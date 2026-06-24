@@ -1,0 +1,38 @@
+# .github/workflows/calibrate.yml
+# 校准：定期(或手动)walk 最近已关闭 PR，从 API 重建并算吻合度，产出报告 artifact。
+name: Touchstone Calibration
+
+on:
+  schedule:
+    - cron: "0 1 * * 1"      # 每周一 01:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  calibrate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - name: Install deps
+        run: pip install -r requirements.txt
+      - name: Calibrate
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CALIBRATE_WINDOW: "50"
+          # TOUCHSTONE_BOT_LOGIN: 若 touchstone 用 PAT 身份发帖，在此覆盖默认 github-actions[bot]
+        run: python touchstone/calibrate.py
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: calibration-report
+          path: |
+            calibration-report.md
+            calibration.json
+          if-no-files-found: ignore

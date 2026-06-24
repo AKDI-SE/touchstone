@@ -1,0 +1,152 @@
+# .github/workflows/touchstone.yml
+# Touchstone —— 默认顾问式评审 + 可插拔质量门禁（对外只发一个总闸）。
+# 链路：touchstone(评审+风险，不拦截) → (按需) verify → gate(聚合并发布那一个总闸) → (可选) auto_merge。
+# verify 与 auto_merge 都是可选、默认关的进阶路径。
+name: Touchstone
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+  checks: write
+
+jobs:
+  # ---- 判断层：评审（advisory，不拦截；不在此发总闸，交给 gate job）----
+  touchstone:
+    runs-on: ubuntu-latest          # 自托管 runner 见下方网络注记
+    outputs:
+      decision: ${{ steps.run.outputs.verification_decision }}
+      risk_band: ${{ steps.run.outputs.risk_band }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - name: Install deps
+        run: pip install -r requirements.txt
+        # 自托管 runner 若经代理访问公网：按需设置/清理 *_PROXY；可选用私有/就近 PyPI 镜像加速 pip install
+      - name: Run review
+        id: run
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LLM_BASE_URL: ${{ secrets.LLM_BASE_URL }}
+          LLM_API_KEY:  ${{ secrets.LLM_API_KEY }}
+          LLM_MODEL:    ${{ secrets.LLM_MODEL }}      # 应不同于、且不弱于 author 模型
+          TOUCHSTONE_SKIP_GATE: "true"                 # 不自发总闸：由下方 gate job 在(可选)verify 之后统一发
+        run: python touchstone/orchestrator.py
+      - name: Upload findings (校准入口 + gate/auto_merge 组装输入)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: touchstone-findings
+          path: touchstone-findings.json
+          if-no-files-found: ignore
+
+  # ---- 可选深检：verify（默认关；vars.VERIFY_ENABLED=='true' 且风险分流判为需验证时才跑）----
+  # 结果写 verify-result.json，由 gate job 经 verify 插件折进总闸（不再单独发 check）。
+  verify:
+    needs: touchstone
+    if: ${{ vars.VERIFY_ENABLED == 'true' && (needs.touchstone.outputs.decision == 'targeted_tests' || needs.touchstone.outputs.decision == 'full_suite') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0           # worktree 需要 base/head 两个 commit
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - name: Install deps
+        run: pip install -r requirements.txt
+      - name: verify_change
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LLM_BASE_URL: ${{ secrets.LLM_BASE_URL }}
+          LLM_API_KEY:  ${{ secrets.LLM_API_KEY }}
+          LLM_TEST_MODEL: ${{ secrets.LLM_TEST_MODEL }}   # 独立验收测试作者：异于 author/touchstone
+          BASE_REF: ${{ github.event.pull_request.base.sha }}
+          HEAD_REF: ${{ github.event.pull_request.head.sha }}
+          VERIFY_MODE: ${{ needs.touchstone.outputs.decision }}
+          PR_TITLE: ${{ github.event.pull_request.title }}   # 供 is_refactor 判定重构→regression_only
+          REPO_DIR: "."
+        run: python verify/verify_change.py
+        # 自托管 runner 若经代理访问公网或 LLM API：按需配置 *_PROXY/NO_PROXY；公有 runner 通常直连、无需此项。
+      - name: Upload verify result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verify-result
+          path: verify-result.json
+          if-no-files-found: ignore
+
+  # ---- 质量门禁：聚合 touchstone 规则 + 转达检查 +（若跑过）verify → 对外发【一个】总闸 ----
+  # needs verify 但用 !cancelled() 兜底：verify 被跳过（默认）时本 job 仍运行，verify 插件记中性、不挡。
+  gate:
+    needs: [touchstone, verify]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      checks: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - run: pip install -r requirements.txt
+      - name: Download touchstone (+ verify if ran) outputs
+        uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true     # touchstone-findings.json (+ verify-result.json) → cwd
+        continue-on-error: true
+      - name: Aggregate & post the single gate
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          REPO_DIR: "."
+        run: python touchstone/checks.py    # 发总闸并把含 verify 的结论写回 touchstone-findings.json
+      - name: Re-upload findings with final gate (供 auto_merge 读含 verify 的总闸)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: touchstone-findings
+          path: touchstone-findings.json
+          overwrite: true
+          if-no-files-found: ignore
+
+  # ── 自动放行（可选，默认关；§4.7）──autonomy 只读总闸结论，不再依赖 verify job/CI_GREEN ──
+  auto_merge:
+    needs: [touchstone, gate]
+    if: ${{ vars.AUTONOMY_ENABLED == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write          # 仅本 job 需要写权限（merge）
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.x" }
+      - run: pip install -r requirements.txt
+      # 闭环输入：touchstone-findings.json（gate job 已写入含 verify 的总闸结论 gate）
+      #         + .touchstone/graduated-classes.json（govern 定时任务发布并提交）+ 熔断态
+      # autonomy 据【总闸结论 + 无阻断否决 + 收敛 + 未熔断 + 类达标 + 总开关】决策；缺任一即回落到人。
+      - name: Download touchstone findings (final, gate-updated)
+        uses: actions/download-artifact@v4
+        with:
+          name: touchstone-findings
+        continue-on-error: true
+      - name: Stage graduated change-classes
+        run: cp .touchstone/graduated-classes.json graduated-classes.json 2>/dev/null || echo '{"graduated_classes":[]}' > graduated-classes.json
+      - name: Decide & (maybe) auto-merge
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          AUTONOMY_TRIPPED: ${{ vars.AUTONOMY_TRIPPED }}
+          AUTONOMY_ENABLED: ${{ vars.AUTONOMY_ENABLED }}
+          AUTONOMY_SHADOW: ${{ vars.AUTONOMY_SHADOW }}
+        run: python -m touchstone.autonomy --execute

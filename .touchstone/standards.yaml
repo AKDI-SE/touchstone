@@ -1,0 +1,320 @@
+# ============================================================================
+# .touchstone/standards.yaml  ——  单一事实源规范 (Single Source of Truth)
+# ----------------------------------------------------------------------------
+# 一份文件，喂两端：
+#   • author agent  → 写代码前/中读取，按 author_guidance 写对（shift-left，源头少犯）
+#   • 评审委员会     → 每个专才按 owns 认领的 category 子集，依 detect_hint 查错
+# 维护者：人（Phase 0 的主引擎；低体量下飞轮喂不动，手写规范优先于自动学习）。
+# 固化通道：machine_checkable 的条目，一旦"反复出现且被强归因证实有害"，
+#           经"建议→拦截桥"沉到确定性门禁、升级为可拦截的确定性检查（见 governance）。
+# 演进：Phase 2 由 Training-Free GRPO 把本表升级为可增删改的经验库；本表是其起点。
+# ============================================================================
+
+meta:
+  version: "0.2"
+  updated: "2026-06-18"
+  source_of_truth: true
+  consumed_by: [author_agent, review_committee]
+  # touchstone 的每条 Finding.rationale 必须指回本表某条 rule.id；指不回的不予采信。
+
+# ---------------------------------------------------------------------------
+# 条目 schema（每条 rule 的形状）
+# ---------------------------------------------------------------------------
+# id:               稳定标识，Finding 用它回指依据
+# category:         缺陷类别（见下方 taxonomy 的枚举）
+# class:            correctness | boundary | quality（三类判定，决定由谁判定）
+# severity:         block_candidate | warn | info
+#                     block_candidate = 若 machine_checkable 且复发证实有害，可经桥固化为闸
+# machine_checkable:true 表示可用确定性手段(lint/类型/SAST/相似度)检出 → 固化候选
+# applies_to:       生效范围（语言/路径 glob/"*"）
+# description:      规则是什么
+# rationale:        为什么（touchstone 出此类 Finding 时的 rationale 模板）
+# author_guidance:  【给 author 的脸】写代码时怎么做对
+# detect_hint:      【给委员会的脸】怎么查、查什么信号
+# examples:         good/bad（可选，约定与质量类尤其有用）
+# ---------------------------------------------------------------------------
+
+# 三类判定 → category → 委员会专才  （路由表：决定哪个专才认领、是否进确定性门禁）
+taxonomy:
+  - class: correctness          # 有客观真值；touchstone 只"怀疑+路由到验证"，不下结论
+    decided_by: 验证子系统（独立验收测试 + 充分性阶梯）
+    touchstone_role: 标记 correctness_suspect → 触发 verify_change，不自行判过/不过
+    categories: [correctness_suspect, weak_test]
+    owner_agent: 正确性·测试专才
+
+  - class: boundary             # 有明确红线；尽量进确定性门禁
+    decided_by: 确定性门禁（规则化检查 / SAST）
+    categories: [security, contract]
+    owner_agent: 安全专才
+
+  - class: quality              # 无客观真值；touchstone 判断力的主场，犯错可承受
+    decided_by: 评审委员会（建议，非准入）
+    categories: [duplication, convention, over_engineering, missing_error_handling, scope_creep]
+    owner_agents: [架构专才, 约定·结构专才]
+
+# ---------------------------------------------------------------------------
+# 规则（骨架：每类 1–3 条代表，按 AI 代码缺陷画像编写；人按缺口扩充）
+# ---------------------------------------------------------------------------
+rules:
+
+  # ===== duplication · 重复造轮子（AI 头号高发，人易漏）=====
+  - id: DUP-001
+    category: duplication
+    class: quality
+    severity: warn
+    machine_checkable: false        # 需 repo_index + 相似度 + 判断；可半自动
+    applies_to: "*"
+    description: 新增的工具/辅助函数与代码库已有能力重复或高度相似。
+    rationale: agent 未检索已有代码即自行实现，造成重复实现、维护分裂。
+    author_guidance: >
+      新增任何 util/helper 前，先在已有代码地图(repo_index)中检索同义能力；
+      若存在，复用并在提交契约 reused_components 中声明，而非另写一份。
+    detect_hint: >
+      对照 repo_index 做函数级相似度比对；重点看 utils/common/helpers 目录；
+      核对提交契约 reused_components 与 diff 中实际 import 是否一致。
+
+  # ===== convention · 约定（多数可 lint，machine_checkable，固化候选）=====
+  - id: CONV-001
+    category: convention
+    class: quality
+    severity: block_candidate
+    machine_checkable: true
+    applies_to: "*"
+    description: 命名、目录布局、导入顺序、日志/错误信息格式须符合本项目既有约定。
+    rationale: 偏离约定增加阅读与维护成本；这类问题应在源头消除而非到评审才抓。
+    author_guidance: 遵循仓库现有同类文件的命名与结构；不引入新风格。
+    detect_hint: 优先交给 linter/formatter；linter 能判的，本条应逐步固化进确定性门禁。
+    examples:
+      good: "parse_config()   # 与现有 parse_* 系列一致"
+      bad:  "configParserHelperFn()   # 风格与仓库不符"
+
+  - id: CONV-002
+    category: convention
+    class: quality
+    severity: warn
+    machine_checkable: false
+    applies_to: "*"
+    description: 注释/文档须与代码实际行为一致，不得是 AI 生成的"看起来合理"但与实现不符的描述。
+    rationale: AI 易产出漂亮但与代码不符的注释，误导后续读者与评审。
+    author_guidance: 注释只描述代码真实做的事；改了实现必须同步改注释。
+    detect_hint: 抽查注释声称的行为与实现是否吻合；docstring 参数与签名是否一致。
+
+  # ===== over_engineering · 过度工程（AI 高发）=====
+  - id: OE-001
+    category: over_engineering
+    class: quality
+    severity: warn
+    machine_checkable: false
+    applies_to: "*"
+    description: 引入与任务规模不相称的抽象层、配置项或泛化（YAGNI 违例）。
+    rationale: agent 倾向"40 行能解决写成 400 行"，凭空加抽象，增加复杂度与维护面。
+    author_guidance: 用满足 acceptance_criteria 的最小改动；不为"将来可能"提前泛化。
+    detect_hint: >
+      对照提交契约 intent 看改动是否超出所需；警惕只有一个实现的接口/工厂、
+      只被调用一次的"通用"层、与本任务无关的参数化。
+
+  # ===== missing_error_handling · 缺失错误处理 =====
+  - id: ERR-001
+    category: missing_error_handling
+    class: quality
+    severity: warn
+    machine_checkable: false        # 部分可静态分析（吞异常/空 catch）
+    applies_to: "*"
+    description: 外部边界(IO/网络/解析/用户输入)缺校验，或异常被静默吞掉。
+    rationale: AI 常给出 happy-path 实现，忽略错误路径与边界。
+    author_guidance: 对所有外部输入与可失败调用显式处理错误；不写空 catch、不静默吞异常。
+    detect_hint: 查空 catch / 裸 except、未校验的外部输入、未处理的 Promise/error 返回值。
+
+  # ===== weak_test · 恒真/无效测试（命门相关）=====
+  - id: TEST-001
+    category: weak_test
+    class: correctness
+    severity: block_candidate
+    machine_checkable: true         # 空实现哨兵可自动判
+    applies_to: "**/*test*, **/*spec*"
+    description: 测试为恒真、断言无意义、或在空实现上也能通过（未真正测到改动）。
+    rationale: author 自写测试可被钻；摆设测试让质量门禁出"假绿"。
+    author_guidance: >
+      每个测试必须对"行为"做有意义断言；验收测试应满足：对改动前/桩实现 FAIL、改动后 PASS。
+      author 自写测试仅作补充，验收以独立验收测试为准。
+    detect_hint: >
+      交给验证子系统的空实现哨兵（改前 FAIL/改后 PASS）与改动覆盖；
+      高风险再上变异验证。本条 machine_checkable，是固化首选。
+
+  - id: TEST-002
+    category: weak_test
+    class: correctness
+    severity: warn
+    machine_checkable: false
+    applies_to: "**/*test*, **/*spec*"
+    description: 测试 mock 掉了被测对象本身，或只测桩而非真实逻辑。
+    rationale: 过度 mock 让测试通过却未验证真实行为。
+    author_guidance: 只 mock 外部依赖，不 mock 被测单元本身。
+    detect_hint: 查被测函数是否被 mock；断言是否落在 mock 返回值而非真实计算结果上。
+
+  # ===== correctness_suspect · 正确性可疑（class-1：只怀疑+路由，不下结论）=====
+  - id: COR-001
+    category: correctness_suspect
+    class: correctness
+    severity: warn
+    machine_checkable: false
+    applies_to: "*"
+    description: 使用了未经核实的 API/方法/字段（疑似幻觉或签名记错）。
+    rationale: AI 易调用不存在的接口或记错参数顺序/语义。
+    author_guidance: 只用已确认存在的 API；不确定的先查文档/类型定义。
+    detect_hint: >
+      交给类型检查/编译；touchstone 标记为 correctness_suspect 并触发 verify_change，
+      绝不靠"读着像对"就放过——这是 plausible-but-wrong 的主战场。
+
+  - id: COR-002
+    category: correctness_suspect
+    class: correctness
+    severity: warn
+    machine_checkable: false
+    applies_to: "*"
+    description: 共享状态/并发路径缺同步，或对外部响应结构做了未验证假设。
+    rationale: 此类语义错误"看着对、能跑"，只有执行/特定输入才暴露。
+    author_guidance: 并发访问共享状态需显式同步；对外部响应先校验结构再使用。
+    detect_hint: touchstone 标记并路由到变更比例验证（生成针对性用例/属性断言去跑），不靠读。
+
+  # ===== security · 安全红线（class-2，尽量进确定性门禁）=====
+  - id: SEC-001
+    category: security
+    class: boundary
+    severity: block_candidate
+    machine_checkable: true
+    applies_to: "*"
+    description: 代码中出现硬编码密钥/凭据/令牌。
+    rationale: 明确红线，可规则化检出。
+    author_guidance: 任何密钥走配置/密钥管理，绝不入代码。
+    detect_hint: 交给 SAST/secret scanner；本条应固化为确定性闸（直接拦）。
+
+  - id: SEC-002
+    category: security
+    class: boundary
+    severity: block_candidate
+    machine_checkable: true
+    applies_to: "*"
+    description: 未净化的外部输入进入 shell/SQL/反序列化等危险汇聚点（注入面）。
+    rationale: 明确红线，SAST 可检。
+    author_guidance: 外部输入一律参数化/转义/白名单校验后再使用。
+    detect_hint: SAST 数据流分析（source→sink）；新增危险汇聚点重点查。
+
+  # ===== contract · 契约（class-2）=====
+  - id: CTR-001
+    category: contract
+    class: boundary
+    severity: block_candidate
+    machine_checkable: true         # 签名/schema diff 可自动比对
+    applies_to: "**/api/**, **/schema/**, **/*.proto"
+    description: 公共 API 签名或数据 schema 发生破坏性变更而未走版本/兼容流程。
+    rationale: 跨模块契约破坏影响面大，属高 blast_radius。
+    author_guidance: 破坏性变更须走版本号/兼容层；提交契约里显式声明影响面。
+    detect_hint: 对比签名/schema 的 diff；命中即提升 RiskAssessment.blast_radius，强制走人仲裁。
+
+  # ===== scope_creep · 越界（class-3，对照契约 intent）=====
+  - id: SCOPE-001
+    category: scope_creep
+    class: quality
+    severity: warn
+    machine_checkable: false
+    applies_to: "*"
+    description: diff 触及与提交契约 intent 无关的文件/区域，或捆绑了不相关改动。
+    rationale: agent 易顺手改动声明范围之外的东西，放大评审与风险面。
+    author_guidance: 一个 PR 只做一件事；与 intent 无关的改动拆成独立 PR。
+    detect_hint: 用 check_contract_consistency 比对 diff 与 intent；范围外改动即列为发现。
+
+  # ===== Java / Spring 栈专项（applies_to: [java]；非 Java PR 自动过滤，不打扰其它栈）=====
+  - id: SPR-DI-001
+    category: spring_di
+    class: quality
+    severity: warn
+    machine_checkable: true
+    applies_to: [java]
+    description: Spring Bean 用字段注入（@Autowired/@Resource/@Inject 直接标在字段上）而非构造器注入。
+    rationale: 字段注入隐藏依赖、破坏不可变性、难以脱离容器单测；构造器注入是 Spring 官方推荐姿势。
+    author_guidance: 依赖一律走构造器注入（final 字段 + 单构造器，可用 Lombok @RequiredArgsConstructor）；不要把 @Autowired 标在字段上。
+    detect_hint: grep 字段声明处的 @Autowired|@Resource|@Inject；所在类带 @Component/@Service/@Repository/@Controller。
+  - id: SPR-TX-001
+    category: spring_tx
+    class: correctness
+    severity: block_candidate
+    machine_checkable: true
+    applies_to: [java]
+    description: 事务注解 @Transactional 标在非 public 方法上，或被同类内部 this. 自调用——事务代理不生效，静默无事务。
+    rationale: Spring 事务靠 AOP 代理；private/protected/包级方法与自调用绕过代理，事务静默失效，是隐蔽的正确性缺陷。
+    author_guidance: 把 @Transactional 只放在 public 方法，且经注入的代理（另一个 Bean）调用；自调用场景把方法拆到另一个 Bean。
+    detect_hint: grep @Transactional 紧跟 private|protected 方法；或同类内 this.<txMethod>() 直接调用本类 @Transactional 方法。
+  - id: SPR-VAL-001
+    category: spring_validation
+    class: boundary
+    severity: warn
+    machine_checkable: false
+    applies_to: [java]
+    description: 控制器入参（@RequestBody/@RequestParam/@PathVariable）未做校验（缺 @Valid/@Validated 或显式校验）。
+    rationale: 外部输入是信任边界；不校验直接进业务/落库，放大注入与脏数据风险。
+    author_guidance: 给 @RequestBody DTO 加约束注解并在入参标 @Valid；@RequestParam 关键约束显式校验。
+    detect_hint: 看 @RestController/@Controller 的 handler 入参是否缺 @Valid/@Validated 且 DTO 无 jakarta/javax.validation 约束。
+  - id: JAVA-EQ-001
+    category: java_correctness
+    class: correctness
+    severity: block_candidate
+    machine_checkable: true
+    applies_to: [java]
+    description: 用 == / != 比较 String 或包装类型（Integer/Long 等）对象的内容，而非 equals()。
+    rationale: == 比的是引用；字符串/包装类内容相等必须用 equals，否则随字符串驻留/整型缓存表现不定，是高频隐蔽 bug。
+    author_guidance: 对象内容比较一律 equals()（或 Objects.equals 处理 null）；== 只用于基本类型与 null/枚举/同一性判断。
+    detect_hint: grep 字符串字面量或 String/Integer/Long 变量参与的 == / !=（排除 == null）。
+  - id: JAVA-EXC-001
+    category: java_error
+    class: quality
+    severity: warn
+    machine_checkable: true
+    applies_to: [java]
+    description: 吞异常——空 catch 块，或 catch 后仅打印/记录便继续，既未处理也未重抛。
+    rationale: 吞掉异常让错误静默消失、问题被掩盖；比缺少错误处理更危险（看似处理了）。
+    author_guidance: catch 要么恢复、要么重抛（或包装为领域异常）、要么明确记录并中断；杜绝空 catch 与"记了就吞"。
+    detect_hint: grep 空的 catch{}；或 catch 体仅含 log/printStackTrace 且无 throw/return/有意义恢复。
+  - id: JAVA-LOG-001
+    category: java_logging
+    class: quality
+    severity: warn
+    machine_checkable: true
+    applies_to: [java]
+    description: 用 e.printStackTrace() 或 System.out/System.err 输出，而非日志框架。
+    rationale: printStackTrace/System.out 绕过日志级别与采集，生产不可观测、噪声大。
+    author_guidance: 统一用 SLF4J/Log4j2 记录（带级别与上下文）；移除 printStackTrace 与 System.out/err。
+    detect_hint: grep printStackTrace(|System.out|System.err（测试代码与 main 引导除外）。
+
+# ---------------------------------------------------------------------------
+# 治理与演进
+# ---------------------------------------------------------------------------
+governance:
+  consumption:
+    author_agent: >
+      写代码前将相关 rules 的 author_guidance 注入上下文（按 applies_to 过滤）；
+      提交时按契约 schema 填写 intent / reused_components / self_noted_risks。
+    review_committee: >
+      每个专才按 taxonomy.owner_agent 认领的 category 子集加载对应 rules；
+      出 Finding 时 rationale 回指 rule.id；touchstone/author 对验收测试集无写权。
+
+  lifecycle:                      # 规则的增删改保留（对齐 TF-GRPO 经验库的四操作）
+    add:    校准发现"人反复 flag、本表未覆盖"的模式 → 新增规则
+    modify: 规则过宽/过严(误报率高或漏报多) → 收紧/泛化描述与 detect_hint
+    delete: 被证实误导或长期零命中 → 移除，避免噪声与过度保守
+    keep:   校准吻合度高、稳定有效 → 保留
+
+  promote_to_gate:                # "建议→拦截桥"
+    condition: machine_checkable == true  AND  recurring  AND  confirmed_harmful(强归因)
+    effect:   固化进确定性门禁，从"建议"升级为可拦截的确定性检查
+    note:     先看 severity=block_candidate 且 machine_checkable=true 的条目（CONV-001/TEST-001/SEC-*/CTR-001）
+
+  calibration:                    # 闭环来源：并行人审裁决（免费 标准答案）
+    signal: touchstone 按 category 维度与人审裁决的吻合度（双尾：漏报 + 误报/噪声）
+    use:    据此对各专才/各规则增删改；退役噪声大的规则与专才
+
+  phase2_experience_library:
+    note: >
+      数十 PR/日喂不动高吞吐飞轮；本手写表是主引擎。待积累足够校准标签后，
+      用 Training-Free GRPO 把本表升级为可自动增删改的经验库（奖励先用人审裁决、
+      后用验证子系统的客观结果）。TF-GRPO 仅优化判断层，不改质量门禁。

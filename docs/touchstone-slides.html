@@ -1,0 +1,232 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Touchstone · 技术方案评审</title>
+<style>
+  :root{
+    --paper:#FAFAF8; --panel:#FFFFFF; --ink:#15181D; --muted:#6B7178;
+    --line:#E6E4DD; --line2:#D8D6CD; --primary:#14506B;
+    --c1:#0E7C7B; --c2:#3D52A0; --c3:#B5651D;
+    --low:#3E7C5A; --mid:#B5651D; --high:#A23E3E;
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--sans);font-size:17px;line-height:1.6}
+  /* 顶部三段色轨——三类判定的视觉署名 */
+  .rail{position:fixed;top:0;left:0;right:0;height:4px;z-index:50;display:flex}
+  .rail i{flex:1}
+  .rail i:nth-child(1){background:var(--c1)} .rail i:nth-child(2){background:var(--c2)} .rail i:nth-child(3){background:var(--c3)}
+  .deck{scroll-snap-type:y mandatory;height:100vh;overflow-y:scroll}
+  .slide{min-height:100vh;scroll-snap-align:start;display:flex;flex-direction:column;justify-content:center;
+         padding:80px max(7vw,40px) 88px;position:relative;border-bottom:1px solid var(--line)}
+  .eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.24em;text-transform:uppercase;color:var(--primary);margin:0 0 22px}
+  h1{font-size:clamp(34px,5.4vw,60px);line-height:1.08;letter-spacing:-.015em;margin:0 0 26px;font-weight:700}
+  h2{font-size:clamp(26px,3.6vw,40px);line-height:1.15;margin:0 0 24px;font-weight:700;letter-spacing:-.01em}
+  .lead{font-size:clamp(18px,2.1vw,23px);color:var(--ink);max-width:30em;margin:0 0 10px}
+  .lead b{color:var(--primary)}
+  .sub{color:var(--muted);max-width:40em;font-size:clamp(15px,1.7vw,18px)}
+  .byline{font-family:var(--mono);font-size:13px;color:var(--muted);margin-top:38px;line-height:1.9}
+  .byline b{color:var(--primary)}
+  .grid{display:grid;gap:18px;margin-top:14px}
+  .g2{grid-template-columns:1fr 1fr} .g3{grid-template-columns:repeat(3,1fr)} .g4{grid-template-columns:repeat(4,1fr)}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:18px 20px}
+  .card .k{font-family:var(--mono);font-size:11.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
+  .card h3{margin:7px 0 6px;font-size:18px}
+  .card p{margin:0;font-size:14.5px;color:var(--muted);line-height:1.55}
+  .card.tc1{border-top:3px solid var(--c1)} .card.tc2{border-top:3px solid var(--c2)} .card.tc3{border-top:3px solid var(--c3)}
+  .card.tp{border-top:3px solid var(--primary)}
+  .big{font-family:var(--mono);font-size:clamp(30px,4.4vw,46px);font-weight:700;color:var(--primary);line-height:1}
+  .big span{font-size:15px;color:var(--muted);font-weight:400;margin-left:4px}
+  ul{margin:8px 0;padding-left:0;list-style:none;max-width:40em}
+  ul li{position:relative;padding-left:22px;margin:11px 0;font-size:clamp(15px,1.7vw,18px)}
+  ul li::before{content:"";position:absolute;left:2px;top:.62em;width:8px;height:8px;border-radius:2px;background:var(--primary)}
+  ul.c1 li::before{background:var(--c1)} ul.c2 li::before{background:var(--c2)} ul.c3 li::before{background:var(--c3)}
+  .muted{color:var(--muted)} code{font-family:var(--mono);font-size:.88em;background:#F2F1EC;padding:1px 5px;border-radius:4px}
+  table{border-collapse:collapse;width:100%;max-width:720px;margin-top:10px;font-size:14.5px}
+  th,td{border:1px solid var(--line2);padding:8px 12px;text-align:left} th{background:#F2F1EC}
+  td.n{font-family:var(--mono);color:var(--primary);font-weight:600;text-align:right;width:90px}
+  /* 导航 */
+  .counter{position:fixed;right:22px;bottom:18px;z-index:50;font-family:var(--mono);font-size:12.5px;color:var(--muted)}
+  .counter b{color:var(--primary)}
+  .dots{position:fixed;right:20px;top:50%;transform:translateY(-50%);z-index:50;display:flex;flex-direction:column;gap:10px}
+  .dots a{width:9px;height:9px;border-radius:50%;border:1.5px solid var(--line2);background:transparent;transition:.2s}
+  .dots a.on{background:var(--primary);border-color:var(--primary)}
+  .hint{position:fixed;left:22px;bottom:18px;z-index:50;font-family:var(--mono);font-size:11.5px;color:var(--muted)}
+  .slide>*{opacity:0;transform:translateY(12px);transition:opacity .5s ease,transform .5s ease}
+  .slide.in>*{opacity:1;transform:none}
+  .slide.in>*:nth-child(2){transition-delay:.06s} .slide.in>*:nth-child(3){transition-delay:.12s}
+  .slide.in>*:nth-child(4){transition-delay:.18s} .slide.in>*:nth-child(5){transition-delay:.24s}
+  @media (prefers-reduced-motion:reduce){.slide>*{opacity:1;transform:none;transition:none}}
+  @media (max-width:720px){.g2,.g3,.g4{grid-template-columns:1fr} .dots{display:none}}
+  svg{max-width:100%;height:auto}
+</style>
+</head>
+<body>
+<div class="rail"><i></i><i></i><i></i></div>
+<div class="deck" id="deck">
+
+  <!-- 1 封面 -->
+  <section class="slide">
+    <p class="eyebrow">技术方案评审 · 2026-06</p>
+    <h1>Touchstone</h1>
+    <p class="lead">一个<b>自动评审公开 GitHub PR</b> 的 agent：默认只给高信噪比的意见，<b>合入由人点</b>；可选开启正确性验证与自动合并。</p>
+    <p class="lead" style="margin-top:18px;font-size:clamp(20px,2.4vw,26px)">核心命题：<b>自主边界 = 验证边界。</b></p>
+    <p class="byline"><b>作者</b> 朱家法（00538128）· Claude Code · GLM-5.2 · Gemini · DeepSeek<br><b>评审</b> 李成（00494329）　|　配套：详细设计 / 4+1 架构视图文档</p>
+  </section>
+
+  <!-- 2 问题 -->
+  <section class="slide">
+    <p class="eyebrow">§ 1 · 为什么做这件事</p>
+    <h2>PR 评审要规模化，有四个绕不开的难点</h2>
+    <div class="grid g2">
+      <div class="card tc1"><div class="k">信号噪声</div><h3>AI 评审噪声是乘性的</h3><p>多来源并行，假阳性叠加成数倍噪声面；噪声一大，开发者会无视全部意见，评审从增益变负担。</p></div>
+      <div class="card tc2"><div class="k">成本</div><h3>每个 PR 跑全量验证付不起</h3><p>真正判断"改得对不对"要测试与验证，但对每个 PR 都跑全套既慢又贵，无法落到日常流水线。</p></div>
+      <div class="card tc3"><div class="k">问责</div><h3>谁为"合入"负责</h3><p>把合并按钮交给 AI，出问题谁背？需要一条清晰、可审计的边界，区分"AI 能自动放行"与"必须人来点"。</p></div>
+      <div class="card tp"><div class="k">可信</div><h3>"测试绿"不等于"对"</h3><p>author 自己写的验收测试可能绕过真实意图；需要独立、盲于实现的验证，否则自动化只是自欺。</p></div>
+    </div>
+  </section>
+
+  <!-- 3 方案总览 -->
+  <section class="slide">
+    <p class="eyebrow">§ 2 · 方案总览</p>
+    <h2>顾问式评审 + 复用开源 + 三层防护</h2>
+    <div class="grid g3">
+      <div class="card tp"><div class="k">定位</div><h3>默认顾问式</h3><p>只产高信噪比的评审意见与风险分流，<b>不产准入</b>；合入按钮始终在人手里。自动合并与验证可选、默认关。</p></div>
+      <div class="card tp"><div class="k">不造轮子</div><h3>评审复用 PR-Agent</h3><p>评审广度交给成熟开源工具；本系统只写 PR-Agent 没有的：归一、裁决映射、契约与栈规则、验证、自治、校准。</p></div>
+      <div class="card tp"><div class="k">边界</div><h3>自主边界 = 验证边界</h3><p>能自动放行多少，由客观验证覆盖到哪决定——不由评审 agent 的数量或模型多样性决定。</p></div>
+    </div>
+    <ul class="c1" style="margin-top:22px">
+      <li><b>向下守底线</b>：客观、可复现的质量门禁是唯一准入，判断层全错也越不过它。</li>
+      <li><b>向上提上限</b>：AI 判断扩展评审广度、降低盲点，但只给建议。</li>
+      <li><b>离线回灌</b>：用真实的人审裁决与合入结果，反过来校准判断、据结果收回或给予自主权。</li>
+    </ul>
+  </section>
+
+  <!-- 4 架构 -->
+  <section class="slide">
+    <p class="eyebrow">§ 3 · 架构（4+1 精简 · 逻辑视图）</p>
+    <h2>按决策权分四层</h2>
+    <svg viewBox="0 0 980 360" xmlns="http://www.w3.org/2000/svg" font-family="system-ui,sans-serif">
+      <rect x="6" y="6" width="968" height="48" rx="8" fill="#fff" stroke="#14506B" stroke-width="2"/>
+      <text x="24" y="35" font-size="15" font-weight="700" fill="#14506B">人 · 治理层　<tspan font-weight="400" fill="#6B7178" font-size="13">定标准 · 核准验收规格 · 仲裁高风险 · 持熔断开关 · 最终合入</tspan></text>
+
+      <rect x="6" y="66" width="968" height="96" rx="8" fill="#F5FAFB" stroke="#0E7C7B" stroke-width="2"/>
+      <text x="24" y="88" font-size="14" font-weight="700" fill="#0E7C7B">判断层（只产建议与风险，不产准入）</text>
+      <rect x="24" y="98" width="232" height="52" rx="6" fill="#fff" stroke="#0E7C7B"/><text x="36" y="120" font-size="12.5" font-weight="600">评审主链 review_pr</text><text x="36" y="138" font-size="10.5" fill="#6B7178">PR-Agent→normalize+契约+栈规则→map_verdict</text>
+      <rect x="272" y="98" width="210" height="52" rx="6" fill="#fff" stroke="#0E7C7B"/><text x="284" y="120" font-size="12.5" font-weight="600">风险分流 route</text><text x="284" y="138" font-size="10.5" fill="#6B7178">cheap / targeted / full（按风险+影响面）</text>
+      <rect x="498" y="98" width="210" height="52" rx="6" fill="#fff" stroke="#0E7C7B"/><text x="510" y="120" font-size="12.5" font-weight="600">反馈循环 loop_step</text><text x="510" y="138" font-size="10.5" fill="#6B7178">可自改发现交回 author，有界防震荡</text>
+      
+
+      <rect x="6" y="174" width="968" height="86" rx="8" fill="#F4F5FA" stroke="#3D52A0" stroke-width="2"/>
+      <text x="24" y="196" font-size="14" font-weight="700" fill="#3D52A0">质量门禁层（唯一准入：客观 · 可复现 · 可审计）</text>
+      <rect x="24" y="206" width="300" height="44" rx="6" fill="#fff" stroke="#3D52A0"/><text x="36" y="232" font-size="12.5" font-weight="600">可插拔检查门禁 checks → 一个统一门禁</text>
+      <rect x="340" y="206" width="300" height="44" rx="6" fill="#fff" stroke="#3D52A0"/><text x="352" y="232" font-size="12.5" font-weight="600">正确性验证 verify（可选）</text>
+      <rect x="656" y="206" width="300" height="44" rx="6" fill="#fff" stroke="#3D52A0"/><text x="668" y="232" font-size="12.5" font-weight="600">自动合并 autonomy（可选 · 默认关）</text>
+
+      <rect x="6" y="272" width="968" height="80" rx="8" fill="#fff" stroke="#6B7178" stroke-width="1.4" stroke-dasharray="5 4"/>
+      <text x="24" y="294" font-size="14" font-weight="700" fill="#6B7178">离线层（cron，不阻塞 PR）</text>
+      <rect x="24" y="304" width="300" height="38" rx="6" fill="#fff" stroke="#6B7178"/><text x="36" y="328" font-size="12" font-weight="600">校准 calibrate</text>
+      <rect x="340" y="304" width="300" height="38" rx="6" fill="#fff" stroke="#6B7178"/><text x="352" y="328" font-size="12" font-weight="600">治理 govern（固化 / 熔断）</text>
+      <rect x="656" y="304" width="300" height="38" rx="6" fill="#fff" stroke="#6B7178"/><text x="668" y="328" font-size="12" font-weight="600">学习回路 learning_loop（Phase 2）</text>
+    </svg>
+    <p class="sub" style="margin-top:14px">完整 4+1（逻辑 / 进程 / 开发 / 物理 + 场景）见独立架构视图文档。</p>
+  </section>
+
+  <!-- 5 关键机制 -->
+  <section class="slide">
+    <p class="eyebrow">§ 4 · 关键机制</p>
+    <h2>四个把"边界"落到代码的机制</h2>
+    <div class="grid g2">
+      <div class="card tc1"><div class="k">判断</div><h3>三类判定，不同处置</h3><p>正确性（疑问→验证）/ 红线·契约（规则化→机器判定）/ 质量（建议）。category 决定风险等级与处置路径。</p></div>
+      <div class="card tc2"><div class="k">分流</div><h3>风险三档验证</h3><p>低/中→cheap_only；高→targeted_tests；高且影响面严重→full_suite（多跑变异）。把贵的验证只花在最危险的改动上。</p></div>
+      <div class="card tc3"><div class="k">验证</div><h3>独立验收 + 充分性校验</h3><p>异模型、盲于实现地生成验收测试；改动覆盖→空实现哨兵→变异，逐级确认"测得够不够"。规格须人核准。</p></div>
+      <div class="card tp"><div class="k">自治</div><h3>多道门禁串联 + 熔断</h3><p>自动合并需：统一门禁绿 · 无阻断否决 · 闭环收敛 · 变更分类达标 · 总开关开。合入后异常越阈→熔断收回自主权。</p></div>
+    </div>
+  </section>
+
+  <!-- 6 工程现状 -->
+  <section class="slide">
+    <p class="eyebrow">§ 5 · 工程现状</p>
+    <h2>已是可跑的工程，不是 PPT</h2>
+    <div class="grid g3" style="margin-bottom:8px">
+      <div class="card tp"><div class="big">187<span>用例</span></div><p style="margin-top:8px">pytest 全绿，<b>离线</b>——无需 LLM / 网络 / 外部服务即可运行。</p></div>
+      <div class="card tp"><div class="big">3427<span>行</span></div><p style="margin-top:8px">自写生产代码（touchstone/ + verify/，17 个模块）；测试 2472 行、配置 515 行。</p></div>
+      <div class="card tp"><div class="big">PR-Agent<span>复用</span></div><p style="margin-top:8px">评审引擎为开源 pip 依赖、不进仓库；自写仅限本系统独有的治理与验证逻辑。</p></div>
+    </div>
+    <table>
+      <tr><th>功能区</th><th style="text-align:right">行数</th><th>主要模块</th></tr>
+      <tr><td>评审主链</td><td class="n">950</td><td class="muted">touchstone / review_provider / stack_rules / contract_check</td></tr>
+      <tr><td>验证子系统</td><td class="n">701</td><td class="muted">verify_change（双 runner：Python / Java-Maven）</td></tr>
+      <tr><td>闭环·校准·学习</td><td class="n">587</td><td class="muted">loop / calibrate / learning_loop</td></tr>
+      <tr><td>质量门禁·集成</td><td class="n">563</td><td class="muted">checks / run / pr_agent_runner / ghclient / preflight</td></tr>
+      <tr><td>治理·自治</td><td class="n">393</td><td class="muted">govern / autonomy</td></tr>
+    </table>
+  </section>
+
+  <!-- 7 演进与风险 -->
+  <section class="slide">
+    <p class="eyebrow">§ 6 · 演进与已知风险</p>
+    <h2>走到哪了，还剩什么风险</h2>
+    <div class="grid g2">
+      <div>
+        <p class="sub" style="margin-bottom:6px;font-weight:600;color:var(--ink)">演进主线</p>
+        <ul class="c1">
+          <li>主干设计：三类判定 / 风险分流 / 契约 / 校准 / 固化 / 熔断。</li>
+          <li>验证子系统：独立验收 + 充分性校验，双 runner。</li>
+          <li>重定位为顾问式 + 可插拔检查门禁（对外一个状态）。</li>
+          <li>评审复用 PR-Agent；自治与离线学习回路。</li>
+          <li>工程化收尾：栈规则、三档验证、接口命名与实现一致。</li>
+        </ul>
+      </div>
+      <div>
+        <p class="sub" style="margin-bottom:6px;font-weight:600;color:var(--ink)">已知风险（诚实记录）</p>
+        <ul class="c3">
+          <li><b>验收规格来源</b>：author 自报规格可被规避 → 已改为人核准优先（<code>acceptance.yaml</code>）。</li>
+          <li><b>充分性 ≠ 意图正确</b>：覆盖/变异证明"测得够"，不证明"测的是对的意图"——故高风险仍要人仲裁。</li>
+          <li><b>校准依赖人审信号</b>：人审质量不稳时，吻合度会失真；保守取并、不全凭单一信号。</li>
+          <li><b>verify 尚未大规模实跑</b>：默认关，需在真实仓库上验证稳定性与成本。</li>
+        </ul>
+      </div>
+    </div>
+    <p class="lead" style="margin-top:24px;font-size:clamp(17px,2vw,21px)">提请评审：<b>定位与边界</b>是否认可，<b>验证子系统</b>的落地优先级，以及<b>自动合并</b>开启的前置条件。</p>
+  </section>
+
+</div>
+
+<div class="rail" style="top:auto;bottom:0"><i></i><i></i><i></i></div>
+<div class="dots" id="dots"></div>
+<div class="counter"><b id="cur">1</b> / <span id="tot">7</span></div>
+<div class="hint">↑ ↓ / 空格翻页</div>
+
+<script>
+  const deck=document.getElementById('deck');
+  const slides=[...document.querySelectorAll('.slide')];
+  const dotsWrap=document.getElementById('dots');
+  const cur=document.getElementById('cur');
+  document.getElementById('tot').textContent=slides.length;
+  slides.forEach((s,i)=>{const a=document.createElement('a');a.href='#';a.onclick=e=>{e.preventDefault();s.scrollIntoView({behavior:'smooth'})};dotsWrap.appendChild(a)});
+  const dots=[...dotsWrap.children];
+  let idx=0;
+  const io=new IntersectionObserver((es)=>{
+    es.forEach(e=>{
+      if(e.isIntersecting){
+        e.target.classList.add('in');
+        idx=slides.indexOf(e.target);
+        cur.textContent=idx+1;
+        dots.forEach((d,i)=>d.classList.toggle('on',i===idx));
+      }
+    });
+  },{threshold:.55});
+  slides.forEach(s=>io.observe(s));
+  function go(d){const n=Math.max(0,Math.min(slides.length-1,idx+d));slides[n].scrollIntoView({behavior:'smooth'})}
+  addEventListener('keydown',e=>{
+    if(['ArrowDown','ArrowRight',' ','PageDown'].includes(e.key)){e.preventDefault();go(1)}
+    if(['ArrowUp','ArrowLeft','PageUp'].includes(e.key)){e.preventDefault();go(-1)}
+  });
+</script>
+</body>
+</html>

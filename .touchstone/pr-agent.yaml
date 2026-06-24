@@ -1,0 +1,31 @@
+# .touchstone/pr-agent.yaml
+# "Touchstone on PR-Agent" 集成的配置：评审提供器 + 发现归一映射。
+# 仅当切到 PR-Agent 评审路径（REVIEW_PROVIDER=pr-agent）时生效。
+
+provider:
+  mode: improve+review          # 跑 PR-Agent 的哪些工具（improve / review / improve+review）
+  runner_cmd: "python -m touchstone.pr_agent_runner"   # 子进程适配器；可由 env TOUCHSTONE_PRAGENT_CMD 覆盖
+  # PR-Agent 是 Apache-2.0 的 pip 包，不是要部署的服务：touchstone 经上面的子进程适配器调它。
+  # 真调需子进程环境有 LLM key（OPENAI_API_KEY 等，pr-agent 经 LiteLLM 调）+ GitHub token，经 env 透传。
+  # 规范注入：standards.yaml 中"需主观判断"的条目 → best_practices.md（gen_best_practices.py 生成）；
+  # 学习回路的 active 经验 → extra_instructions；"可机器核对"的条目继续走确定性 touchstone-rules。
+
+normalization:                  # ReviewItem.label → 本系统 category（NormalizationMap）
+  label_to_category:
+    security: security
+    "critical bug": correctness
+    "possible bug": correctness
+    "possible issue": correctness_suspect   # 弱信号：值得看一眼，但不当已知缺陷 → 不升 high
+    performance: convention
+    enhancement: convention
+    "best practice": convention
+    maintainability: convention
+    typo: convention
+    general: convention
+    "Organization best practice": convention   # 违反我们注入 PR-Agent 的 standards
+  default_category: convention
+  default_severity: warn        # 顾问式：PR-Agent 建议一律 advisory，不产 block_candidate
+  default_confidence: 0.7
+  conf_min: 0.5                 # 裁决映射的置信下限
+  high_categories: [security, correctness]   # 命中这些 category 才升 high；correctness_suspect 不在内 → 落 mid
+  discard_labels: []            # 要直接丢弃的 label（如团队认定纯噪声的某类）

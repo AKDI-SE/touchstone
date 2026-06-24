@@ -1,0 +1,780 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Touchstone 设计文档 · 在 AI 写代码场景下保障 PR 评审效率与质量</title>
+<style>
+  :root{
+    --paper:#FAFAF8; --panel:#FFFFFF; --ink:#15181D; --muted:#6B7178;
+    --line:#E6E4DD; --line2:#D8D6CD;
+    --primary:#14506B;            /* 结构主色 · petrol */
+    --c1:#0E7C7B;                 /* 第一类 正确性 · teal */
+    --c2:#3D52A0;                 /* 第二类 红线/契约 · indigo */
+    --c3:#B5651D;                 /* 第三类 质量 · burnt amber */
+    --low:#3E7C5A; --mid:#B5651D; --high:#A23E3E;
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue","PingFang SC","Microsoft YaHei",sans-serif;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--paper); color:var(--ink);
+    font-family:var(--sans); font-size:16px; line-height:1.66;
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:920px; margin:0 auto; padding:0 24px}
+
+  /* ---- hero ---- */
+  header.hero{padding:64px 0 40px; border-bottom:1px solid var(--line)}
+  .eyebrow{font-family:var(--mono); font-size:12px; letter-spacing:.22em; text-transform:uppercase; color:var(--primary); margin:0 0 18px}
+  h1{font-size:40px; line-height:1.12; font-weight:760; letter-spacing:-.018em; margin:0 0 18px}
+  .thesis{font-size:19px; line-height:1.55; color:var(--ink); max-width:42em; margin:0 0 26px}
+  .thesis b{color:var(--primary)}
+  .byline{font-size:13.5px; line-height:1.7; color:var(--muted); margin:0 0 24px}
+  .byline b{color:var(--primary); font-weight:600; margin-right:5px}
+  .byline .sep{margin:0 14px; opacity:.5}
+  .anchor{display:flex; flex-wrap:wrap; gap:10px; margin-top:8px}
+  .anchor .pill{font-family:var(--mono); font-size:12.5px; padding:6px 11px; border:1px solid var(--line2); border-radius:5px; background:var(--panel); color:var(--muted)}
+  .anchor .pill b{color:var(--ink); font-weight:600}
+
+  /* ---- toc ---- */
+  nav.toc{margin:34px 0 0; padding:18px 20px; background:var(--panel); border:1px solid var(--line); border-radius:8px}
+  nav.toc .lbl{font-family:var(--mono); font-size:11px; letter-spacing:.2em; text-transform:uppercase; color:var(--muted); display:block; margin-bottom:10px}
+  nav.toc ol{margin:0; padding:0; list-style:none; display:grid; grid-template-columns:1fr 1fr; gap:6px 28px}
+  nav.toc a{color:var(--ink); text-decoration:none; font-size:14.5px; display:flex; gap:10px}
+  nav.toc a:hover{color:var(--primary)}
+  nav.toc a .n{font-family:var(--mono); color:var(--primary); font-size:13px; min-width:1.6em}
+
+  /* ---- sections ---- */
+  section{padding:48px 0; border-bottom:1px solid var(--line)}
+  .snum{font-family:var(--mono); font-size:13px; color:var(--primary); letter-spacing:.04em}
+  h2{font-size:27px; font-weight:720; letter-spacing:-.012em; margin:6px 0 20px}
+  h3{font-size:19px; font-weight:680; margin:34px 0 12px; padding-bottom:0}
+  h4{font-size:15.5px; font-weight:680; margin:22px 0 8px; color:var(--ink)}
+  p{margin:0 0 14px}
+  .lede{font-size:17px; color:#33373d}
+  strong{font-weight:670}
+  code{font-family:var(--mono); font-size:.9em; background:#F1F0EA; padding:1px 6px; border-radius:4px; color:#2a2d33}
+  .term{font-family:var(--mono); font-weight:600; color:var(--primary); background:#EAF1F4; padding:1px 6px; border-radius:4px}
+  ul,ol{margin:0 0 14px; padding-left:1.25em}
+  li{margin:5px 0}
+  .muted{color:var(--muted)}
+
+  /* class chips */
+  .chip{display:inline-block; font-family:var(--mono); font-size:11.5px; font-weight:600; padding:2px 8px; border-radius:20px; vertical-align:middle; line-height:1.5}
+  .chip.c1{background:rgba(14,124,123,.12); color:var(--c1); border:1px solid rgba(14,124,123,.3)}
+  .chip.c2{background:rgba(61,82,160,.12); color:var(--c2); border:1px solid rgba(61,82,160,.3)}
+  .chip.c3{background:rgba(181,101,29,.12); color:var(--c3); border:1px solid rgba(181,101,29,.3)}
+
+  /* callout / principle */
+  .principle{margin:20px 0; padding:16px 20px; border-left:3px solid var(--primary); background:#F3F6F8; border-radius:0 7px 7px 0}
+  .principle .k{font-family:var(--mono); font-size:11px; letter-spacing:.16em; text-transform:uppercase; color:var(--primary); display:block; margin-bottom:6px}
+  .warn{border-left-color:var(--high); background:#FAF1F0}
+  .warn .k{color:var(--high)}
+
+  /* concept legend */
+  .legend{display:grid; grid-template-columns:repeat(2,1fr); gap:10px; margin:20px 0}
+  .legend .item{border:1px solid var(--line); border-radius:7px; padding:11px 13px; background:var(--panel)}
+  .legend .item .nm{font-family:var(--mono); font-weight:600; color:var(--primary); font-size:13.5px}
+  .legend .item .ds{font-size:13px; color:#3b3f45; margin-top:3px; line-height:1.5}
+
+  /* tables */
+  .tbl{width:100%; border-collapse:collapse; margin:16px 0; font-size:14px}
+  .tbl th,.tbl td{border:1px solid var(--line2); padding:9px 11px; text-align:left; vertical-align:top}
+  .tbl th{background:#F1F0EA; font-weight:640; font-size:12.5px; letter-spacing:.02em}
+  .tbl td code,.tbl th code{background:transparent; padding:0}
+  .tbl .mono{font-family:var(--mono); font-size:12.5px; color:#2a2d33}
+
+  /* figure */
+  figure{margin:26px 0; padding:0}
+  figure svg{display:block; width:100%; height:auto; background:var(--panel); border:1px solid var(--line); border-radius:9px}
+  figcaption{font-size:13px; color:var(--muted); margin-top:9px; font-family:var(--mono)}
+
+  /* code block (interfaces) */
+  pre{margin:14px 0; padding:16px 18px; background:#13161B; color:#E4E6EA; border-radius:9px; overflow-x:auto; font-family:var(--mono); font-size:13px; line-height:1.62}
+  pre .cm{color:#7C8AA0}        /* comment */
+  pre .kw{color:#8FD0C4}        /* type/keyword */
+  pre .fn{color:#E6C07B}        /* fn name */
+  pre .st{color:#C3E88D}        /* literal */
+
+  .rel{margin:10px 0 0; padding:13px 16px; background:#F3F6F8; border-radius:7px; font-size:14px}
+  .rel .k{font-family:var(--mono); font-size:11px; letter-spacing:.14em; text-transform:uppercase; color:var(--primary); margin-right:8px}
+
+  footer{padding:40px 0 80px; color:var(--muted); font-size:13px; font-family:var(--mono)}
+  @media (max-width:700px){
+    h1{font-size:30px}
+    nav.toc ol{grid-template-columns:1fr}
+    .legend{grid-template-columns:1fr}
+  }
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <div class="wrap">
+    <p class="eyebrow">详细设计 · Design Doc</p>
+    <h1>Touchstone：在 AI 写代码场景下保障 PR 评审的效率与质量</h1>
+    <p class="byline"><b>作者</b>朱家法（00538128）· Claude Code · GLM-5.2 · Gemini · DeepSeek<span class="sep">|</span><b>评审</b>李成（00494329）</p>
+    <p class="thesis"><b>只给评审意见、不替人做最终决定</b>：合入按钮始终由人来点，AI 的判断不作准入门槛——把人从逐行审阅里解放出来，同时不放松质量。</p>
+    <div class="anchor">
+      <span class="pill"><b>设计时间</b> 2026-06-18</span>
+      <span class="pill"><b>默认形态</b> 顾问式评审 · 人点合并</span>
+      <span class="pill"><b>评审引擎</b> 复用开源 PR-Agent</span>
+      <span class="pill"><b>质量门禁</b> 可插拔检查 · 单一状态检查</span>
+    </div>
+    <div class="principle" style="border-left-color:#0E7C7B;background:#EAF1F4"><span class="k" style="color:#0E7C7B">导读</span>现状是 AI agent 大量产出代码、再由人逐个审 PR，瓶颈落在人。本文设计 Touchstone：一层插在 PR 提交与人决定合入之间的自动评审，用高信噪比的意见替人省下逐行审阅，同时守住质量。它<strong>只给意见、不替人做最终决定</strong>——合入始终由人来点，"必须通过才能合"的硬性质量关交给可插拔检查把守，而非 AI 的判断。评审本身<strong>复用开源 PR-Agent、不另造轮子</strong>；这一层的完整设计在配套文档 <code>touchstone-on-pr-agent.html</code>，本文只讲它如何接进整个系统。文中的自动合并与重型的正确性验证（verify）是两项<strong>默认关闭的可选能力</strong>，对应章节写得详细，但请当作可选路径来读，不是默认形态。设计的演进过程见文末 §7 变更历史。</div>
+
+    <nav class="toc">
+      <span class="lbl">目录</span>
+      <ol>
+        <li><a href="#glossary"><span class="n">术</span> 术语表</a></li>
+        <li><a href="#s1"><span class="n">1</span> 设计目的</a></li>
+        <li><a href="#s2"><span class="n">2</span> 设计逻辑与概念空间</a></li>
+        <li><a href="#s3"><span class="n">3</span> 核心数据结构</a></li>
+        <li><a href="#s4"><span class="n">4</span> 接口定义</a></li>
+        <li><a href="#s5"><span class="n">5</span> 一致性校验</a></li>
+        <li><a href="#s6"><span class="n">6</span> 验证子系统</a></li>
+        <li><a href="#s7"><span class="n">7</span> 变更历史</a></li>
+      </ol>
+    </nav>
+  </div>
+</header>
+
+<!-- ============ 1 设计目的 ============ -->
+<section id="glossary">
+  <div class="wrap">
+    <span class="snum">术语表</span>
+    <table class="tbl">
+      <tr><th>词</th><th>大白话</th><th>软件工程里的对应词</th></tr>
+      <tr><td class="mono">质量门禁</td><td>一组"必须通过才能合入"的自动化检查（跑测试、规则、扫描做客观核对）——和"看一眼就判断"相对。对外汇总成一个汇总状态检查。</td><td>就是 <strong>Quality Gate</strong> 本身（标准词）。</td></tr>
+      <tr><td class="mono">评审引擎 / PR-Agent</td><td>评审意见不自己造，复用开源的 PR-Agent 产出（多工具、自动去重排序、多语言），再归一进本系统。</td><td>复用开源评审组件（<strong>PR-Agent</strong>）；归一与裁决映射是本设计自己的。</td></tr>
+      <tr><td class="mono">独立验收测试</td><td>不看作者代码、单独按"这次改动该达到什么效果"生成的验收测试。</td><td><strong>基于规格的黑盒测试</strong>（specification-based / black-box）+ <strong>独立验证（IV&amp;V）</strong>。</td></tr>
+      <tr><td class="mono">充分性</td><td>这些测试本身够不够狠：能不能真把错误抓出来。</td><td><strong>测试充分性（test adequacy）</strong>；具体手段即<strong>变异测试（mutation testing）</strong>。</td></tr>
+      <tr><td class="mono">熔断</td><td>合入后回滚 / 热修等指标越线，就自动收回自主权、退回到人来决定。</td><td>借自标准韧性模式 <strong>熔断器（Circuit Breaker）</strong>。</td></tr>
+      <tr><td class="mono">验证边界</td><td>合入决策能完全靠客观验证站得住的那部分 PR——自动合并最多覆盖到这里。</td><td><strong>本设计特有，无标准对应词</strong>（最相近：可自动判定的范围）。</td></tr>
+      <tr><td class="mono">变更比例验证</td><td>不跑整套集成测试，只针对这次改动现生成少量测试、只跑这些；验证量随改动量走。</td><td><strong>针对性 / 增量测试（targeted / change-scoped testing）</strong>。</td></tr>
+      <tr><td class="mono">风险分流</td><td>给每个 PR 的一个风险信号，用来分配两样稀缺资源：人的注意力、验证算力。</td><td><strong>基于风险的测试/分级（Risk-Based Testing / triage）</strong>。</td></tr>
+      <tr><td class="mono">提交契约</td><td>提 PR 时随附的结构化信息：意图、验收标准、复用了什么、自评风险、重点看哪里。</td><td><strong>PR 模板 + 验收标准（acceptance criteria）</strong>；"契约"借自 Design by Contract（整体作为强制清单是本设计的用法）。</td></tr>
+      <tr><td class="mono">校准</td><td>拿并行人审的真实裁决当"标准答案"，持续测量 Touchstone 和人合不合。</td><td><strong>影子模式（shadow mode）+ 校准（calibration）</strong>。</td></tr>
+      <tr><td class="mono">反馈循环</td><td>写代码的 agent 拿到反馈后改、再提交的机器间快循环（有轮次上限）。</td><td><strong>反馈循环（feedback loop）</strong>。</td></tr>
+      <tr><td class="mono">汇总状态检查</td><td>对外只发的那一个汇总检查状态：所有"必须通过"的检查都绿，它才绿。</td><td><strong>汇总/必需状态检查（required status check）</strong>——GitHub 的标准术语。</td></tr>
+      <tr><td class="mono">风险等级 / 变更分类</td><td>给的高/中/低风险评级 / 按改动类型把 PR 分组。</td><td><strong>风险等级（risk level）</strong> / <strong>变更分类（change classification）</strong>。</td></tr>
+      <tr><td class="mono">三类判定</td><td>评审在回答三种问题：做对了吗（正确性，能跑验证）、越界了吗（红线/契约，能写成规则）、做好了吗（质量，没有标准答案、只能判断）。</td><td><strong>本设计特有的分法</strong>；三类各近似：功能/正确性测试、<strong>合规即代码（policy-as-code）</strong>、代码质量与可维护性。</td></tr>
+    </table>
+  </div>
+</section>
+
+
+<section id="s1">
+  <div class="wrap">
+    <span class="snum">§ 1</span>
+    <h2>设计目的</h2>
+
+    <p class="lede">现状流程是这样的：AI agent 大量产出代码并提交 PR，再由人逐个审核。瓶颈出在人这一环——AI 写得又快又多，人没有足够精力逐行读完每一个 PR。本设计在这条已有流程上新增一个 <span class="term">Touchstone</span>，不重写流程、也不从零造系统：它是一道自动评审层，位于 PR 提交之后、人决定是否合入之前，对每个 PR 给出评分与反馈。</p>
+
+    <p>它的输出有两个使用者。一是写代码的 agent：拿到反馈后自行修改、重新提交，形成机器对机器的快速迭代。二是人：把评分和反馈当作参考，据此决定某个 PR 值不值得看、要投入多少精力。本设计的目标随之确定——把人从逐个 PR、逐行通读的负担中解放出来，理想情况下让 Touchstone 在尽可能多的 PR 上代替人工审核，同时不让有缺陷的代码因为无人细看而被合入主干（即不以牺牲质量为代价）。</p>
+
+    <p>这个目标不是无条件就能达到的。要让方案站得住，有三件事必须先讲清楚。</p>
+    <ul>
+      <li><strong>第一，评审能否替人把关，最终取决于代码有没有被真正运行、验证过，而不是 AI 读得多仔细。</strong>但对每一个 PR 都跑完整的后端集成验证，成本无法承受。这两者直接冲突：验证做得越少，能放心交给 Touchstone、无需人工复核的 PR 就越少。本设计不回避这一冲突，而是把它转化为一个可以逐步推进的指标——<span class="term">验证边界</span>：客观验证能覆盖到哪里，自动化就推进到哪里。</li>
+      <li><strong>第二，代码是否正确，仅凭阅读无法判断。</strong>AI 代码最危险的一类缺陷，是看上去正确、也能运行，但逻辑其实有误——本文称之为<span class="term">似是而非的错误</span>，这类问题不真正执行就暴露不出来。因此在正确性方面，Touchstone 只能帮助人更高效地定位该重点检查的地方，无法靠纯阅读把人的工作量完全替代。</li>
+      <li><strong>第三，Touchstone 现阶段只给出参考意见，与人工审核并行，并不拦截合入。</strong>这是一个低风险的起点。在此基础上，本设计规划了一条演进路线：自主权逐步放开，但始终以真实验证为托底，而不是一开始就把合入的决定权交给 AI。</li>
+    </ul>
+
+    <div class="principle">
+      <span class="k">一句话概括</span>
+      用确定性的机制守住不能出错的部分，用 AI 的判断力改进可以做得更好的部分，用真实运行结果回头检验 AI 的判断本身是否可靠，让人专注于定义什么才算正确。速度交给 agent，底线交给验证，判断力交给 Touchstone，方向盘和校准权留在可审计的客观结果与人手里。
+    </div>
+  </div>
+</section>
+
+<!-- ============ 2 设计逻辑 ============ -->
+<section id="s2">
+  <div class="wrap">
+    <span class="snum">§ 2</span>
+    <h2>设计逻辑与概念空间</h2>
+    <p class="lede">本节先建立贯穿全文的概念空间，再围绕三个核心问题说明设计选择与取舍，最后给出四个逻辑视图（职责分层、PR 流程、风险分流、演进边界）。<strong>注：默认形态是顾问式评审、人点合并。本节中凡涉及"自动合并"的概念与论证（验证边界、自动放行等），界定的都是（可选、默认关）的进阶路径，不是默认形态。</strong></p>
+
+    <h3>2.1 概念空间</h3>
+    <p>下列概念都不是预先拍脑袋定义的，而是为解决后面每个具体问题而引入；后续的数据结构与接口必须直接使用这些名称。</p>
+    <div class="legend">
+      <div class="item"><div class="nm">三类判定</div><div class="ds">把评审要回答的问题拆成三类，可判定性各不相同：<span class="chip c1">正确性</span>可执行验证、<span class="chip c2">红线/契约</span>可规则化、<span class="chip c3">质量</span>无客观真值需判断。</div></div>
+      <div class="item"><div class="nm">验证边界 Verification Frontier</div><div class="ds">合入决策能完全靠客观验证站住的那部分 PR——它界定（可选的）自动合并最多能覆盖到哪。默认形态（人点合并）不涉及它，仅当开启自动合并时才是约束。</div></div>
+      <div class="item"><div class="nm">Touchstone</div><div class="ds">评审 agent。其角色是<strong>编排验证 + 质疑 + 低风险质量判断</strong>，不是预言机，<strong>其评价不构成准入依据</strong>。</div></div>
+      <div class="item"><div class="nm">风险分流（Risk-Based）</div><div class="ds">Touchstone 产出的一个风险信号，<strong>同时</strong>把两样稀缺资源分流到不同处理路径：人的注意力，与验证预算。</div></div>
+      <div class="item"><div class="nm">提交契约 Submission Contract</div><div class="ds">强制 写代码的 agent 在提交 PR 时随附的结构化信息（意图、验收标准、复用项、自标风险、重点看哪里）。</div></div>
+      <div class="item"><div class="nm">只用于定位、绝不采信</div><div class="ds">治理提交契约的铁律：契约只用于定位（指出该重点看哪里），绝不被采信；Touchstone 一律独立核对，对不上即问题。</div></div>
+      <div class="item"><div class="nm">变更比例验证</div><div class="ds">不跑整套集成，而是针对本次改动现生成少量针对性测试、只跑这些（隔离、快），让验证量正比于改动量。</div></div>
+      <div class="item"><div class="nm">单一事实源规范</div><div class="ds">一份规范，<strong>同时</strong>提供给 author（写对，把问题前移到写代码阶段）与 Touchstone（查错）；可机器自动核对 的条目可被固化为确定性检查。</div></div>
+      <div class="item"><div class="nm">把“建议”升级为“拦截门禁”的通道</div><div class="ds">反复出现且被证实有害的 第三类 发现，被固化进确定性门禁、升级为可拦截的 第二类 门禁——这是建议最终升级为拦截门禁的唯一通道。</div></div>
+      <div class="item"><div class="nm">校准（Calibration · 影子模式下）</div><div class="ds">在影子模式下（与人审并行、不影响合入），拿人审的真实裁决当标准答案，持续测量 Touchstone 与人的吻合度。</div></div>
+      <div class="item"><div class="nm">反馈循环（Feedback Loop）</div><div class="ds">写代码的 agent 拿到反馈后改代码、再重新提交；机器间快循环，设轮次上限，且其产物在正确性上仍需独立仲裁。</div></div>
+      <div class="item"><div class="nm">熔断 Circuit Breaker</div><div class="ds">用合入后的 revert/hotfix 率与 Touchstone 批准率漂移做监控；越阈值则自动收回自主权、回落到人。</div></div>
+      <div class="item"><div class="nm">评审引擎（PR-Agent）</div><div class="ds">复用开源 PR-Agent 产出评审观察与建议（多工具、建议去重/排序、多语言）。评审层的权威设计见配套文档 <code>touchstone-on-pr-agent.html</code>。</div></div>
+      <div class="item"><div class="nm">发现归一 + 裁决映射</div><div class="ds"><code>normalize</code> 把 PR-Agent 输出归一成本系统 Finding；<code>map_verdict</code> 按 category 定<strong>单一</strong> RiskAssessment（<strong>不做共识</strong>——去重/排序已由 PR-Agent 完成）。</div></div>
+    </div>
+
+    <h3>2.2 核心问题与取舍</h3>
+
+    <h4>问题一：AI 判断该承担什么角色——它给建议，绝不当合入的准入门禁</h4>
+    <p>最直接的想法，是做一个像资深工程师那样通读 diff、再判断这个 PR 能不能合入的评审者。<strong>本设计不采用这个方案</strong>：它仍然把合入与否押在判断之上，只是把判断者从可靠的一方换成了不可靠的一方。人这一方是可靠的——拿不准时会明说，背后还有验证和回滚保障。AI 这一方则不然：它会自信地批准那些<span class="term">似是而非的错误</span>；而且评审用的 AI 往往和写代码的 AI 是同一类模型，author 看漏的地方它多半也看漏，两者共享同一批盲区；再加上人一旦退出，就没有东西能兜住它的误判。</p>
+    <p><strong>因此，AI 的判断不进入合入的准入环节。</strong>默认形态下，合入与否始终由人决定，Touchstone 只产出评审意见；是否设置一道必须通过才能合入的硬性关卡，交给可插拔的质量门禁（见 §4.7）——由现成的规则工具与确定性检查保障，而不依赖 Touchstone 的判断。即便（可选地）开启自动合并，放行的依据也只是客观验证的结果，而非 Touchstone 的判断。由此，评审要回答的问题被分成三类，各自交给不同的决策者：</p>
+    <figure>
+      <svg viewBox="0 0 880 230" xmlns="http://www.w3.org/2000/svg" font-family="ui-monospace,Menlo,Consolas,monospace">
+        <text x="20" y="28" font-size="13" fill="#6B7178">问题 → 可判定性 → 决策者</text>
+        <!-- c1 -->
+        <rect x="20" y="48" width="270" height="150" rx="9" fill="rgba(14,124,123,.07)" stroke="#0E7C7B" stroke-width="1.4"/>
+        <text x="36" y="76" font-size="15" font-weight="700" fill="#0E7C7B">做对了吗 · 正确性</text>
+        <text x="36" y="104" font-size="12.5" fill="#33373d">有客观真值</text>
+        <text x="36" y="126" font-size="12.5" fill="#33373d">→ 跑起来验</text>
+        <line x1="36" y1="148" x2="274" y2="148" stroke="#0E7C7B" stroke-opacity=".35"/>
+        <text x="36" y="172" font-size="13" font-weight="700" fill="#15181D">机器判定</text>
+        <text x="36" y="190" font-size="11.5" fill="#6B7178">AI 的意见不得掺入</text>
+        <!-- c2 -->
+        <rect x="305" y="48" width="270" height="150" rx="9" fill="rgba(61,82,160,.07)" stroke="#3D52A0" stroke-width="1.4"/>
+        <text x="321" y="76" font-size="15" font-weight="700" fill="#3D52A0">越界了吗 · 红线/契约</text>
+        <text x="321" y="104" font-size="12.5" fill="#33373d">有明确红线</text>
+        <text x="321" y="126" font-size="12.5" fill="#33373d">→ 规则化</text>
+        <line x1="321" y1="148" x2="559" y2="148" stroke="#3D52A0" stroke-opacity=".35"/>
+        <text x="321" y="172" font-size="13" font-weight="700" fill="#15181D">机器判定</text>
+        <text x="321" y="190" font-size="11.5" fill="#6B7178">安全/契约/签名扫描</text>
+        <!-- c3 -->
+        <rect x="590" y="48" width="270" height="150" rx="9" fill="rgba(181,101,29,.07)" stroke="#B5651D" stroke-width="1.4"/>
+        <text x="606" y="76" font-size="15" font-weight="700" fill="#B5651D">做好了吗 · 质量</text>
+        <text x="606" y="104" font-size="12.5" fill="#33373d">无客观真值</text>
+        <text x="606" y="126" font-size="12.5" fill="#33373d">→ 经验性判断</text>
+        <line x1="606" y1="148" x2="844" y2="148" stroke="#B5651D" stroke-opacity=".35"/>
+        <text x="606" y="172" font-size="13" font-weight="700" fill="#15181D">Touchstone 判断（仅限此类）</text>
+        <text x="606" y="190" font-size="11.5" fill="#6B7178">在此犯错可承受——慢慢劣化，不破底线</text>
+      </svg>
+      <figcaption>图 1 · 三类判定与各自的决策者。正确性、红线/契约由机器裁定，AI 判断只用于质量这一类、且仅作建议——只要 AI 判断不进入前两类的准入裁决，它判错也越不过质量门禁。</figcaption>
+    </figure>
+
+    <h4>问题二：付不起每个 PR 跑集成验证，如何既减人力又不失正确性</h4>
+    <p>两个极端都不行：<strong>每 PR 全集成验证</strong>（太贵，被你否掉）；<strong>纯阅读、零验证</strong>（读不出正确性）。<strong>采用</strong>的折中是把人的工作量先一刀切成两层，再用一个统一信号去分配稀缺资源：</p>
+    <ul>
+      <li><strong>结构层</strong>（重复造轮子、违反约定、过度工程、漏的错误处理、恒真测试、越界改动）——读 + 廉价静态信号即可抓，交给 <span class="term">反馈循环</span>，人基本不看。这是人力下降的大头。</li>
+      <li><strong>正确性层</strong>——Touchstone 与 author 都读不出，只能靠验证。用 <span class="term">风险分流</span> 把稀缺的验证预算与人的注意力<strong>只导向高风险的少数</strong>：低风险走廉价信号 + 反馈循环、人不看；高风险才跑 <span class="term">变更比例验证</span> 并送人细看。</li>
+    </ul>
+    <div class="principle">
+      <span class="k">关键洞察</span>
+      付不起完整验证，不等于没有任何客观信号。lint、类型检查、快单测、SAST 都不是集成验证、都很便宜，照提供给 Touchstone 当依据。要省的是 端到端/集成那层；把它从每个 PR 必跑，降为只对风险分流标高的少数 PR 跑，就同时解决了成本与正确性保障。
+    </div>
+
+    <h4>问题三：author 与 Touchstone 同源——反馈循环会不会变成互相放松把关</h4>
+    <p><strong>否决</strong>还有一个错误假设是相信反馈循环会自然收敛到正确：同源模型一起瞎，author 会把代码改成「让 Touchstone 满意」而非「真的更对」，闭环能把一坨东西抛得更亮、却抛不出正确性。<strong>采用</strong>三道约束：</p>
+    <ul>
+      <li><strong>独立性</strong>，按强弱排序——最硬最持久的是对独立测试执行（由 verify 子系统承担，可选）；其次是信息不对称，即让 Touchstone 掌握 author 生成时未必有的信息——目前主要是人核准的验收规格（走 verify 侧）；最弱、且随模型趋同越来越没用的是换个模型。默认形态下真正承重的是对独立测试执行那条，换模型仅作可选点缀。</li>
+      <li><strong>轮次上限 + 升级判据</strong>：闭环设最大轮数，防震荡，也防止双方妥协着把标准降下来；超限或反复矛盾则升级到人或 re-plan。</li>
+      <li><strong>闭环产物不自证正确</strong>：其正确性仍由变更比例验证或人来仲裁。</li>
+    </ul>
+    <div class="principle">
+      <span class="k">关于模型多样性</span>
+      让 author 与审核侧用不同模型——<strong>做，它便宜、有真实但有限的去相关收益，且最该用在反馈循环里</strong>（同源模型会收敛到它自己觉得顺眼的写法这一不动点，而那可能正好是错的）。但要清醒：它是三种独立性来源里<strong>最弱、且随前沿模型趋同在衰减</strong>的一条，不能当主力；它<strong>不跨越验证边界</strong>（两个模型来读，终究还是只是读）；审核模型<strong>不得弱于</strong> author（逮错比制造错更难，挑弱模型是假经济）。最值钱的形态是“不同模型 + 对抗角色 + 信息不对称”三件套，而非单换模型。</div>
+
+    <h3>2.3 视图一：职责分层与决策权</h3>
+    <figure>
+      <svg viewBox="0 0 880 300" xmlns="http://www.w3.org/2000/svg" font-family="ui-monospace,Menlo,Consolas,monospace">
+        <!-- governance -->
+        <rect x="20" y="22" width="600" height="74" rx="9" fill="#FFFFFF" stroke="#B5651D" stroke-width="1.4"/>
+        <text x="38" y="50" font-size="15" font-weight="700" fill="#B5651D">人 · 治理层</text>
+        <text x="38" y="74" font-size="12.5" fill="#33373d">定标准（单一事实源）· 仲裁高风险 · 持有熔断开关 · 写可验证规格</text>
+        <!-- Touchstone -->
+        <rect x="20" y="108" width="600" height="74" rx="9" fill="#FFFFFF" stroke="#14506B" stroke-width="1.4"/>
+        <text x="38" y="136" font-size="15" font-weight="700" fill="#14506B">Touchstone · 判断层</text>
+        <text x="38" y="160" font-size="12.5" fill="#33373d">编排验证 · 质疑 · 风险分流 · 低风险 第三类 判断 · 产出建议（非准入）</text>
+        <!-- floor -->
+        <rect x="20" y="194" width="600" height="74" rx="9" fill="#F3F6F8" stroke="#0E7C7B" stroke-width="1.8"/>
+        <text x="38" y="222" font-size="15" font-weight="700" fill="#0E7C7B">确定性门禁 · 客观验证</text>
+        <text x="38" y="246" font-size="12.5" fill="#33373d">build/测试/lint/类型/契约/安全 · 唯一准入门禁 · 客观可复现可审计</text>
+        <!-- veto note -->
+        <rect x="644" y="108" width="216" height="160" rx="9" fill="#13161B"/>
+        <text x="660" y="134" font-size="12" fill="#8FD0C4">决策权分配</text>
+        <text x="660" y="162" font-size="13" font-weight="700" fill="#E4E6EA">笔 → Touchstone</text>
+        <text x="660" y="184" font-size="11.5" fill="#B9Bec6">（握合入动作）</text>
+        <text x="660" y="214" font-size="13" font-weight="700" fill="#E4E6EA">否决权 → 现实</text>
+        <text x="660" y="236" font-size="11.5" fill="#B9Bec6">（验证 + 熔断）</text>
+        <text x="660" y="258" font-size="11" fill="#7C8AA0">Touchstone 全错也崩不了底</text>
+        <!-- arrow up annotation -->
+        <text x="630" y="232" font-size="22" fill="#0E7C7B">↑</text>
+        <text x="630" y="146" font-size="22" fill="#14506B">↑</text>
+      </svg>
+      <figcaption>图 2 · 向下守底线、向上提上限、顶层治理。Touchstone 的评价<strong>不</strong>构成准入；准入只由确定性门禁说了算。</figcaption>
+    </figure>
+
+    <h3>2.4 视图二：一个 PR 的流程</h3>
+    <figure>
+      <svg viewBox="0 0 900 540" xmlns="http://www.w3.org/2000/svg" font-family="ui-monospace,Menlo,Consolas,monospace" font-size="12">
+        <defs>
+          <marker id="ah" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 Z" fill="#6B7178"/></marker>
+          <marker id="ag" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 Z" fill="#3E7C5A"/></marker>
+          <marker id="ao" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 Z" fill="#B5651D"/></marker>
+        </defs>
+
+        <!-- band labels + divider -->
+        <text x="16" y="22" font-weight="700" fill="#14506B">① 同步 · 每个 PR（毫秒级，无学习开销）</text>
+        <line x1="0" y1="262" x2="900" y2="262" stroke="#D8D6CD" stroke-dasharray="6 5"/>
+        <text x="16" y="286" font-weight="700" fill="#B5651D">② 离线 cron · 不阻塞 PR（Phase 2 学习回路 · 详见 learning-loop-design.html）</text>
+
+        <!-- ===== Band 1: 同步 ===== -->
+        <rect x="16" y="42" width="128" height="46" rx="8" fill="#FFFFFF" stroke="#D8D6CD"/><text x="80" y="63" text-anchor="middle" font-weight="700" fill="#15181D">PR opened</text><text x="80" y="79" text-anchor="middle" fill="#6B7178">+ 提交契约</text>
+        <rect x="176" y="42" width="140" height="46" rx="8" fill="#F3F6F8" stroke="#0E7C7B" stroke-width="1.4"/><text x="246" y="63" text-anchor="middle" font-weight="700" fill="#0E7C7B">确定性门禁</text><text x="246" y="79" text-anchor="middle" fill="#6B7178">廉价信号(必过)</text>
+        <rect x="348" y="42" width="178" height="46" rx="8" fill="#FFFFFF" stroke="#14506B" stroke-width="1.4"/><text x="437" y="63" text-anchor="middle" font-weight="700" fill="#14506B">Touchstone · 评审(PR-Agent)</text><text x="437" y="79" text-anchor="middle" fill="#6B7178">发现 + 风险等级</text>
+        <rect x="558" y="42" width="130" height="46" rx="8" fill="#FFFFFF" stroke="#14506B" stroke-width="1.4"/><text x="623" y="63" text-anchor="middle" font-weight="700" fill="#14506B">风险分流</text><text x="623" y="79" text-anchor="middle" fill="#6B7178">分配两类预算</text>
+        <rect x="720" y="30" width="170" height="40" rx="8" fill="rgba(62,124,90,.08)" stroke="#3E7C5A"/><text x="734" y="48" font-weight="700" fill="#3E7C5A">低风险</text><text x="734" y="63" fill="#33373d">反馈循环 · 人不看</text>
+        <rect x="720" y="86" width="170" height="40" rx="8" fill="rgba(162,62,62,.07)" stroke="#A23E3E"/><text x="734" y="104" font-weight="700" fill="#A23E3E">高风险</text><text x="734" y="119" fill="#33373d">验证 + 人细看/仲裁</text>
+        <rect x="558" y="150" width="130" height="42" rx="8" fill="#13161B"/><text x="623" y="176" text-anchor="middle" font-weight="700" fill="#E4E6EA">合入（人点）</text>
+
+        <line x1="144" y1="65" x2="174" y2="65" stroke="#6B7178" marker-end="url(#ah)"/>
+        <line x1="316" y1="65" x2="346" y2="65" stroke="#6B7178" marker-end="url(#ah)"/>
+        <line x1="526" y1="65" x2="556" y2="65" stroke="#6B7178" marker-end="url(#ah)"/>
+        <line x1="688" y1="58" x2="718" y2="50" stroke="#3E7C5A" marker-end="url(#ag)"/>
+        <line x1="688" y1="72" x2="718" y2="106" stroke="#A23E3E" marker-end="url(#ah)"/>
+        <path d="M805,70 C805,150 700,150 690,165" fill="none" stroke="#3E7C5A" stroke-dasharray="3 3" marker-end="url(#ag)"/>
+        <line x1="805" y1="126" x2="690" y2="168" stroke="#A23E3E" marker-end="url(#ah)"/>
+        <path d="M720,50 C600,50 470,30 445,40" fill="none" stroke="#3E7C5A" stroke-dasharray="3 3" marker-end="url(#ag)"/><text x="470" y="24" fill="#3E7C5A">改后重提 → 再审</text>
+
+        <!-- ===== Band 2: 离线学习回路 ===== -->
+        <rect x="558" y="300" width="178" height="48" rx="8" fill="#FFFFFF" stroke="#B5651D" stroke-dasharray="4 3"/><text x="647" y="321" text-anchor="middle" font-weight="700" fill="#B5651D">calibrate（校准）</text><text x="647" y="337" text-anchor="middle" fill="#6B7178">人审裁决→奖励 · 采纳/改动/噪声</text>
+        <rect x="330" y="300" width="196" height="48" rx="8" fill="#FFFFFF" stroke="#14506B" stroke-width="1.4"/><text x="428" y="321" text-anchor="middle" font-weight="700" fill="#14506B">TF-GRPO</text><text x="428" y="337" text-anchor="middle" fill="#6B7178">分组rollout·组内相对优势·蒸馏(无权重)</text>
+        <rect x="92" y="300" width="200" height="48" rx="8" fill="#FBF3EA" stroke="#B5651D" stroke-width="1.6"/><text x="192" y="321" text-anchor="middle" font-weight="700" fill="#B5651D">经验库</text><text x="192" y="337" text-anchor="middle" fill="#6B7178">active/retired · 按仓·栈·类型</text>
+        <rect x="92" y="388" width="200" height="40" rx="8" fill="#FFFFFF" stroke="#6B7178" stroke-dasharray="4 3"/><text x="192" y="406" text-anchor="middle" font-weight="700" fill="#6B7178">govern</text><text x="192" y="420" text-anchor="middle" fill="#6B7178">门控 · 退役有害/噪声经验</text>
+
+        <path d="M623,192 C623,250 660,255 655,298" fill="none" stroke="#B5651D" stroke-dasharray="3 3" marker-end="url(#ao)"/><text x="600" y="248" fill="#B5651D">评审发现 + 人审裁决 + 合入后事故率</text>
+        <line x1="558" y1="324" x2="528" y2="324" stroke="#6B7178" marker-end="url(#ah)"/><text x="532" y="290" fill="#6B7178" text-anchor="middle">奖励</text>
+        <line x1="330" y1="324" x2="294" y2="324" stroke="#6B7178" marker-end="url(#ah)"/><text x="312" y="290" fill="#6B7178" text-anchor="middle">候选经验</text>
+        <line x1="192" y1="388" x2="192" y2="350" stroke="#6B7178" marker-end="url(#ah)"/><text x="290" y="372" fill="#6B7178">达标→active/退役</text>
+        <path d="M192,300 C192,150 360,120 350,90" fill="none" stroke="#0E7C7B" stroke-width="1.3" stroke-dasharray="5 3" marker-end="url(#ah)"/><text x="120" y="180" fill="#0E7C7B" font-weight="600">注入 active 经验 → extra_instructions</text><text x="120" y="196" fill="#6B7178">（只调建议、不进合入门禁）</text>
+      </svg>
+      <figcaption>图 3 · PR 数据流（两层）。<strong>上层同步</strong>：每个 PR 走 门禁→评审(PR-Agent，注入 active 经验)→风险分流→人点合入，毫秒级、无学习开销。<strong>下层离线 cron（Phase 2）</strong>：calibrate 把人审裁决变奖励 → TF-GRPO 蒸馏经验（无梯度/无权重）→ 经验库（govern 门控/退役）→ 注入回评审。两层<strong>只经经验库耦合</strong>：学习挂了评审仍用上一版经验；经验<strong>只调建议、不进合入门禁</strong>。</figcaption>
+    </figure>
+
+    <h3>2.5 视图三：风险分流——一个信号，两份预算</h3>
+    <p>这是解开成本约束的枢纽：Touchstone 的同一个风险信号，<strong>同时</strong>决定人要不要看、以及要不要跑昂贵的验证。绝大多数低风险 PR 两样都省；被标高风险的少数，两样都给。于是人不必再读每一行，只读被标出来的那几处，验证预算也只花在刀刃上。</p>
+    <figure>
+      <svg viewBox="0 0 880 220" xmlns="http://www.w3.org/2000/svg" font-family="ui-monospace,Menlo,Consolas,monospace" font-size="12.5">
+        <defs><marker id="ah2" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 Z" fill="#14506B"/></marker></defs>
+        <rect x="350" y="84" width="180" height="52" rx="9" fill="#14506B"/><text x="440" y="108" text-anchor="middle" font-weight="700" fill="#fff" font-size="14">风险分流信号</text><text x="440" y="126" text-anchor="middle" fill="#cde0e9">low / mid / high · 含影响面因子</text>
+        <!-- attention -->
+        <rect x="40" y="22" width="240" height="46" rx="8" fill="rgba(62,124,90,.08)" stroke="#3E7C5A"/><text x="56" y="51" fill="#33373d"><tspan font-weight="700" fill="#3E7C5A">人的注意力 →</tspan> 低:跳过 / 高:细看</text>
+        <rect x="40" y="152" width="240" height="46" rx="8" fill="rgba(162,62,62,.07)" stroke="#A23E3E"/><text x="56" y="181" fill="#33373d"><tspan font-weight="700" fill="#A23E3E">验证预算 →</tspan> 低:廉价信号 / 高:变更比例验证</text>
+        <line x1="350" y1="100" x2="282" y2="48" stroke="#14506B" marker-end="url(#ah2)"/>
+        <line x1="350" y1="120" x2="282" y2="172" stroke="#14506B" marker-end="url(#ah2)"/>
+        <text x="560" y="100" font-size="12.5" fill="#6B7178">影响面因子：是否触及</text>
+        <text x="560" y="120" font-size="12.5" fill="#6B7178">公共 API / schema / 安全面 / 跨模块契约</text>
+      </svg>
+      <figcaption>图 4 · 统一分流：稀缺的人注意力与验证预算由同一信号分配。</figcaption>
+    </figure>
+
+    <h3>2.6 视图四：（可选）自动合并如何渐进开放</h3>
+    <p><strong>本节只在你选择开启自动合并时才适用；默认形态始终是人点合并。</strong>若开启：自主不是一次授予的，是挣来的、且有界的——可安全自动合并的面积随客观验证覆盖率增长而外扩；但 第三类 残差永远不为零（无客观门禁），由风险分流圈住、或对架构重要的少数保留人。</p>
+    <figure>
+      <svg viewBox="0 0 880 250" xmlns="http://www.w3.org/2000/svg" font-family="ui-monospace,Menlo,Consolas,monospace" font-size="12.5">
+        <!-- baseline -->
+        <line x1="60" y1="200" x2="840" y2="200" stroke="#D8D6CD"/>
+        <text x="60" y="224" fill="#6B7178">Phase 0 · 并行打分</text>
+        <text x="330" y="224" fill="#6B7178">Phase 1 · 反馈循环 + 风险分流</text>
+        <text x="650" y="224" fill="#6B7178">Phase 2 · 经验库 + 自主合入</text>
+        <!-- frontier area (autonomy grows) -->
+        <path d="M60,196 L320,170 L640,128 L840,96 L840,196 Z" fill="rgba(14,124,123,.10)"/>
+        <path d="M60,196 L320,170 L640,128 L840,96" fill="none" stroke="#0E7C7B" stroke-width="2"/>
+        <circle cx="60" cy="196" r="4" fill="#0E7C7B"/><circle cx="320" cy="170" r="4" fill="#0E7C7B"/><circle cx="640" cy="128" r="4" fill="#0E7C7B"/><circle cx="840" cy="96" r="4" fill="#0E7C7B"/>
+        <text x="120" y="150" fill="#0E7C7B" font-weight="700">可安全自主（=已客观验证）</text>
+        <!-- residual -->
+        <text x="600" y="70" fill="#B5651D" font-weight="700">需人判断的 第三类 残差（永不为零）</text>
+        <line x1="640" y1="80" x2="700" y2="110" stroke="#B5651D" stroke-dasharray="3 3"/>
+        <text x="60" y="40" fill="#15181D" font-weight="700" font-size="13">自主率 = 验证覆盖率</text>
+      </svg>
+      <figcaption>图 5 ·（可选路径）自动合并的边界 = 验证边界；投资验证覆盖率，可自动合并的面积自然外扩。默认仍是人点合并。</figcaption>
+    </figure>
+
+    <h3>2.7 视图五：评审层（复用 PR-Agent）</h3>
+    <p>评审层<strong>复用开源 PR-Agent</strong>：PR-Agent 产出评审观察与建议（含建议去重/排序），<code>normalize</code> 归一成本系统的 Finding，<code>map_verdict</code> 按 category 定风险等级（<strong>不做共识</strong>）。该层只生产建议与风险分流、<strong>不生产准入</strong>，与图 2「判断层」定位一致。评审层的完整权威设计见配套文档 <code>touchstone-on-pr-agent.html</code>，本文不重复其细节。</p>
+    <p class="muted">复用而非自研评审的一个理由：多评审来源并行时各自的假阳性会乘性叠加成噪声，足以让开发者无视全部意见；PR-Agent 的去重与排序把噪声收敛到可用，<code>map_verdict</code> 因此只做归一与定级、不再在其上叠一层评审来源。</p>
+  </div>
+</section>
+
+<!-- ============ 3 数据结构 ============ -->
+<section id="s3">
+  <div class="wrap">
+    <span class="snum">§ 3</span>
+    <h2>核心数据结构</h2>
+    <p class="lede">只定义与设计逻辑对应的关键成员，不写编码细节。七个结构对应概念空间的七个要点。</p>
+
+    <h3>3.1 SubmissionContract · 提交契约</h3>
+    <p>写代码的 agent 提交 PR 时强制随附（GitHub 上落为仓内文件 <code>.touchstone/pr.yaml</code> 或 PR 模板字段）。<strong>仅作索引</strong>。</p>
+    <table class="tbl">
+      <tr><th>成员</th><th>含义</th><th>Touchstone 如何用</th></tr>
+      <tr><td class="mono">intent</td><td>本 PR 想干什么</td><td>拿 diff 对意图，抓越界（scope creep）</td></tr>
+      <tr><td class="mono">acceptance_criteria</td><td>怎样算做成（可验收）</td><td>变更比例验证的生成依据，但 author 自报的<strong>仅作建议(author_proposed)</strong>、不构成可信认证；驱动「可信的通过（人核准了验收规格、验证才算数）」的验收规格须<strong>人核准</strong>(<code>.touchstone/acceptance.yaml</code>，human_curated)——见 §5 已知风险 1 与 §6.4</td></tr>
+      <tr><td class="mono">reused_components[]</td><td>声明复用了哪些已有工具/类比了哪段代码</td><td>核对 diff 中新增代码是否真的引用了所声明的复用（DUP-001），预防重复造轮子的误判</td></tr>
+      <tr><td class="mono">self_noted_risks[]</td><td>author 自标的风险与不确定处</td><td>抬高这些位置的审视权重</td></tr>
+      <tr><td class="mono">review_guide</td><td>建议重点看哪里</td><td>人读导览（哪里该重点看）而非全文；Touchstone 仍独立核对</td></tr>
+      <tr><td class="mono">tests_added[] / test_results</td><td>声称加了哪些测试、结果如何</td><td>核对 diff 中真实测试文件；不采信结果，独立重跑</td></tr>
+      <tr><td class="mono">loop_round</td><td>反馈循环当前轮次</td><td>超上限触发升级</td></tr>
+    </table>
+
+    <h3>3.2 Finding · 评审发现</h3>
+    <p>Touchstone 的真正产物（比单纯的评分值钱得多）。每条发现必须可定位、可动作、有依据。</p>
+    <table class="tbl">
+      <tr><th>成员</th><th>含义</th></tr>
+      <tr><td class="mono">file / line_range</td><td>定位到行</td></tr>
+      <tr><td class="mono">category</td><td>枚举：<span class="chip c1">correctness_suspect</span> <span class="chip c2">security / contract</span> <span class="chip c3">duplication / convention / over_engineering / missing_error_handling / weak_test / scope_creep</span></td></tr>
+      <tr><td class="mono">severity / confidence</td><td>严重度 + 置信度（低置信不当拦截理由）</td></tr>
+      <tr><td class="mono">rationale</td><td><strong>必须指回依据</strong>：某条规范 / 某个验证得到的事实 / 某段已有代码。给不出依据的不予采信</td></tr>
+      <tr><td class="mono">suggested_fix</td><td>可直接 apply 的补丁或精确指令（供 author 消费）</td></tr>
+      <tr><td class="mono">consumable_by</td><td><code>author</code> | <code>human</code> | <code>both</code></td></tr>
+    </table>
+
+    <h3>3.3 RiskAssessment · 风险分流输出</h3>
+    <table class="tbl">
+      <tr><th>成员</th><th>含义</th></tr>
+      <tr><td class="mono">risk_band</td><td><code>low</code> / <code>mid</code> / <code>high</code></td></tr>
+      <tr><td class="mono">blast_radius[]</td><td>影响面因子：touches_public_api / schema / security_surface / cross_module_contract …</td></tr>
+      <tr><td class="mono">human_action</td><td><code>skip</code> | <code>read</code> | <code>arbitrate</code></td></tr>
+      <tr><td class="mono">verification_decision</td><td><code>cheap_only</code> | <code>targeted_tests</code> | <code>full_suite</code></td></tr>
+    </table>
+
+    <h3>3.4 StandardRule · 单一事实源规范条目</h3>
+    <table class="tbl">
+      <tr><th>成员</th><th>含义</th></tr>
+      <tr><td class="mono">id / category / description</td><td>规则标识与说明</td></tr>
+      <tr><td class="mono">example_good / example_bad</td><td>正反例（同时供 author 学习与 Touchstone 判定）</td></tr>
+      <tr><td class="mono">可机器自动核对</td><td>布尔。为真者可经把建议升级为拦截门禁的通道，固化为确定性检查</td></tr>
+      <tr><td class="mono">enforced</td><td>布尔。由 <code>promote_to_gate</code> 固化后置真——此后该规则作为确定性门禁（可拦截），而非仅建议</td></tr>
+    </table>
+
+    <h3>3.5–3.7 · VerificationResult · CalibrationRecord · AutonomyState</h3>
+    <table class="tbl">
+      <tr><th>结构</th><th>关键成员</th><th>对应概念</th></tr>
+      <tr><td class="mono">VerificationResult</td><td>mode（cheap/targeted/full）· generated_tests[] · passed · evidence</td><td>变更比例验证</td></tr>
+      <tr><td class="mono">CalibrationRecord</td><td>touchstone_findings[] · touchstone_band · human_verdict（approved/changes_requested）· human_flagged[] · agreement</td><td>校准</td></tr>
+      <tr><td class="mono">AutonomyState</td><td>phase · per_category_autonomy{} · revert_rate · approval_drift · tripped(bool)</td><td>熔断</td></tr>
+    </table>
+
+    <h3>3.8 ReviewItem / NormalizationMap · 评审路径（复用 PR-Agent）</h3>
+    <table class="tbl">
+      <tr><th>结构</th><th>关键成员</th><th>说明</th></tr>
+      <tr><td class="mono">ReviewItem</td><td>kind(review/suggestion) · file · line_range · body · label · tool</td><td>PR-Agent 单条输出的抽象（improve 的 code_suggestion / review 的 key_issue）。由评审提供器解析得到，屏蔽 PR-Agent 的具体格式。</td></tr>
+      <tr><td class="mono">NormalizationMap</td><td>label_to_category · default_severity/confidence · high_categories · discard_labels</td><td>归一策略表（<code>.touchstone/pr-agent.yaml</code>）。把 PR-Agent 的 label 映射到本系统 category 与默认严重度/置信度；<code>high_categories</code> 决定哪些 category 升 high。可演进而不改代码。</td></tr>
+    </table>
+    <p class="muted">本表只列评审路径特有结构；Finding / RiskAssessment / CheckResult 见 3.1–3.3。评审层完整数据结构与接口的权威设计见 <code>touchstone-on-pr-agent.html</code>。</p>
+  </div>
+</section>
+
+<!-- ============ 4 接口 ============ -->
+<section id="s4">
+  <div class="wrap">
+    <span class="snum">§ 4</span>
+    <h2>接口定义</h2>
+    <p class="lede">以带注释的签名表达，重点在功能与概念关系，不是 API 手册。前四组是核心接口——评审主链（§4.1）、风险与验证（§4.2）、闭环与校准（§4.3）、固化与熔断（§4.4）；其后依次是 GitHub 集成面（§4.5）、可选的自动合并（§4.6），以及默认形态那道硬质量门禁的机制（§4.7）。</p>
+
+    <h3>4.1 评审主链（复用 PR-Agent）</h3>
+<pre><span class="cm"># 主入口：复用 PR-Agent 评审 → 归一 → 裁决映射，不产出"过/不过"（详见 touchstone-on-pr-agent.html）</span>
+<span class="fn">review_pr</span>(pr, contract, standards)
+    <span class="cm"># = map_verdict(normalize(fetch(...)) + check_contract_consistency(...) + check_stack_rules(...))</span>
+    <span class="cm"># 返回 → { findings[], risk:RiskAssessment }</span>
+
+<span class="cm"># 评审来源：复用开源 PR-Agent（评审提供器封装其调用，真实端点见 _invoke_endpoint）</span>
+<span class="fn">review_provider.fetch</span>(pr_ctx)            <span class="cm"># → [ReviewItem]（PR-Agent improve/review 输出）</span>
+<span class="fn">review_provider.normalize</span>(items, nmap)   <span class="cm"># → [Finding]（label→category，顾问式一律 warn）</span>
+
+<span class="cm"># 裁决映射：按 category 定风险等级，不做共识（去重/排序已由 PR-Agent 完成）</span>
+<span class="fn">review_provider.map_verdict</span>(findings, nmap) <span class="cm"># → { findings[], risk:RiskAssessment }</span>
+
+<span class="cm"># 提交契约一致性核对——落实"只用于定位、绝不采信"。（确定性）检查(无 LLM、置信=1.0)，</span>
+<span class="cm">#   PR-Agent 不做契约一致性；其发现与评审发现一同进 map_verdict。</span>
+<span class="fn">check_contract_consistency</span>(diff, contract, rule_index)
+    <span class="cm"># 三项独立核对：scope 越界(→SCOPE-001)、claimed tests vs 真实测试(→TEST-001)、</span>
+    <span class="cm"># reused_components vs 新增代码真实引用(→DUP-001)。返回 → discrepancies[]</span>
+
+<span class="cm"># 栈专项确定性规则——standards.yaml 中 machine_checkable 的栈规则，按 applies_to 只进对应栈</span>
+<span class="fn">check_stack_rules</span>(diff, rule_index)
+    <span class="cm"># Java：SPR-DI-001 字段注入 / SPR-TX-001 事务失效 / JAVA-EQ-001 == 比较字符串 /</span>
+    <span class="cm">#       JAVA-EXC-001 吞异常 / JAVA-LOG-001 printStackTrace；路径型：CTR-001 契约影响。</span>
+    <span class="cm"># 行级 best-effort、顾问式 warn；主观栈规则(machine_checkable=false)改走 best_practices.md。</span>
+    <span class="cm"># 其发现与评审/契约发现一同进 map_verdict。返回 → findings[]</span></pre>
+    <div class="rel"><span class="k">关系</span>主链 <code>review_pr()</code> 等于 <code>map_verdict(normalize(review_provider.fetch(...)) + check_contract_consistency(...))</code>，分三步读：第一步，评审观察与建议由 <strong>PR-Agent</strong> 产出，建议的去重、排序、多语言都由它完成；第二步，<code>normalize</code> 把这些输出归一成本系统的 <code>Finding</code>；第三步，<code>map_verdict</code> 按 category 给出风险等级，<strong>不做共识投票</strong>。契约一致性核对是 PR-Agent 不做的那块确定性检查，它的发现与评审发现一起进 <code>map_verdict</code>。评审层的完整权威设计在配套文档 <code>touchstone-on-pr-agent.html</code>，本文不重复。规则按 <code>applies_to</code> <strong>分栈生效</strong>，且按可机检与否分两路落地：<strong>可机器核对</strong>的栈规则（如 SPR-DI-001、SPR-TX-001、JAVA-EQ-001、JAVA-EXC-001、JAVA-LOG-001、CTR-001）由 <code>check_stack_rules</code> 在对应栈的 PR 上做<strong>确定性检测</strong>（行级 best-effort、顾问式 warn，可经 <code>promote_to_gate</code> 固化为拦截）；<strong>主观</strong>的栈规则（如 SPR-VAL-001）经 <code>gen_best_practices.py</code> 写进 <code>best_practices.md</code> 供 PR-Agent。通用规则（<code>"*"</code>）进所有 PR，栈专项规则只进对应栈。整条评审主链只产出建议与风险分流，<strong>不产出准入裁决</strong>。</div>
+
+    <h3>4.2 风险与验证</h3>
+<pre><span class="cm"># 一个信号，两份预算：同时决定人看不看、跑不跑贵验证</span>
+<span class="fn">route</span>(risk:RiskAssessment)
+    <span class="cm"># 返回 → { human_action, verification_decision }</span>
+
+<span class="cm"># 变更比例验证：针对本次改动现生成少量测试、只跑这些</span>
+<span class="fn">verify_change</span>(diff, acceptance_criteria, mode)
+    <span class="cm"># mode 由 route() 给出；cheap_only 时退化为只读 ci_facts</span>
+    <span class="cm"># targeted_tests：生成针对性验收测试并运行（覆盖 + 空实现哨兵）；
+    # full_suite：在 targeted 基础上再跑变异测试（最强、最贵的一档），
+    #   由 route 在（高风险且影响面严重）时产出（命中 security_surface / cross_module_contract /
+    #   公共 API 等 blast 因子）；普通高风险仍走 targeted_tests。</span>
+    <span class="cm"># 返回 → VerificationResult</span></pre>
+    <div class="rel"><span class="k">关系</span><code>route()</code> 把稀缺资源按 <code>risk_band</code> 分流；高风险才调 <code>verify_change(mode=targeted_tests|full_suite)</code> 把正确性那层补回来，低风险只吃廉价 <code>ci_facts</code>。这是"付不起每 PR 全验证"约束下的核心调度。</div>
+
+    <h3>4.3 闭环与校准</h3>
+<pre><span class="cm"># 反馈循环控制器：有界、防震荡、可升级。在 Touchstone 侧(中立方,非 author)bound 循环。</span>
+<span class="fn">loop_step</span>(findings, rule_index, state, ci_passed=None) -> (decision, reason, new_state)
+    <span class="cm"># 只管（可自改发现）= 非正确性类(class!=correctness) 且有 suggested_fix；</span>
+    <span class="cm">#   正确性不在此解决,交 verify/人。state 存于 PR 评论隐藏 marker(轮次/上轮判定由此派生)。</span>
+    <span class="cm"># ci_passed：当前轮 CI/verify 判定(True 绿/False 红/None 未知,从 head check-runs 取、排除自身)</span>
+    <span class="cm"># converged = 无可自改发现（且 CI 非红）(≠ 正确,正确性由 verify 正交把关)</span>
+    <span class="cm"># continue  = 仍有可自改发现；或（发现已清但 CI 红）→ 提示 author 修构建/测试后再 push</span>
+    <span class="cm"># escalate  = 超轮次(含 CI 持续红耗尽轮次) / 震荡(发现集重复) / 无推进(含假修·协商降级)</span>
+
+<span class="cm"># 校准：用人审真实裁决做免费 真实裁决（判断对错的标准答案）</span>
+<span class="fn">record_calibration</span>(pr, touchstone_output, human_verdict)
+    <span class="cm"># 持续测 Touchstone 与人的吻合度（双尾：漏报 + 误报/噪声）</span>
+    <span class="cm"># 返回 → CalibrationRecord</span></pre>
+    <div class="rel"><span class="k">关系</span>结构层的发现交给 <code>loop_step()</code>，让 author 自己改、人不介入。与此并行，每个 PR 的 Touchstone 输出会经 <code>record_calibration()</code> 与人的最终裁决比对——这是现阶段唯一负担得起的可靠性信号，它来自身边的人工评审，而不是昂贵又滞后的线上事故。评审复用 PR-Agent，校准即按 PR-Agent 的<strong>工具与规则维度</strong>统计（<code>Finding.agent</code> 记录来源：<code>pr-agent:suggestion</code>、<code>pr-agent:review</code>、<code>contract-check</code>）；这样就能看出哪一类建议校得准、哪一类在瞎挑刺，进而调整 <code>NormalizationMap</code> 的默认值与 <code>discard</code>，甚至剔除噪声过大的来源。实现上不另建数据库，而是直接从 GitHub API 重建：Touchstone 的发现来自它评论里的隐藏标记（result marker），人的裁决来自 review 状态（APPROVED / CHANGES_REQUESTED）与该 PR 是否合入。最粗一层的吻合度是 <strong>PR 级代理</strong>：比对风险等级与人的决定，并统计"某 agent 或 rule 命中的 PR 里、人最终要求改动的比例"——命中多、该比例却低，就是噪声来源。更细一层是 <strong>finding 级采纳率</strong>：Touchstone 给每条内联评论打上自识别隐藏标记（<code>touchstone-finding</code>），校准时用 GraphQL 读取该 PR 各评论线程的 <code>isResolved</code>，把线程对回具体发现，线程被 resolved 即视作该条被采纳。于是 <code>by_rule</code> / <code>by_agent</code> 在 PR 级改动率之外又多了 finding 级采纳率（resolved 数 / 命中条数），更细、也更直接地提供给固化判定（高采纳 = 证实有害）与噪声判定。需注意 resolved 只是采纳的代理（线程也可能讨论后才关闭），所以保留原始计数、与 PR 级信号并存互证。</div>
+
+    <h3>4.4 固化与熔断</h3>
+<pre><span class="cm"># 把“建议”升级为“拦截门禁”的通道：把反复出现且证实有害的发现升级为确定性门禁</span>
+<span class="fn">promote_to_gate</span>(calibration_agg, rule_index)
+    <span class="cm"># 候选条件：可机器自动核对 AND 复发(fires≥N) AND 高采纳(人改动比例≥阈值,</span>
+    <span class="cm">#   作为"证实有害"的可靠归因代理——与噪声检测正好相反)</span>
+    <span class="cm"># 效果：rule.enforced=true(确定性门禁)。改 SoT 须以（提案）交人确认,不静默改</span>
+
+<span class="cm"># 熔断：按真实结果收回或给予自主权，替代「人工把关」这道防线</span>
+<span class="fn">update_autonomy</span>(merge_records, prior_approval_rate)
+    <span class="cm"># revert/hotfix：用可靠归因(git revert 检测 + merge_commit_sha 匹配),低体量下干净够用</span>
+    <span class="cm"># 越阈值 → tripped：收回自主、回落到人；Touchstone 低风险比例突升 → 告警(疑似把关变松/被钻空子)</span>
+    <span class="cm"># 返回 → AutonomyState</span></pre>
+    <div class="rel"><span class="k">关系</span>这两个接口让循环长期保持"正"：<code>promote_to_gate()</code> 是"建议"变"门禁"的唯一通道，让质量问题最终可被强制执行；<code>update_autonomy()</code> 用现实结果当否决权，确保即便 Touchstone 被钻空子，自主权也会自动收缩。</div>
+
+    <h3>4.5 GitHub 集成面（验证场景）</h3>
+    <table class="tbl">
+      <tr><th>方向</th><th>GitHub 载体</th><th>对应接口/数据</th></tr>
+      <tr><td>触发</td><td>PR 打开或更新时，由 <code>pull_request</code> 事件（opened / synchronize）触发评审；人提交评审时，由 <code>pull_request_review</code> 事件捕获其裁决。</td><td>启动 review_pr / 捕获 human_verdict</td></tr>
+      <tr><td>本地/独立运行</td><td>运行 <code>python -m touchstone.run --repo O/R --pr N</code>：先经 API 取完整 diff，并浅克隆、checkout 到 PR head（供检索工具读到真实仓库），再依次跑 PR-Agent 评审归一、契约核对、裁决映射、风险分流与闭环。<strong>默认 dry-run、只打印结果</strong>，加 <code>--post</code> 才回贴评论；token 与 key 走环境变量。用于评审 Actions 之外、或不属于自己的外部 PR。</td><td>review_provider / contract_check</td></tr>
+      <tr><td>输入</td><td>经 API 取得的 diff，仓内的 <code>.touchstone/pr.yaml</code> 与 <code>.touchstone/standards.md</code>，以及仓库索引。</td><td>contract / standards / repo_index</td></tr>
+      <tr><td>质量门禁</td><td>经 Checks API 读取现有 GitHub Actions（lint、类型检查、快单测、SAST）的结论。</td><td>ci_facts</td></tr>
+      <tr><td>输出</td><td>行内 review 评论（定位到具体发现）、一条总结评论（给人看的 review_guide）、一个 <code>touchstone</code> check run（<strong>neutral、顾问式、不拦截</strong>），以及一份机读的 findings（JSON artifact）。</td><td>Finding[] / RiskAssessment</td></tr>
+      <tr><td>验证(高风险)</td><td>由一个<strong>独立的 verify job</strong> 承担（needs touchstone，仅当 verification_decision 为 targeted_tests 或 full_suite 时才跑）：它调 <code>verify_change</code> 并传入 base/head 的 sha，产出一个 <code>touchstone/verify</code> check run（<strong>success/failure，质量门禁级判决</strong>）、一条评论和一份 verify-result artifact。它是否拦合入，由分支保护的 required check 决定，可随信心增长再开启。</td><td>verify_change / VerificationResult</td></tr>
+      <tr><td>自改</td><td>写代码的 agent 经 API 读取 findings，改完后 push，由 synchronize 事件再次触发评审。</td><td>loop_step</td></tr>
+      <tr><td>校准</td><td>读取 review 状态与已解决（resolved）的评论线程。</td><td>record_calibration</td></tr>
+      <tr><td>熔断</td><td>监控合入后的 revert / hotfix，以及批准率随时间的变化序列。</td><td>update_autonomy</td></tr>
+    </table>
+    <div class="rel"><span class="k">总链路</span>一个 PR 的完整链路是：PR 触发后，Touchstone（判断层 job）读取 PR 的 diff、提交契约与规范规则，产出发现与风险等级，并发一个 neutral 的 check run（顾问式、不拦截）。接着 <code>route()</code> 按风险分流——低风险走反馈循环、人不看；高风险且开启了 verify（<code>vars.VERIFY_ENABLED</code>）时，由独立的 verify job 触发 <code>verify_change</code>，它只写 <code>verify-result.json</code>、不再单独发 check。随后 gate job 把「Touchstone 规则 + 转达的现成检查 +（若跑过）verify」聚合成对外的<strong>那一个统一门禁</strong>，并把含 verify 的结论写回 <code>touchstone-findings.json</code> 供 autonomy 读取。合入之后，再由校准与熔断持续观测。其中有几个要点：各环节分属不同 job，以此做到职责分离——判断层不在同一进程里做客观验证；Touchstone 自己的 check 永远是 neutral、从不拦合入；是否硬拦只由那一个统一门禁决定，因此 GitHub 上只需一次性要求 <code>touchstone/gate</code> 这一个状态，挂哪些检查、哪些必须通过都写在 <code>.touchstone/checks.yaml</code> 里；verify 是可选的，开启后也只是折进统一门禁的一个检查、不另发 check。</div>
+
+        <h3>4.6 渐进开放自动合并（可选，默认关）：执行器 + 经验层</h3>
+    <p><strong>这是（可选）路径，默认关、需显式开启；不是默认形态——默认是顾问式评审、人点合并。</strong>本节描述：当你选择开启自动合并时，它如何只在安全前提下替人点合并。第一原则不变：评审可能出错，<strong>授权自动放行的从来不是评审意见，而是汇总状态检查（质量门禁）的通过</strong>。下方判据多道门禁串联、默认全关、经验门控、熔断保障。<em>（已实现：判据已简化为"直接读汇总状态检查(统一门禁)是否绿"，与 §4.7 的质量门禁对齐；契约/规则/可选 verify 均折进统一门禁，autonomy 不再自行判定地基。）</em></p>
+    <p><strong>自动放行判据</strong>(<code>decide_auto_merge</code>)——当且仅当以下<strong>全部</strong>成立，否则回落到人：</p>
+    <pre>1 质量门禁通过 汇总状态检查(统一门禁)= success。契约核对、确定性规则、(可选)verify 都已折进统一门禁；autonomy 只读这一个结论，不再自行判定地基。（统一门禁非 success 即不放行）
+2 阻断否决     无未消除的 block_candidate 且非 high 档。（不对称：阻断条件能否决自动放行，但不能批准——批准只由质量门禁给）
+3 闭环已收敛  loop_decision=converged（非 escalate）
+4 未熔断      govern.update_autonomy 维持（非"收回自主"）
+5 变更分类已达标 经验层判该类变更有良好的安全记录（见下）
+6 总开关开    AUTONOMY_ENABLED（默认关）</pre>
+    <div class="rel"><span class="k">变更分类</span>auto-merge 的资格按（变更分类）累积与授予，不按单 PR。签名 = {风险等级 · 文件类型(docs_only/test_only/code/mixed) · 触及的规则 category 集 · blast}。够粗以积累足够样本、够细以有意义。</div>
+    <div class="rel"><span class="k">怎样安全地分级开放</span>难点：某类变更要先有足够样本才敢放开，但不放开就拿不到样本。做法分三步：① <strong>影子模式</strong>(AUTONOMY_SHADOW)——对<strong>人工合并</strong>的 PR 只记录"按规则本会自动合并吗 + 它后来是否被回滚/热修"，<strong>只观察、不自动合并</strong>；② <strong>达标</strong>——某类变更累计样本≥N 且回滚/热修率≤阈值，才取得自动合并资格；③ <strong>开启</strong>——总开关打开后，对已达标的变更分类才真正自动合并。<strong>先观察、后达标、再开启——不对没有先例的变更分类冒险</strong>。</div>
+    <div class="rel"><span class="k">经验层与达标</span>经验库 = 按变更分类的 {样本数, revert, hotfix, 人否决}，由 merge_records 累积(沿用 calibrate/govern 管线)。<code>graduate_classes</code>：样本≥N ∧ 坏结局率≤阈值 → 达标。与 §4.4 的 <code>promote_to_gate</code>(规则固化)<strong>同构</strong>——只是这里固化的是"自动放行某类变更"的资格。<strong>TF-GRPO</strong> 是把这套从计数式达标升级为可增删改经验库(把手写 standards 学成经验)的演进路径。</div>
+    <div class="rel"><span class="k">经验层不替代任何单 PR 门禁</span>即便类已达标，每个 PR 仍须逐条过 1–6 道门禁。经验层只决定"<strong>这类变更我们是否愿意自动放行</strong>"，绝不替代某 PR 的质量门禁/否决/收敛/熔断。</div>
+    <div class="rel"><span class="k">与熔断的关系</span>经验层是<strong>前向</strong>的按类达标门；<code>update_autonomy</code> 是<strong>全局熔断后备</strong>(自动放行后 revert 率超阈 → 收回自主、强制关)。二者都吃 merge_records，一前一后。</div>
+    <div class="rel"><span class="k">GitHub 形态</span>job 链：<code>touchstone</code>(评审，<code>TOUCHSTONE_SKIP_GATE</code> 不自发统一门禁) → (可选)<code>verify</code> → <code>gate</code>(聚合并发那一个统一门禁、写回 <code>touchstone-findings.json</code>) → <code>auto_merge</code>。<code>auto_merge</code> job <strong>needs [touchstone, gate]</strong>，<strong>默认不启用</strong>(<code>if: vars.AUTONOMY_ENABLED=='true'</code>)：读 gate job 写回的<strong>统一门禁结论</strong>(<code>touchstone-findings.json</code> 的 <code>gate</code>，已含 verify) + 达标类(由 govern 定时任务发布) + 熔断态 → <code>decide_auto_merge</code>；merge=true 则 <code>execute_auto_merge</code> 调 merge API 并打 <code>auto_handled</code> marker 供校准归因。</div>
+    <div class="rel"><span class="k">边界（默认放行 0 个）</span>默认 <code>AUTONOMY_ENABLED</code> 关 → 放行 0；经验为空 → 无类达标 → 放行 0。要真放行须<strong>同时</strong>：类达标 ∧ 总开关 ∧ 质量门禁(统一门禁)绿 ∧ 阻断否决无 ∧ 闭环收敛 ∧ 未熔断。任一不成立即回落到人——这是（可选）自动合并的安全前提：开启后也只在质量门禁绿等条件全满足时才替人点。</div>
+
+    <h3 id="checks">4.7 可插拔检查门禁（默认形态对外的硬质量门禁）</h3>
+    <p>这道门禁是 §2.2 问题一里“必须通过才能合”的硬质量门禁的机制实现，§4.5（GitHub 集成）、§4.6（autonomy）、§6（verify）都用到它。Touchstone 自己<strong>不发明关卡</strong>，只提供一个挂载点——把现成质量工具（或以后自建的服务）的结果挂成检查，再按 <code>.touchstone/checks.yaml</code> 里的策略汇总成<strong>一个</strong>对外状态。改“挂哪些、哪几个必须通过”只改这个文件，不碰 GitHub 设置。</p>
+
+    <h4>一个检查 = 名字 + 通过与否 + 一句话摘要</h4>
+    <p>框架读配置 → 跑所有启用的检查 → 把每个结果折进汇总状态检查。三种挂法：</p>
+    <div class="legend">
+      <div class="item"><div class="nm">builtin</div><div class="ds">进程内函数。如 <code>touchstone-rules</code>（自带确定性规则，无拦截级才通过）、<code>verify</code>（折入按需深检结果）。</div></div>
+      <div class="item"><div class="nm">relay</div><div class="ds">读某个<strong>已有</strong> GitHub check-run 的结论——工具在它自己的 CI 里跑过（单测 / SonarQube / SAST），这里只转达。</div></div>
+      <div class="item"><div class="nm">service</div><div class="ds">POST PR 上下文到一个 HTTP 服务拿结果——<strong>未来自建质量服务按此接口挂上来，不改框架</strong>。</div></div>
+      <div class="item"><div class="nm">汇总状态检查 aggregate_gate</div><div class="ds">所有 <code>required</code> 检查都通过才 success；任一必须项非通过 → failure。非必须项只作信息。</div></div>
+    </div>
+
+    <div class="principle"><span class="k">与 GitHub 的最小耦合</span>对外只发<strong>一个</strong>汇总状态检查(默认 <code>touchstone/gate</code>)——由专门的 gate 步骤在 Touchstone 评审与(可选)verify 之后聚合所有启用的检查、统一发布这一个状态。<strong>人点合并</strong>场景：GitHub 分支保护一次性只要求这一个状态即可——挂几个插件、哪几个必须绿、阈值多少，全在 <code>.touchstone/checks.yaml</code> 里演进，不再回去动 GitHub。<strong>自动合并</strong>场景(可选)：Touchstone 自己看汇总状态检查绿不绿决定合不合，<strong>零 GitHub 配置</strong>。</div>
+
+    <pre><span class="cm"># .touchstone/checks.yaml —— 策略全在这里</span>
+gate:
+  status_name: touchstone/gate     <span class="cm"># 对外唯一的汇总状态检查名</span>
+checks:
+  - {name: touchstone-rules, type: builtin, plugin: touchstone-rules, required: true}
+  - {name: unit-tests,      type: relay,   source_check: unit, required: true}     <span class="cm"># 转达现有单测</span>
+  - {name: sonarqube,       type: relay,   source_check: SonarQube, required: false, enabled: false}
+  - {name: verify,          type: builtin, plugin: verify, required: false, enabled: false} <span class="cm"># 算力够时人开</span>
+  - {name: my-service,      type: service, url: "http://internal/check", enabled: false}     <span class="cm"># 未来自建服务挂点</span></pre>
+  </div>
+</section>
+
+<!-- ============ 5 一致性校验 ============ -->
+<section id="s5">
+  <div class="wrap">
+    <span class="snum">§ 5</span>
+    <h2>一致性校验</h2>
+    <p class="lede">对全文设计要素做综合校验。通过的维度一笔带过，重点记录发现并修正的问题、以及有意接受的遗留项与理由。</p>
+
+    <h4>通过的维度</h4>
+    <ul>
+      <li><strong>概念一致性</strong>：三类判定、验证边界、风险分流、提交契约、变更比例验证、把“建议”升级为“拦截门禁”的通道、校准、反馈循环、熔断、单一事实源规范、评审引擎（PR-Agent）、发现归一、裁决映射，以及验证子系统的独立验收测试、职责分离约束、充分性校验、空实现探针（把功能改空看测试会不会报警）、变异验证等概念全文同名同义，数据结构与接口直接复用其名。</li>
+      <li><strong>接口完备性</strong>：设计逻辑中每个操作均有对应接口（评审→review_pr；分流→route；验证→verify_change；闭环→loop_step；校准→record_calibration；固化→promote_to_gate；熔断→update_autonomy）。</li>
+      <li><strong>层次一致性</strong>：Touchstone 不承担质量门禁的职责——它<strong>从不</strong>对正确性给出准入裁决，准入只由确定性门禁产生；Touchstone 的输出对正确性只构成风险分流与建议。</li>
+    </ul>
+
+    <h4>状态完备性（PR 生命周期对异常事件的处理）</h4>
+    <table class="tbl">
+      <tr><th>异常事件</th><th>处理策略</th></tr>
+      <tr><td>提交契约缺失/不合格</td><td>视为不可评审，直接打回 author（不消耗 Touchstone）</td></tr>
+      <tr><td>确定性门禁红</td><td>直接打回，AI 审都不上场</td></tr>
+      <tr><td>反馈循环超轮次 / 反复矛盾</td><td>升级到人仲裁或要求 re-plan</td></tr>
+      <tr><td>Touchstone 批准率突升</td><td>熔断告警，疑似把关变松/被钻空子</td></tr>
+      <tr><td>合入后事故率越阈值</td><td>熔断收回自主权，全部回落到人</td></tr>
+    </table>
+
+    <h4>有意接受的遗留项</h4>
+    <ul>
+      <li><strong>第三类 质量在全自主下会缓慢漂移</strong>（无客观门禁）。接受，并由风险分流圈住：仅在架构影响低处全自主，触及公共 API/schema/契约/安全面的少数保留人。</li>
+      <li><strong>author 与 Touchstone 同源的相关性盲点</strong>不能根除，只能缓解（独立性三来源 + 闭环产物不自证正确）。接受。</li>
+      <li><strong>当前校准信号继承人审盲区</strong>：以「与人一致」为奖励，会连人看不出的 似是而非的错误 一起学过去。接受为 Phase 1 限制；Phase 2 加入变更比例验证的客观结果作为更高质量奖励后改善。</li>
+      <li><strong>人力下降在正确性轴上有上限</strong>：上限 = 可负担的廉价验证覆盖率；结构轴大体可压缩。这是「正确性只能靠跑验证、而验证有成本」的直接推论，非缺陷。</li>
+      <li><strong>模型多样性的去相关收益有限、且在衰减。</strong>让评审侧与 author 用不同模型能带来一些独立性，但这条收益会随前沿模型趋同而衰减，且它不跨越验证边界（两个模型读代码仍然只是"读"）。因此本设计不把模型多样性当作主力独立性来源；评审复用 PR-Agent（单一配置模型），评审侧所用模型要求不弱于 author 所用模型。</li>
+      <li><strong>评审层只改判断层。</strong>评审层（复用 PR-Agent）只能扩展评审广度、降低相关性盲点，而不会新增"客观验证"这一能力。因此（可选的）自动合并的天花板，始终由验证覆盖率决定，而不由评审 agent 的数量或模型多样性决定。</li>
+      <li><strong>充分性 ≠ 测试意图正确。</strong>哨兵与变异只能逮出弱测试，逮不住「强而错」的测试（规格被误读却写得很强）。接受：由人核准的验收规格从源头压低误读、变异部分覆盖、事后熔断保障——充分性层只保证「测了改动」、不保证「测的是对的性质」。</li>
+      <li><strong>风险分流的安全性部分压在判断层。</strong>「Touchstone 全错也越不过门禁」只对<strong>准入门禁</strong>成立（评审层不能批准合入）；但一个 PR 跑哪一档验证由（会误判的）评审层决定，被误判为 low 的错改只走 cheap_only，自动合并下可能仅凭 CI 绿放行。缓解而非根除：blast_radius 的 touches_public_api / schema / security_surface 等因子尽量确定性计算、保守取并，把伤害面大的改动强制抬到 full_suite；并由事后熔断保障。</li>
+    </ul>
+  </div>
+</section>
+
+<!-- ============ 6 变更历史 ============ -->
+<!-- ============ 6 验证子系统 ============ -->
+<section id="s6">
+  <div class="wrap">
+    <span class="snum">§ 6</span>
+    <h2>验证子系统：独立测试来源与充分性</h2>
+    <p class="lede"><strong>本节描述的 verify 是（可选）的深度正确性检查（默认关、算力够时人按需开），不是默认形态的一部分。</strong>它作为一个检查插件挂进质量门禁（见 §4.7）：开启后产出一个可信的"正确性验证"结果。本节讲的就是——这个结果"凭什么可信"。验证 = 跑测试；若测试不可信（author 自写恒真测试）或不充分（跑了却没真正测到改动），它给出的就是<strong>假绿</strong>。锚点同主文档（2026-06-18 / GitHub PR）。</p>
+
+    <h3>6.1 子系统目的</h3>
+    <p><strong>定性。</strong>这是 verify 插件的内部细化设计。目的：让它产出的「验证通过」信号，<strong>对本次改动的范围而言，真的等价于「正确」</strong>。它要同时解决两件性质不同的事：</p>
+    <ul>
+      <li><strong>来源（Provenance）</strong>：验收测试从哪里来，才能不被写代码的 agent 钻空子。</li>
+      <li><strong>充分性（Adequacy）</strong>：即便来源干净，这些测试是否真的测到了改动——还是「在空实现上也能过」的摆设。</li>
+    </ul>
+    <p>这两件做扎实，verify 给出的"绿"才可信——既是给人看的客观正确性证据，也是（可选）自动合并能依赖的前提。</p>
+
+    <h3>6.2 设计逻辑与概念空间</h3>
+    <div class="legend">
+      <div class="item"><div class="nm">独立验收测试 Spec-Blind Test</div><div class="ds">由一个<strong>看不到实现</strong>、只读 acceptance_criteria 与接口的独立测试作者（异模型）从规格生成的验收测试——编码「规格要什么」，而非「代码做了什么」。</div></div>
+      <div class="item"><div class="nm">职责分离约束 Separation-of-Duties</div><div class="ds">author 与 Touchstone 对验收测试集<strong>无写权限</strong>——不能修改、改弱、跳过那个评判自己的东西。</div></div>
+      <div class="item"><div class="nm">充分性校验 Adequacy Ladder</div><div class="ds">廉价→贵、由风险分流分配的三档充分性校验：改动覆盖 → 空实现探针（把功能改空看测试会不会报警） → 变异验证。</div></div>
+      <div class="item"><div class="nm">空实现探针（把功能改空看测试会不会报警） Empty-Impl Sentinel</div><div class="ds">廉价底线：同一组验收测试，对改动前/桩实现必须 <strong>FAIL</strong>、对改动后必须 <strong>PASS</strong>；否则即恒真或没测到改动，判测试不合格。</div></div>
+      <div class="item"><div class="nm">变异验证 Mutation Check</div><div class="ds">强信号、贵、仅高风险跑：对改动区注入小故障，测试杀不掉变异即视为不充分。</div></div>
+      <div class="item"><div class="nm">改动覆盖 Changed-Line Coverage</div><div class="ds">廉价必过：测试必须真的执行到改动行。必要非充分。</div></div>
+    </div>
+
+    <h4>问题一：来源——谁写验收测试，怎么防 author 污染</h4>
+    <p>author 自写测试，是 specification gaming 的同一向量换了位置：author 既写代码又写测试，二者共享同一份对规格的误解（甚至写恒真测试），于是测试全过、代码却错。<strong>否决</strong>两个极端：纯人工写全部验收测试（违背减人力目标，不可扩展）；author 自写作为唯一门禁（可被钻空子）。<strong>采用</strong>：</p>
+    <ul>
+      <li>验收测试主要由 <span class="term">独立验收测试</span> 作者生成——独立 agent、异模型，<strong>只看 acceptance_criteria 与接口、看不到实现 diff</strong>。它编码的是规格要求，而不是代码现状。</li>
+      <li>叠加<strong>回归套件</strong>（仓库已有测试，防退化）与<strong>人工关键路径测试</strong>（人对高风险路径手工把关，对应人事前定义可验证规格的新角色）。</li>
+      <li>author 自写测试仅作<strong>补充信号</strong>，绝非唯一门禁；并立 <span class="term">职责分离约束</span>：author 与 Touchstone 对验收测试集无写权限。</li>
+    </ul>
+
+    <h4>问题二：充分性——「通过」是否真的等于「测到了」</h4>
+    <p>来源干净也不够：测试可能很弱，「在空实现上也能过的测试价值为零」。<strong>否决</strong>对每个 PR 都跑完整变异测试（太贵）。<strong>采用</strong> <span class="term">充分性校验</span>，三档由风险分流分配、且验证量正比于改动（接 §4.2 变更比例验证）：</p>
+    <ol>
+      <li><strong>改动覆盖</strong>（廉价，全跑）：测试必须执行到改动行。</li>
+      <li><strong>空实现探针（把功能改空看测试会不会报警）</strong>（廉价，全跑）：验收测试对改动前/桩实现必须 FAIL、对改动后必须 PASS。这一步用极低成本就杀掉恒真测试与「没测到改动」的测试。</li>
+      <li><strong>变异验证</strong>（贵，仅高风险）：对改动区注入小故障，测试若杀不掉则判不充分。</li>
+    </ol>
+    <div class="principle">
+      <span class="k">防御纵深及其边界</span>
+      来源（独立性）与充分性（是否真测）互为后盾，但边界要讲清。充分性层（哨兵 / 变异）能逮出<strong>弱测试</strong>——恒真的、没真正覆盖改动的；职责分离约束保证没人能事后把测试改弱来骗过它。但它<strong>逮不住「强而错」的测试</strong>：若独立验收测试作者误读了规格、写出强但与意图不符的测试，它会过哨兵、也会在（同样按错误理解写的）新代码上 PASS，形成自信的假绿。所以充分性层保证的是「测了改动」，<strong>不是「测的是对的性质」</strong>；后者只能靠人核准规格（把规格被误读从源头压低）+ 事后熔断保障。
+    </div>
+
+    <figure>
+      <svg viewBox="0 0 880 360" xmlns="http://www.w3.org/2000/svg" font-family="ui-monospace,Menlo,Consolas,monospace" font-size="11.5">
+        <defs><marker id="ah4" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 Z" fill="#6B7178"/></marker></defs>
+        <!-- band labels -->
+        <text x="20" y="22" font-size="12" fill="#14506B" font-weight="700">来源 PROVENANCE</text>
+        <line x1="0" y1="176" x2="880" y2="176" stroke="#E6E4DD"/>
+        <text x="20" y="202" font-size="12" fill="#14506B" font-weight="700">充分性 ADEQUACY（廉价 → 贵，由风险分流）</text>
+        <!-- provenance -->
+        <rect x="18" y="40" width="120" height="56" rx="8" fill="#FFFFFF" stroke="#D8D6CD"/><text x="78" y="64" text-anchor="middle" font-weight="700" fill="#15181D">规格</text><text x="78" y="82" text-anchor="middle" fill="#6B7178">acceptance_criteria</text>
+        <rect x="180" y="34" width="180" height="68" rx="8" fill="rgba(14,124,123,.07)" stroke="#0E7C7B" stroke-width="1.4"/><text x="270" y="58" text-anchor="middle" font-weight="700" fill="#0E7C7B">独立验收测试作者</text><text x="270" y="76" text-anchor="middle" fill="#6B7178">异模型</text><text x="270" y="92" text-anchor="middle" fill="#A23E3E">✕ 看不到实现</text>
+        <rect x="180" y="116" width="180" height="22" rx="6" fill="#FFFFFF" stroke="#D8D6CD"/><text x="270" y="131" text-anchor="middle" fill="#6B7178">回归套件</text>
+        <rect x="180" y="144" width="180" height="22" rx="6" fill="#FFFFFF" stroke="#D8D6CD"/><text x="270" y="159" text-anchor="middle" fill="#6B7178">人工关键路径测试</text>
+        <rect x="410" y="66" width="150" height="60" rx="8" fill="#13161B"/><text x="485" y="92" text-anchor="middle" font-weight="700" fill="#E4E6EA">验收测试集</text><text x="485" y="110" text-anchor="middle" fill="#7C8AA0">🔒 author/Touchstone 无写权</text>
+        <line x1="138" y1="68" x2="178" y2="68" stroke="#6B7178" marker-end="url(#ah4)"/>
+        <line x1="360" y1="74" x2="408" y2="88" stroke="#6B7178" marker-end="url(#ah4)"/>
+        <line x1="360" y1="127" x2="408" y2="104" stroke="#6B7178" marker-end="url(#ah4)"/>
+        <line x1="360" y1="155" x2="408" y2="116" stroke="#6B7178" marker-end="url(#ah4)"/>
+        <!-- adequacy ladder -->
+        <rect x="18" y="222" width="170" height="44" rx="8" fill="rgba(62,124,90,.08)" stroke="#3E7C5A"/><text x="34" y="244" font-weight="700" fill="#3E7C5A">① 改动覆盖</text><text x="34" y="260" fill="#6B7178">廉价 · 全跑 · 执行到改动行</text>
+        <rect x="210" y="222" width="210" height="44" rx="8" fill="rgba(62,124,90,.08)" stroke="#3E7C5A"/><text x="226" y="244" font-weight="700" fill="#3E7C5A">② 空实现探针（把功能改空看测试会不会报警）</text><text x="226" y="260" fill="#6B7178">廉价 · 全跑 · 改前 FAIL / 改后 PASS</text>
+        <rect x="442" y="222" width="210" height="44" rx="8" fill="rgba(162,62,62,.07)" stroke="#A23E3E"/><text x="458" y="244" font-weight="700" fill="#A23E3E">③ 变异验证</text><text x="458" y="260" fill="#6B7178">贵 · 仅高风险 · 杀不掉变异=不充分</text>
+        <rect x="674" y="216" width="186" height="56" rx="8" fill="#F3F6F8" stroke="#0E7C7B" stroke-width="1.8"/><text x="767" y="240" text-anchor="middle" font-weight="700" fill="#0E7C7B">可信的通过（人核准了验收规格、验证才算数）</text><text x="767" y="258" text-anchor="middle" fill="#6B7178">= 质量门禁准入信号</text>
+        <line x1="485" y1="126" x2="103" y2="220" stroke="#6B7178" stroke-dasharray="3 3" marker-end="url(#ah4)"/>
+        <line x1="188" y1="244" x2="208" y2="244" stroke="#6B7178" marker-end="url(#ah4)"/>
+        <line x1="420" y1="244" x2="440" y2="244" stroke="#6B7178" marker-end="url(#ah4)"/>
+        <line x1="652" y1="244" x2="672" y2="244" stroke="#6B7178" marker-end="url(#ah4)"/>
+        <text x="300" y="300" font-size="11" fill="#6B7178">任一档不过 → 测试/改动打回；高风险才触发 ③，低风险止于 ②</text>
+        <text x="300" y="320" font-size="11" fill="#6B7178">「可信的通过（人核准了验收规格、验证才算数）」之外的残余正确性风险，交由熔断（合入后事故率）保障</text>
+      </svg>
+      <figcaption>图 7 · 验证子系统：来源(独立验收测试 + 回归 + 人工 + 职责分离)保证测试可信，充分性校验(廉价→贵、风险门控)保证测试真测到改动；二者共同让质量门禁的通过状态真正可信。</figcaption>
+    </figure>
+
+    <h3>6.3 核心数据结构</h3>
+    <table class="tbl">
+      <tr><th>结构</th><th>关键成员</th><th>说明</th></tr>
+      <tr><td class="mono">AcceptanceTestSet</td><td>tests[] · source(spec_blind/regression/human_curated/author_supplementary) · author_model · write_locked_from[author,touchstone]</td><td>验收测试集。source 标明来源；write_locked_from 落实职责分离约束；author_supplementary 仅作补充信号</td></tr>
+      <tr><td class="mono">AdequacyResult</td><td>changed_line_coverage · sentinel_passed(改前FAIL/改后PASS) · mutation_score · verdict(adequate/inadequate/not_run)</td><td>充分性校验的输出。not_run 用于低风险未触发变异的情形</td></tr>
+    </table>
+    <p class="muted">§3.6 的 <code>VerificationResult</code> 由本子系统充实：其 <code>passed</code> 不再只是「测试跑过」，而是「<strong>改后 PASS(正确性)</strong> + 来源可信 + 充分性达标 + 回归绿」共同成立——这才是质量门禁可作为唯一准入门禁的前提。</p>
+
+    <h3>6.4 接口定义</h3>
+<pre><span class="cm"># 生成独立验收测试：注意——不传 implementation，这正是其独立性所在</span>
+<span class="fn">generate_spec_blind_tests</span>(acceptance_criteria, interface, model)
+    <span class="cm"># model 取异于 author 的模型；返回 → AcceptanceTestSet(source=spec_blind)</span>
+
+<span class="cm"># 充分性校验：廉价两档全跑，变异仅 mode=high 时对改动区跑</span>
+<span class="fn">check_adequacy</span>(test_set, changed_units, mode)
+    <span class="cm"># ① changed_line_coverage ② empty_impl_sentinel(改前FAIL/改后PASS)</span>
+    <span class="cm"># ③ mutation(changed_units) [仅 high]。返回 → AdequacyResult</span>
+
+<span class="cm"># 职责分离的不变式（部署期断言，而非运行期函数）</span>
+<span class="kw">invariant</span> author 与 Touchstone 对 AcceptanceTestSet <span class="kw">无写路径</span></pre>
+    <div class="rel"><span class="k">展开</span>§4.2 的 <code>verify_change()</code> 在本子系统下展开为四步：① 从 head 抽取<strong>公共签名（去掉实现）</strong>作为"接口"；② <code>generate_spec_blind_tests()</code> 据规格与接口产出独立验收测试；③ 用 git worktree 物化改前、改后两个版本，分别运行（含回归套件与人工关键路径测试）；④ <code>check_adequacy()</code> 按风险爬充分性校验。判过需四者同时成立：改后 PASS（正确性）、改前 FAIL（哨兵充分）、覆盖达标（高风险再加变异达标）、回归绿。其中"改后跑"既是哨兵的一半，<strong>也同时是正确性判决</strong>——改后挂掉，就说明代码不满足规格。author 可以改代码，但碰不到那套评判它的测试集。</div>
+    <div class="rel"><span class="k">runner 可插拔</span><code>select_runner()</code> 按仓库特征选择语言运行器：Python 用 pytest + coverage + 内置变异，Java/Maven 用 <code>mvn</code> 跑套件 + JaCoCo + PIT 变异。两者都支持生成独立验收测试（Python 产 pytest、Java 产 JUnit 5），且接口都取"去实现签名"、盲于实现。参考实现是 Python/pytest，换语言只需替换 runner。</div>
+    <div class="rel"><span class="k">覆盖率定义</span>覆盖率按<strong>改动行</strong>计算，而非文件级：Python 取 coverage.py 的 <code>executed_lines</code> 与改动行的交集，Java 取 JaCoCo <code>&lt;line&gt; ci&gt;0</code> 与改动行的交集。只覆盖到改动文件里的旧行，不算数。</div>
+    <div class="rel"><span class="k">纯重构（regression_only）</span>纯重构的 PR 行为不变，没有"新行为"可供"改前 FAIL / 改后 PASS"，强行生成独立验收测试没有意义。因此另设 <code>regression_only</code> 模式：只验"<strong>现有套件在改后仍然全绿，且改动被测试覆盖</strong>"（改前也要绿，以便正确归因），不生成独立验收测试、也不跑哨兵。重构 PR 默认走此模式；Java 的功能型 PR 现在走独立验收测试路径。</div>
+    <div class="rel"><span class="k">验收规格来源</span>独立验收测试所依据的 acceptance_criteria 有来源治理（<code>resolve_acceptance_spec</code>）：<strong>人核准的规格优先</strong>（<code>.touchstone/acceptance.yaml</code>，标 <code>human_curated</code>），缺失才回落到 author 契约里自报的（标 <code>author_proposed</code>），来源记在 <code>VerificationResult.spec_source</code>。verify 插件（<code>checks._check_verify</code>）只认 <code>human_curated</code>，或无需规格的回归（<code>spec_source=None</code>）。<strong>author 自报规格的独立验收测试即便全绿，也不构成正确性认证、不计入统一门禁</strong>——这把"只用于定位、绝不采信"落实到了质量门禁最承重的地方；此时统一门禁不为 success，自动合并回落到人（由人来写或核准规格，或人工评审）。</div>
+
+    <h3>6.5 一致性校验（本子系统）</h3>
+    <ul>
+      <li><strong>补洞</strong>：「验证通过」不以 author 自写测试的善意为前提：验收测试来源独立、测试作者与代码作者分离，并由充分性（哨兵 / 变异）保障。</li>
+      <li><strong>层次一致性</strong>：测试作者 ≠ 代码作者；Touchstone 对测试集无写权——评判者与被评判者分离。</li>
+      <li><strong>有意接受的遗留</strong>：① <strong>规格本身的正确性是人的职责</strong>——独立验收测试只能让测试忠于规格，规格错则测试错；本子系统建立在「人事前写对 acceptance_criteria」之上（即人被前移的角色）。② 变异验证贵且可能有等价变异噪声 → 风险门控、不全量跑。③ 规格未预见的 unknown-unknowns 任何测试体系都覆盖不到 → 由熔断（合入后 revert/hotfix）保障。</li>
+    </ul>
+  </div>
+</section>
+
+<!-- ============ 7 变更历史 ============ -->
+<section id="s7">
+  <div class="wrap">
+    <span class="snum">§ 7</span>
+    <h2>变更历史</h2>
+    <table class="tbl">
+      <tr><th>日期</th><th>变更内容</th><th>原因</th></tr>
+      <tr><td class="mono">阶段一 · 主干设计</td><td>确立主轴「自主边界 = 验证边界」与顾问式定位：三类判定（正确性 / 红线·契约 / 质量）、风险分流、变更比例验证、提交契约（只用于定位、绝不采信）、校准（影子模式）、把「建议」升级为「强制拦截」的固化通道、熔断；给出 GitHub 集成面与数据流视图。</td><td>把多轮讨论整理为可实现的架构</td></tr>
+      <tr><td class="mono">阶段二 · 验证子系统（§6）</td><td>落地正确性验证 verify：独立验收测试（异模型、盲于实现）+ 充分性校验（改动覆盖 → 空实现哨兵 → 变异）；Python(pytest+coverage) 与 Java/Maven(JaCoCo+PIT) 双 runner；纯重构走 regression_only；验收规格来源治理（人核准优先、author 自报仅作建议）。</td><td>让「验证通过」真正等价于「对」，不被自写测试钻空子</td></tr>
+      <tr><td class="mono">阶段三 · 重新定位为顾问式 + 可插拔检查门禁</td><td>默认只给评审意见、合入由人点；自动合并与 verify 降为（可选、默认关）。新增可插拔检查门禁（§4.7）：builtin / relay / service 三类检查聚合成对外【一个】汇总状态检查，策略全在 .touchstone/checks.yaml，与 GitHub 仅一次性耦合一个状态。</td><td>不强制把合入权交给 AI；硬质量门禁用现成工具保障、做成插件</td></tr>
+      <tr><td class="mono">阶段四 · 评审层复用开源 PR-Agent</td><td>评审与聚合不自研，复用开源 PR-Agent：Touchstone 只做 PR-Agent 没有的部分——发现归一（normalize）、裁决映射（map_verdict，不做共识）、契约一致性核对、单一统一门禁、verify、autonomy、校准与学习回路。§2–§4 全面改写到此路径。</td><td>不重复造轮子；评审广度交给成熟工具，本系统专注治理与验证</td></tr>
+      <tr><td class="mono">阶段五 · 自治与学习回路</td><td>渐进开放自动合并（§4.6，可选默认关）：质量门禁绿 / 无阻断否决 / 闭环收敛 / 未熔断 / 变更分类达标 / 总开关 六项条件串联，先影子观察、再按类达标、最后开启。Phase 2 离线学习回路：训练-free 计数式蒸馏 + TF-GRPO（已实现，可插拔），经验经 govern 门控、只调建议不进门禁。</td><td>把「自主边界 = 验证边界」兑现到合入动作，多道门禁默认全关、熔断保障</td></tr>
+      <tr><td class="mono">阶段七 · TF-GRPO 落地与蒸馏器可插拔</td><td>学习回路的 TF-GRPO 语义优势蒸馏从设计落到实现（分组 rollout / 离线打分 / 旗舰模型内省组内语义优势 / 多轮编排；旗舰模型经可注入 llm，离线以假 llm 覆盖测试）；蒸馏器做成可插拔（<code>distill</code> 按名分发 + <code>register_distiller</code> 注册自有实现，rollout/score/distill 三步可注入替换）；产出仍是同 schema 候选经验、经 shadow A/B 门控、只调建议不进门禁。详见 <code>learning-loop-design.html</code>。</td><td>把差异化核心从设计兑现为实现，并支持替换为团队自有实现</td></tr>
+      <tr><td class="mono">阶段六 · 工程化与一致性收尾</td><td>栈专项确定性规则（SPR-DI / SPR-TX / JAVA-EQ / EXC / LOG / CTR，按 applies_to 分栈）；三档验证路径一致（cheap / targeted / full+变异，按风险与影响面选档）；主入口与接口的命名与实现一致（review_pr / route / record_calibration）；全文术语对齐软件工程标准词、移除已废弃概念的措辞，变更历史收敛为里程碑级。离线测试全绿。</td><td>实现补齐设计承诺、文档与代码一致、术语可读</td></tr>
+      <tr><td class="mono">说明</td><td>本表为里程碑级简史；逐版本的详细变更记录见仓库 git 历史。</td><td>设计文档只保留主线演进，不淹没在版本流水里</td></tr>
+    
+    </table>
+    <p class="muted" style="margin-top:18px">附：实施路线 — <strong>Phase 0（当前）</strong> 并行打分、人决策、积累校准标签、手写单一事实源规范；<strong>Phase 1</strong> 反馈循环纳入结构层、风险分流分配人的注意力与验证预算、强制运行廉价的客观验证；评审层复用开源 PR-Agent（其输出经 normalize 归一为 Finding、再由 map_verdict 定风险等级），主观规则经 best_practices.md 注入、可机器核对的规则走确定性 touchstone-rules；<strong>Phase 2</strong> 用 Training-Free GRPO 把手写规范升级为可增删改的经验库（低数据量级适配，奖励先用人审裁决、后用验证结果），在验证完备处放开低风险自主合入，并经固化机制把复发发现升级为确定性门禁。TF-GRPO 仅作判断层优化器，非质量门禁，产出只与给它的奖励一样好。</p>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">Touchstone 设计文档 · 文档修订 v5.20 · 软件 v0.1.0 · 自包含离线文档（无外部依赖）</div>
+</footer>
+
+</body>
+</html>

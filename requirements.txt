@@ -1,0 +1,9 @@
+# 原则：优先成熟开源实现；手写仅限本系统独有领域逻辑或硬运行时约束。
+pyyaml>=6.0
+requests>=2.31          # GitHub REST/GraphQL（连接池 + urllib3.Retry 退避，见 ghclient）
+unidiff>=0.7            # unified diff 解析（替代手写状态机，稳妥处理重命名/合并/边界长尾）
+openai>=1.30            # LLM 调用（OpenAI 兼容；支持自定义 base_url，内部端点同样适用）
+
+# verify_change（命门）参考实现需要：
+pytest>=7.0
+coverage>=7.0

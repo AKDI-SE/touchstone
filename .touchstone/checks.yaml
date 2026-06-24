@@ -1,0 +1,39 @@
+# Touchstone 可插拔检查策略
+# 改"挂哪些检查 / 哪几个必须通过"只改本文件，不碰 GitHub 设置。
+# 对外只发一个总闸状态(status_name)；GitHub 那边一次性只要求这一个状态即可(人点合并场景)。
+gate:
+  status_name: touchstone/gate
+
+checks:
+  # 内置：touchstone 自带确定性契约规则（无拦截级发现才通过）
+  - name: touchstone-rules
+    type: builtin
+    plugin: touchstone-rules
+    required: true
+
+  # 转达：读你们现有 CI 的单测结果（它在自己流水线跑过，这里只转达结论）
+  - name: unit-tests
+    type: relay
+    source_check: "unit"          # 改成你们单测 check 的实际名字
+    required: true
+
+  # 转达：SonarQube 结论（先不设必须；没接就关掉）
+  - name: sonarqube
+    type: relay
+    source_check: "SonarQube"
+    required: false
+    enabled: false
+
+  # 内置：verify 正确性深检（算力够时人按需开）
+  - name: verify
+    type: builtin
+    plugin: verify
+    required: false
+    enabled: false
+
+  # 调用：未来自建质量服务的挂点（按此接口挂上来，不改框架）
+  - name: my-quality-service
+    type: service
+    url: "http://localhost:8099/check"
+    required: false
+    enabled: false

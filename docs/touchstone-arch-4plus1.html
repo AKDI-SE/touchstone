@@ -1,0 +1,334 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Touchstone · 架构视图（4+1）</title>
+<style>
+  :root{
+    --paper:#FAFAF8; --panel:#FFFFFF; --ink:#15181D; --muted:#6B7178;
+    --line:#E6E4DD; --line2:#D8D6CD; --primary:#14506B;
+    --c1:#0E7C7B; --c2:#3D52A0; --c3:#B5651D;
+    --low:#3E7C5A; --mid:#B5651D; --high:#A23E3E;
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--sans);font-size:16px;line-height:1.66}
+  .wrap{max-width:960px;margin:0 auto;padding:0 28px}
+  header.hero{padding:60px 0 36px;border-bottom:1px solid var(--line)}
+  .eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.22em;text-transform:uppercase;color:var(--primary);margin:0 0 16px}
+  h1{font-size:30px;line-height:1.25;margin:0 0 14px;letter-spacing:-.01em}
+  .thesis{font-size:18px;color:var(--ink);max-width:44em;margin:0 0 20px}
+  .byline{font-size:13.5px;line-height:1.7;color:var(--muted);margin:0 0 22px}
+  .byline b{color:var(--primary);font-weight:600;margin-right:5px}
+  .byline .sep{margin:0 14px;opacity:.5}
+  .anchor{display:flex;flex-wrap:wrap;gap:10px;margin-top:6px}
+  .pill{font-family:var(--mono);font-size:12.5px;padding:6px 11px;border:1px solid var(--line2);border-radius:5px;background:var(--panel);color:var(--muted)}
+  .pill b{color:var(--ink);font-weight:600}
+  section{padding:34px 0;border-bottom:1px solid var(--line)}
+  .snum{font-family:var(--mono);font-size:12px;letter-spacing:.18em;text-transform:uppercase;color:var(--primary)}
+  h2{font-size:23px;margin:8px 0 6px}
+  h3{font-size:17px;margin:26px 0 8px;color:var(--primary)}
+  p{margin:10px 0;max-width:46em}
+  .lede{color:var(--muted);max-width:46em}
+  code{font-family:var(--mono);font-size:.9em;background:#F2F1EC;padding:1px 5px;border-radius:4px}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14.5px}
+  th,td{border:1px solid var(--line2);padding:8px 11px;text-align:left;vertical-align:top}
+  th{background:#F2F1EC;font-weight:600}
+  td.mono,code{font-family:var(--mono)}
+  .fig{margin:18px 0;padding:18px;background:var(--panel);border:1px solid var(--line);border-radius:8px}
+  .cap{font-size:13px;color:var(--muted);margin-top:8px}
+  ol,ul{max-width:46em}
+  li{margin:5px 0}
+  .muted{color:var(--muted)}
+  .tag{font-family:var(--mono);font-size:11px;padding:2px 6px;border-radius:4px;color:#fff}
+  svg{max-width:100%;height:auto;display:block}
+  footer{padding:30px 0 60px;color:var(--muted);font-size:13px}
+</style>
+</head>
+<body>
+<header class="hero"><div class="wrap">
+  <p class="eyebrow">架构视图 · 4 + 1 View Model</p>
+  <h1>Touchstone · 架构视图（4+1）</h1>
+  <p class="thesis">用 Kruchten 的 4+1 视图，从五个互补角度刻画 Touchstone：它做什么（逻辑）、怎么跑（进程）、代码怎么组织（开发）、部署在哪（物理），以及用一组关键场景把前四个视图串联起来。</p>
+  <p class="byline"><b>作者</b>朱家法（00538128）· Claude Code · GLM-5.2 · Gemini · DeepSeek<span class="sep">|</span><b>评审</b>李成（00494329）</p>
+  <div class="anchor">
+    <span class="pill"><b>定位</b> 顾问式 PR 评审 · 人点合并</span>
+    <span class="pill"><b>评审引擎</b> 复用开源 PR-Agent</span>
+    <span class="pill"><b>形态</b> GitHub Actions 上的多 job 编排</span>
+    <span class="pill"><b>配套</b> 详细设计见 touchstone-design.html</span>
+  </div>
+</div></header>
+
+<!-- ============ 0 概述 ============ -->
+<section><div class="wrap">
+  <span class="snum">§ 0 · 概述</span>
+  <h2>系统是什么</h2>
+  <p>Touchstone 是插在「PR 提交」与「人决定合入」之间的一层<strong>自动评审</strong>：默认只给高信噪比的评审意见，合入按钮始终由人来点。评审本身复用开源 <strong>PR-Agent</strong>；Touchstone 自己只做 PR-Agent 没有的部分——把评审输出<strong>归一</strong>成本系统的 Finding、按风险<strong>裁决映射</strong>、做确定性的契约与栈规则核对、可选的正确性验证（verify）、可选的自动合并（autonomy），以及离线的校准与学习回路。</p>
+  <p>贯穿全系统的一条红线：<strong>评审只产建议与风险分流，不产准入</strong>；真正"必须通过才能合"的硬质量门禁由可插拔检查聚合成对外<strong>一个</strong>状态，由人或（可选的）自动合并据其放行。</p>
+</div></section>
+
+<!-- ============ 1 逻辑视图 ============ -->
+<section><div class="wrap">
+  <span class="snum">§ 1 · 逻辑视图　Logical View</span>
+  <h2>职责分层与功能模块</h2>
+  <p class="lede">关注"系统由哪些职责单元组成、它们之间的关系"。Touchstone 按决策权分四层：人持有治理与最终裁决；判断层只产建议与风险；质量门禁层做客观、可复现的准入核对；离线层用真实结果反过来校准前面几层。</p>
+
+  <div class="fig">
+  <svg viewBox="0 0 900 470" xmlns="http://www.w3.org/2000/svg" font-family="system-ui,sans-serif">
+    <!-- 治理层 -->
+    <rect x="30" y="20" width="840" height="58" rx="8" fill="#fff" stroke="#14506B" stroke-width="2"/>
+    <text x="50" y="44" font-size="14" font-weight="700" fill="#14506B">人 · 治理层</text>
+    <text x="50" y="64" font-size="12.5" fill="#6B7178">定标准（单一事实源）· 核准验收规格 · 仲裁高风险 · 持有熔断开关 · 最终合入决定</text>
+
+    <!-- 判断层 -->
+    <rect x="30" y="98" width="840" height="120" rx="8" fill="#F5FAFB" stroke="#0E7C7B" stroke-width="2"/>
+    <text x="50" y="120" font-size="14" font-weight="700" fill="#0E7C7B">判断层（只产建议与风险，不产准入）</text>
+    <rect x="50" y="132" width="190" height="72" rx="6" fill="#fff" stroke="#0E7C7B"/>
+    <text x="60" y="152" font-size="12.5" font-weight="600">评审主链 review_pr</text>
+    <text x="60" y="170" font-size="11" fill="#6B7178">PR-Agent → normalize</text>
+    <text x="60" y="186" font-size="11" fill="#6B7178">+ contract_check</text>
+    <text x="60" y="200" font-size="11" fill="#6B7178">+ stack_rules → map_verdict</text>
+    <rect x="256" y="132" width="180" height="72" rx="6" fill="#fff" stroke="#0E7C7B"/>
+    <text x="266" y="152" font-size="12.5" font-weight="600">风险分流 route</text>
+    <text x="266" y="170" font-size="11" fill="#6B7178">band → 人看不看</text>
+    <text x="266" y="186" font-size="11" fill="#6B7178">band+影响面 → 验证档</text>
+    <text x="266" y="200" font-size="11" fill="#6B7178">cheap / targeted / full</text>
+    <rect x="452" y="132" width="180" height="72" rx="6" fill="#fff" stroke="#0E7C7B"/>
+    <text x="462" y="152" font-size="12.5" font-weight="600">反馈循环 loop_step</text>
+    <text x="462" y="170" font-size="11" fill="#6B7178">可自改发现 → author</text>
+    <text x="462" y="186" font-size="11" fill="#6B7178">有界、防震荡、可升级</text>
+
+    <!-- 质量门禁层 -->
+    <rect x="30" y="238" width="840" height="100" rx="8" fill="#F4F5FA" stroke="#3D52A0" stroke-width="2"/>
+    <text x="50" y="260" font-size="14" font-weight="700" fill="#3D52A0">质量门禁层（唯一准入：客观、可复现、可审计）</text>
+    <rect x="50" y="272" width="250" height="52" rx="6" fill="#fff" stroke="#3D52A0"/>
+    <text x="60" y="292" font-size="12.5" font-weight="600">可插拔检查门禁 checks</text>
+    <text x="60" y="310" font-size="11" fill="#6B7178">builtin / relay / service → 一个统一门禁</text>
+    <rect x="316" y="272" width="260" height="52" rx="6" fill="#fff" stroke="#3D52A0"/>
+    <text x="326" y="292" font-size="12.5" font-weight="600">正确性验证 verify（可选）</text>
+    <text x="326" y="310" font-size="11" fill="#6B7178">独立验收测试 + 充分性校验</text>
+    <rect x="592" y="272" width="258" height="52" rx="6" fill="#fff" stroke="#3D52A0"/>
+    <text x="602" y="292" font-size="12.5" font-weight="600">自动合并 autonomy（可选）</text>
+    <text x="602" y="310" font-size="11" fill="#6B7178">只读统一门禁是否绿 + 六道门禁 + 熔断</text>
+
+    <!-- 离线层 -->
+    <rect x="30" y="358" width="840" height="92" rx="8" fill="#fff" stroke="#6B7178" stroke-width="1.5" stroke-dasharray="5 4"/>
+    <text x="50" y="380" font-size="14" font-weight="700" fill="#6B7178">离线层（cron，不阻塞 PR）</text>
+    <rect x="50" y="392" width="250" height="44" rx="6" fill="#fff" stroke="#6B7178"/>
+    <text x="60" y="418" font-size="12" font-weight="600">校准 calibrate</text>
+    <rect x="316" y="392" width="250" height="44" rx="6" fill="#fff" stroke="#6B7178"/>
+    <text x="326" y="418" font-size="12" font-weight="600">治理 govern（固化 / 熔断）</text>
+    <rect x="582" y="392" width="268" height="44" rx="6" fill="#fff" stroke="#6B7178"/>
+    <text x="592" y="418" font-size="12" font-weight="600">学习回路 learning_loop（Phase 2）</text>
+
+    <!-- 箭头：判断层→门禁层；离线层→判断层(虚) -->
+    <text x="450" y="232" font-size="11" fill="#6B7178" text-anchor="middle">发现 + 风险等级 ↓（建议，不是准入）</text>
+    <path d="M 450 392 C 200 380 120 250 120 224" fill="none" stroke="#6B7178" stroke-width="1.2" stroke-dasharray="4 3"/>
+    <text x="150" y="360" font-size="10.5" fill="#6B7178">注入 active 经验（只调建议）</text>
+  </svg>
+  <div class="cap">图 1 · 四层职责：向下守底线（客观验证），向上提上限（AI 判断），顶层人治理，离线层用真实结果回灌校准。判断层全错也越不过门禁。</div>
+  </div>
+
+  <h3>模块职责清单</h3>
+  <table>
+    <tr><th>层</th><th>模块</th><th>职责</th></tr>
+    <tr><td>判断层</td><td class="mono">orchestrator.py / review_provider.py</td><td>评审主链编排（review_pr）；封装 PR-Agent 调用、发现归一（normalize）、裁决映射（map_verdict，按 category 定风险、不做共识）、风险分流（route）</td></tr>
+    <tr><td>判断层</td><td class="mono">contract_check.py / stack_rules.py</td><td>确定性核对：提交契约一致性（SCOPE/TEST/DUP）；栈专项规则（SPR-DI/TX、JAVA-EQ/EXC/LOG、CTR，按栈生效）</td></tr>
+    <tr><td>判断层</td><td class="mono">loop.py</td><td>反馈循环：把可自改发现交回 author，有界、防震荡、可升级</td></tr>
+    <tr><td>门禁层</td><td class="mono">checks.py</td><td>可插拔检查框架（builtin/relay/service）→ 聚合成对外一个汇总状态检查</td></tr>
+    <tr><td>门禁层</td><td class="mono">verify/verify_change.py</td><td>正确性验证（可选）：独立验收测试 + 充分性校验（覆盖/哨兵/变异），Python 与 Java/Maven 双 runner</td></tr>
+    <tr><td>门禁层</td><td class="mono">autonomy.py</td><td>自动合并（可选）：只读统一门禁 + 六项条件串联 + 变更分类达标 + 熔断</td></tr>
+    <tr><td>离线层</td><td class="mono">calibrate.py / govern.py</td><td>校准（从 GitHub API 重建、算吻合度/噪声）；治理（固化复发发现为门禁、熔断按结果收回或给予自主权）</td></tr>
+    <tr><td>离线层</td><td class="mono">learning_loop.py</td><td>Phase 2 学习回路：训练-free 蒸馏 + TF-GRPO（已实现，可插拔），经验只调建议不进门禁</td></tr>
+  </table>
+</div></section>
+
+<!-- ============ 2 进程视图 ============ -->
+<section><div class="wrap">
+  <span class="snum">§ 2 · 进程视图　Process View</span>
+  <h2>运行期的并发与编排</h2>
+  <p class="lede">关注"运行时有哪些进程/任务、如何并发与协作"。Touchstone 不是单进程，而是 GitHub Actions 上分职责的多个 job，外加几条离线 cron。<strong>职责分离</strong>是设计原则：判断层与客观验证不在同一进程里跑。</p>
+
+  <div class="fig">
+  <svg viewBox="0 0 900 300" xmlns="http://www.w3.org/2000/svg" font-family="system-ui,sans-serif">
+    <!-- 同步链 -->
+    <text x="30" y="28" font-size="13" font-weight="700" fill="#14506B">① 同步链路（每个 PR，毫秒级，无学习开销）</text>
+    <rect x="30" y="42" width="120" height="56" rx="6" fill="#fff" stroke="#14506B"/>
+    <text x="40" y="66" font-size="12" font-weight="600">PR 触发</text>
+    <text x="40" y="84" font-size="10.5" fill="#6B7178">opened/sync</text>
+    <rect x="178" y="42" width="148" height="56" rx="6" fill="#F5FAFB" stroke="#0E7C7B"/>
+    <text x="188" y="62" font-size="12" font-weight="600" fill="#0E7C7B">touchstone job</text>
+    <text x="188" y="80" font-size="10.5" fill="#6B7178">评审归一+契约+栈规则</text>
+    <text x="188" y="93" font-size="10.5" fill="#6B7178">→ 发现+风险，neutral check</text>
+    <rect x="354" y="42" width="140" height="56" rx="6" fill="#F4F5FA" stroke="#3D52A0"/>
+    <text x="364" y="62" font-size="12" font-weight="600" fill="#3D52A0">verify job（可选）</text>
+    <text x="364" y="80" font-size="10.5" fill="#6B7178">高风险才跑</text>
+    <text x="364" y="93" font-size="10.5" fill="#6B7178">写 verify-result.json</text>
+    <rect x="522" y="42" width="140" height="56" rx="6" fill="#F4F5FA" stroke="#3D52A0"/>
+    <text x="532" y="62" font-size="12" font-weight="600" fill="#3D52A0">gate job</text>
+    <text x="532" y="80" font-size="10.5" fill="#6B7178">聚合所有检查</text>
+    <text x="532" y="93" font-size="10.5" fill="#6B7178">→ 一个统一门禁状态</text>
+    <rect x="690" y="42" width="180" height="56" rx="6" fill="#F4F5FA" stroke="#3D52A0" stroke-dasharray="4 3"/>
+    <text x="700" y="62" font-size="12" font-weight="600" fill="#3D52A0">auto_merge job（可选）</text>
+    <text x="700" y="80" font-size="10.5" fill="#6B7178">默认关；读统一门禁+六道门禁</text>
+    <text x="700" y="93" font-size="10.5" fill="#6B7178">否则回落到人点合并</text>
+    <line x1="150" y1="70" x2="176" y2="70" stroke="#6B7178" marker-end="url(#a)"/>
+    <line x1="326" y1="70" x2="352" y2="70" stroke="#6B7178" marker-end="url(#a)"/>
+    <line x1="494" y1="70" x2="520" y2="70" stroke="#6B7178" marker-end="url(#a)"/>
+    <line x1="662" y1="70" x2="688" y2="70" stroke="#6B7178" marker-end="url(#a)"/>
+
+    <!-- 反馈循环回边 -->
+    <path d="M 252 98 C 252 130 150 130 110 100" fill="none" stroke="#0E7C7B" stroke-width="1.3" stroke-dasharray="4 3" marker-end="url(#a)"/>
+    <text x="120" y="128" font-size="10.5" fill="#0E7C7B">反馈循环：author 改完 push → 再触发</text>
+
+    <!-- 离线 cron -->
+    <text x="30" y="186" font-size="13" font-weight="700" fill="#6B7178">② 离线 cron（不阻塞 PR）</text>
+    <rect x="30" y="200" width="180" height="50" rx="6" fill="#fff" stroke="#6B7178"/>
+    <text x="40" y="222" font-size="12" font-weight="600">calibrate.yml</text>
+    <text x="40" y="240" font-size="10.5" fill="#6B7178">人审裁决 → 吻合度/噪声</text>
+    <rect x="232" y="200" width="180" height="50" rx="6" fill="#fff" stroke="#6B7178"/>
+    <text x="242" y="222" font-size="12" font-weight="600">govern.yml</text>
+    <text x="242" y="240" font-size="10.5" fill="#6B7178">固化 + 熔断 + 发布达标类</text>
+    <path d="M 300 200 C 300 150 260 120 252 100" fill="none" stroke="#6B7178" stroke-width="1.1" stroke-dasharray="3 3" marker-end="url(#a)"/>
+    <text x="305" y="170" font-size="10.5" fill="#6B7178">经验/达标类回灌（只调建议）</text>
+    <defs><marker id="a" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 z" fill="#6B7178"/></marker></defs>
+  </svg>
+  <div class="cap">图 2 · 多 job 编排 + 离线 cron。两层只经"经验库 / 达标类"耦合：离线学习挂了，同步评审仍用上一版经验照常跑。</div>
+  </div>
+
+  <h3>并发与边界</h3>
+  <ul>
+    <li><strong>职责分离</strong>：touchstone（判断）/ verify（客观验证）/ gate（聚合）/ auto_merge（放行）分属不同 job，判断层不在同一进程里做验证。</li>
+    <li><strong>对外只一个状态</strong>：touchstone 的 check 永远 neutral 不拦；是否硬拦只由 gate 发的 <code>touchstone/gate</code> 决定。</li>
+    <li><strong>校准串行</strong>：calibrate 经 GitHub API 重建、加退避，不上并发（GitHub 二级限流对并发有惩罚）。</li>
+    <li><strong>同步/离线解耦</strong>：同步链路毫秒级、无学习开销；学习只在离线 cron 发生。</li>
+  </ul>
+</div></section>
+
+<!-- ============ 3 开发视图 ============ -->
+<section><div class="wrap">
+  <span class="snum">§ 3 · 开发视图　Development View</span>
+  <h2>代码组织与复用边界</h2>
+  <p class="lede">关注"源码如何分包、依赖什么、自写与复用的边界在哪"。一个核心决策：<strong>评审引擎复用开源 PR-Agent（pip 依赖、不进仓库）</strong>，本系统只写 PR-Agent 没有的治理与验证逻辑。</p>
+
+  <h3>仓库布局</h3>
+  <table>
+    <tr><th>目录</th><th>内容</th></tr>
+    <tr><td class="mono">touchstone/</td><td>判断层 + 门禁/集成 + 离线层（15 个模块）</td></tr>
+    <tr><td class="mono">verify/</td><td>正确性验证子系统 <code>verify_change.py</code></td></tr>
+    <tr><td class="mono">.touchstone/</td><td>策略与契约：<code>standards.yaml</code>（规范）、<code>checks.yaml</code>（门禁策略）、<code>pr-agent.yaml</code>（归一映射）、<code>acceptance.yaml</code>（人核准验收规格）、<code>best_practices.md</code>（供 PR-Agent）</td></tr>
+    <tr><td class="mono">.github/workflows/</td><td>touchstone / calibrate / govern 三条工作流</td></tr>
+    <tr><td class="mono">tests/</td><td>离线 pytest 套件（228 用例，无需 LLM/网络/外部服务）</td></tr>
+    <tr><td class="mono">docs/</td><td>详细设计、本架构视图、配套的 PR-Agent 集成文档与学习回路文档</td></tr>
+  </table>
+
+  <h3>自写代码量与分布（生产代码 3427 行）</h3>
+  <table>
+    <tr><th>功能区</th><th>行数</th><th>主要模块</th></tr>
+    <tr><td>评审主链</td><td class="mono">950</td><td>touchstone / review_provider / stack_rules / contract_check / gen_best_practices</td></tr>
+    <tr><td>验证子系统</td><td class="mono">701</td><td>verify/verify_change</td></tr>
+    <tr><td>闭环·校准·学习</td><td class="mono">587</td><td>loop / calibrate / learning_loop</td></tr>
+    <tr><td>质量门禁·集成</td><td class="mono">563</td><td>checks / run / pr_agent_runner / ghclient / preflight</td></tr>
+    <tr><td>治理·自治</td><td class="mono">393</td><td>govern / autonomy</td></tr>
+    <tr><td class="muted">（另：测试 2472 行 · 配置/规范 515 行）</td><td class="mono muted">—</td><td class="muted">tests/ · .touchstone/</td></tr>
+  </table>
+
+  <h3>依赖与复用边界</h3>
+  <ul>
+    <li><strong>复用（不进仓库）</strong>：<code>pr-agent</code>（Apache-2.0，装在独立 venv，经子进程适配器 <code>pr_agent_runner.py</code> 调用）——评审广度全靠它。</li>
+    <li><strong>成熟库依赖</strong>：<code>unidiff</code>（diff 解析）、<code>requests</code>（GitHub I/O）、<code>openai</code>（LLM 调用，支持自定义 base_url）、<code>pyyaml</code>。</li>
+    <li><strong>自写仅限本系统独有逻辑</strong>：归一/裁决映射、契约与栈规则、风险分流、verify 子系统、自治/治理/校准/学习。</li>
+    <li><strong>零跨模块隐式耦合</strong>：同步层与离线层只经经验库耦合。</li>
+  </ul>
+</div></section>
+
+<!-- ============ 4 物理视图 ============ -->
+<section><div class="wrap">
+  <span class="snum">§ 4 · 物理视图　Physical View</span>
+  <h2>部署与运行环境</h2>
+  <p class="lede">关注"软件跑在什么硬件/服务上、如何连通"。Touchstone 运行在<strong>互联网</strong>上：评审公网 GitHub PR、调一个可访问的 LLM 端点；不依赖任何内网/专有后端服务。</p>
+
+  <div class="fig">
+  <svg viewBox="0 0 900 320" xmlns="http://www.w3.org/2000/svg" font-family="system-ui,sans-serif">
+    <rect x="30" y="30" width="380" height="260" rx="10" fill="#F5FAFB" stroke="#0E7C7B" stroke-width="1.6"/>
+    <text x="50" y="55" font-size="13" font-weight="700" fill="#0E7C7B">CI Runner（GitHub Actions / 自有机器）</text>
+    <rect x="50" y="70" width="160" height="50" rx="6" fill="#fff" stroke="#0E7C7B"/>
+    <text x="60" y="90" font-size="11.5" font-weight="600">touchstone 进程</text>
+    <text x="60" y="107" font-size="10" fill="#6B7178">Python · 各 job</text>
+    <rect x="226" y="70" width="160" height="50" rx="6" fill="#fff" stroke="#3D52A0"/>
+    <text x="236" y="90" font-size="11.5" font-weight="600">pr-agent（独立 venv）</text>
+    <text x="236" y="107" font-size="10" fill="#6B7178">子进程适配调用</text>
+    <rect x="50" y="134" width="160" height="50" rx="6" fill="#fff" stroke="#3D52A0"/>
+    <text x="60" y="154" font-size="11.5" font-weight="600">verify runner</text>
+    <text x="60" y="171" font-size="10" fill="#6B7178">pytest / mvn+JaCoCo+PIT</text>
+    <rect x="50" y="198" width="336" height="42" rx="6" fill="#fff" stroke="#6B7178"/>
+    <text x="60" y="223" font-size="11" fill="#6B7178">仓内策略文件：.touchstone/*.yaml · best_practices.md（无需外部存储）</text>
+    <text x="50" y="268" font-size="10.5" fill="#6B7178">无内网 / 无外部存储或数据库服务依赖</text>
+
+    <!-- 外部 -->
+    <rect x="500" y="50" width="370" height="60" rx="8" fill="#fff" stroke="#14506B"/>
+    <text x="520" y="76" font-size="12.5" font-weight="700" fill="#14506B">GitHub（公网）</text>
+    <text x="520" y="95" font-size="10.5" fill="#6B7178">PR / diff / checks / review 状态 / 评论线程（REST + GraphQL）</text>
+    <rect x="500" y="140" width="370" height="60" rx="8" fill="#fff" stroke="#3D52A0"/>
+    <text x="520" y="166" font-size="12.5" font-weight="700" fill="#3D52A0">LLM 端点（可访问）</text>
+    <text x="520" y="185" font-size="10.5" fill="#6B7178">OpenAI 兼容 /chat；可经代理访问公网；base_url 可配</text>
+    <rect x="500" y="230" width="370" height="56" rx="8" fill="#fff" stroke="#6B7178" stroke-dasharray="4 3"/>
+    <text x="520" y="254" font-size="12" font-weight="700" fill="#6B7178">可选外部后端（默认关）</text>
+    <text x="520" y="272" font-size="10.5" fill="#6B7178">Milvus / Neo4j / 远程嵌入——adapter 扩展点，就绪再启</text>
+
+    <line x1="410" y1="80" x2="498" y2="80" stroke="#14506B" marker-end="url(#b)"/>
+    <line x1="410" y1="160" x2="498" y2="170" stroke="#3D52A0" marker-end="url(#b)"/>
+    <defs><marker id="b" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 z" fill="#6B7178"/></marker></defs>
+  </svg>
+  <div class="cap">图 3 · 部署拓扑。CI Runner 上跑 touchstone 各 job + 独立 venv 的 pr-agent；对外只连 GitHub 与一个 LLM 端点；不依赖任何外部存储服务。</div>
+  </div>
+
+  <h3>运行环境约束</h3>
+  <ul>
+    <li><strong>互联网，不是内网</strong>：评审公网 GitHub PR、调可访问的 LLM；PR-Agent 是 pip 包，集成 = 依赖 + 子进程调用，不是部署端点。</li>
+    <li><strong>凭据</strong>：GitHub token 与 LLM key 走环境变量；可经代理访问公网。</li>
+    <li><strong>零专有后端</strong>：当前部署不依赖任何外部存储或数据库服务，对外只连 GitHub 与一个 LLM 端点。</li>
+    <li><strong>可在自有环境独立运行</strong>：<code>python -m touchstone.run --repo O/R --pr N</code> 可对 Actions 之外、甚至不属于自己的外部 PR 做端到端评审（默认 dry-run）。</li>
+  </ul>
+</div></section>
+
+<!-- ============ +1 场景视图 ============ -->
+<section><div class="wrap">
+  <span class="snum">§ +1 · 场景视图　Scenarios</span>
+  <h2>用关键场景串起前四视图</h2>
+  <p class="lede">4+1 中的"+1"：用几条有代表性的用例，验证前四个视图能协同支撑真实工作流。</p>
+
+  <h3>场景 A · 普通 PR 的顾问式评审（默认形态）</h3>
+  <ol>
+    <li>PR 打开 → touchstone job 取 diff，<code>review_pr</code> 跑 PR-Agent 评审归一 + 契约核对 + 栈规则 → <code>map_verdict</code> 出发现与风险等级。</li>
+    <li><code>route</code> 判低/中风险 → 人不必逐行看；touchstone 发 neutral check + 行内/总结评论。</li>
+    <li>gate job 聚合检查 → 发 <code>touchstone/gate</code>；<strong>人</strong>看一眼评论与统一门禁，点合并。</li>
+  </ol>
+
+  <h3>场景 B · 高风险 PR 触发正确性验证</h3>
+  <ol>
+    <li>评审命中 security / 契约影响 → 风险 high、影响面严重 → <code>route</code> 给 <code>full_suite</code>。</li>
+    <li>verify job（已开启时）调 <code>verify_change</code>：用人核准的验收规格生成独立验收测试，跑充分性校验（覆盖 → 空实现哨兵 → <strong>变异</strong>）。</li>
+    <li>gate 把 verify 结论折进统一门禁；只有"可信的通过"（人核准规格 + 验证达标）才计入。否则统一门禁非绿、回落到人。</li>
+  </ol>
+
+  <h3>场景 C · 机器自改的反馈循环</h3>
+  <ol>
+    <li>touchstone 给出可自改的结构层发现（带 suggested_fix）→ <code>loop_step</code> 判 continue。</li>
+    <li>写代码的 agent 经 API 读 findings、改完 push → synchronize 再触发评审。</li>
+    <li>无可自改发现且 CI 非红 → converged；超轮次/震荡/假修 → escalate 交人。正确性始终由 verify 正交把关。</li>
+  </ol>
+
+  <h3>场景 D · 校准与（可选）自动合并的长期演进</h3>
+  <ol>
+    <li>离线 calibrate 从已合 PR 重建：touchstone 发现 vs 人审裁决 → 算吻合度、标噪声来源。</li>
+    <li>govern 把复发且证实有害的发现固化为门禁；按变更分类影子观察、达标后发布"可自动放行"的类。</li>
+    <li>开启 autonomy 后，对已达标的类、且统一门禁绿 + 六项条件全过，才自动合并；合入后 revert/hotfix 越阈 → 熔断收回自主权。</li>
+  </ol>
+</div></section>
+
+<footer><div class="wrap">Touchstone · 架构视图（4+1） · 2026-06-18 · 自包含离线文档（无外部依赖） · 详细设计见 touchstone-design.html</div></footer>
+</body>
+</html>

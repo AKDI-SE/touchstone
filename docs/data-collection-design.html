@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Touchstone · TF-GRPO 数据采集与真值集重建</title>
+<style>
+  :root{
+    --paper:#FAFAF8; --panel:#FFFFFF; --ink:#15181D; --muted:#6B7178;
+    --line:#E6E4DD; --line2:#D8D6CD;
+    --primary:#14506B; --c1:#0E7C7B; --c2:#3D52A0; --c3:#B5651D;
+    --high:#A23E3E;
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue","PingFang SC","Microsoft YaHei",sans-serif;
+  }
+  *{box-sizing:border-box}
+  body{margin:0; background:var(--paper); color:var(--ink); font-family:var(--sans); font-size:16px; line-height:1.66; -webkit-font-smoothing:antialiased}
+  .wrap{max-width:920px; margin:0 auto; padding:0 24px}
+  header.hero{padding:60px 0 38px; border-bottom:1px solid var(--line)}
+  .eyebrow{font-family:var(--mono); font-size:12px; letter-spacing:.22em; text-transform:uppercase; color:var(--primary); margin:0 0 18px}
+  h1{font-size:38px; line-height:1.14; font-weight:760; letter-spacing:-.018em; margin:0 0 18px}
+  .thesis{font-size:18px; line-height:1.56; max-width:46em; margin:0 0 24px}
+  .thesis b{color:var(--primary)}
+  .anchor{display:flex; flex-wrap:wrap; gap:10px}
+  .anchor .pill{font-family:var(--mono); font-size:12.5px; padding:6px 11px; border:1px solid var(--line2); border-radius:5px; background:var(--panel); color:var(--muted)}
+  .anchor .pill b{color:var(--ink); font-weight:600}
+  section{padding:44px 0; border-bottom:1px solid var(--line)}
+  .snum{font-family:var(--mono); font-size:13px; color:var(--primary); letter-spacing:.04em}
+  h2{font-size:26px; font-weight:720; letter-spacing:-.012em; margin:6px 0 18px}
+  h3{font-size:18px; font-weight:680; margin:28px 0 10px}
+  p{margin:0 0 14px}
+  .lede{font-size:17px; color:#33373d}
+  strong{font-weight:670}
+  code{font-family:var(--mono); font-size:.9em; background:#F1F0EA; padding:1px 6px; border-radius:4px; color:#2a2d33}
+  .term{font-family:var(--mono); font-weight:600; color:var(--primary); background:#EAF1F4; padding:1px 6px; border-radius:4px}
+  ul,ol{margin:0 0 14px; padding-left:1.25em} li{margin:6px 0}
+  .muted{color:var(--muted)}
+  .principle{margin:16px 0; padding:14px 18px; border-left:3px solid var(--primary); background:#F3F6F8; border-radius:0 7px 7px 0}
+  .principle .k{font-family:var(--mono); font-size:11px; letter-spacing:.16em; text-transform:uppercase; color:var(--primary); display:block; margin-bottom:6px}
+  .warn{border-left-color:var(--high); background:#FAF1F0}
+  .warn .k{color:var(--high)}
+  .tbl{width:100%; border-collapse:collapse; margin:16px 0; font-size:14px}
+  .tbl th,.tbl td{border:1px solid var(--line2); padding:9px 11px; text-align:left; vertical-align:top}
+  .tbl th{background:#F1F0EA; font-weight:640; font-size:12.5px}
+  .tbl .mono{font-family:var(--mono); font-size:12.5px; color:#2a2d33}
+  figure{margin:24px 0; padding:0}
+  figure svg{display:block; width:100%; height:auto; background:var(--panel); border:1px solid var(--line); border-radius:9px}
+  figcaption{font-size:13px; color:var(--muted); margin-top:9px; font-family:var(--mono)}
+  footer{padding:36px 0 72px; color:var(--muted); font-size:13px; font-family:var(--mono)}
+  @media (max-width:700px){h1{font-size:28px}}
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <div class="wrap">
+    <p class="eyebrow">详细设计 · 数据采集（TF-GRPO 落地第一步）</p>
+    <h1>Touchstone · TF-GRPO 数据采集与真值集重建</h1>
+    <p class="thesis">要让 <b>TF-GRPO</b> 真用起来还出好效果，最值钱的一份数据是<b>「每条发现 → 人最终怎么处理了」</b>的干净标注。本设计沿用 <code>calibrate</code> 既有的原则——<b>不另建数据库，一切从 GitHub 重建</b>：采集只做一件新事，即评审时把<b>需要记录的信息写进评论 marker</b>（尤其是「注入了哪些经验」）；其余结局从 GitHub API / GraphQL 线程 / git 历史<b>重建</b>，再装配成提供给 TF-GRPO 的<b>真值集</b>。</p>
+    <div class="anchor">
+      <span class="pill">基线 <b>v0.1.0</b></span>
+      <span class="pill">原则 <b>不建库 · 从 GitHub 重建</b></span>
+      <span class="pill">成败关键 <b>每条发现的人审结局</b></span>
+      <span class="pill">配套 <b>learning-loop-design.html</b></span>
+    </div>
+  </div>
+</header>
+
+<section>
+  <div class="wrap">
+    <p class="snum">01</p>
+    <h2>设计目的</h2>
+    <p class="lede">这是一次<strong>在已有系统上增加功能</strong>：给现有的 <code>calibrate</code> 重建管线补上 TF-GRPO 所需的数据，而不是新起一套数据基建。</p>
+    <div class="principle"><span class="k">先说清楚这批数据的用途</span>这里采的是<strong>评分标准（奖励真值）</strong>，<strong>不是训练数据</strong>。TF-GRPO 不训练、不更新模型权重；这批「历史 PR + 人采纳了哪些发现」只用来给评审<strong>打分</strong>，据此蒸馏出经验、加进提示词——改变的是经验库，不是模型。</div>
+    <p><strong>现状（基线 v0.1.0）。</strong><code>calibrate</code> 不建库——它从 GitHub 重建：Touchstone 的发现/风险来自评论里的 <code>&lt;!-- touchstone-result --&gt;</code> / <code>&lt;!-- touchstone-finding --&gt;</code> marker，人审裁决来自 PR 的 review 状态（APPROVED / CHANGES_REQUESTED）与是否合入，finding 级采纳来自 GraphQL 评审线程的 <code>isResolved</code>（线程被解决 ≈ 该条被采纳）。<code>aggregate()</code> 由此产出 <code>by_rule</code> 的 <code>fires / changes_requested_rate / adoption_rate</code>，已经在供计数式蒸馏与退役使用。</p>
+    <p><strong>差距。</strong>TF-GRPO 的三个消费点要的东西，现有重建只覆盖了一部分：</p>
+    <table class="tbl">
+      <tr><th>消费点（learning_loop）</th><th>需要的数据</th><th>现状</th></tr>
+      <tr><td class="mono">score_review(review, human_adopted)</td><td>每个历史 PR 上，人最终<strong>采纳了哪些发现</strong>（按类型/条目）</td><td>仅有 PR 级 + 线程级采纳代理，未装配成「每 PR 的采纳集」</td></tr>
+      <tr><td class="mono">_distill_via_llm(ground_truth, …)</td><td>一份<strong>真值集</strong>：PR 的 diff + 人采纳集（+ 仓/栈/混淆因素）</td><td>未实现重建</td></tr>
+      <tr><td class="mono">graduate(store, ab_results)</td><td>每个 finding_type 的 <strong>注入 vs 不注入</strong>两臂 {seen, adopted}</td><td>无——marker 未记「注入了哪些经验」，无法分臂</td></tr>
+      <tr><td class="mono">retire / distill_candidates</td><td><code>by_rule</code> 的 fires / adoption_rate</td><td><strong>已有</strong>（沿用 aggregate）</td></tr>
+    </table>
+    <p><strong>目的。</strong>定义清楚 TF-GRPO 要采什么、并给出<strong>不建库</strong>的采集方式：评审时把缺的 provenance（最关键是「注入了哪些经验」）写进 marker；其余从 GitHub / git 历史重建；再新增两个纯装配函数 <code>build_ground_truth</code> 与 <code>aggregate_ab</code>，把重建结果整理成 <code>_distill_via_llm</code> 与 <code>graduate</code> 能直接使用的结构。本设计只到「数据形状与接口」，真正的埋点与重建实现是随后一步。</p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <p class="snum">02</p>
+    <h2>设计逻辑与概念空间</h2>
+    <p>把采集拆成「评审时留一点、离线重建一片」。评审路径只多写一条更完整的 marker（毫秒级、无额外服务）；其余靠 <code>calibrate</code> 周期性从 GitHub 拉取重建。下面先建概念，再给数据流。</p>
+
+    <h3>2.1 概念</h3>
+    <table class="tbl">
+      <tr><th>概念</th><th>定义 / 由什么构成</th></tr>
+      <tr><td class="term">评审记录</td><td>评审时为每条发现写入 PR 评论的 <code>touchstone-finding</code> marker；在现有字段上<strong>扩充</strong>出 file/line、finding_type、<strong>注入的经验 id 列表</strong>、模型/端点、时间戳。它不是数据库，就是评论里的一段 JSON 注释。</td></tr>
+      <tr><td class="term">采纳证据</td><td>一条发现「被人接受」的来源，分<strong>可信度等级</strong>：① 显式反馈（最干净，见 2.3）；② 自动关联（线程 <code>isResolved</code>、被标位置随后有改动、suggestion 被 apply）；③ 推断（PR 合了但该位置没动 → 记为忽略/误报）。</td></tr>
+      <tr><td class="term">漏报</td><td>人审评论里指出、而 Touchstone 没提的问题——对应奖励里的 miss 项，是提升召回的关键，但需把人评论映射到代码位置（最难，分期做）。</td></tr>
+      <tr><td class="term">真值集</td><td>装配出来的、供 <code>_distill_via_llm</code> 的产物：每个历史已合 PR 的 {diff 引用, 人采纳集, （可选）漏报, 混淆因素}。</td></tr>
+      <tr><td class="term">注入对照</td><td>同一 finding_type 在「注入了该经验的 PR」与「没注入的 PR」两组上的采纳率——由 marker 里的<strong>注入经验 id</strong>事后切分历史即可重建，无需另存。供 <code>graduate</code>。</td></tr>
+      <tr><td class="term">PR 级结局</td><td>合入/关闭、评审轮数、合入后 N 天内是否被 revert / hotfix / 关联事故——从 git 历史与 PR 元数据重建，供 govern 退役与（可选）自治。</td></tr>
+      <tr><td class="term">混淆因素</td><td>reviewer 身份、作者是 agent 还是人、PR 大小、文件类型、时间。不记则会把「讨某人喜欢」误当「对」。</td></tr>
+    </table>
+
+    <h3>2.2 数据流</h3>
+    <figure>
+      <svg viewBox="0 0 920 470" role="img" aria-label="数据采集与重建数据流">
+        <defs><marker id="dah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#14506B"/></marker>
+        <marker id="dahg" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#6B7178"/></marker></defs>
+        <rect x="20" y="40" width="300" height="22" rx="4" fill="#F3F6F8" stroke="#E6E4DD"/>
+        <text x="34" y="55" font-family="ui-monospace,Menlo,monospace" font-size="11" letter-spacing=".12em" fill="#14506B">评审时 · 同步 · 每条发现</text>
+        <rect x="20" y="300" width="340" height="22" rx="4" fill="#FAF6EE" stroke="#E6E4DD"/>
+        <text x="34" y="315" font-family="ui-monospace,Menlo,monospace" font-size="11" letter-spacing=".12em" fill="#B5651D">离线 · calibrate 从 GitHub 重建 · 周期</text>
+
+        <rect x="28" y="78" width="168" height="58" rx="8" fill="#FFFFFF" stroke="#14506B" stroke-width="1.5"/>
+        <text x="112" y="100" text-anchor="middle" font-family="ui-monospace,Menlo,monospace" font-size="12.5" font-weight="600" fill="#15181D">评审出一条发现</text>
+        <text x="112" y="116" text-anchor="middle" font-family="ui-monospace,Menlo,monospace" font-size="10.5" fill="#6B7178">PR-Agent + 注入 active 经验</text>
+        <rect x="240" y="74" width="240" height="66" rx="8" fill="#EAF1F4" stroke="#14506B" stroke-width="1.8"/>
+        <text x="360" y="96" text-anchor="middle" font-family="ui-monospace,Menlo,monospace" font-size="12.5" font-weight="600" fill="#14506B">写扩充后的 marker 到 PR 评论</text>
+        <text x="360" y="112" text-anchor="middle" font-family="ui-monospace,Menlo,monospace" font-size="10.5" fill="#6B7178">finding_id · file/line · finding_type</text>
+        <text x="360" y="126" text-anchor="middle" font-family="ui-monospace,Menlo,monospace" font-size="10.5" fill="#6B7178">注入的经验 id · 模型 · 时间</text>
+
+        <rect x="300" y="184" width="320" height="74" rx="8" fill="#FFFFFF" stroke="#6B7178" stroke-width="1.3"/>
+        <text x="460" y="206" text-anchor="middle" font-family="ui-monospace,Menlo,monospace" font-size="12.5" font-weight="600" fill="#15181D">GitHub（真值的来源）</text>
+        <text x="460" y="223" text-anchor="middle" font-family="ui-monospace,Menlo,monospace" font-size="10.5" fill="#6B7178">评论 marker · review 状态 · 是否合入</text>
+        <text x="460" y="237" text-anchor="middle" font-family="ui-monospace,Menlo,monospace" font-size="10.5" fill="#6B7178">GraphQL 线程 isResolved · reactions</text>
+        <text x="460" y="251" text-anchor="middle" font-family="ui-monospace,Menlo,monospace" font-size="10.5" fill="#6B7178">git 历史（revert / hotfix）</text>
+
+        <rect x="40" y="332" width="226" height="60" rx="8" fill="#FFFFFF" stroke="#14506B" stroke-width="1.5"/>
+        <text x="153" y="354" text-anchor="middle" font-family="ui-monospace,Menlo,monospace" font-size="12.5" font-weight="600" fill="#15181D">calibrate 重建扩充后的 records</text>
+        <text x="153" y="370" text-anchor="middle" font-family="ui-monospace,Menlo,monospace" font-size="10.5" fill="#6B7178">含采纳证据 · 注入经验 · 混淆因素</text>
+        <text x="153" y="383" text-anchor="middle" font-family="ui-monospace,Menlo,monospace" font-size="10.5" fill="#6B7178">+ PR 级结局</text>
+
+        <rect x="300" y="326" width="180" height="34" rx="7" fill="#FFFFFF" stroke="#0E7C7B" stroke-width="1.4"/>
+        <text x="390" y="348" text-anchor="middle" font-family="ui-monospace,Menlo,monospace" font-size="11.5" font-weight="600" fill="#0E7C7B">build_ground_truth</text>
+        <rect x="300" y="368" width="180" height="34" rx="7" fill="#FFFFFF" stroke="#0E7C7B" stroke-width="1.4"/>
+        <text x="390" y="390" text-anchor="middle" font-family="ui-monospace,Menlo,monospace" font-size="11.5" font-weight="600" fill="#0E7C7B">aggregate_ab</text>
+        <rect x="300" y="410" width="180" height="34" rx="7" fill="#FFFFFF" stroke="#6B7178" stroke-width="1.3"/>
+        <text x="390" y="432" text-anchor="middle" font-family="ui-monospace,Menlo,monospace" font-size="11.5" font-weight="600" fill="#6B7178">aggregate（既有）</text>
+
+        <rect x="520" y="326" width="372" height="34" rx="7" fill="#F3F6F8" stroke="#14506B" stroke-width="1.3"/>
+        <text x="706" y="348" text-anchor="middle" font-family="ui-monospace,Menlo,monospace" font-size="11.5" fill="#14506B">真值集 → _distill_via_llm（TF-GRPO）</text>
+        <rect x="520" y="368" width="372" height="34" rx="7" fill="#F3F6F8" stroke="#14506B" stroke-width="1.3"/>
+        <text x="706" y="390" text-anchor="middle" font-family="ui-monospace,Menlo,monospace" font-size="11.5" fill="#14506B">ab_results → graduate（shadow A/B 门控）</text>
+        <rect x="520" y="410" width="372" height="34" rx="7" fill="#F3F6F8" stroke="#6B7178" stroke-width="1.2"/>
+        <text x="706" y="432" text-anchor="middle" font-family="ui-monospace,Menlo,monospace" font-size="11.5" fill="#6B7178">by_rule → distill_candidates / retire</text>
+
+        <path d="M196,107 L238,107" fill="none" stroke="#14506B" stroke-width="1.6" marker-end="url(#dah)"/>
+        <path d="M360,140 L420,182" fill="none" stroke="#6B7178" stroke-width="1.3" stroke-dasharray="4 3" marker-end="url(#dahg)"/>
+        <text x="378" y="168" font-family="ui-monospace,Menlo,monospace" font-size="10" fill="#6B7178">积累</text>
+        <path d="M340,232 C250,250 180,300 156,330" fill="none" stroke="#14506B" stroke-width="1.6" marker-end="url(#dah)"/>
+        <text x="200" y="290" font-family="ui-monospace,Menlo,monospace" font-size="10.5" fill="#14506B">重建</text>
+        <path d="M266,352 L298,346" fill="none" stroke="#14506B" stroke-width="1.6" marker-end="url(#dah)"/>
+        <path d="M266,360 C285,372 290,382 298,384" fill="none" stroke="#14506B" stroke-width="1.6" marker-end="url(#dah)"/>
+        <path d="M266,366 C282,392 290,414 298,420" fill="none" stroke="#6B7178" stroke-width="1.3" marker-end="url(#dahg)"/>
+        <path d="M480,343 L518,343" fill="none" stroke="#14506B" stroke-width="1.6" marker-end="url(#dah)"/>
+        <path d="M480,385 L518,385" fill="none" stroke="#14506B" stroke-width="1.6" marker-end="url(#dah)"/>
+        <path d="M480,427 L518,427" fill="none" stroke="#6B7178" stroke-width="1.3" marker-end="url(#dahg)"/>
+      </svg>
+      <figcaption>评审时只多写一条扩充后的 marker（蓝色实线写入 GitHub）；其余结局离线从 GitHub 重建。三个装配函数把同一批 records 整理成 TF-GRPO / 门控 / 计数式各自需要的结构。全程不建库。</figcaption>
+    </figure>
+
+    <h3>2.3 三个核心取舍</h3>
+    <div class="principle warn"><span class="k">取舍 1 · 奖励可信度（最关键）</span>TF-GRPO 朝奖励方向优化，奖励测得糙，就会把噪声当信号学进去。<strong>显式反馈</strong>（每条意见上的 👍/👎 或「有用/已知/误报/已改」）信噪比最高，但需要一个轻量反馈通道——在不建库的前提下，可用<strong>评论 reaction</strong> 或作者<strong>回复关键词</strong>承载，仍从 GitHub 重建。退而求其次用自动关联（线程 resolved / 位置改动），最次用推断。本设计把三档都纳入 <code>采纳证据</code>，每条标注<strong>来源与可信度</strong>，让奖励可以分档加权、也便于抽检。</div>
+    <div class="principle warn"><span class="k">取舍 2 · provenance 必须评审时留</span>「这条发现产生时注入了哪些经验」只能<strong>评审当时</strong>写进 marker，事后无法从 GitHub 反推。缺了它：注入对照无法分臂（<code>graduate</code> 失效）、坏经验无法单条归因与回退、抽检无从谈起。所以扩充 marker 的<strong>第一要务是 <code>injected_experience_ids</code></strong>，其次才是 file/line/模型。</div>
+    <div class="principle"><span class="k">取舍 3 · 类型级先行、位置级择机</span>当前 <code>score_review</code> 只按 finding_type 的集合重合度算命中/噪声（见 learning-loop §3，已知简化）。marker 与采纳证据里<strong>保留 file/line/内容</strong>，就为日后把奖励从类型级升级到位置级预留了字段；先做类型级，位置级作为奖励函数的后续增强，不阻塞采集落地。</div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <p class="snum">03</p>
+    <h2>核心数据结构</h2>
+
+    <h3>3.1 扩充后的 touchstone-finding marker（评审记录）</h3>
+    <p>在现有 marker（<code>rule_id / agent</code>）上补 provenance。它是写进 PR 评论的一段 JSON 注释，不是表：</p>
+    <table class="tbl">
+      <tr><th>字段</th><th>含义</th><th>新增?</th></tr>
+      <tr><td class="mono">finding_id</td><td>该条发现的稳定 id（PR内唯一，关联采纳证据）</td><td>新</td></tr>
+      <tr><td class="mono">rule_id / finding_type</td><td>发现类型（PRA-* / 规则号）</td><td>有</td></tr>
+      <tr><td class="mono">agent</td><td>来源（pr-agent:suggestion / review）</td><td>有</td></tr>
+      <tr><td class="mono">file · line_start · line_end</td><td>定位（位置级奖励与位置改动关联用）</td><td>新</td></tr>
+      <tr><td class="mono">injected_experience_ids[]</td><td><strong>产生时注入的 active 经验 id 列表</strong>（注入对照分臂、单条归因）</td><td>新·关键</td></tr>
+      <tr><td class="mono">model · endpoint</td><td>评审用的模型/端点（模型/端点变化时归因）</td><td>新</td></tr>
+      <tr><td class="mono">ts</td><td>时间戳</td><td>新</td></tr>
+    </table>
+
+    <h3>3.2 扩充后的 CalibrationRecord（重建产物，每 PR 一条）</h3>
+    <p>在现有 record（<code>pr / risk_band / findings / finding_adoption / human_state / merged / merge_commit_sha</code>）上补：</p>
+    <table class="tbl">
+      <tr><th>字段</th><th>含义</th></tr>
+      <tr><td class="mono">finding_adoption[]</td><td>每条：<code>{finding_id, adopted(bool), evidence: explicit|thread_resolved|code_changed|inferred, fidelity}</code>（现有仅 thread_resolved，扩成多档）</td></tr>
+      <tr><td class="mono">injected_experience_ids[]</td><td>该 PR 评审注入过的经验 id 并集（从 marker 汇）——注入对照分臂用</td></tr>
+      <tr><td class="mono">reviewer · author_kind</td><td>决定性 reviewer 的 login；作者是 agent 还是人（混淆因素）</td></tr>
+      <tr><td class="mono">size · file_types[]</td><td>{files, additions, deletions}；涉及的文件类型（混淆因素）</td></tr>
+      <tr><td class="mono">pr_outcome</td><td><code>{merged, review_rounds, reverted, hotfix_within_days, incident}</code>（govern / 自治用）</td></tr>
+    </table>
+
+    <h3>3.3 真值集 GroundTruthPR（供 _distill_via_llm）</h3>
+    <table class="tbl">
+      <tr><th>字段</th><th>含义</th></tr>
+      <tr><td class="mono">pr_id · repo · stack</td><td>定位与分类（经验按 仓·栈·发现类型 归类）</td></tr>
+      <tr><td class="mono">summary · diff（或 diff_ref）</td><td>PR 摘要与 diff；diff_ref 可用 base..merge_commit_sha 惰性取</td></tr>
+      <tr><td class="mono">human_adopted[]</td><td><strong>人采纳集</strong>：被采纳发现的 finding_type（位置级时为 finding_id）。<code>score_review</code> 的标准答案</td></tr>
+      <tr><td class="mono">misses[]</td><td>（可选，分期）人指出而未被覆盖的问题 {file,line,note}</td></tr>
+      <tr><td class="mono">confounders</td><td>{reviewer, author_kind, size, ts}</td></tr>
+    </table>
+
+    <h3>3.4 ab_results（供 graduate）</h3>
+    <p>形状与 <code>graduate</code> 现有入参一致，由 <code>aggregate_ab</code> 按 marker 的 <code>injected_experience_ids</code> 切分两臂得到：</p>
+    <table class="tbl">
+      <tr><th>键</th><th>值</th></tr>
+      <tr><td class="mono">finding_type</td><td><code>{with_seen, with_adopted, without_seen, without_adopted}</code>——注入该类型经验的 PR 为 with 臂，未注入为 without 臂</td></tr>
+    </table>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <p class="snum">04</p>
+    <h2>接口定义</h2>
+    <p>评审侧只加一个「写扩充后的 marker」的动作；离线侧给 <code>calibrate</code> 加两个<strong>纯装配函数</strong>，并在 <code>main()</code> 的重建里多拉几样 GitHub 数据。</p>
+    <table class="tbl">
+      <tr><th>接口（建议名）</th><th>功能</th><th>位置</th></tr>
+      <tr><td class="mono">render_finding_marker(finding, injected_experience_ids, model) -&gt; str</td><td>评审时为一条发现生成扩充后的 marker 文本（含 finding_id/file/line/注入经验/模型/ts），贴进 PR 评论。<strong>唯一的「采集写入」，写进评论、不入库</strong></td><td>review_provider / orchestrator</td></tr>
+      <tr><td class="mono">build_ground_truth(records) -&gt; [GroundTruthPR]</td><td>纯函数：从扩充后的 records 装配每 PR 的真值（人采纳集 + 混淆因素 + diff 引用），供 <code>_distill_via_llm</code></td><td>calibrate（新）</td></tr>
+      <tr><td class="mono">aggregate_ab(records) -&gt; {finding_type: arms}</td><td>纯函数：按 <code>injected_experience_ids</code> 把历史 PR 分注入/未注入两臂，按 finding_type 汇 {seen, adopted}，供 <code>graduate</code></td><td>calibrate（新）</td></tr>
+      <tr><td class="mono">reconstruct（main 内增强）</td><td>重建时多拉：PR diff/size/author（REST）、reactions（REST，承载显式反馈）、revert/hotfix（git log / commit message）→ 填扩充后的 record</td><td>calibrate.main（增强）</td></tr>
+      <tr><td class="mono">aggregate(records) -&gt; by_rule（既有）</td><td>不变；records 扩充后照常产出 fires/adoption_rate，供 distill_candidates/retire</td><td>calibrate（沿用）</td></tr>
+    </table>
+    <p><strong>整体流程。</strong>评审时 <code>render_finding_marker</code> 把 provenance 留进评论；<code>calibrate.main</code> 周期性从 GitHub 重建出扩充后的 <code>records</code>；<code>build_ground_truth(records)</code> → 真值集 → <code>_distill_via_llm</code> 蒸馏候选经验；<code>aggregate_ab(records)</code> → <code>graduate</code> 做 shadow A/B 门控；<code>aggregate(records)</code> 照旧供计数式与退役使用。三条消费链共享同一批重建出来的 records，互不阻塞。</p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <p class="snum">05</p>
+    <h2>一致性校验</h2>
+    <p>对照每个消费点逐一核对，重点记已发现并接受的遗留项。</p>
+    <div class="principle"><span class="k">接口完备性</span><code>score_review</code> 要的 <code>human_adopted</code> ← <code>build_ground_truth</code> 的人采纳集；<code>graduate</code> 要的两臂 ← <code>aggregate_ab</code>（靠 marker 的注入经验 id 分臂）；<code>retire/distill_candidates</code> 要的 by_rule ← 既有 <code>aggregate</code>；单条经验归因/回退、抽检 ← marker 的 <code>injected_experience_ids</code> + finding 级采纳证据。各消费点均有对应来源。</div>
+    <div class="principle"><span class="k">概念一致性</span>「采纳」一词全设计统一指<strong>采纳证据</strong>（带可信度等级），不与人审 PR 级 verdict 混用；finding_type 是否算评审类，与 learning_loop 的 <code>_is_review_type</code> 判定一致——确定性 contract 类型不进真值集的经验侧。</div>
+    <div class="principle warn"><span class="k">接受的遗留项</span>① <strong>漏报采集</strong>需把人自由文本评论映射到代码位置，最难——先不采 misses、TF-GRPO 先优化精确率，召回作后续增强。② <strong>显式反馈</strong>依赖一个反馈通道（reaction/回复关键词），是个小的产品依赖；未上线前用自动关联+推断作回退，可信度等级会如实标注。③ <strong>位置级奖励</strong>需 marker 与采纳证据都带 file/line，schema 已预留字段，<code>score_review</code> 的升级是后续，不阻塞采集。④ 重建依赖 GitHub marker 持续存在（评论不可被清理）——与 <code>calibrate</code> 现有假设相同。</div>
+    <div class="principle"><span class="k">量级提醒</span>经验按 仓·栈·发现类型 分类，每一类都要积累足够的带结局样本，才能稳定蒸馏出经验（蒸馏下限 <code>DISTILL_MIN_FIRES=8</code>、达标每臂 <code>≥20</code>）。论文整体几十条真值即可，但分到每一类需要数十个实例，意味着在活跃仓上连续采集若干周——所以<strong>从第一天就埋点</strong>，尤其是注入经验 id 与模型版本这类事后不可重建的 provenance。</div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <p class="snum">06</p>
+    <h2>变更历史</h2>
+    <table class="tbl">
+      <tr><th>日期</th><th>变更</th><th>原因</th></tr>
+      <tr><td class="mono">2026-06-23 · v0.2</td><td>开头补一句把这批数据的用途说死：它是<strong>评分标准（奖励真值）、不是训练数据</strong>，模型冻结、只用来给评审打分。</td><td>消除「采集数据＝训练模型」的误解</td></tr>
+      <tr><td class="mono">2026-06-23 · v0.1</td><td>首版：定义 TF-GRPO 落地所需的数据采集与真值集重建。原则沿用 calibrate「不建库、从 GitHub 重建」；评审时扩充 touchstone-finding marker（关键是 injected_experience_ids），离线新增 build_ground_truth / aggregate_ab 两个纯装配函数 + main 重建增强；明确奖励可信度三档、provenance 必须评审时留、类型级先行位置级择机。</td><td>把「TF-GRPO 用起来要采什么数据」定到可实现的数据形状与接口，作为落地第一步</td></tr>
+    </table>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">Touchstone · TF-GRPO 数据采集与真值集重建 · v0.2 · 2026-06-23 · 自包含离线文档（内联 SVG，无外部依赖）</div>
+</footer>
+
+</body>
+</html>

@@ -1,0 +1,9 @@
+# 人核准的验收规格（human_curated）——驱动盲规格验证「可信绿」的唯一可信来源。
+# 放在 .touchstone/acceptance.yaml（或 env TOUCHSTONE_ACCEPTANCE 指向）。
+# 与 author 提交的 .touchstone/pr.yaml 分离：pr.yaml 里的 acceptance_criteria 仅作建议(author_proposed)，
+# 不足以支撑自治放行；高风险 PR 的正确性认证须本文件（由人写或人核准）。
+acceptance_criteria:
+  - 用一句可判定的话写清"怎样算做成"，每条独立可验收
+  - 例：分页拉取须返回全部目标点数，单页含无效行不得提前终止
+  - 例：金额比较须按内容相等（equals），不得用引用相等
+approved_by: "（核准人，可选；留痕用）"

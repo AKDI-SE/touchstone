@@ -1,0 +1,316 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Touchstone on PR-Agent · 集成设计</title>
+<style>
+  :root{
+    --paper:#FAFAF8; --panel:#FFFFFF; --ink:#15181D; --muted:#6B7178;
+    --line:#E6E4DD; --line2:#D8D6CD;
+    --primary:#14506B;            /* 结构主色 · petrol */
+    --c1:#0E7C7B;                 /* 第一类 正确性 · teal */
+    --c2:#3D52A0;                 /* 第二类 红线/契约 · indigo */
+    --c3:#B5651D;                 /* 第三类 质量 · burnt amber */
+    --low:#3E7C5A; --mid:#B5651D; --high:#A23E3E;
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue","PingFang SC","Microsoft YaHei",sans-serif;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--paper); color:var(--ink);
+    font-family:var(--sans); font-size:16px; line-height:1.66;
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:920px; margin:0 auto; padding:0 24px}
+
+  /* ---- hero ---- */
+  header.hero{padding:64px 0 40px; border-bottom:1px solid var(--line)}
+  .eyebrow{font-family:var(--mono); font-size:12px; letter-spacing:.22em; text-transform:uppercase; color:var(--primary); margin:0 0 18px}
+  h1{font-size:40px; line-height:1.12; font-weight:760; letter-spacing:-.018em; margin:0 0 18px}
+  .thesis{font-size:19px; line-height:1.55; color:var(--ink); max-width:42em; margin:0 0 26px}
+  .thesis b{color:var(--primary)}
+  .anchor{display:flex; flex-wrap:wrap; gap:10px; margin-top:8px}
+  .anchor .pill{font-family:var(--mono); font-size:12.5px; padding:6px 11px; border:1px solid var(--line2); border-radius:5px; background:var(--panel); color:var(--muted)}
+  .anchor .pill b{color:var(--ink); font-weight:600}
+
+  /* ---- toc ---- */
+  nav.toc{margin:34px 0 0; padding:18px 20px; background:var(--panel); border:1px solid var(--line); border-radius:8px}
+  nav.toc .lbl{font-family:var(--mono); font-size:11px; letter-spacing:.2em; text-transform:uppercase; color:var(--muted); display:block; margin-bottom:10px}
+  nav.toc ol{margin:0; padding:0; list-style:none; display:grid; grid-template-columns:1fr 1fr; gap:6px 28px}
+  nav.toc a{color:var(--ink); text-decoration:none; font-size:14.5px; display:flex; gap:10px}
+  nav.toc a:hover{color:var(--primary)}
+  nav.toc a .n{font-family:var(--mono); color:var(--primary); font-size:13px; min-width:1.6em}
+
+  /* ---- sections ---- */
+  section{padding:48px 0; border-bottom:1px solid var(--line)}
+  .snum{font-family:var(--mono); font-size:13px; color:var(--primary); letter-spacing:.04em}
+  h2{font-size:27px; font-weight:720; letter-spacing:-.012em; margin:6px 0 20px}
+  h3{font-size:19px; font-weight:680; margin:34px 0 12px; padding-bottom:0}
+  h4{font-size:15.5px; font-weight:680; margin:22px 0 8px; color:var(--ink)}
+  p{margin:0 0 14px}
+  .lede{font-size:17px; color:#33373d}
+  strong{font-weight:670}
+  code{font-family:var(--mono); font-size:.9em; background:#F1F0EA; padding:1px 6px; border-radius:4px; color:#2a2d33}
+  .term{font-family:var(--mono); font-weight:600; color:var(--primary); background:#EAF1F4; padding:1px 6px; border-radius:4px}
+  ul,ol{margin:0 0 14px; padding-left:1.25em}
+  li{margin:5px 0}
+  .muted{color:var(--muted)}
+
+  /* class chips */
+  .chip{display:inline-block; font-family:var(--mono); font-size:11.5px; font-weight:600; padding:2px 8px; border-radius:20px; vertical-align:middle; line-height:1.5}
+  .chip.c1{background:rgba(14,124,123,.12); color:var(--c1); border:1px solid rgba(14,124,123,.3)}
+  .chip.c2{background:rgba(61,82,160,.12); color:var(--c2); border:1px solid rgba(61,82,160,.3)}
+  .chip.c3{background:rgba(181,101,29,.12); color:var(--c3); border:1px solid rgba(181,101,29,.3)}
+
+  /* callout / principle */
+  .principle{margin:20px 0; padding:16px 20px; border-left:3px solid var(--primary); background:#F3F6F8; border-radius:0 7px 7px 0}
+  .principle .k{font-family:var(--mono); font-size:11px; letter-spacing:.16em; text-transform:uppercase; color:var(--primary); display:block; margin-bottom:6px}
+  .warn{border-left-color:var(--high); background:#FAF1F0}
+  .warn .k{color:var(--high)}
+
+  /* concept legend */
+  .legend{display:grid; grid-template-columns:repeat(2,1fr); gap:10px; margin:20px 0}
+  .legend .item{border:1px solid var(--line); border-radius:7px; padding:11px 13px; background:var(--panel)}
+  .legend .item .nm{font-family:var(--mono); font-weight:600; color:var(--primary); font-size:13.5px}
+  .legend .item .ds{font-size:13px; color:#3b3f45; margin-top:3px; line-height:1.5}
+
+  /* tables */
+  .tbl{width:100%; border-collapse:collapse; margin:16px 0; font-size:14px}
+  .tbl th,.tbl td{border:1px solid var(--line2); padding:9px 11px; text-align:left; vertical-align:top}
+  .tbl th{background:#F1F0EA; font-weight:640; font-size:12.5px; letter-spacing:.02em}
+  .tbl td code,.tbl th code{background:transparent; padding:0}
+  .tbl .mono{font-family:var(--mono); font-size:12.5px; color:#2a2d33}
+
+  /* figure */
+  figure{margin:26px 0; padding:0}
+  figure svg{display:block; width:100%; height:auto; background:var(--panel); border:1px solid var(--line); border-radius:9px}
+  figcaption{font-size:13px; color:var(--muted); margin-top:9px; font-family:var(--mono)}
+
+  /* code block (interfaces) */
+  pre{margin:14px 0; padding:16px 18px; background:#13161B; color:#E4E6EA; border-radius:9px; overflow-x:auto; font-family:var(--mono); font-size:13px; line-height:1.62}
+  pre .cm{color:#7C8AA0}        /* comment */
+  pre .kw{color:#8FD0C4}        /* type/keyword */
+  pre .fn{color:#E6C07B}        /* fn name */
+  pre .st{color:#C3E88D}        /* literal */
+
+  .rel{margin:10px 0 0; padding:13px 16px; background:#F3F6F8; border-radius:7px; font-size:14px}
+  .rel .k{font-family:var(--mono); font-size:11px; letter-spacing:.14em; text-transform:uppercase; color:var(--primary); margin-right:8px}
+
+  footer{padding:40px 0 80px; color:var(--muted); font-size:13px; font-family:var(--mono)}
+  @media (max-width:700px){
+    h1{font-size:30px}
+    nav.toc ol{grid-template-columns:1fr}
+    .legend{grid-template-columns:1fr}
+  }
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <div class="wrap">
+    <p class="eyebrow">集成设计 · Integration Design</p>
+    <h1>Touchstone on PR-Agent：复用开源评审引擎，叠加自有门禁与验证</h1>
+    <p class="thesis">既然开源的 <b>PR-Agent</b> 在公网可用（本工具评审公网 GitHub PR），<b>评审与聚合这层就复用它</b>，不再自研委员会与共识聚合器；Touchstone 只做 PR-Agent 没有的那几层——<b>发现归一、裁决映射、单一统一门禁、verify 正确性验证、自动合并、契约来源治理、校准</b>。一句话：<b>把评审的轮子交给 PR-Agent，把"裁决/门禁/验证/自治"留给自己。</b></p>
+    <div class="anchor">
+      <span class="pill"><b>设计时间</b> 2026-06（基于主文档 v3.8 / 82 提交）</span>
+      <span class="pill"><b>定性</b> 复用开源 + 边界重划重构</span>
+      <span class="pill"><b>前提</b> 互联网：公网 GitHub + 可访问的 LLM 端点</span>
+    </div>
+    <div class="principle"><span class="k">不造轮子的边界</span>PR-Agent 的核心能力是"多工具评审 + 建议去重/排序/措辞"，正是与自研委员会重叠最深的一块——自研它是重复造轮子。<strong>真正没有开源对应、构成 Touchstone 价值的是：可插拔质量门禁（单一统一门禁）、verify 验证子系统（独立验收测试 + 充分性校验 + 变异）、可选 autonomy（自动合并 + 经验达标 + 熔断）、契约"只定位不采信"的来源治理、校准 / TF-GRPO 经验演进。</strong>本设计把工程力集中在后者，前者复用 PR-Agent。</div>
+    <nav class="toc">
+      <span class="lbl">目录</span>
+      <ol>
+        <li><a href="#s1"><span class="n">1</span> 设计目的</a></li>
+        <li><a href="#s2"><span class="n">2</span> 设计逻辑与概念空间</a></li>
+        <li><a href="#s3"><span class="n">3</span> 核心数据结构</a></li>
+        <li><a href="#s4"><span class="n">4</span> 接口定义</a></li>
+        <li><a href="#s5"><span class="n">5</span> 一致性校验</a></li>
+        <li><a href="#s6"><span class="n">6</span> 变更历史</a></li>
+      </ol>
+    </nav>
+  </div>
+</header>
+
+<section id="s1">
+  <div class="wrap">
+    <span class="snum">§ 1</span>
+    <h2>设计目的</h2>
+    <p class="lede">本设计的定性是<strong>"复用开源 + 边界重划"的架构重构</strong>：把自研的"评审委员会 + 启发式共识聚合器"替换为开源 PR-Agent，并把 Touchstone 独有的门禁/验证/自治层叠在其上。不是新增模块，而是把一段重复造的轮子换成现成的轮子，并重新划清两边的职责边界。</p>
+
+    <h3>1.1 现状（设计锚点）</h3>
+    <p>锚点：主设计文档 v3.8 / 仓库 82 提交 / 2026-06。前提：本工具运行在<strong>互联网</strong>上（评审公网 GitHub PR、调可访问的 LLM 端点），PR-Agent 同环境可用；<strong>不涉及 air-gapped / 内网约束</strong>。当前 Touchstone 由以下部分组成：</p>
+    <div class="legend">
+      <div class="item"><div class="nm">自研评审委员会 + aggregate()</div><div class="ds">多专才产出 Finding，启发式聚合（置信过滤 + 精确去重 + 规则类定级）。<strong>← 与 PR-Agent 高度重叠的部分</strong></div></div>
+      <div class="item"><div class="nm">contract_check</div><div class="ds">提交契约一致性核对（"只定位不采信"），产出确定性发现。PR-Agent 不做。</div></div>
+      <div class="item"><div class="nm">checks / 统一门禁</div><div class="ds">可插拔检查框架，聚合后对外发一个汇总状态检查。PR-Agent 不做。</div></div>
+      <div class="item"><div class="nm">verify</div><div class="ds">可选正确性验证子系统：独立验收测试 + 充分性校验 + 变异。PR-Agent 不做。</div></div>
+      <div class="item"><div class="nm">autonomy / calibrate / govern</div><div class="ds">可选自动合并（读统一门禁）+ 经验达标 + 熔断；校准与经验演进。PR-Agent 不做。</div></div>
+    </div>
+
+    <h3>1.2 期望与纠偏</h3>
+    <p>期望：用 PR-Agent 当评审引擎，<strong>退役自研评审专才与共识聚合器</strong>；独有层不变地叠在其上。需要在此澄清两点用户期望之外、但必须面对的事实：</p>
+    <div class="rel"><span class="k">输出模型不一致</span>PR-Agent 产出的是 review/suggestion 文本项，与本系统的 <code>Finding</code>（file/line/rule_id/category/severity/confidence）模型不同。<strong>必须有一层"发现归一"</strong>把前者映射成后者，否则风险路由、统一门禁、校准都无从对接。</div>
+    <div class="rel"><span class="k">PR-Agent 不产出裁决</span>它不发单一统一门禁、不做风险路由（三类判定 / 风险等级 / 验证预算分配）、不做正确性验证、不做契约一致性核对。<strong>这些是 Touchstone 的职责，必须保留</strong>，不能因为"复用 PR-Agent"而误以为它们也被覆盖了。</div>
+    <div class="rel"><span class="k">不可并存两套评审</span>若既保留自研委员会、又接入 PR-Agent 做同样的评审，就是"双轮子"——既增加噪声又增加维护。<strong>本设计明确：评审/聚合由 PR-Agent 取代，自研评审专才与 heuristic 共识退役。</strong></div>
+  </div>
+</section>
+
+<section id="s2">
+  <div class="wrap">
+    <span class="snum">§ 2</span>
+    <h2>设计逻辑与概念空间</h2>
+    <p class="lede">围绕三个核心取舍说明设计选择，并定义为描述这套集成而引入的新概念，最后给出两个逻辑视图（职责分层、数据流）。</p>
+
+    <h3>2.1 概念空间</h3>
+    <div class="legend">
+      <div class="item"><div class="nm">评审提供器 Review Provider</div><div class="ds">把 PR-Agent 抽象成一个<strong>可替换的"评审观察来源"</strong>：输入一个 PR，输出一批原始评审条目。封装了"怎么调 PR-Agent（CLI/API、公网或自托管端点、注入指令）"，对上层只暴露"给我这个 PR 的评审观察"。</div></div>
+      <div class="item"><div class="nm">发现归一 Finding Normalization</div><div class="ds">把 PR-Agent 的 review/suggestion 项映射到本系统的 <code>Finding</code>。封装了两套模型之间的字段对齐与默认值（严重度、置信度、category 的推断）。</div></div>
+      <div class="item"><div class="nm">裁决映射 Verdict Mapping</div><div class="ds">把归一后的 Finding 映射到<strong>三类判定 + 风险等级 + verification_decision</strong>（风险路由所需）。它<strong>不做共识</strong>（共识已由 PR-Agent 完成），只做分类与定级——是原 <code>aggregate()</code> "评审侧"职责的瘦身版。</div></div>
+      <div class="item"><div class="nm">退役边界 Retirement Boundary</div><div class="ds">明确划线：哪些自研代码因 PR-Agent 接入而退役（评审专才 prompt、heuristic 共识），哪些保留（contract_check、checks、verify、autonomy、calibrate、govern）。封装了"复用到哪、自研留哪"的决策，防止双轮子或误删独有层。</div></div>
+    </div>
+
+    <h3>2.2 核心取舍</h3>
+    <h4>取舍一：边界划在哪——PR-Agent 管"观察"，我们管"裁决"</h4>
+    <p>PR-Agent 负责评审观察与建议（广度、措辞、多语言，已成熟）；Touchstone 负责裁决与门禁（风险路由、统一门禁、验证、自治）。<strong>封装策略取"薄封装"</strong>：把 PR-Agent 当评审提供器，用它的注入点（<code>extra_instructions</code> / best-practices）传入我们的规范，而<strong>不去 fork、改它的源码</strong>——否则要长期承担与上游分叉的维护负担，背离"不造轮子"的初衷。</p>
+    <h4>取舍二：聚合归谁——不自研共识，只做裁决映射</h4>
+    <p>PR-Agent 自带建议去重、排序、按重要性过滤（其核心竞争力）。所以<strong>不自研带共识算法的聚合器</strong>。但风险路由与统一门禁需要"三类判定 + 风险等级"，这是 PR-Agent 不产出的，因此保留一个<strong>轻量裁决映射</strong>：把归一后的 Finding 按 category/严重度映射到风险等级与验证预算决策。它取代 <code>aggregate()</code> 中"评审侧"的职责，但去掉了"共识"那部分（交给 PR-Agent）。</p>
+    <h4>取舍三：怎么不丢掉独有价值——明确 PR-Agent 不覆盖项</h4>
+    <p>逐项确认 PR-Agent <strong>不</strong>覆盖、因而必须由我们保留的能力：单一统一门禁（汇总状态检查）、风险路由、verify 正确性验证、契约一致性核对（contract_check）与来源治理（human_curated）、校准 / 经验演进。其中 <strong>contract_check 尤其关键</strong>：PR-Agent 不做"提交契约 vs 改动"的确定性核对，它继续作为 <code>touchstone-rules</code> 的输入输入到统一门禁。</p>
+
+    <h3>2.3 视图一：职责分层</h3>
+    <figure>
+      <svg viewBox="0 0 860 300" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system,Segoe UI,Roboto,sans-serif">
+        <rect x="20" y="20" width="820" height="110" rx="10" fill="#EAF1F4" stroke="#14506B" stroke-width="1.5"/>
+        <text x="36" y="46" font-weight="700" fill="#14506B" font-size="14">复用 · PR-Agent（评审提供器）</text>
+        <text x="36" y="70" fill="#15181D" font-size="12.5">多工具评审 · 代码建议 · 建议去重/排序/措辞 · 多语言 · 自定义 LLM 端点 · extra_instructions 注入</text>
+        <text x="36" y="92" fill="#6B7178" font-size="11.5">＝ 原"自研委员会 + 启发式共识聚合器"被取代的职责</text>
+        <text x="36" y="114" fill="#6B7178" font-size="11.5">输出：review / suggestion 文本项</text>
+
+        <line x1="430" y1="130" x2="430" y2="160" stroke="#6B7178" stroke-width="1.5" marker-end="url(#a)"/>
+        <text x="442" y="150" fill="#6B7178" font-size="11">发现归一 → Finding</text>
+
+        <rect x="20" y="160" width="820" height="120" rx="10" fill="#FFFFFF" stroke="#0E7C7B" stroke-width="1.8"/>
+        <text x="36" y="186" font-weight="700" fill="#0E7C7B" font-size="14">自研 · Touchstone（裁决 / 门禁 / 验证 / 自治）</text>
+        <text x="36" y="210" fill="#15181D" font-size="12.5">裁决映射（三类判定 · 风险等级 · 验证预算） · 契约一致性核对（contract_check）</text>
+        <text x="36" y="232" fill="#15181D" font-size="12.5">可插拔检查 → 单一统一门禁 · （可选）verify 正确性验证 · （可选）autonomy 自动合并</text>
+        <text x="36" y="254" fill="#15181D" font-size="12.5">校准 / govern / TF-GRPO 经验演进</text>
+        <text x="36" y="274" fill="#A23E3E" font-size="11.5">＝ PR-Agent 不覆盖、构成本系统价值的层，全部保留</text>
+        <defs><marker id="a" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto"><path d="M0,0 L6,4 L0,8 z" fill="#6B7178"/></marker></defs>
+      </svg>
+      <figcaption>图 1 · 职责分层：上层评审观察复用 PR-Agent，下层裁决/门禁/验证/自治为自研、全部保留；两层以"发现归一"衔接。</figcaption>
+    </figure>
+
+    <h3>2.4 视图二：数据流</h3>
+    <figure>
+      <svg viewBox="0 0 880 150" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system,Segoe UI,Roboto,sans-serif">
+        <defs><marker id="b" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto"><path d="M0,0 L7,4.5 L0,9 z" fill="#14506B"/></marker></defs>
+        <g font-size="11.5" text-anchor="middle">
+          <rect x="10" y="40" width="92" height="42" rx="7" fill="#F3F6F8" stroke="#14506B"/><text x="56" y="58">PR 触发</text><text x="56" y="74" fill="#6B7178" font-size="10">open/sync</text>
+          <rect x="126" y="40" width="118" height="42" rx="7" fill="#EAF1F4" stroke="#14506B"/><text x="185" y="58">评审提供器</text><text x="185" y="74" fill="#6B7178" font-size="10">PR-Agent.fetch</text>
+          <rect x="268" y="40" width="100" height="42" rx="7" fill="#FFFFFF" stroke="#0E7C7B"/><text x="318" y="58">发现归一</text><text x="318" y="74" fill="#6B7178" font-size="10">→ Finding</text>
+          <rect x="392" y="40" width="110" height="42" rx="7" fill="#FFFFFF" stroke="#0E7C7B"/><text x="447" y="58">裁决映射</text><text x="447" y="74" fill="#6B7178" font-size="10">风险等级</text>
+          <rect x="526" y="40" width="110" height="42" rx="7" fill="#FFFFFF" stroke="#0E7C7B"/><text x="581" y="58">checks → 统一门禁</text><text x="581" y="74" fill="#6B7178" font-size="10">单一状态</text>
+          <rect x="660" y="10" width="100" height="38" rx="7" fill="#FBF3EA" stroke="#B5651D" stroke-dasharray="3 2"/><text x="710" y="26">（可选）verify</text><text x="710" y="40" fill="#6B7178" font-size="10">折进统一门禁</text>
+          <rect x="660" y="74" width="100" height="38" rx="7" fill="#FBF3EA" stroke="#B5651D" stroke-dasharray="3 2"/><text x="710" y="90">（可选）autonomy</text><text x="710" y="104" fill="#6B7178" font-size="10">读统一门禁</text>
+          <rect x="784" y="40" width="86" height="42" rx="7" fill="#F3F6F8" stroke="#14506B"/><text x="827" y="58">人点合并</text><text x="827" y="74" fill="#6B7178" font-size="10">默认</text>
+          <line x1="102" y1="61" x2="124" y2="61" stroke="#14506B" marker-end="url(#b)"/>
+          <line x1="244" y1="61" x2="266" y2="61" stroke="#14506B" marker-end="url(#b)"/>
+          <line x1="368" y1="61" x2="390" y2="61" stroke="#14506B" marker-end="url(#b)"/>
+          <line x1="502" y1="61" x2="524" y2="61" stroke="#14506B" marker-end="url(#b)"/>
+          <line x1="636" y1="50" x2="658" y2="33" stroke="#B5651D" marker-end="url(#b)"/>
+          <line x1="636" y1="72" x2="658" y2="90" stroke="#B5651D" marker-end="url(#b)"/>
+          <line x1="636" y1="61" x2="782" y2="61" stroke="#14506B" marker-end="url(#b)"/>
+        </g>
+        <text x="447" y="128" text-anchor="middle" fill="#6B7178" font-size="10.5">契约一致性核对（contract_check）与裁决映射并行，作为 touchstone-rules 输入折进统一门禁</text>
+      </svg>
+      <figcaption>图 2 · 数据流：PR → PR-Agent 评审 → 归一为 Finding → 裁决映射出风险等级 → 发单一统一门禁 → 默认人点合并；verify/autonomy 为可选支路。</figcaption>
+    </figure>
+  </div>
+</section>
+
+<section id="s3">
+  <div class="wrap">
+    <span class="snum">§ 3</span>
+    <h2>核心数据结构</h2>
+    <p class="lede">只定义与设计逻辑对应的关键成员；复用主文档已有的 <code>Finding</code> / <code>RiskAssessment</code> / <code>CheckResult</code> / <code>VerificationResult</code>，不重复定义。</p>
+    <table class="tbl">
+      <tr><th>结构</th><th>关键成员</th><th>说明</th></tr>
+      <tr><td class="mono">ReviewItem</td><td>kind(review/suggestion) · file · line_range · body · label? · tool?</td><td>PR-Agent 单条输出的抽象。评审提供器把 PR-Agent 的原生响应解析成一组 ReviewItem，屏蔽其具体格式。</td></tr>
+      <tr><td class="mono">Finding（复用）</td><td>file · line · rule_id · category · severity · confidence · agent</td><td>归一目标。<code>agent</code> 记来源（如 <code>pr-agent:review</code> / <code>pr-agent:suggestion</code> / <code>contract-check</code>），供校准按来源归因。</td></tr>
+      <tr><td class="mono">NormalizationMap</td><td>label→category · 默认 severity · 默认 confidence · 丢弃规则</td><td>归一策略表，写在配置里（如 <code>.touchstone/pr-agent.yaml</code>）。把 PR-Agent 的工具/标签映射到我们的 category 与默认严重度/置信度；含 <code>high_categories</code>（哪些 category 升 high，默认 <code>[security, correctness]</code>），定级策略显式可调而不改代码。</td></tr>
+      <tr><td class="mono">RiskAssessment（复用）</td><td>risk_band · blast_radius · verification_decision</td><td>裁决映射的产出，结构与主文档一致，下游风险路由/统一门禁/autonomy 直接复用。</td></tr>
+    </table>
+  </div>
+</section>
+
+<section id="s4">
+  <div class="wrap">
+    <span class="snum">§ 4</span>
+    <h2>接口定义</h2>
+    <p class="lede">以函数注释形式给出新增接口；复用的接口（checks / verify / autonomy）签名不变，只说明衔接关系。</p>
+    <pre>
+# 新增：评审提供器（封装 PR-Agent 调用，可替换）
+review_provider.fetch(pr_ctx) -> list[ReviewItem]
+    # 对 pr_ctx（owner/repo/number/token）经子进程适配器 pr_agent_runner 调 PR-Agent，
+    # 传入我们的规范作为 extra_instructions/best-practices，解析其响应为 ReviewItem 列表。
+    # 屏蔽 PR-Agent 的具体调用方式与输出格式。
+
+# 新增：发现归一
+normalize(items: list[ReviewItem], nmap: NormalizationMap) -> list[Finding]
+    # 按 nmap 把每个 ReviewItem 映射成 Finding：推断 category、给默认 severity/confidence、
+    # 标 agent 来源；按丢弃规则过滤明显无关项。
+
+# 新增：裁决映射（取代 aggregate 的"评审侧"，不做共识）
+map_verdict(findings: list[Finding], rule_index) -> tuple[list[Finding], RiskAssessment]
+    # 把归一后的 Finding 按 category/severity 映射到三类判定与风险等级，
+    # 产出 verification_decision（风险路由）。复用主文档 aggregate 的"定级"骨架，去掉"共识/去重"。
+
+# 复用（签名不变）：
+contract_check.check_contract_consistency(diff, contract, rule_index) -> list[Finding]   # 契约确定性核对，PR-Agent 不做
+checks.run_checks(cfg, pr) / checks.post_gate(pr, cfg, results)                           # 聚合并发单一统一门禁
+verify/verify_change.py                                                                   # （可选）正确性验证，折进统一门禁
+autonomy.decide_auto_merge(risk, findings, loop_decision, gate, ...)                      # （可选）读统一门禁自动合并
+    </pre>
+    <div class="rel"><span class="k">关系总结</span>一个 PR 来：<code>review_provider.fetch</code> 从 PR-Agent 取评审观察 → <code>normalize</code> 成 Finding → <code>map_verdict</code> 出风险等级；与此并行，<code>contract_check</code> 做契约确定性核对（PR-Agent 不做）。两路 Finding 一起作为 <code>touchstone-rules</code> 输入，经 <code>checks.run_checks</code> + <code>post_gate</code> 发<strong>那一个统一门禁</strong>；高风险且开启时（可选）verify 折进统一门禁，autonomy（可选）读统一门禁替人点合并。<strong>默认形态仍是人点合并。</strong></div>
+    <div class="rel"><span class="k">实现状态（v0.2）</span>已落地<strong>离线骨架</strong>：<code>touchstone/review_provider.py</code>（<code>parse_pr_agent</code> / <code>normalize</code> / <code>map_verdict</code> / <code>load_nmap</code> / <code>PRAgentProvider</code>）+ <code>.touchstone/pr-agent.yaml</code> + 12 个离线测试（解析/归一/裁决映射/注入与集成点），全绿。<strong>PR-Agent 调用<strong>已实现为子进程集成</strong>（<code>_invoke_endpoint</code> 起 <code>pr_agent_runner</code> 子进程，v0.7）；离线经 <code>pr_agent_output</code> 注入测 plumbing。<strong>已切换（v0.4）</strong>：orchestrator.py 默认走 PR-Agent 路径，<strong>自研委员会（专才编排 + 共识聚合器 + 相关 LLM 调用）已退役删除</strong>；run.py 与测试同步更新，离线测试 144 全绿（评审路径经 <code>pr_agent_output</code> 注入验证）。<strong>PR-Agent 是 Apache-2.0 的 pip 包、不是要部署的服务</strong>：集成 = 子进程里 <code>pip install pr-agent</code> 并调它。端到端真跑只差<strong>凭据</strong>：子进程环境的 LLM key（pr-agent 经 LiteLLM 调）+ GitHub token——这是<strong>任何 AI 评审器固有</strong>的，非 PR-Agent 特有，也无需"部署 PR-Agent"。<strong>无 shadow A/B 门槛</strong>——采用 PR-Agent 的依据是"不造轮子/不维护自研评审引擎"，而非"评分更高"；若评审质量需提升则调 PR-Agent（extra_instructions/best_practices/换模型），不回退委员会。</div>
+    <div class="rel"><span class="k">规范注入</span>我们的单一事实源规范（<code>.touchstone/standards.yaml</code>）中"可机器自动核对"的条目继续走确定性 <code>touchstone-rules</code>；"需主观判断"的条目作为 <code>extra_instructions</code>/best-practices 注入 PR-Agent——<strong>规范一处定义，分别提供给 PR-Agent（查主观问题）与确定性检查（查可核对问题）</strong>。<strong>已落地（v0.6）</strong>：<code>touchstone/gen_best_practices.py</code> 从 <code>standards.yaml</code> 取 <code>machine_checkable=false</code> 的规则，按 PR-Agent 推荐的 pattern-based 结构生成 <code>.touchstone/best_practices.md</code>（违反即标 “Organization best practice”，归一为 convention）；可机检规则不进该文件、继续走确定性检查。部署时把该文件放到 PR-Agent 读取处（仓库根，或经 PR-Agent 的 <code>metadata.yaml</code> 路径映射）；改 <code>standards.yaml</code> 后重新生成（测试含"生成结果须与提交版一致"的防漂移校验）。</div>
+  </div>
+</section>
+
+<section id="s5">
+  <div class="wrap">
+    <span class="snum">§ 5</span>
+    <h2>一致性校验</h2>
+    <p class="lede">对设计目的、逻辑、数据结构、接口做综合校验；下面记录结论，重点写发现并已处理的问题与有意接受的遗留。</p>
+    <div class="rel"><span class="k">概念一致</span><code>Finding</code> / <code>RiskAssessment</code> / 统一门禁 / 风险等级 与主文档同名同义；新概念（评审提供器 / 发现归一 / 裁决映射 / 退役边界）全文一致使用。</div>
+    <div class="rel"><span class="k">层次一致</span>PR-Agent 只做评审观察，不发统一门禁、不做风险路由、不做验证、不做契约核对——<strong>没有把本系统的裁决/门禁职责下推给 PR-Agent</strong>；本系统也不再自研评审/共识——<strong>没有在我们层重复 PR-Agent 的评审</strong>。边界干净。</div>
+    <div class="rel"><span class="k">接口完备</span>评审获取（fetch）、归一（normalize）、裁决映射（map_verdict）、契约核对、发统一门禁、可选验证、可选自治，每个操作都有对应接口。</div>
+    <div class="rel"><span class="k">退役与去重（防双轮子）</span>因 PR-Agent 接入而<strong>退役</strong>：自研评审专才 prompt、<code>aggregate()</code> 的共识/去重部分。<strong>保留</strong>：<code>contract_check</code>（契约一致性，PR-Agent 不做）、<code>checks</code>/统一门禁、<code>verify</code>、<code>autonomy</code>、<code>calibrate</code>/<code>govern</code>。明确<strong>不并存两套评审</strong>。</div>
+    <div class="rel"><span class="k">校准维度调整</span>校准（calibrate）的归因维度由"按专才"改为"按 PR-Agent 工具/规则 + contract_check"——<code>Finding.agent</code> 记来源即可支撑；退役噪声来源的机制不变（只是退役对象从"某专才"变为"PR-Agent 某类建议"）。</div>
+    <div class="rel"><span class="k">有意接受的遗留</span>① PR-Agent 的评审质量依赖其 prompt 与模型，本设计通过 <code>NormalizationMap</code> 的默认严重度/置信度 + 校准持续治理噪声，但<strong>质量是否优于自研委员会，需在真实 GitHub PR 上跑 shadow A/B 验证</strong>（本沙箱无实时 GitHub/LLM 凭据，故在你的环境做）。② <code>review_provider</code> 对 PR-Agent 调用方式（CLI vs API）的最终选型，待真实环境联调确定；本设计只约束"评审提供器"这一抽象边界，不锁定调用细节。</div>
+  </div>
+</section>
+
+<section id="s7">
+  <div class="wrap">
+    <span class="snum">§ 6</span>
+    <h2>变更历史</h2>
+    <table class="tbl">
+      <tr><th>日期 · 版本</th><th>变更内容</th><th>原因</th></tr>
+      <tr><td class="mono">2026-06 · v0.1</td><td>初稿。确立"复用 PR-Agent 评审/聚合、自研只做裁决/门禁/验证/自治"的边界（不造轮子）。定义评审提供器 / 发现归一 / 裁决映射 / 退役边界四个概念；给出职责分层与数据流两个视图；ReviewItem / NormalizationMap 数据结构；fetch / normalize / map_verdict 接口与对既有 checks/verify/autonomy 的衔接。明确退役自研评审专才与 heuristic 共识、保留 contract_check/checks/verify/autonomy/calibrate/govern，不并存两套评审。前提：PR-Agent 在公网可用（评审公网 GitHub PR）。</td><td>从"不造轮子"角度确定：评审层复用 PR-Agent，工程力集中在无开源对应的门禁/验证/自治层</td></tr>
+      <tr><td class="mono">2026-06 · v0.2</td><td>落地评审路径<strong>离线骨架</strong>：<code>review_provider.py</code> 实现评审提供器（PR-Agent 调用为集成点 <code>_invoke_endpoint</code>，离线经 <code>pr_agent_output</code> 注入）、<code>parse_pr_agent</code>（按 improve 的 $PRCodeSuggestions + review 的 key_issues schema 解析）、<code>normalize</code>（label→category，顾问式一律 warn、agent 记来源）、<code>map_verdict</code>（按 category 定风险等级、不做共识）、<code>load_nmap</code>；新增 <code>.touchstone/pr-agent.yaml</code>（NormalizationMap）。12 个离线测试全绿；<strong>不动 orchestrator.py</strong>，自研委员会仍默认，切换待真实环境验证。</td><td>把集成设计的 §3/§4 接口骨架做出来、可离线测；端点与切换留待真实环境</td></tr>
+      <tr><td class="mono">2026-06 · v0.3</td><td>纠正措辞：本工具运行于<strong>互联网</strong>（评审公网 GitHub PR），<strong>非内网/air-gapped</strong>；前提、遗留与变更历史中的"内网（验证/端点/联调）"改为"公网可用 / 真实环境 / 真实 GitHub PR 的 shadow A/B 验证"。无设计变更。</td><td>用户指出工具用于互联网</td></tr>
+      <tr><td class="mono">2026-06 · v0.4</td><td><strong>退役自研委员会、orchestrator.py 评审来源切到 PR-Agent 路径。</strong>orchestrator.py 删除专才编排（run_committee/run_specialist/build_*_prompt/parse_findings/stack_of/rule_applies）、共识聚合器（aggregate）与 LLM 调用层（_client/llm_chat/_post_chat/llm_review）；main 链路改为 fetch→normalize→map_verdict + contract_check；不再要求 LLM_* 环境变量（PR-Agent 自带端点）。run.py 同步切换；委员会测试移除、新增 PR-Agent 注入式 e2e；离线测试 144 全绿。明确<strong>不设 shadow A/B 门槛</strong>（理由见实现状态）。</td><td>不造轮子的决定落到代码：评审引擎由 PR-Agent 承担，停止维护自研评审/共识</td></tr>
+      <tr><td class="mono">2026-06 · v0.5</td><td>据 spring-ai-ascend#314 真跑校准 <code>NormalizationMap</code> 默认：PR-Agent 的 <code>possible issue</code> 由 <code>correctness</code>（→high）改映射到 <code>correctness_suspect</code>（弱信号，不升 high→落 mid），避免行为不变的纯重构被误判 high；<code>possible bug</code>/<code>critical bug</code>/<code>security</code> 仍升 high。新增可配置 <code>high_categories</code>（map_verdict 不再写死高危 category 集）。同 PR 上 high/targeted_tests → mid/cheap_only，两条发现不丢。测试 147 全绿。</td><td>真跑暴露默认偏重；把定级策略做成显式可调</td></tr>
+      <tr><td class="mono">2026-06 · v0.6</td><td>落地"规范注入 PR-Agent"：新增 <code>touchstone/gen_best_practices.py</code>，从 <code>standards.yaml</code> 的主观规则（machine_checkable=false，共 9 条）生成 <code>.touchstone/best_practices.md</code>（pattern-based，按 applies_to 分语言分组，Why/Do）；可机检规则不进、留确定性检查。+6 测试（选取/排除/pattern 结构/分组/确定性/与提交文件一致），共 153 全绿。</td><td>把"规范一处定义、主观条目供 PR-Agent"从设计落到可生成的产物</td></tr>
+      <tr><td>2026-06 · v0.7</td><td>把 <code>_invoke_endpoint</code> 从占位实现写成<strong>真子进程集成</strong>：起 <code>python -m touchstone.pr_agent_runner</code> 子进程、传 --pr-url/--mode/--best-practices-file/--extra-instructions-file、解析其 JSON；非零退出/坏 JSON/找不到命令均显式报错。新增薄适配器 <code>touchstone/pr_agent_runner.py</code>（在装了 pr-agent 的环境调它、<code>publish_output=false</code> 不发评论、打印 JSON；Touchstone 本体不依赖 pr-agent）。学习回路 active 经验经 <code>_experience_injection</code> → extra_instructions（只读）。pr-agent.yaml 的 <code>endpoint</code> 改为 <code>runner_cmd</code>，去"部署/端点"措辞。+8 测试（子进程成功/非零/坏JSON/缺命令/无URL/建URL/runner导入），共 170 全绿。</td><td>纠正"PR-Agent 要部署"的误framing：它是 pip 包，集成=依赖+调用；真跑只差 LLM key+token（固有）</td></tr>
+      <tr><td>2026-06 · v0.8</td><td>把 <code>pr_agent_runner.py</code> 对<strong>真实 pr-agent 0.37.0</strong> 验证并修正（沙箱 venv 装包、只验 API 表面，真跑仍需凭据）：① improve 结果取 <code>cs.data["code_suggestions"]</code>（确认）；② <strong>修 review 路径 bug</strong>——<code>PRReviewer</code> run() 后 <code>self.prediction</code> 是原始 YAML 串、解析结果不在实例上，改为自行 <code>load_yaml(self.prediction, keys_fix=[...], first_key=review, last_key=security_concerns)</code> 取 <code>key_issues_to_review</code>（已用真 load_yaml + parse_pr_agent 验证可运行）；③ 确认 <code>config.publish_output(_progress)</code>、<code>pr_code_suggestions/pr_reviewer.extra_instructions</code> 为真实配置键；④ <strong>删除伪造的 best_practices 内容注入</strong>——pr-agent 本地 best_practices 是<strong>文件式</strong>（把 best_practices.md 放被审仓库根，pr-agent 自动识别），故 runner 与 <code>_invoke_endpoint</code> 不再传 <code>--best-practices-file</code>，best_practices 改由文件投放交付；runner 仅注入 extra_instructions。key_issues 字段名（relevant_file/issue_header/issue_content/start_line/end_line）与 parse_pr_agent 对齐确认。170 测试仍全绿。</td><td>消除集成里唯一未验证的部分；接入时不再撞 AttributeError（review 解析）/ 无效配置键（best_practices）</td></tr>
+    </table>
+    <p class="muted" style="margin-top:18px">配套主文档：<code>touchstone-design.html</code>（v3.8）。本文件为其在"复用 PR-Agent"方向上的集成设计；落地前需：在跑 pr_agent_runner 的环境 pip 安装 pr-agent、配好 LLM key + GitHub token，再做 shadow A/B 质量验证。</p>
+  </div>
+</section>
+
+</body>
+</html>

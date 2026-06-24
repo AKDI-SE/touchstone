@@ -1,0 +1,12 @@
+# touchstone 运行产物（并行校准工件，不入库）
+touchstone-findings.json
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# 杂项
+*.log
+.DS_Store

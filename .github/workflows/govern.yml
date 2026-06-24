@@ -1,0 +1,60 @@
+# .github/workflows/govern.yml
+# 治理：先校准(产出 calibration.json)，再跑 govern(固化提案 + 熔断)。定期/手动。
+name: Touchstone Governance
+
+on:
+  schedule:
+    - cron: "30 1 * * 1"     # 每周一 01:30 UTC（在 calibrate 之后）
+  workflow_dispatch:
+
+permissions:
+  contents: write           # 提交 .touchstone/graduated-classes.json（经验层发布）
+  pull-requests: read
+
+jobs:
+  govern:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0          # detect_revert_shas 需要 base 分支历史
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - name: Install deps
+        run: pip install -r requirements.txt
+      - name: Calibrate (produce calibration.json)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CALIBRATE_WINDOW: "50"
+        run: python touchstone/calibrate.py
+      - name: Govern (promotion proposal + circuit breaker)
+        env:
+          BASE_REF: ${{ github.event.repository.default_branch }}
+          REPO_DIR: "."
+        run: python touchstone/govern.py
+        continue-on-error: true   # 熔断触发会退出 2，仍上传产物
+      - name: Publish graduated change-classes (经验层)
+        run: |
+          python -m touchstone.autonomy --graduate
+          mkdir -p .touchstone && cp graduated-classes.json .touchstone/graduated-classes.json
+      - name: Commit graduated-classes
+        if: ${{ vars.AUTONOMY_ENABLED == 'true' }}
+        run: |
+          git config user.name touchstone
+          git config user.email touchstone@users.noreply.github.com
+          git add .touchstone/graduated-classes.json
+          git commit -m "chore(autonomy): refresh graduated change-classes [skip ci]" || echo "no change"
+          git push || echo "push skipped"
+      - name: Upload governance outputs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: governance
+          path: |
+            promotion-proposal.md
+            standards.proposed.yaml
+            autonomy-state.json
+            graduated-classes.json
+            calibration-report.md
+          if-no-files-found: ignore

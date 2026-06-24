@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Touchstone · 自进化评审学习回路（Phase 2）</title>
+<style>
+  :root{
+    --paper:#FAFAF8; --panel:#FFFFFF; --ink:#15181D; --muted:#6B7178;
+    --line:#E6E4DD; --line2:#D8D6CD;
+    --primary:#14506B; --c1:#0E7C7B; --c2:#3D52A0; --c3:#B5651D;
+    --high:#A23E3E;
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue","PingFang SC","Microsoft YaHei",sans-serif;
+  }
+  *{box-sizing:border-box}
+  body{margin:0; background:var(--paper); color:var(--ink); font-family:var(--sans); font-size:16px; line-height:1.66; -webkit-font-smoothing:antialiased}
+  .wrap{max-width:920px; margin:0 auto; padding:0 24px}
+  header.hero{padding:60px 0 38px; border-bottom:1px solid var(--line)}
+  .eyebrow{font-family:var(--mono); font-size:12px; letter-spacing:.22em; text-transform:uppercase; color:var(--primary); margin:0 0 18px}
+  h1{font-size:38px; line-height:1.14; font-weight:760; letter-spacing:-.018em; margin:0 0 18px}
+  .thesis{font-size:18px; line-height:1.56; max-width:44em; margin:0 0 24px}
+  .thesis b{color:var(--primary)}
+  .anchor{display:flex; flex-wrap:wrap; gap:10px}
+  .anchor .pill{font-family:var(--mono); font-size:12.5px; padding:6px 11px; border:1px solid var(--line2); border-radius:5px; background:var(--panel); color:var(--muted)}
+  .anchor .pill b{color:var(--ink); font-weight:600}
+  section{padding:44px 0; border-bottom:1px solid var(--line)}
+  .snum{font-family:var(--mono); font-size:13px; color:var(--primary); letter-spacing:.04em}
+  h2{font-size:26px; font-weight:720; letter-spacing:-.012em; margin:6px 0 18px}
+  h3{font-size:18px; font-weight:680; margin:28px 0 10px}
+  p{margin:0 0 14px}
+  .lede{font-size:17px; color:#33373d}
+  strong{font-weight:670}
+  code{font-family:var(--mono); font-size:.9em; background:#F1F0EA; padding:1px 6px; border-radius:4px; color:#2a2d33}
+  .term{font-family:var(--mono); font-weight:600; color:var(--primary); background:#EAF1F4; padding:1px 6px; border-radius:4px}
+  ul,ol{margin:0 0 14px; padding-left:1.25em} li{margin:6px 0}
+  .muted{color:var(--muted)}
+  .principle{margin:16px 0; padding:14px 18px; border-left:3px solid var(--primary); background:#F3F6F8; border-radius:0 7px 7px 0}
+  .principle .k{font-family:var(--mono); font-size:11px; letter-spacing:.16em; text-transform:uppercase; color:var(--primary); display:block; margin-bottom:6px}
+  .warn{border-left-color:var(--high); background:#FAF1F0}
+  .warn .k{color:var(--high)}
+  .tbl{width:100%; border-collapse:collapse; margin:16px 0; font-size:14px}
+  .tbl th,.tbl td{border:1px solid var(--line2); padding:9px 11px; text-align:left; vertical-align:top}
+  .tbl th{background:#F1F0EA; font-weight:640; font-size:12.5px}
+  .tbl .mono{font-family:var(--mono); font-size:12.5px; color:#2a2d33}
+  figure{margin:24px 0; padding:0}
+  figure svg{display:block; width:100%; height:auto; background:var(--panel); border:1px solid var(--line); border-radius:9px}
+  figcaption{font-size:13px; color:var(--muted); margin-top:9px; font-family:var(--mono)}
+  footer{padding:36px 0 72px; color:var(--muted); font-size:13px; font-family:var(--mono)}
+  @media (max-width:700px){h1{font-size:28px}}
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <div class="wrap">
+    <p class="eyebrow">详细设计 · Phase 2 学习回路</p>
+    <h1>Touchstone · 自进化评审学习回路</h1>
+    <p class="thesis">在 <b>advisory-only</b>（只给评审意见、合入按钮始终人点）定位下，复用开源 <b>PR-Agent</b> 当评审器，用<b>人审裁决</b>当奖励，<b>TF-GRPO</b> 把经验固化成注入提示词的 token prior，<b>govern</b> 退役有害经验——<b>无训练、无权重、自托管</b>。评审质量随真实使用持续改进，决策权始终在人。</p>
+    <div class="anchor">
+      <span class="pill"><b>定位</b> advisory-only · 人保留合入权</span>
+      <span class="pill"><b>学习</b> 训练-free（上下文空间，无权重）</span>
+      <span class="pill"><b>奖励</b> 人审裁决（采纳/改动/噪声）</span>
+      <span class="pill"><b>部署</b> 自托管 · 公网/自托管端点 · 冻结模型</span>
+    </div>
+  </div>
+</header>
+
+<section>
+  <div class="wrap">
+    <p class="snum">01</p>
+    <h2>目的</h2>
+    <p class="lede">去掉自动合并后，唯一目标变成「<strong>高信噪比的评审意见</strong>」——而 AI 评审工具最常见的失败方式是规则越堆噪声越大、最终被一线开发弃用。本回路要的，是让评审质量<strong>能随真实使用自我改进</strong>，且不靠训练权重（数据稀缺、无训练基建、要可控可回退）。</p>
+    <p>做法：把「评审」与「学习」彻底解耦。评审走成熟开源（PR-Agent），学习是一条<strong>离线、周期性</strong>的回路，把「人最终采纳/忽略了什么」蒸馏成自然语言经验，回注评审器的提示词。这恰好把原设计里一直只是指针的「Phase 2 经验库/TF-GRPO」落到实处，且复用你已有的 <code>calibrate</code> 与 <code>govern</code>。</p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <p class="snum">02</p>
+    <h2>回路与数据流</h2>
+    <figure>
+      <svg viewBox="0 0 920 470" role="img" aria-label="学习回路数据流图">
+        <defs>
+          <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="#14506B"/>
+          </marker>
+          <marker id="ahg" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="#6B7178"/>
+          </marker>
+        </defs>
+        <style>
+          .bx{fill:#FFFFFF; stroke:#14506B; stroke-width:1.5; rx:8}
+          .bx2{fill:#FFFFFF; stroke:#6B7178; stroke-width:1.3; rx:8}
+          .key{fill:#EAF1F4; stroke:#14506B; stroke-width:1.8; rx:8}
+          .t{font-family:ui-monospace,Menlo,Consolas,monospace; font-size:13px; fill:#15181D; font-weight:600}
+          .s{font-family:ui-monospace,Menlo,Consolas,monospace; font-size:11px; fill:#6B7178}
+          .lbl{font-family:ui-monospace,Menlo,Consolas,monospace; font-size:11px; fill:#14506B; letter-spacing:.12em}
+          .ed{stroke:#14506B; stroke-width:1.6; fill:none}
+          .edg{stroke:#6B7178; stroke-width:1.3; fill:none; stroke-dasharray:4 3}
+        </style>
+
+        <!-- band labels -->
+        <rect x="20" y="44" width="280" height="22" rx="4" fill="#F3F6F8" stroke="#E6E4DD"/>
+        <text class="lbl" x="34" y="59">PR 关键路径 · 同步 · 每个 PR</text>
+        <rect x="20" y="300" width="320" height="22" rx="4" fill="#FAF6EE" stroke="#E6E4DD"/>
+        <text class="lbl" x="34" y="315" style="fill:#B5651D">离线学习回路 · 周期(cron) · 不阻塞 PR</text>
+
+        <!-- top lane -->
+        <rect class="bx" x="28" y="86" width="120" height="52"/>
+        <text class="t" x="88" y="110" text-anchor="middle">PR 打开/更新</text>
+        <text class="s" x="88" y="126" text-anchor="middle">author = 机器/人</text>
+
+        <rect class="bx" x="210" y="82" width="236" height="60"/>
+        <text class="t" x="328" y="104" text-anchor="middle">PR-Agent 评审</text>
+        <text class="s" x="328" y="120" text-anchor="middle">冻结 LLM + 经验库注入</text>
+        <text class="s" x="328" y="134" text-anchor="middle">(extra_instructions / best-practices)</text>
+
+        <rect class="bx" x="512" y="86" width="180" height="52"/>
+        <text class="t" x="602" y="106" text-anchor="middle">人读 · 采纳 · 合入</text>
+        <text class="s" x="602" y="124" text-anchor="middle">合入决定权在人</text>
+
+        <!-- center artifact -->
+        <rect class="key" x="296" y="196" width="248" height="60"/>
+        <text class="t" x="420" y="219" text-anchor="middle" style="fill:#14506B">经验库（NL token prior）</text>
+        <text class="s" x="420" y="235" text-anchor="middle">按 仓·栈·发现类型；每条带来源/证据</text>
+        <text class="s" x="420" y="249" text-anchor="middle">状态 active / retired</text>
+
+        <!-- bottom lane -->
+        <rect class="bx" x="700" y="330" width="190" height="58"/>
+        <text class="t" x="795" y="353" text-anchor="middle">calibrate</text>
+        <text class="s" x="795" y="369" text-anchor="middle">人审裁决 → 奖励</text>
+        <text class="s" x="795" y="382" text-anchor="middle">采纳率/改动率/噪声</text>
+
+        <rect class="bx" x="372" y="330" width="240" height="58"/>
+        <text class="t" x="492" y="353" text-anchor="middle">TF-GRPO</text>
+        <text class="s" x="492" y="369" text-anchor="middle">分组 introspect · 组内相对语义优势</text>
+        <text class="s" x="492" y="382" text-anchor="middle">蒸馏/更新经验（无权重）</text>
+
+        <rect class="bx" x="40" y="330" width="200" height="58"/>
+        <text class="t" x="140" y="353" text-anchor="middle">govern</text>
+        <text class="s" x="140" y="369" text-anchor="middle">门控 · 退役有害/噪声经验</text>
+        <text class="s" x="140" y="382" text-anchor="middle">控制何时注入</text>
+
+        <!-- edges: top lane -->
+        <path class="ed" d="M148,112 L208,112" marker-end="url(#ah)"/>
+        <path class="ed" d="M446,112 L510,112" marker-end="url(#ah)"/>
+        <!-- experience -> review (注入) -->
+        <path class="ed" d="M380,196 C372,170 340,156 328,144" marker-end="url(#ah)"/>
+        <text class="s" x="300" y="178" text-anchor="end" style="fill:#14506B">注入</text>
+        <!-- human -> calibrate (down) -->
+        <path class="ed" d="M650,138 C720,160 795,250 795,328" marker-end="url(#ah)"/>
+        <text class="s" x="812" y="240">裁决/合入</text>
+        <!-- review -> calibrate (touchstone findings, dashed) -->
+        <path class="edg" d="M430,142 C560,200 740,250 800,328" marker-end="url(#ahg)"/>
+        <text class="s" x="600" y="250">评审发现</text>
+        <!-- calibrate -> tfgrpo (left) -->
+        <path class="ed" d="M700,359 L614,359" marker-end="url(#ah)"/>
+        <text class="s" x="657" y="350" text-anchor="middle">奖励</text>
+        <!-- tfgrpo -> govern (left) -->
+        <path class="ed" d="M372,359 L242,359" marker-end="url(#ah)"/>
+        <text class="s" x="307" y="350" text-anchor="middle">候选经验</text>
+        <!-- govern -> experience (up) -->
+        <path class="ed" d="M140,330 C140,280 240,250 294,238" marker-end="url(#ah)"/>
+        <text class="s" x="150" y="295">存活经验</text>
+        <!-- tfgrpo reads current experience (dashed up) -->
+        <path class="edg" d="M470,330 C450,300 440,272 432,258" marker-end="url(#ahg)"/>
+        <text class="s" x="486" y="300">读现状</text>
+      </svg>
+      <figcaption>上半同步、毫秒级、无学习开销；下半离线 cron、不在 PR 关键路径。经验库是两者唯一的共享物。</figcaption>
+    </figure>
+
+    <table class="tbl">
+      <tr><th>组件</th><th>角色</th><th>复用/新建</th><th>关键点</th></tr>
+      <tr><td class="mono">PR-Agent</td><td>评审器（冻结 LLM + 提示）</td><td>复用开源(Apache-2.0)</td><td>经验库注入其 <code>extra_instructions</code>/best-practices，不改内核</td></tr>
+      <tr><td class="mono">经验库</td><td>进化的 token prior</td><td>新（产物，非服务）</td><td>NL 经验，按仓·栈·发现类型；每条带来源 PR 与采纳证据；状态 active/retired</td></tr>
+      <tr><td class="mono">calibrate</td><td>奖励来源</td><td>复用你已有</td><td>从 GitHub 重建 touchstone 输出 vs 人审裁决 → 按规则/专才的采纳率·改动率·噪声</td></tr>
+      <tr><td class="mono">TF-GRPO</td><td>经验进化</td><td>新（离线）</td><td>分组 rollout + 组内相对语义优势 → 蒸馏经验；无梯度、无权重；冻结旗舰模型</td></tr>
+      <tr><td class="mono">govern</td><td>门控 / 退役</td><td>复用你已有</td><td>退役有害/噪声经验、控制注入（"何时暴露/覆盖/退役"的控制层）</td></tr>
+    </table>
+    <div class="principle"><span class="k">两条边界</span><strong>评审与学习解耦</strong>：PR 关键路径只<em>读</em>经验库、出评审，毫秒级、无学习开销；学习是离线 cron，<strong>挂了也不影响评审</strong>（评审继续用上一版经验库）。<strong>经验只调"建议"、不进"合入门禁"</strong>：advisory-only 下经验最坏只是让一条建议偏一点，人忽略即可，绝不触发错误合并。</div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <p class="snum">03</p>
+    <h2>TF-GRPO 机制（Touchstone 自己的核心）</h2>
+    <p>评审引擎复用了开源的 PR-Agent，所以 Touchstone 真正自己的、有差异化价值的部分，是让评审<strong>随真实使用自我改进</strong>这条回路——而 TF-GRPO 就是它的引擎。本节把这块机制写细。它直接取自 <em>Training-Free Group Relative Policy Optimization</em>（arXiv&nbsp;2510.08191，2025-10），核心思想是：<strong>策略模型一概冻结、不更新任何权重</strong>，改为维护一份外部的"经验知识"当作注入提示词的 token prior；每一步对一个查询并行采样一组输出，用奖励打分，但<strong>不计算数值优势做梯度上升</strong>，而是让大模型内省这一组输出、提炼出"语义优势"（一段自然语言经验），累进地更新那份经验知识。</p>
+
+    <h3>3.1 概念映射（从论文到 PR 评审）</h3>
+    <table class="tbl">
+      <tr><th>论文概念</th><th>在 Touchstone 里是什么</th></tr>
+      <tr><td class="mono">冻结策略 π</td><td>PR-Agent（旗舰模型 + 提示词），参数始终不动</td></tr>
+      <tr><td class="mono">经验知识 E（token prior）</td><td>经验库：一组自然语言经验，注入 PR-Agent 的 <code>extra_instructions</code></td></tr>
+      <tr><td class="mono">查询 q</td><td>一个历史 PR——已合入、已有人审裁决，用作"最小真值集"</td></tr>
+      <tr><td class="mono">一组 rollout {o₁…o_G}</td><td>在当前经验库 E 下，对同一个 PR 生成的 G 份评审</td></tr>
+      <tr><td class="mono">奖励 r_i = R(q, o_i)</td><td>第 i 份评审与"人实际采纳了什么"的吻合度：命中人关心的发现得分、报出人忽略的噪声扣分</td></tr>
+      <tr><td class="mono">数值优势 (r_i−mean)/std</td><td><strong>不用</strong>——本方法不做梯度更新</td></tr>
+      <tr><td class="mono">语义优势</td><td>让旗舰模型内省整组评审：为什么高分的挑对了、低分的挑偏或挑漏，把差异提炼成按"仓·栈·发现类型"归类的经验</td></tr>
+      <tr><td class="mono">多轮(epoch)</td><td>在最小真值集上离线多轮迭代，经验库逐轮累积、修正</td></tr>
+    </table>
+
+    <h3>3.2 离线过程（一轮 epoch 内，对每个历史 PR）</h3>
+    <figure>
+      <svg viewBox="0 0 920 300" role="img" aria-label="TF-GRPO 单轮过程">
+        <defs><marker id="tah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#14506B"/></marker>
+        <marker id="tahg" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#6B7178"/></marker></defs>
+        <rect x="24" y="40" width="120" height="56" rx="8" fill="#FFFFFF" stroke="#14506B" stroke-width="1.5"/>
+        <text x="84" y="64" text-anchor="middle" font-family="ui-monospace,Menlo,monospace" font-size="12.5" font-weight="600" fill="#15181D">历史 PR q</text>
+        <text x="84" y="80" text-anchor="middle" font-family="ui-monospace,Menlo,monospace" font-size="10.5" fill="#6B7178">已合 · 有人审裁决</text>
+        <rect x="186" y="36" width="158" height="64" rx="8" fill="#FFFFFF" stroke="#14506B" stroke-width="1.5"/>
+        <text x="265" y="58" text-anchor="middle" font-family="ui-monospace,Menlo,monospace" font-size="12.5" font-weight="600" fill="#15181D">① 生成 G 份评审</text>
+        <text x="265" y="74" text-anchor="middle" font-family="ui-monospace,Menlo,monospace" font-size="10.5" fill="#6B7178">PR-Agent，在当前 E 下</text>
+        <text x="265" y="88" text-anchor="middle" font-family="ui-monospace,Menlo,monospace" font-size="10.5" fill="#6B7178">{o₁…o_G}</text>
+        <rect x="386" y="36" width="158" height="64" rx="8" fill="#FFFFFF" stroke="#14506B" stroke-width="1.5"/>
+        <text x="465" y="58" text-anchor="middle" font-family="ui-monospace,Menlo,monospace" font-size="12.5" font-weight="600" fill="#15181D">② 打分 r_i</text>
+        <text x="465" y="74" text-anchor="middle" font-family="ui-monospace,Menlo,monospace" font-size="10.5" fill="#6B7178">对人审真值的吻合度</text>
+        <text x="465" y="88" text-anchor="middle" font-family="ui-monospace,Menlo,monospace" font-size="10.5" fill="#6B7178">命中−噪声（纯离线）</text>
+        <rect x="586" y="36" width="170" height="64" rx="8" fill="#FFFFFF" stroke="#14506B" stroke-width="1.5"/>
+        <text x="671" y="58" text-anchor="middle" font-family="ui-monospace,Menlo,monospace" font-size="12.5" font-weight="600" fill="#15181D">③ 旗舰模型内省</text>
+        <text x="671" y="74" text-anchor="middle" font-family="ui-monospace,Menlo,monospace" font-size="10.5" fill="#6B7178">组内语义优势</text>
+        <text x="671" y="88" text-anchor="middle" font-family="ui-monospace,Menlo,monospace" font-size="10.5" fill="#6B7178">高分 vs 低分 → 经验</text>
+        <rect x="320" y="200" width="280" height="60" rx="8" fill="#EAF1F4" stroke="#14506B" stroke-width="1.8"/>
+        <text x="460" y="224" text-anchor="middle" font-family="ui-monospace,Menlo,monospace" font-size="12.5" font-weight="600" fill="#14506B">经验库 E（NL token prior）</text>
+        <text x="460" y="240" text-anchor="middle" font-family="ui-monospace,Menlo,monospace" font-size="10.5" fill="#6B7178">④ 候选经验入池（不立即生效）</text>
+        <text x="460" y="253" text-anchor="middle" font-family="ui-monospace,Menlo,monospace" font-size="10.5" fill="#6B7178">按 仓·栈·发现类型 · 去重/冲突消解</text>
+        <path d="M144,68 L184,68" fill="none" stroke="#14506B" stroke-width="1.6" marker-end="url(#tah)"/>
+        <path d="M344,68 L384,68" fill="none" stroke="#14506B" stroke-width="1.6" marker-end="url(#tah)"/>
+        <path d="M544,68 L584,68" fill="none" stroke="#14506B" stroke-width="1.6" marker-end="url(#tah)"/>
+        <path d="M671,100 C671,150 600,196 560,210" fill="none" stroke="#14506B" stroke-width="1.6" marker-end="url(#tah)"/>
+        <text x="660" y="150" font-family="ui-monospace,Menlo,monospace" font-size="10.5" fill="#14506B">候选经验 ΔE</text>
+        <path d="M320,224 C200,224 200,120 264,102" fill="none" stroke="#6B7178" stroke-width="1.3" stroke-dasharray="4 3" marker-end="url(#tahg)"/>
+        <text x="150" y="180" font-family="ui-monospace,Menlo,monospace" font-size="10.5" fill="#6B7178">注入：评审读当前 E</text>
+        <path d="M600,230 C760,230 800,150 760,96" fill="none" stroke="#6B7178" stroke-width="1.3" stroke-dasharray="4 3" marker-end="url(#tahg)"/>
+        <text x="775" y="170" font-family="ui-monospace,Menlo,monospace" font-size="10.5" fill="#6B7178">下个 PR / 下一轮</text>
+      </svg>
+      <figcaption>策略（PR-Agent）始终冻结；每轮只有经验库 E 在变，因此全程无训练、无权重。打分一步纯离线（复用 calibrate 的计算方式），只有①生成与③内省需要旗舰模型端点。</figcaption>
+    </figure>
+    <p>把上图写成步骤：对最小真值集里的每个历史 PR <span class="mono">q</span>——<strong>①</strong> 在当前经验库 <span class="mono">E</span> 下，让 PR-Agent 生成 <span class="mono">G</span> 份评审；<strong>②</strong> 用这个 PR 的人审真值（人最终改了/采纳了哪些点）给每份评审打分 <span class="mono">r_i</span>，命中人关心的加分、报出人忽略的扣分；<strong>③</strong> 把整组带分数的评审交给旗舰模型内省，对比高分与低分，说清"在这个仓/栈/发现类型上什么该挑、什么别挑"，产出候选经验；<strong>④</strong> 候选经验经去重与冲突消解后并入经验库，但<strong>先入候选池、不立即生效</strong>。多轮重复，经验库逐步收敛。</p>
+
+    <h3>3.3 核心数据结构</h3>
+    <table class="tbl">
+      <tr><th>结构</th><th>关键成员</th></tr>
+      <tr><td class="mono">Experience</td><td><code>id · repo · stack · finding_type · kind(suppress/emphasize) · text(NL) · evidence{fires, adoption} · status(candidate/active/retired) · source(human/tfgrpo/counting) · locked(bool) · source_prs[]</code></td></tr>
+      <tr><td class="mono">RolloutGroup</td><td><code>outputs[o_i] · rewards[r_i]</code>——一个历史 PR 的一组评审及其得分</td></tr>
+      <tr><td class="mono">奖励定义 R</td><td>对一份评审：命中人采纳集的发现数（真阳）− 人忽略的发现数（噪声/假阳）− 漏报权重；与 calibrate 的吻合度/噪声同源</td></tr>
+    </table>
+
+    <h3>3.4 接口（设计名）</h3>
+    <table class="tbl">
+      <tr><th>接口</th><th>功能</th><th>是否需旗舰模型端点</th></tr>
+      <tr><td class="mono">rollout_reviews(pr, E_text, llm, G)</td><td>在经验库 E 下对一个 PR 生成 G 份评审</td><td>需要</td></tr>
+      <tr><td class="mono">score_review(review, human_adopted)</td><td>按人审真值给一份评审打分 r_i</td><td>不需要（纯离线）</td></tr>
+      <tr><td class="mono">distill_semantic_advantage(pr, group, llm)</td><td>内省一组评审、提炼候选经验（语义优势）</td><td>需要</td></tr>
+      <tr><td class="mono">merge_candidates(store, candidates)</td><td>候选经验去重/冲突消解后并入候选池</td><td>不需要</td></tr>
+      <tr><td class="mono">_distill_via_llm(ground_truth, store, llm)</td><td>入口：编排前三步、返回候选经验，交调用方 merge_candidates → graduate 门控（见 05 节）</td><td>—</td></tr>
+    </table>
+    <p>把这些接口连起来：<span class="mono">_distill_via_llm</span> 对真值集里的每个 PR 跑 <span class="mono">rollout_reviews</span> 取一组评审，用 <span class="mono">score_review</span> 离线打分，用 <span class="mono">distill_semantic_advantage</span> 内省出候选经验并返回；调用方再用 <span class="mono">merge_candidates</span> 并入经验库，经 shadow A/B（<span class="mono">graduate</span>）达标才转 active 注入评审。</p>
+
+    <h3>3.5 忠于论文、为 PR 评审做的改写（与诚实交代）</h3>
+    <div class="principle"><span class="k">忠实保留</span>策略冻结、组内"语义优势"取代数值优势、经验作 token prior 注入、多轮迭代——与论文一致。</div>
+    <div class="principle"><span class="k">关键改写</span><strong>奖励改为离线</strong>：PR 评审拿不到每次 rollout 的即时人反馈，所以不在线打分，而是用历史已合 PR 的人审真值离线评分（这正是 calibrate 已经在算的）。经验严格<strong>按 仓·栈·发现类型归类</strong>，且<strong>只对 PR-Agent 源的发现产经验</strong>；确定性 <code>contract_check</code> 永不进经验库、不受其影响，作为经验出问题时的固定基准。</div>
+    <div class="principle"><span class="k">实现与验证</span>本机制<strong>已实现并经本团队验证</strong>（<code>touchstone/learning_loop.py</code>：<code>rollout_reviews</code> / <code>score_review</code> / <code>distill_semantic_advantage</code> / <code>_distill_via_llm</code>，旗舰模型经注入的 <code>llm</code> 调用、离线以假 llm 覆盖测试）。安全上坚持<strong>稳健上线</strong>：经验只调建议、不碰合入门禁，新经验先 shadow A/B 达标才启用（见下节）。唯一的运行期依赖是一个<strong>参数固定的旗舰模型端点</strong>（①生成与③内省用它；端点可靠性见下节坑 1）。</div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <p class="snum">04</p>
+    <h2>三个坑与应对</h2>
+
+    <div class="principle warn"><span class="k">坑 1 · 自定义/自托管端点可靠性（前置风险）</span>
+      TF-GRPO 要跑大量 LLM 调用（分组 rollout × 多轮），PR-Agent 在自定义/自托管端点上有已知问题（配置自定义端点仍回退硬编码模型）。<strong>应对</strong>：把"PR-Agent 在你的自定义端点验证可正常运行"列为<strong>第一道验证关</strong>，不通则整条学习回路不上；且因评审/学习解耦，端点抖动时<strong>学习停摆、评审降级仍可跑</strong>（沿用上一版经验库）。</div>
+
+    <div class="principle warn"><span class="k">坑 2 · 奖励有偏（人审盲区）</span>
+      奖励是"人采纳/合入"，噪声且有偏——TF-GRPO 会优化成"<strong>人爱看的</strong>"而非"<strong>对的</strong>"，可能放大人审盲区。<strong>应对</strong>：(a) advisory-only 下后果可控（不进合入门禁）；(b) 经验<strong>只影响 LLM 建议、不稀释确定性 <code>contract_check</code></strong>——确定性检查不受经验影响，作为固定基准；(c) govern 退役高噪声/低采纳经验 + 人<strong>定期抽检</strong>经验库；(d) 新经验先入"建议池"、需达标才转 active。</div>
+
+    <div class="principle warn"><span class="k">坑 3 · 经验偏离的应对（shadow 先行）</span>
+      经验由模型从人的采纳里蒸馏，难免有偏；为防一条坏经验拉低评审，新经验默认<strong>不直接注入</strong>，先离线对最近 PR 做 A/B（注入 vs 不注入）比采纳率，达标才转 active；小步、可回退；每条经验<strong>留来源 PR 与证据</strong>，可单条停用。</div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <p class="snum">05</p>
+    <h2>与现有件的映射 · 落地次序</h2>
+    <h3>映射</h3>
+    <ul>
+      <li><strong>直接复用</strong>：<code>calibrate</code>（奖励）、<code>govern</code>（退役/门控）——本就为标定与降噪而建，恰是 TF-GRPO 需要的奖励源与控制层。</li>
+      <li><strong>可替换/并存</strong>：你自研的委员会 <code>orchestrator.py</code> 可被 PR-Agent 取代，或两者并存（PR-Agent 出主评审、你的确定性检查与 repo-context 作补充）。</li>
+      <li><strong>保留作基准</strong>：<code>contract_check</code> 确定性检查不受经验影响，是经验出问题时的固定基准。</li>
+    </ul>
+    <h3>落地次序（每步可回退）</h3>
+    <ol>
+      <li><strong>验证端点</strong>：PR-Agent 在你的自定义端点验证可正常运行（坑 1 的关）。</li>
+      <li><strong>挂 advisory、积累奖励信号</strong>：PR-Agent 在活跃仓库真跑两周，<code>calibrate</code> 积累人审裁决信号。</li>
+      <li><strong>离线进化 + shadow</strong>：周期跑 TF-GRPO 产候选经验，<code>govern</code> 门控，A/B 比采纳率（坑 2/3）。</li>
+      <li><strong>达标启用注入</strong>：经验库转 active 注入 PR-Agent；持续由 govern 退役、人抽检。</li>
+    </ol>
+    <div class="principle" style="border-left-color:#0E7C7B;background:#EAF1F4"><span class="k" style="color:#0E7C7B">实现状态（TF-GRPO + 可插拔蒸馏器）</span><code>touchstone/learning_loop.py</code> + 离线测试（共 228 全绿）。已实现：经验库 JSON 读写；<strong>训练-free 计数蒸馏</strong> <code>distill_candidates</code>；<strong>TF-GRPO 全流程</strong> <code>rollout_reviews</code> / <code>score_review</code> / <code>distill_semantic_advantage</code> / <code>_distill_via_llm</code>（旗舰模型经注入的 <code>llm</code> 调用，离线以假 llm 覆盖测试；确定性 contract 检查不进经验，坑 2b）；<code>graduate</code>（shadow A/B 达标 candidate→active）；<code>retire</code>（govern 式退役）；<code>render_injection</code>（仅 active → PR-Agent extra_instructions，明文标 advisory、不进门禁）；单条 <code>disable</code> 可回退；<code>main</code> 入口按是否提供真值集在 TF-GRPO 与计数式之间选择。<strong>生产前置</strong>：一个参数固定的旗舰模型端点（<code>LLM_BASE_URL</code> / <code>LLM_API_KEY</code> / <code>TOUCHSTONE_FLAGSHIP_MODEL</code>）+ 一份历史 PR 真值集（采什么数据、如何从 GitHub 重建见 <code>data-collection-design.html</code>）；端点可靠性见坑 1。<strong>蒸馏器可插拔</strong>：<code>distill(ctx, name)</code> 按名分发、<code>register_distiller</code> 注册自有实现（不必改本文件），<code>_distill_via_llm</code> 的 rollout/score/distill_advantage 三步可注入替换。</div>
+    <div class="principle"><span class="k">一句话</span>一条<strong>无训练的自进化评审回路</strong>：复用开源评审器、用已有标定当奖励、用 TF-GRPO 把"这个仓该挑什么、别挑什么"固化成经验、用 govern 退役坏经验——而人始终持有合入决定权。</div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <p class="snum">06</p>
+    <h2>人能提供什么（人类输入入口）</h2>
+    <p>training-free 的一个独特好处：经验就是一段<strong>人能直接读、直接写的自然语言</strong>，策略模型又冻结不动，所以人不只能提供数据让它学，还能<strong>直接读写它学到的东西</strong>——这是和权重式 RL 最不同的地方（权重式 RL 把数据变成模型权重，学到的东西人读不到、也改不了）。下面列出人能提供的输入及其落点。</p>
+    <table class="tbl">
+      <tr><th>人能提供</th><th>是什么</th><th>落点（已实现 / 设计）</th></tr>
+      <tr><td>手写经验种子</td><td>资深工程师直接写规则（"本仓 @Transactional 标在 private 方法上必报"），入库当 active 或 candidate；解决冷启动</td><td class="mono">seed_experience(source=human)（已实现）；也可写进 best_practices.md / standards.yaml</td></tr>
+      <tr><td>审校候选经验</td><td>读学习回路产出的 candidate，改措辞、合并重复、纠正过度泛化、定作用域、批准或否决</td><td class="mono">candidate→active 生命周期 + disable（已有）；审校界面（设计，建议走 GitHub 评论批准，延续不建库）</td></tr>
+      <tr><td>逐条显式反馈</td><td>对每条意见给 👍/👎、标"误报/已知/漏报"、改风险等级——比自动推断更干净的奖励信号</td><td class="mono">采纳证据最高可信度等级（见 data-collection-design）</td></tr>
+      <tr><td>奖励设计</td><td>命中/噪声/漏报的权重、"算采纳"的判定、这个仓更看重精确率还是召回、标杆评审</td><td class="mono">TOUCHSTONE_W_NOISE / W_MISS + score_review 权重参数（已实现）；标杆评审（设计）</td></tr>
+      <tr><td><strong>红线与禁区</strong></td><td>受保护类型永不许被 suppress（哪怕历史总被忽略）；锁定的经验学习回路不得改写或退役</td><td class="mono">TOUCHSTONE_PROTECTED_TYPES + locked 字段（已实现）</td></tr>
+      <tr><td>真值集挑选与剔除</td><td>手挑评审到位的 PR 当学习样本，剔除人审本身潦草或错了的 PR（坏真值比没有更糟）</td><td class="mono">build_ground_truth 的输入筛选（设计；见 data-collection-design）</td></tr>
+      <tr><td>上线与退役把关</td><td>candidate 过 shadow A/B 后人做最终批准；退役决定人工复核</td><td class="mono">graduate 后人工确认（设计）；disable 已有</td></tr>
+      <tr><td>仓库领域知识</td><td>核心目录、生成/vendored 目录（跳过不评审）、内部发现类型含义、严重度政策、团队约定</td><td class="mono">standards.yaml + 经验作用域（部分已有 + 设计）</td></tr>
+    </table>
+    <h3>具体例子（照着做）</h3>
+    <table class="tbl">
+      <tr><th>输入</th><th>具体例子</th></tr>
+      <tr><td>手写种子</td><td><code>seed_experience(store, "PRA-POSSIBLE_BUG", "emphasize", "本仓 @Transactional 标在 private 方法上要报", repo="acme/pay", stack="java")</code> —— 直接 active 并注入 PR-Agent</td></tr>
+      <tr><td>立红线</td><td><code>TOUCHSTONE_PROTECTED_TYPES=PRA-SECURITY,PRA-POSSIBLE_BUG</code> —— 哪怕历史上人总忽略安全类意见，回路也永不生成"别挑安全问题"的经验</td></tr>
+      <tr><td>锁定经验</td><td>上面那条种子 <code>locked=True</code>（默认）：该类型采纳率一时偏低，<code>retire</code> 也不退役、回路也不改写它的文字</td></tr>
+      <tr><td>调奖励权重</td><td>这个仓对误报敏感 → <code>TOUCHSTONE_W_NOISE=1.0</code>（默认 0.5），噪声扣分翻倍、评审更保守；想少漏报 → <code>TOUCHSTONE_W_MISS=0.5</code></td></tr>
+      <tr><td>审校候选</td><td>回路蒸出 candidate「Deprioritize PRA-TYPO…」→ 人可批准、改作用域只对 <code>docs/</code> 生效、或 <code>disable(store, "suppress:PRA-TYPO")</code> 否决</td></tr>
+      <tr><td>逐条显式反馈</td><td>对 PR-Agent 某条意见点 👎 并回「误报」→ 该 finding 在真值里记为噪声，拉低这类的奖励，下次蒸馏更可能压低它</td></tr>
+      <tr><td>真值集挑选/剔除</td><td>最近 80 个 PR 里手挑 30 个评审到位的当样本，剔掉 3 个只点「LGTM」没细看的（坏真值比没有更糟）</td></tr>
+      <tr><td>仓库领域知识</td><td>在 <code>standards.yaml</code> 标 <code>vendor/</code>、<code>*_pb2.py</code>（生成代码）跳过评审；把 PRA-SECURITY 设为「必看」严重度</td></tr>
+    </table>
+    <h3>案例：10 条手写种子（完整代码见 <code>examples/seed_experiences.py</code>）</h3>
+    <p><code>python examples/seed_experiences.py</code> 即把下面 10 条写入经验库。前 8 条 <code>emphasize</code>（让评审多盯紧、且常被漏），后 2 条 <code>suppress</code>（这个仓历史上人总忽略的噪声）。规则原文写英文（PR-Agent 提示词是英文环境，执行更准）；<code>finding_type</code> 换成你们 PR-Agent 实际输出的类型名。</p>
+    <table class="tbl">
+      <tr><th>finding_type（示意）</th><th>动作</th><th>规则（注入 PR-Agent 的原文）</th><th>说明</th></tr>
+      <tr><td class="mono">PRA-SPRING-TX</td><td>emphasize</td><td>Flag @Transactional on private or self-invoked methods; Spring proxies won't apply the transaction.</td><td>Spring 事务标在 private/自调用上不生效</td></tr>
+      <tr><td class="mono">PRA-ERROR-SWALLOW</td><td>emphasize</td><td>Flag empty catch blocks, or catch blocks that only log and swallow the exception.</td><td>空 catch / 只打日志吞掉异常</td></tr>
+      <tr><td class="mono">PRA-PY-MUTABLE-DEFAULT</td><td>emphasize</td><td>Flag mutable default arguments like def f(x=[]) or x={}; they are shared across calls.</td><td>Python 可变默认参数</td></tr>
+      <tr><td class="mono">PRA-GO-ERRCHECK</td><td>emphasize</td><td>Flag returned errors that are ignored (assigned to _ or not checked).</td><td>Go 把 error 丢弃 / 没检查</td></tr>
+      <tr><td class="mono">PRA-SEC-AUTHZ</td><td>emphasize</td><td>Flag new HTTP handlers or endpoints added without an auth/authorization check.</td><td>新接口缺鉴权</td></tr>
+      <tr><td class="mono">PRA-SEC-SQLI</td><td>emphasize</td><td>Flag SQL built by string concatenation or formatting with request data; require parameterized queries.</td><td>拼接 SQL 注入风险</td></tr>
+      <tr><td class="mono">PRA-SEC-SECRET-LOG</td><td>emphasize</td><td>Flag logging or printing of secrets, tokens, passwords, or full request bodies.</td><td>日志打出密钥/token/请求体</td></tr>
+      <tr><td class="mono">PRA-RELIABILITY-TIMEOUT</td><td>emphasize</td><td>Flag outbound network or DB calls created without an explicit timeout.</td><td>对外调用没设超时</td></tr>
+      <tr><td class="mono">PRA-STYLE-IMPORT</td><td>suppress</td><td>Do not raise import-ordering or formatting nits; the formatter/linter already handles them.</td><td>import 顺序/格式交给 formatter</td></tr>
+      <tr><td class="mono">PRA-DOC-PRIVATE</td><td>suppress</td><td>Do not ask for docstrings on short private helper functions in this repo.</td><td>短的私有小函数不强求注释</td></tr>
+    </table>
+    <div class="principle"><span class="k">用这组种子的两点</span>① <strong>一条经验 = 一个（动作 × finding_type）</strong>：同一类型想表达多点，合并进一条文字，别写两条同 kind+type（后写的会覆盖）。② 安全三类记得设 <code>TOUCHSTONE_PROTECTED_TYPES=PRA-SEC-AUTHZ,PRA-SEC-SQLI,PRA-SEC-SECRET-LOG</code>，防回路反过来学出"别挑安全问题"。写完默认 active+locked：立刻注入评审、且不被回路改写或退役。</div>
+    <div class="principle"><span class="k">schema 与红线</span>经验 schema 加两字段：<code>source</code>（human / tfgrpo / counting，标来源）与 <code>locked</code>（人锁定 → 学习回路不得改写或退役）。<strong>红线是最关键的人类输入</strong>：坑 2 是"人的采纳本身有盲区、回路会忠实放大"，受保护类型（永不 suppress）与锁定经验专门挡这个失败模式，让回路只在人立的边界内学。性价比最高的三样：<strong>手写种子</strong>（冷启动）、<strong>审校候选</strong>（纠偏）、<strong>红线</strong>（防放大盲区）。</div>
+    <div class="principle" style="border-left-color:#0E7C7B;background:#EAF1F4"><span class="k" style="color:#0E7C7B">实现状态</span>已实现并离线测试覆盖：<code>seed_experience</code>；<code>TOUCHSTONE_PROTECTED_TYPES</code>（计数式与 TF-GRPO 两条蒸馏都拦住受保护类型的 suppress）；<code>locked</code>（<code>retire</code> 与 <code>merge_candidates</code> 都尊重，人锁定的经验不被自动退役或改写）；奖励权重 env 可配 + <code>score_review</code> 权重参数。设计、随后做：候选经验审校界面（建议走 GitHub 评论批准）、标杆评审、真值集人工筛选、上线人工最终批准。</div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">Touchstone · 自进化评审学习回路 · v0.9 · 2026-06-23 · 自包含离线文档（内联 SVG，无外部依赖）</div>
+</footer>
+
+</body>
+</html>
