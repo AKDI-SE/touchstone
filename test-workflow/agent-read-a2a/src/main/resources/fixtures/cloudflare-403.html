@@ -1,0 +1,14 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>Just a moment...</title>
+</head>
+<body>
+<div style="font-size:1.6em;color:#444;padding:48px;">
+    此 fixture 模拟 Cloudflare 拦截页面。read-agent 的 StubDocumentReader
+    对 host 包含 "cloudflare" 的 URL 直接返回 doc_type=cloudflare_403，
+    不会读取此文件内容；HtmlDocumentReader（prod）则根据 HTTP 响应头里的
+    server: cloudflare 或 cf-ray 判定。本文件仅作占位与文档说明。
+</div>
+</body>
+</html>

@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>智谱AI 开放平台 · 定价</title>
+    <meta name="author" content="智谱AI">
+    <meta property="og:type" content="website">
+    <!-- 此 fixture 模拟 SPA（React/Vue 客户端渲染）页面：
+         只有空 root div + 脚本标签，jsoup 抓不到任何正文。
+         read-agent 应检测到并返回 doc_type=spa_blocked。 -->
+</head>
+<body>
+<div id="root"></div>
+<div id="app"></div>
+<script src="/static/js/vendor.chunk.js"></script>
+<script src="/static/js/main.bundle.js"></script>
+<script>
+  // 客户端渲染入口（jsoup 不执行 JS，所以正文为空）
+  window.__INITIAL_STATE__ = {};
+  ReactDOM.render(React.createElement(App), document.getElementById('root'));
+</script>
+</body>
+</html>

@@ -1,0 +1,4 @@
+-------------------------------------------------------------------------------
+Test set: com.huawei.ascend.examples.read.a2a.ReadUrlToolTest
+-------------------------------------------------------------------------------
+Tests run: 7, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 2.081 s -- in com.huawei.ascend.examples.read.a2a.ReadUrlToolTest

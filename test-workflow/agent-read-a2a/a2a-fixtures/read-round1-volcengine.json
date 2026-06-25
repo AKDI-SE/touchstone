@@ -1,0 +1,21 @@
+{
+  "jsonrpc": "2.0",
+  "id": "read-r1-pricing",
+  "method": "SendMessage",
+  "params": {
+    "message": {
+      "role": "ROLE_USER",
+      "messageId": "msg-read-r1",
+      "contextId": "session-read-1",
+      "metadata": {
+        "userId": "manual-user",
+        "agentId": "read-agent"
+      },
+      "parts": [
+        {
+          "text": "请抓取 https://www.volcengine.com/docs/240/pricing ，关注豆包 Pro 4K 的输入价格，给我返回定价与摘要"
+        }
+      ]
+    }
+  }
+}

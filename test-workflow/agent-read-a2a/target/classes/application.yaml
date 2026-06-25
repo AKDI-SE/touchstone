@@ -1,0 +1,64 @@
+debug: false
+
+spring:
+  application:
+    name: agent-read-a2a
+  profiles:
+    # Default profile must refuse to boot against real backends. The default profile is
+    # only a guard — operators MUST pass --spring.profiles.active=stub|prod.
+    # When a profile IS active, Spring resolves application-stub.yaml / application-prod.yaml
+    # below to set read-agent.backend accordingly.
+    active: ${SPRING_PROFILES_ACTIVE:prod}
+
+server:
+  port: 13005
+  shutdown: graceful
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+
+agent-runtime:
+  access:
+    a2a:
+      default-tenant-id: deep-research-tenant
+      default-agent-id: read-agent
+
+read-agent:
+  # backend is overridden per-profile (see application-stub.yaml / application-prod.yaml).
+  # prod = real HTTP via HtmlDocumentReader; stub = StubDocumentReader (fixtures, no network).
+  backend: ${READ_AGENT_BACKEND:prod}
+  checkpointer: in-memory
+  llm:
+    model-provider: ${LLM_PROVIDER:openai}
+    api-key:        ${LLM_API_KEY:}
+    api-base:       ${LLM_API_BASE:http://localhost:4000/v1}
+    model-name:     ${LLM_MODEL:gpt-4o-mini}
+    ssl-verify:     ${LLM_SSL_VERIFY:false}
+    max-iterations: 5
+
+logging:
+  level:
+    root: INFO
+    com.huawei.ascend.examples.read: INFO
+    com.huawei.ascend.runtime: INFO
+
+---
+# stub profile — fixtures, no network. Design doc §4.5.
+spring:
+  config:
+    activate:
+      on-profile: stub
+read-agent:
+  backend: stub
+
+---
+# prod profile — real HTTP + real LLM. Design doc §4.5.
+spring:
+  config:
+    activate:
+      on-profile: prod
+read-agent:
+  backend: prod
