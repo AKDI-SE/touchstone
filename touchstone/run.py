@@ -18,14 +18,26 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from urllib.parse import urlparse
 
 from touchstone import orchestrator as C   # 触发 orchestrator.py 的同目录加固导入
+
+
+def _gh_host():
+    """clone 用的 Git host：GITHUB_HOST 优先；否则从 GITHUB_API_URL 推（企业 GHE 的 api 在 <host>/api/v3）。
+    公有 github 的 api host api.github.com → 还原为 github.com。"""
+    h = os.environ.get("GITHUB_HOST")
+    if h:
+        return h
+    host = urlparse(os.environ.get("GITHUB_API_URL", "https://api.github.com")).hostname
+    return "github.com" if host in (None, "api.github.com") else host
 
 
 def _checkout(repo, head_sha, token):
     """浅 clone 到 PR head；返回 (repo_dir, created?)。"""
     d = tempfile.mkdtemp(prefix="touchstone_pr_")
-    url = f"https://{token}@github.com/{repo}.git" if token else f"https://github.com/{repo}.git"
+    host = _gh_host()
+    url = f"https://{token}@{host}/{repo}.git" if token else f"https://{host}/{repo}.git"
     try:
         subprocess.run(["git", "init", "-q", d], check=True, capture_output=True)
         subprocess.run(["git", "-C", d, "remote", "add", "origin", url],

@@ -1,7 +1,15 @@
 """可插拔检查框架 checks.py 的离线测试（无网络：转达/发布用打桩）。"""
+import copy
 import os
 
 import checks
+import stack_rules
+from helpers import build_diff
+
+# 仅 touchstone-rules 一个必填内置检查（避开 relay/网络）
+_ONLY_RULES_CFG = {"gate": {"status_name": "touchstone/gate"},
+                   "checks": [{"name": "touchstone-rules", "type": "builtin",
+                               "plugin": "touchstone-rules", "required": True}]}
 
 
 # ---------------- 配置加载 ----------------
@@ -56,6 +64,39 @@ def test_touchstone_rules_passes_when_clean():
     pr = {"contract_findings": [{"rule_id": "TEST-001", "severity": "warn", "category": "weak_test"}]}
     passed, _ = checks._check_touchstone_rules(pr, {})
     assert passed is True
+
+
+# ---------------- 端到端：确定性栈规则进总闸（F1/F3 回归）----------------
+def test_ctr001_reaches_gate_and_blocks(rule_index):
+    """CTR-001（破坏性契约变更）经 stack_rules 产出 block_candidate，进总闸 → failure。"""
+    diff = build_diff([("src/api/handler.py", ["def breaking(): pass"], True)])
+    sf = stack_rules.check_stack_rules(diff, rule_index)
+    ctr = next(f for f in sf if f["rule_id"] == "CTR-001")
+    assert ctr["severity"] == "block_candidate" and ctr["agent"] == "touchstone-rules"
+    pr = {"owner": "o", "repo": "r", "sha": "s", "token": "t", "files": [], "contract_findings": sf}
+    assert checks.aggregate_gate(checks.run_checks(_ONLY_RULES_CFG, pr)) == "failure"
+
+
+def test_warn_stack_rule_not_enforced_does_not_block(rule_index):
+    """SPR-DI-001（warn、未固化）命中但不阻断——顾问式，仅 enforced 后才拦。"""
+    diff = build_diff([("Svc.java", ["@Autowired", "private Foo foo;"], True)])
+    sf = stack_rules.check_stack_rules(diff, rule_index)
+    di = next(f for f in sf if f["rule_id"] == "SPR-DI-001")
+    assert di["severity"] == "warn"
+    pr = {"owner": "o", "repo": "r", "sha": "s", "token": "t", "files": [], "contract_findings": sf}
+    assert checks.aggregate_gate(checks.run_checks(_ONLY_RULES_CFG, pr)) == "success"
+
+
+def test_enforced_warn_rule_escalates_to_block(rule_index):
+    """被 govern 固化(enforced)的 warn 规则升级为 block_candidate → 阻断。"""
+    ri = copy.deepcopy(rule_index)
+    ri["SPR-DI-001"]["enforced"] = True
+    diff = build_diff([("Svc.java", ["@Autowired", "private Foo foo;"], True)])
+    sf = stack_rules.check_stack_rules(diff, ri)
+    di = next(f for f in sf if f["rule_id"] == "SPR-DI-001")
+    assert di["severity"] == "block_candidate"
+    pr = {"owner": "o", "repo": "r", "sha": "s", "token": "t", "files": [], "contract_findings": sf}
+    assert checks.aggregate_gate(checks.run_checks(_ONLY_RULES_CFG, pr)) == "failure"
 
 
 # ---------------- verify 插件：折入结果 + 可信绿（author 自报规格不算通过）----------

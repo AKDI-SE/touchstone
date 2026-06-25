@@ -17,6 +17,9 @@ MAX_ROUNDS = 3
 _OPEN = "<!-- touchstone-loop:"
 _CLOSE = "-->"
 
+# 正确性类 category（含 PR-Agent 源的 "correctness"）：不进自改循环，交 verify/人。
+_CORRECTNESS_CATEGORIES = {"correctness", "correctness_suspect", "weak_test"}
+
 
 @dataclass
 class LoopState:
@@ -30,12 +33,15 @@ def _sig(f):
 
 
 def author_actionable(findings, rule_index):
-    """可由 author 自改的发现：非正确性类(class!=correctness) 且 有 suggested_fix。"""
+    """可由 author 自改的发现：非正确性类 且 有 suggested_fix。
+    正确性判定双路：① 在册规则的 class==correctness；② 发现自带 category 落在正确性集合
+    （覆盖 PR-Agent 源的 PRA-* 发现——其 rule_id 不在 standards rule_index，单靠 ① 会漏网）。"""
     out = []
     for f in findings:
-        cls = rule_index.get(f.get("rule_id"), {}).get("class")
-        if cls == "correctness":                       # 正确性不靠自改,交 verify/人
-            continue
+        if rule_index.get(f.get("rule_id"), {}).get("class") == "correctness":
+            continue                                   # 在册正确性规则
+        if f.get("category") in _CORRECTNESS_CATEGORIES:
+            continue                                   # PR-Agent 源 correctness（PRA-* 等）
         if not (f.get("suggested_fix") or "").strip():
             continue
         out.append(f)

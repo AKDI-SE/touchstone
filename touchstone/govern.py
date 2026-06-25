@@ -94,15 +94,17 @@ def detect_revert_shas(repo_dir, base_ref, window=200):
 
 
 def build_merge_records(calibration_records, revert_shas):
-    """从 calibration 记录构造熔断输入。auto_handled/approved 用低风险作代理。"""
+    """从 calibration 记录构造熔断输入。auto_handled/approved 取真实 marker（calibrate 从
+    <!-- touchstone:auto_handled --> 重建），不再用 risk_band=='low' 代理——后者会把 autonomy
+    关闭时的低风险人合 PR 误算成自动放行。hotfix 检测尚未接通（仅 git revert 是已接信号）。"""
     recs = []
     for r in calibration_records:
         if not r.get("merged"):
             continue
-        low = r.get("risk_band") == "low"
+        auto = bool(r.get("auto_handled"))
         sha = (r.get("merge_commit_sha") or "")
         reverted = any(sha.startswith(s) or s.startswith(sha[:7]) for s in revert_shas if sha)
-        recs.append({"pr": r.get("pr"), "auto_handled": low, "touchstone_approved": low,
+        recs.append({"pr": r.get("pr"), "auto_handled": auto, "touchstone_approved": auto,
                      "reverted": reverted, "hotfixed": False})
     return recs
 

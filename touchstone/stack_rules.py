@@ -42,10 +42,13 @@ def _ctr_path_match(rule, path):
 
 def _mk(rule_id, rule_index, path, lineno, why):
     r = rule_index.get(rule_id, {})
+    # severity 取自规则：block_candidate（CTR-001/SPR-TX-001/JAVA-EQ-001）立即具备拦截级；
+    # warn 类（SPR-DI/JAVA-EXC/JAVA-LOG）仅在被 govern 固化(enforced=true)后才升为 block_candidate。
+    severity = "block_candidate" if r.get("enforced") else r.get("severity", "warn")
     return {
         "rule_id": rule_id,
         "category": r.get("category", "convention"),
-        "severity": "warn",                 # 顾问式；固化(enforced)后才由 checks 当拦截级
+        "severity": severity,
         "confidence": 0.8,                  # 行级正则 best-effort，非确定 1.0
         "file": path, "line": lineno, "line_start": lineno, "line_end": lineno,
         "agent": "touchstone-rules",

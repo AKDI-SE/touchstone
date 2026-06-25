@@ -42,14 +42,16 @@ STORE_PATH = os.environ.get("TOUCHSTONE_EXPERIENCE", ".touchstone/experience.jso
 #              text, evidence{fires,adoption}, status(candidate/active/retired),
 #              source(human/tfgrpo/counting), locked(bool: 人锁定→回路不得改写/退役),
 #              source_prs[], created_at, updated_at}
-def load_store(path=STORE_PATH):
+def load_store(path=None):
+    path = path or STORE_PATH            # 调用时取，env/monkeypatch 在 import 后改也能生效
     try:
         return json.load(open(path, encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return {"experiences": []}
 
 
-def save_store(store, path=STORE_PATH):
+def save_store(store, path=None):
+    path = path or STORE_PATH
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     json.dump(store, open(path, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
     return store
@@ -413,6 +415,13 @@ def render_injection(store):
     return "\n".join(lines)
 
 
+def active_types(store):
+    """当前 active 经验的 finding_type 列表——即本轮评审会被注入（render_injection）的类型。
+    供 orchestrator 写入 result marker，为未来 shadow A/B 采纳率分臂采集留接口。"""
+    return [e.get("finding_type") for e in (store or {}).get("experiences", [])
+            if e.get("status") == "active" and e.get("finding_type")]
+
+
 def main():
     """离线 cron 入口：读经验库 →（外部已备好 calib_agg / ab_results）→ 蒸馏/达标/退役 → 落盘。
     真实编排（取 calibrate 记录、跑 A/B）在 CI/cron 脚本里组装；此处给最小可跑骨架。"""
@@ -427,6 +436,18 @@ def main():
            "ground_truth": json.load(open(gt_path, encoding="utf-8")) if gt_path else None}
     cands = distill(ctx)          # 按名分发：env TOUCHSTONE_DISTILLER；默认 有真值集→tfgrpo 否则 counting
     merge_candidates(store, cands)
+    # candidate → active（shadow A/B 达标）。ab_results 由 env TOUCHSTONE_AB_RESULTS 指向的 JSON 提供
+    # （calibrate 按 marker 的 injected_types 切臂后产出——该采集到位前，candidate 不自动激活，
+    # 注入由人写 seed 驱动；这是「最小接通 + 诚实」：graduate 已在管线中，但不伪造数据）。
+    ab_path = os.environ.get("TOUCHSTONE_AB_RESULTS")
+    if ab_path and os.path.exists(ab_path):
+        try:
+            grad = graduate(store, json.load(open(ab_path, encoding="utf-8")))
+            print(f"[learn] graduate 达标转 active：{len(grad)} 条 {grad}")
+        except (OSError, json.JSONDecodeError) as e:
+            print(f"[learn] graduate 跳过（A/B 数据无效：{e}）", file=sys.stderr)
+    else:
+        print("[learn] graduate 跳过（无 A/B 数据；当前注入由人写 seed 驱动，自动达标需积累样本）")
     retire(store, agg)
     save_store(store)
     print(f"[learn] 经验库：{sum(1 for e in store['experiences'] if e['status']=='active')} active / "

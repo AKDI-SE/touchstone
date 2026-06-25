@@ -21,6 +21,15 @@ def test_scope_violation_fires(rule_index):
     assert any(f["rule_id"] == "SCOPE-001" for f in finds)
 
 
+def test_scope_placeholder_template_does_not_fire(rule_index):
+    """未填的 pr.yaml 模板（scope 为 <...> 占位符）不应刷屏 SCOPE-001——
+    与 SEC-001 豁免测试文件同类：系统不应因自己的模板/夹具产生假阳性。"""
+    diff = build_diff([("src/a.py", ["x = 1"], True), ("docs/b.md", ["y"], True)])
+    contract = {"scope": ["<path/glob，如 src/parser/**>"]}   # pr.yaml 模板里的占位符
+    finds = cc.check_contract_consistency(diff, contract, rule_index)
+    assert not any(f["rule_id"] == "SCOPE-001" for f in finds)
+
+
 def test_tests_claimed_but_absent_fires(rule_index):
     diff = build_diff([("a/x.py", ["x = 1"], True)])
     contract = {"scope": ["a/**"], "tests_added": ["test_x.py"]}
@@ -50,6 +59,53 @@ def test_standards_has_java_rules(rule_index):
     assert set(java) == {"SPR-DI-001", "SPR-TX-001", "SPR-VAL-001",
                          "JAVA-EQ-001", "JAVA-EXC-001", "JAVA-LOG-001"}
     assert sum(rule_index[r]["machine_checkable"] for r in java) >= 4
+
+
+# ---------------- SEC-001：硬编码密钥/凭据扫描（确定性、离线）----------------
+def test_sec001_detects_hardcoded_secrets(rule_index):
+    diff = build_diff([("src/api/auth.py", [
+        'AWS_KEY = "AKIAIOSFODNN7EXAMPLE"',
+        'token = "ghp_abcdefghijklmnopqrstuvwxyz0123456789AB"',   # 36 chars after ghp_
+        'api_key = "AIzaSyA" + "B" * 29',                        # Google key 形状
+    ], True)])
+    finds = cc.check_contract_consistency(diff, {}, rule_index)
+    sec = [f for f in finds if f["rule_id"] == "SEC-001"]
+    assert sec and all(f["category"] == "security" for f in sec)
+    # 注意：上面的占位值会被 _PLACEHOLDER 过滤；用真值再验一次
+    diff2 = build_diff([("src/c.py", ['TOKEN = "sk-proj-abcd1234efgh5678ijkl9012mnop3456"'], True)])
+    finds2 = cc.check_contract_consistency(diff2, {}, rule_index)
+    assert any(f["rule_id"] == "SEC-001" for f in finds2)
+
+
+def test_sec001_detects_pem_private_key(rule_index):
+    diff = build_diff([("deploy/key.pem", ["-----BEGIN RSA PRIVATE KEY-----", "MIIE..."], True)])
+    finds = cc.check_contract_consistency(diff, {}, rule_index)
+    assert any(f["rule_id"] == "SEC-001" for f in finds)
+
+
+def test_sec001_skips_placeholders(rule_index):
+    diff = build_diff([("src/c.py", [
+        'api_key = "your_api_key_here"',
+        'password = "example-password"',
+        'token = "<replace-me>"',
+    ], True)])
+    finds = cc.check_contract_consistency(diff, {}, rule_index)
+    assert not any(f["rule_id"] == "SEC-001" for f in finds)
+
+
+def test_sec002_injection_not_built_in(rule_index):
+    """SEC-002（SQL/命令注入）依赖外部 SAST，内置扫描器不检出——锁死边界。"""
+    diff = build_diff([("src/q.py", ['sql = "SELECT * FROM u WHERE n=\'" + name + "\'"'], True)])
+    finds = cc.check_contract_consistency(diff, {}, rule_index)
+    assert not any(f["rule_id"] == "SEC-002" for f in finds)
+
+
+def test_sec001_skips_test_file_fixtures(rule_index):
+    """测试文件里的密钥是故意夹具（测扫描器本身），不据此阻断——兑现『宁可漏不误拦』。"""
+    diff = build_diff([("tests/test_secrets.py",
+                        ['token = "ghp_abcdefghijklmnopqrstuvwxyz0123456789AB"'], True)])
+    finds = cc.check_contract_consistency(diff, {}, rule_index)
+    assert not any(f["rule_id"] == "SEC-001" for f in finds)
 
 
 # ---------------- 内联锚定（删除行/超界行降级）----------------

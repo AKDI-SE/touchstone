@@ -41,9 +41,14 @@ def parse_diff(diff_text):
 
 def _finding(rule_id, file, line, category, rationale, fix, rule_index,
              confidence=1.0, severity=None):
+    rule = rule_index.get(rule_id, {})
+    # 显式 severity 优先，否则取规则 severity；被 govern 固化(enforced)的一律升为 block_candidate
+    sev = severity or rule.get("severity", "warn")
+    if rule.get("enforced"):
+        sev = "block_candidate"
     return {
         "rule_id": rule_id, "file": file, "line": line, "category": category,
-        "severity": severity or rule_index.get(rule_id, {}).get("severity", "warn"),
+        "severity": sev,
         "confidence": confidence,        # 确定性核对默认 1.0；纯启发式可下调
         "rationale": rationale, "suggested_fix": fix, "agent": "contract-check",
     }
@@ -54,6 +59,9 @@ def _match_any(path, globs):
 
 
 def check_scope(files, scope, rule_index):
+    # 跳过模板占位符（以 '<' 开头，如未填的 pr.yaml 里 "<path/glob…>"）——
+    # 与 check_tests 同构：占位符不算真实声明，否则会对每个文件刷假阳性 SCOPE-001。
+    scope = [s for s in (scope or []) if s and not str(s).startswith("<")]
     if not scope:
         return []
     return [_finding("SCOPE-001", f, 0, "scope_creep",
@@ -124,11 +132,58 @@ def check_untested_code(files, rule_index):
     return []
 
 
+# --- SEC-001：硬编码密钥/凭据（离线、确定性正则扫描）----------------------------
+# 高精度特征串（已知格式的云/Git 凭据 + PEM 私钥头 + 通用凭据赋值）。
+# SEC-002（SQL/命令注入）是污点分析、需外部 SAST 数据流，不在此——经 checks.yaml relay 接入。
+_SECRET_PATTERNS = [
+    (re.compile(r"AKIA[0-9A-Z]{16}"), "AWS access key id"),
+    (re.compile(r"aws[_-]?secret[_-]?(?:access[_-]?key)?\s*[:=]\s*['\"][A-Za-z0-9/+=]{40}['\"]", re.I),
+     "AWS secret access key"),
+    (re.compile(r"\bgh[pousr]_[A-Za-z0-9]{36}\b"), "GitHub token"),
+    (re.compile(r"\bgithub_pat_[A-Za-z0-9_]{59,}"), "GitHub fine-grained PAT"),
+    (re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b"), "Google API key"),
+    (re.compile(r"-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY-----"), "PEM 私钥"),
+    (re.compile(r"(?:api[_-]?key|secret|token|passwd|password|pwd)\b\s*[:=]\s*['\"]"
+                r"([A-Za-z0-9_\-+/=]{16,})['\"]", re.I), "硬编码凭据赋值"),
+]
+# 占位符/示例值：命中则跳过，压低误报（确定性扫描宁可漏不误拦）。
+_PLACEHOLDER = re.compile(
+    r"(example|sample|changeme|changed?|placeholder|todo|xxxx|<[^>]+>|your[_-]?\w*"
+    r"|_here\b|redacted|test|dummy|fake|replace[_-]?me)", re.I)
+
+
+def check_secrets(added, rule_index):
+    """SEC-001：扫新增行里的硬编码密钥/凭据（确定性、离线）。仅当 SEC-001 在册且 machine_checkable 时生效。
+    产 finding(agent=contract-check, category=security, severity 取自规则=block_candidate) → 自动进确定性门禁。"""
+    rule = rule_index.get("SEC-001", {})
+    if not rule.get("machine_checkable"):
+        return []
+    out = []
+    for path, lines in added.items():
+        if _is_test(path):
+            continue            # 测试文件里的密钥是故意夹具，不据此阻断（真实泄密仍由外部 SAST 兜底）
+        for lineno, text in lines:
+            for pat, label in _SECRET_PATTERNS:
+                m = pat.search(text)
+                if not m:
+                    continue
+                matched = m.group(1) if m.groups() else m.group(0)
+                if _PLACEHOLDER.search(matched):       # 示例/占位值 → 跳过
+                    continue
+                out.append(_finding("SEC-001", path, lineno, "security",
+                                    f"疑似硬编码凭据（{label}）—— 安全红线，凭据应走密钥管理",
+                                    "将凭据移至环境变量/密钥管理服务；代码中勿入硬编码凭据",
+                                    rule_index))
+                break                                   # 一行最多报一条
+    return out
+
+
 def check_contract_consistency(diff_text, contract, rule_index):
-    """确定性核对契约三项声明（需 manifest）+ 无 manifest 也能跑的纯 diff 事实检查。"""
+    """确定性核对契约三项声明（需 manifest）+ 无 manifest 也能跑的纯 diff 事实检查 + SEC-001 密钥扫描。"""
     contract = contract or {}
     files, added = parse_diff(diff_text)
     return (check_scope(files, contract.get("scope"), rule_index)
             + check_tests(files, contract.get("tests_added"), rule_index)
             + check_reuse(added, contract.get("reused_components"), rule_index)
-            + check_untested_code(files, rule_index))
+            + check_untested_code(files, rule_index)
+            + check_secrets(added, rule_index))

@@ -116,6 +116,21 @@ def _human_verdict(reviews, bot_login):
 
 
 # --- 纯聚合（可测）-----------------------------------------------------------
+def _norm_record(r):
+    """归一化两种 CalibrationRecord 形状：main() 经 record_calibration 构造的（touchstone_band/
+    touchstone_findings/human_verdict）与历史 inline 形状（risk_band/findings/human_state）。"""
+    return {
+        "pr": r.get("pr"),
+        "risk_band": r.get("risk_band", r.get("touchstone_band")),
+        "findings": r.get("findings", r.get("touchstone_findings", [])),
+        "human_state": r.get("human_state", r.get("human_verdict")),
+        "finding_adoption": r.get("finding_adoption", []),
+        "merged": r.get("merged"),
+        "merge_commit_sha": r.get("merge_commit_sha"),
+        "auto_handled": r.get("auto_handled"),
+    }
+
+
 def record_calibration(pr, touchstone_output, human_verdict):
     """§4.3（薄封装）：把【单个 PR】的 touchstone 输出与人审裁决组装成一条 CalibrationRecord
     （成员见设计 §3.5：touchstone_findings / touchstone_band / human_verdict / human_flagged / agreement）。
@@ -138,7 +153,9 @@ def record_calibration(pr, touchstone_output, human_verdict):
 
 
 def aggregate(records):
-    """records: [{risk_band, findings:[{rule_id,agent}], human_state, merged}]"""
+    """records: [{risk_band, findings:[{rule_id,agent}], human_state, merged}]（经 _norm_record
+    也接受 record_calibration 的 touchstone_* / human_verdict 形状）。"""
+    records = [_norm_record(r) for r in records]
     def cr(rs):                       # 人"要求改动"比例（CHANGES_REQUESTED）
         n = [r for r in rs if r.get("human_state")]
         return (sum(r["human_state"] == "CHANGES_REQUESTED" for r in n) / len(n)) if n else None
@@ -242,21 +259,22 @@ def main():
         result = _parse_result([c.get("body", "") for c in comments], bot)
         if not result:
             continue                      # 该 PR 没经过 touchstone，跳过
+        # 真实自动放行标记（autonomy.execute_auto_merge 发布的隐藏 marker）；熔断据此归因
+        auto_handled = any("touchstone:auto_handled" in (c.get("body") or "") for c in comments)
         reviews = gh(f"/repos/{owner}/{repo}/pulls/{n}/reviews?per_page=100", token)
         try:
             fa = thread_findings(fetch_review_threads(owner, repo, n, token), bot)
         except (requests.exceptions.RequestException, KeyError, ValueError) as e:
             print(f"[warn] PR #{n} 线程采纳取用失败: {e}", file=sys.stderr)
             fa = []
-        records.append({
-            "pr": n,
-            "risk_band": result.get("risk_band"),
-            "findings": result.get("findings", []),
-            "finding_adoption": fa,
-            "human_state": _human_verdict(reviews, bot),
-            "merged": bool(pr.get("merged_at")),
-            "merge_commit_sha": pr.get("merge_commit_sha"),
-        })
+        # 经 record_calibration 构造（设计 §3.5 的 CalibrationRecord 形状），再追加重建期才有的字段。
+        # aggregate 经 _norm_record 同时消费此形状与历史 inline 形状。
+        hv = _human_verdict(reviews, bot)
+        rec = record_calibration(n, {"findings": result.get("findings", []),
+                                     "risk": {"risk_band": result.get("risk_band")}}, hv)
+        rec.update({"finding_adoption": fa, "merged": bool(pr.get("merged_at")),
+                    "merge_commit_sha": pr.get("merge_commit_sha"), "auto_handled": auto_handled})
+        records.append(rec)
     agg = aggregate(records)
     report = render_report(agg)
     print(report)

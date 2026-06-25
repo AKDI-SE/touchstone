@@ -139,7 +139,7 @@ def ci_verdict(owner, repo, head_sha, token):
 
 
 def post_results(owner, repo, number, head_sha, token, risk, findings, loop_info=None,
-                 change_class=None, diff=None):
+                 change_class=None, diff=None, injected_types=None):
     # (1) 摘要评论——总是成功；顶部附反馈循环状态，底部附隐藏 state marker
     body = render_summary(risk, findings)
     if loop_info:
@@ -153,6 +153,7 @@ def post_results(owner, repo, number, head_sha, token, risk, findings, loop_info
         "verification_decision": risk["verification_decision"],
         "change_class": change_class,
         "loop_decision": (loop_info[0] if loop_info else None),
+        "injected_types": injected_types,          # 本轮注入的经验类型（供未来 shadow A/B 分臂采集）
         "findings": [{"rule_id": f.get("rule_id"), "agent": f.get("agent"),
                       "severity": f.get("severity")} for f in findings],
     }, ensure_ascii=False) + " -->"
@@ -256,7 +257,17 @@ def main():
     cls = autonomy.change_class(risk, findings, sorted(changed_files), rule_index)
     contract_clean = not any(f.get("agent") == "contract-check" for f in findings)
 
-    post_results(owner, repo, number, head_sha, token, risk, findings, loop_info, cls, diff)
+    # 本轮注入的经验类型（学习回路 active 经验）——写入 result marker，供未来 shadow A/B 分臂采集。
+    # 与 review_provider._experience_injection 同源（只读经验库、失败即空）。
+    injected_types = []
+    try:
+        import learning_loop as _ll
+        injected_types = _ll.active_types(_ll.load_store())
+    except Exception:
+        injected_types = []
+
+    post_results(owner, repo, number, head_sha, token, risk, findings, loop_info, cls, diff,
+                 injected_types=injected_types)
 
     # 可插拔检查 → 对外发【一个】总闸状态（策略全在 .touchstone/checks.yaml）。
     # CI 中由独立 gate job 在(可选)verify 之后聚合并发布，此处置 TOUCHSTONE_SKIP_GATE 跳过自发、
@@ -265,8 +276,12 @@ def main():
     if os.environ.get("TOUCHSTONE_SKIP_GATE", "").lower() not in ("1", "true", "yes", "on"):
         try:
             chk_cfg = checks.load_config(os.environ.get("REPO_DIR", "."))
+            # 确定性发现 = contract-check（scope/test/dup/untested/sec）+ touchstone-rules（CTR/SPR/JAVA）。
+            # 注意：之前这里误引了未定义的 contract_findings（NameError，仅因 gate 路径少被走到而隐藏）。
+            det_findings = [f for f in findings
+                            if f.get("agent") in ("contract-check", "touchstone-rules")]
             pr_ctx = {"owner": owner, "repo": repo, "sha": head_sha, "token": token,
-                      "files": sorted(changed_files), "contract_findings": contract_findings}
+                      "files": sorted(changed_files), "contract_findings": det_findings}
             gate, _ = checks.post_gate(pr_ctx, chk_cfg, checks.run_checks(chk_cfg, pr_ctx))
         except (urllib.error.HTTPError, requests.exceptions.RequestException) as e:
             print(f"[info] 总闸跳过: {e}", file=sys.stderr)

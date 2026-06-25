@@ -1,5 +1,6 @@
 """自进化评审学习回路（Phase 2）：经验库 + 训练-free 蒸馏 + shadow达标 + 退役 + 注入。
 全离线、纯函数；TF-GRPO 的 rollout/语义优势内省以注入的假 llm 离线覆盖，真实 A/B 跑批在你的环境做。"""
+import json
 import os
 import learning_loop as L
 
@@ -311,3 +312,51 @@ def test_example_seed_experiences():
     assert sum(e["kind"] == "suppress" for e in exps) == 2
     assert set(m.PROTECTED) <= {e["finding_type"] for e in exps}   # 红线类型都在种子里
     assert "Spring proxies" in m.L.render_injection(store)         # 种子会被注入评审
+
+
+# ---------------- active_types + main() 接通 graduate（F8）----------------
+def test_active_types_returns_only_active():
+    store = {"experiences": [
+        {"finding_type": "PRA-A", "status": "active"},
+        {"finding_type": "PRA-B", "status": "candidate"},
+        {"finding_type": "PRA-C", "status": "retired"},
+        {"finding_type": "PRA-D", "status": "active"}]}
+    assert sorted(L.active_types(store)) == ["PRA-A", "PRA-D"]
+    assert L.active_types({"experiences": []}) == []
+
+
+def _seed_candidate_store(path, ftype="PRA-X"):
+    path.write_text(json.dumps({"experiences": [
+        {"id": f"emphasize:{ftype}", "finding_type": ftype, "kind": "emphasize",
+         "status": "candidate", "locked": False, "source_prs": [], "evidence": {}}]}),
+        encoding="utf-8")
+    return path
+
+
+def test_main_graduates_candidate_when_ab_provided(tmp_path, monkeypatch):
+    store_path = _seed_candidate_store(tmp_path / "exp.json")
+    (tmp_path / "agg.json").write_text(json.dumps({}), encoding="utf-8")   # 无新候选
+    (tmp_path / "ab.json").write_text(json.dumps({"PRA-X": {
+        "with_seen": 25, "with_adopted": 20, "without_seen": 25, "without_adopted": 10}}),
+        encoding="utf-8")                                                    # lift 0.4 ≥ 0.10
+    monkeypatch.setattr(L, "STORE_PATH", str(store_path))
+    monkeypatch.setenv("TOUCHSTONE_CALIB_AGG", str(tmp_path / "agg.json"))
+    monkeypatch.setenv("TOUCHSTONE_AB_RESULTS", str(tmp_path / "ab.json"))
+    monkeypatch.setenv("TOUCHSTONE_DISTILLER", "counting")
+    L.main()
+    e = next(x for x in L.load_store(str(store_path))["experiences"]
+             if x["finding_type"] == "PRA-X")
+    assert e["status"] == "active"                                          # graduate 已接通
+
+
+def test_main_skips_graduate_without_ab(tmp_path, monkeypatch):
+    store_path = _seed_candidate_store(tmp_path / "exp.json")
+    (tmp_path / "agg.json").write_text(json.dumps({}), encoding="utf-8")
+    monkeypatch.setattr(L, "STORE_PATH", str(store_path))
+    monkeypatch.setenv("TOUCHSTONE_CALIB_AGG", str(tmp_path / "agg.json"))
+    monkeypatch.delenv("TOUCHSTONE_AB_RESULTS", raising=False)
+    monkeypatch.setenv("TOUCHSTONE_DISTILLER", "counting")
+    L.main()
+    e = next(x for x in L.load_store(str(store_path))["experiences"]
+             if x["finding_type"] == "PRA-X")
+    assert e["status"] == "candidate"                                       # 无 A/B 数据 → 不自动激活

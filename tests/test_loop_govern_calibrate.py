@@ -25,6 +25,17 @@ def test_loop_correctness_not_author_actionable(rule_index):
     assert dec == "converged"
 
 
+def test_loop_excludes_pra_correctness_findings(rule_index):
+    # PR-Agent "critical bug" → rule_id PRA-CRITICAL_BUG（不在 rule_index），category=correctness
+    # 修复前：单靠 rule_index[rid].class 查不到 → 漏网判可自改；修复后：按 category 排除。
+    pra = {"rule_id": "PRA-CRITICAL_BUG", "file": "f", "line": 1,
+           "category": "correctness", "suggested_fix": "修这个 bug"}
+    assert loop.author_actionable([pra], rule_index) == []
+    conv = {"rule_id": "PRA-CONVENTION", "file": "f", "line": 1,
+            "category": "convention", "suggested_fix": "改名"}
+    assert loop.author_actionable([conv], rule_index) == [conv]
+
+
 def test_loop_escalate_on_oscillation(rule_index):
     st = loop.LoopState(round=1, history=[["OE-001:f:1"]])
     dec, reason, _ = loop.loop_step([_f("OE-001", line=1)], rule_index, st)
@@ -85,6 +96,31 @@ def test_autonomy_drift_computed():
     recs = [{"touchstone_approved": True}] * 10
     out = govern.update_autonomy(recs, prior_approval_rate=0.0)
     assert out["approval_rate"] == 1.0 and out["approval_drift"] == 1.0
+
+
+# ---------------- govern.build_merge_records（读真实 auto_handled marker）----------
+def test_build_merge_records_uses_marker_not_low_risk():
+    records = [
+        {"pr": 1, "merged": True, "risk_band": "low", "merge_commit_sha": "aaa"},            # 低风险但无 marker
+        {"pr": 2, "merged": True, "risk_band": "mid", "merge_commit_sha": "bbb",
+         "auto_handled": True},                                                               # 真实自动放行
+    ]
+    recs = govern.build_merge_records(records, set())
+    by_pr = {r["pr"]: r for r in recs}
+    assert by_pr[1]["auto_handled"] is False      # 不再用 risk_band=='low' 代理
+    assert by_pr[2]["auto_handled"] is True
+    assert all(r["hotfixed"] is False for r in recs)   # hotfix 检测尚未接通（已知）
+
+
+def test_aggregate_consumes_record_calibration_shape():
+    # record_calibration 产 touchstone_*/human_verdict 形状；aggregate 经 _norm_record 应正确消费
+    rec = calibrate.record_calibration(
+        7, {"findings": [{"rule_id": "PRA-X", "agent": "pr-agent:suggestion"}],
+            "risk": {"risk_band": "high"}}, "CHANGES_REQUESTED")
+    agg = calibrate.aggregate([rec])
+    assert agg["total"] == 1 and agg["prs_with_findings"] == 1
+    assert agg["by_risk"]["high"]["count"] == 1
+    assert agg["overall_changes_requested_rate"] == 1.0
 
 
 # ---------------- calibrate.aggregate ----------------

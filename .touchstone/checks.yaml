@@ -12,10 +12,12 @@ checks:
     required: true
 
   # 转达：读你们现有 CI 的单测结果（它在自己流水线跑过，这里只转达结论）
+  # 默认非必填 + 占位 source_check：接入时把 source_check 改成你们真实单测 check 名、
+  # 并把 required 置 true 才计入总闸（否则开箱即用的总闸会因找不到 "unit" 而恒 failure）。
   - name: unit-tests
     type: relay
-    source_check: "unit"          # 改成你们单测 check 的实际名字
-    required: true
+    source_check: "unit"          # ← 改成你们单测 check 的实际名字
+    required: false
 
   # 转达：SonarQube 结论（先不设必须；没接就关掉）
   - name: sonarqube
@@ -25,6 +27,9 @@ checks:
     enabled: false
 
   # 内置：verify 正确性深检（算力够时人按需开）
+  # 注意：verify_change.py 已单独发 touchstone/verify check（success/failure，质量门禁级），
+  # 分支保护通常直接 require 它。本插件仅在你想把 verify 结论【折进】touchstone/gate 总闸时启用——
+  # 二者择一，勿同时 required（否则同一结论被计两次 / 判定不一致）。
   - name: verify
     type: builtin
     plugin: verify

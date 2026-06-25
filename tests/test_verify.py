@@ -19,6 +19,18 @@ def test_select_runner_python_default(tmp_path):
     assert V.select_runner(str(tmp_path), ["x/foo.py"]).lang == "python"
 
 
+def test_select_runner_none_for_unsupported_language(tmp_path):
+    assert V.select_runner(str(tmp_path), ["x/main.go"]) is None
+    assert V.select_runner(str(tmp_path), ["x/app.ts"]) is None
+    assert V.select_runner(str(tmp_path), []) is None          # 空改动也 None，不再误判 python
+
+
+def test_verify_change_unsupported_language_is_neutral(tmp_path):
+    res = V.verify_change(str(tmp_path), {}, ["x/main.go"], "b", "h", "targeted_tests",
+                          {"base_url": "u", "api_key": "k", "model": "m"}, "")
+    assert res.passed is None and res.mode == "unsupported"
+
+
 def test_is_refactor():
     assert V.is_refactor({}, "refactor(openjiuwen): extract memory runtime rail")
     assert V.is_refactor({"intent": "重构 MemoryRuntimeRail"}, "")

@@ -8,11 +8,11 @@
 #   发现归一 normalize(items, nmap) -> [Finding] —— PR-Agent 输出映射成本系统 Finding
 #   裁决映射 map_verdict(findings) -> (findings, risk) —— 出三类判定/风险等级（不做共识）
 #
-# 实现状态（诚实标注）：PR-Agent 的真实端点调用需在你的部署环境实现
-#   PRAgentProvider._invoke_endpoint（CLI 子进程或 HTTP）。本文件可离线测：parse / normalize
+# 实现状态（诚实标注）：orchestrator.py 已直连本模块（自研委员会已退役）——评审主链走
+#   review_provider.fetch → normalize → map_verdict。PR-Agent 的真实端点调用需在你的部署环境
+#   实现 PRAgentProvider._invoke_endpoint（CLI 子进程或 HTTP）；本文件可离线测：parse / normalize
 #   / map_verdict 全是纯函数；fetch 支持把 PR-Agent 原始输出经 pr_ctx['pr_agent_output'] 注入。
-#   切换到本路径（orchestrator.py 用 REVIEW_PROVIDER 开关 + shadow A/B）属下一步，需先在真实环境
-#   验证 PR-Agent 端点与评审质量；在此之前自研委员会仍是默认路径，本模块不改动 orchestrator.py。
+#   REVIEW_PROVIDER 目前仅支持 "pr-agent"（默认）；端点未配置时 orchestrator 降级为只跑确定性核对。
 # ============================================================================
 
 import json
@@ -189,7 +189,8 @@ class PRAgentProvider:
 
 
 def fetch(pr_ctx, provider=None):
-    """按 provider 取评审观察。默认 pr-agent；orchestrator.py 切换路径时由 REVIEW_PROVIDER 控制。"""
+    """按 provider 取评审观察（默认 pr-agent；目前仅此一种，未知 provider 抛错）。
+    orchestrator.review_pr 已直连本函数；REVIEW_PROVIDER 留作未来接入其它评审来源的开关。"""
     provider = provider or os.environ.get("REVIEW_PROVIDER", "pr-agent")
     if provider == "pr-agent":
         return PRAgentProvider().fetch(pr_ctx)
@@ -228,8 +229,10 @@ def normalize(items, nmap=None):
 _HUMAN = {"high": "read+arbitrate", "mid": "read", "low": "skip"}
 
 
-# 影响面严重因子：高风险 + 命中其一 → 升到 full_suite（最强一档，多跑变异）
-_SEVERE_BLAST = {"cross_module_contract", "security_surface", "touches_public_api", "schema"}
+# 影响面严重因子：高风险 + 命中其一 → 升到 full_suite（最强一档，多跑变异）。
+# 仅列 map_verdict 实际会产出（security_surface / cross_module_contract）的因子——
+# 其余（如 touches_public_api / schema）当前无产出路径，不在此避免「看着有、其实空」。
+_SEVERE_BLAST = {"cross_module_contract", "security_surface"}
 
 
 def route(risk):
@@ -238,7 +241,11 @@ def route(risk):
       低/中            → cheap_only（仅廉价信号）
       高               → targeted_tests（生成针对性验收测试 + 覆盖/哨兵）
       高 且 影响面严重 → full_suite（在 targeted 基础上再跑变异测试——最强、最贵的一档）
-    map_verdict 在定级后调用本函数，填入 human_action / verification_decision。"""
+    map_verdict 在定级后调用本函数，填入 human_action / verification_decision。
+
+    注：契约/安全类违例（contract/security category）由【确定性门禁】以 block_candidate
+    severity 拦截，不依赖此处的验证档——验证(verify)只管 correctness（spec-blind 验收测试）。
+    故契约变更落到 mid/cheap_only 不构成漏洞：它的拦截发生在门禁，不在 verify。"""
     band = risk.get("risk_band")
     if band == "high":
         severe = bool(_SEVERE_BLAST & set(risk.get("blast_radius") or []))

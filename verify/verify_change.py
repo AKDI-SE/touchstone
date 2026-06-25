@@ -326,7 +326,9 @@ def select_runner(repo_dir, changed_files):
     if os.path.exists(os.path.join(repo_dir, "pom.xml")) or \
        any(f.endswith(".java") for f in (changed_files or [])):
         return MavenRunner()
-    return PythonRunner()
+    if any(f.endswith(".py") for f in (changed_files or [])):
+        return PythonRunner()
+    return None     # 非 Python/Java：verify 参考实现不支持 → verify_change 给中性结果，不再误生成 pytest
 
 
 def is_refactor(contract, pr_title=""):
@@ -561,6 +563,11 @@ def verify_change(repo_dir, contract, changed_files, base_ref, head_ref,
                                  evidence="cheap_only：仅廉价信号，未生成验收测试")
 
     runner = select_runner(repo_dir, changed_files)
+    if runner is None:
+        return VerificationResult(
+            passed=None, mode="unsupported",
+            evidence="verify 参考实现仅支持 Python(pytest)/Java(Maven)；本仓改动语言不在此列——"
+                     "请跑自有套件或在 select_runner 接入自有 runner。")
     # 纯重构（无新行为，独立验收测试无意义）或语言不支持独立验收测试 → 回归模式
     if mode == "regression_only" or is_refactor(contract, pr_title) or not runner.supports_spec_blind:
         return _verify_regression(repo_dir, runner, changed_files, base_ref, head_ref, mode)

@@ -81,6 +81,23 @@ Java 仓需 `mvn` 可用（JaCoCo 出改动行覆盖、PIT 出变异）；Python
 5. 熔断：govern 检测到回滚率超阈会写 `autonomy-state.json`（tripped），据此关 `AUTONOMY_ENABLED`。
 6. 强烈建议：分支保护把 verify 设为 required check（Phase 1 合入闸），自治才有确定性门禁保障。
 
+## 8. 示范：Touchstone 审自身 PR（dogfooding，证明门禁真能拦）
+
+> 本仓的 PR #2（让确定性门禁真正生效那次修复）就是用 Touchstone 审 Touchstone 自己——
+> 结果总闸先判 **failure**，逼出修复后再判 **success**。这条闭环本身就是「试金石」生效的活证据。
+
+发生了什么：
+1. 初版 PR 推上去 → `touchstone/gate = failure`：内置 SEC-001 密钥扫描把
+   `tests/test_contract.py` 里**测扫描器用的密钥夹具**（`ghp_…`/`AIza…`/PEM）当真实泄密拦了。
+2. 诊断：扫描器工作正常（确实检出了），但**不该把测试夹具当泄密来阻断**——
+   违背扫描器自己声明的「确定性扫描宁可漏不误拦」。
+3. 修复：`check_secrets` 跳过 `_is_test(path)` 的文件（真实泄密仍由外部 SAST 兜底）+ 1 条锁定测试。
+4. 重跑 → `touchstone/gate = success`（`✓ touchstone-rules：22 条建议、无拦截级`）。
+
+含义：门禁**拦下了「看着对、实则误拦」的提交**（似是而非的反面），逼出正确修复后再放行——
+正是系统的立身之本。接入后，拿一个**故意带缺陷**的 PR 跑一遍，看总闸是否如预期 failure，
+是验证你这套 `checks.yaml` + `standards.yaml` 真生效的最快办法。
+
 ## 排错
 - touchstone 不再需要 LLM_*（评审走 PR-Agent）。`缺少 LLM_BASE_URL/...` 仅可能来自（可选）verify——启用 verify 时再设这些变量。
 - 内联评论降级（行不在 diff 内）属正常，不影响摘要与 marker。

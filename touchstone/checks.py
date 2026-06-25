@@ -143,8 +143,9 @@ def post_gate(pr, config, results):
 # ---- 内置插件：touchstone 自带的确定性规则 -----------------------------------
 @builtin("touchstone-rules")
 def _check_touchstone_rules(pr, cfg):
-    """通过 = touchstone 的确定性契约检查没有拦截级发现。
-    拦截级 = 严重度 block_candidate 或风险等级 high 的契约类发现。"""
+    """通过 = 确定性检查（contract-check + touchstone-rules）无拦截级发现。
+    拦截级 = severity == block_candidate（含被 enforce 固化升级的）或 category == contract。
+    severity 由各检查器按规则 severity 计算：block_candidate 规则立即拦截，warn 规则仅 enforced 后拦截。"""
     findings = pr.get("contract_findings") or []
     block = [f for f in findings
              if f.get("severity") == "block_candidate" or f.get("category") == "contract"]
@@ -185,7 +186,9 @@ def main():
     pr = {"owner": owner, "repo": name, "sha": co.get("sha"),
           "token": os.environ.get("GITHUB_TOKEN", ""),
           "files": co.get("changed_files", []),
-          "contract_findings": [f for f in findings if f.get("agent") == "contract-check"]}
+          # 确定性发现 = contract-check（含 SEC-001 密钥）+ touchstone-rules（CTR/SPR/JAVA）
+          "contract_findings": [f for f in findings
+                                if f.get("agent") in ("contract-check", "touchstone-rules")]}
     cfg = load_config(os.environ.get("REPO_DIR", "."))
     gate, _ = post_gate(pr, cfg, run_checks(cfg, pr))
     co["gate"] = gate

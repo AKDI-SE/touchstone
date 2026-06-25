@@ -16,9 +16,11 @@ import urllib.request
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 
-REQUIRED = ["GITHUB_TOKEN", "LLM_BASE_URL", "LLM_API_KEY", "LLM_MODEL"]
-OPTIONAL = ["LLM_TEST_MODEL", "GITHUB_REPOSITORY", "GITHUB_API_URL",
-            "GITHUB_GRAPHQL_URL", "HTTP_PROXY", "HTTPS_PROXY"]
+REQUIRED = ["GITHUB_TOKEN"]
+# LLM_* 仅 verify（独立验收测试，异模型）需要；评审走 PR-Agent（自有端点配置见 .touchstone/pr-agent.yaml），
+# 不需要这些。故不列入 REQUIRED——缺失不阻断 preflight。
+OPTIONAL = ["LLM_BASE_URL", "LLM_API_KEY", "LLM_MODEL", "LLM_TEST_MODEL",
+            "GITHUB_REPOSITORY", "GITHUB_API_URL", "GITHUB_GRAPHQL_URL", "HTTP_PROXY", "HTTPS_PROXY"]
 
 
 def check_config(env):
@@ -27,10 +29,15 @@ def check_config(env):
     for k in REQUIRED:
         v = env.get(k)
         rows.append((k, bool(v), "已设置" if v else "缺失（必需）"))
+    # LLM_* 仅 verify 用；未设不阻断（评审走 PR-Agent），仅给提示
+    missing_llm = [k for k in ("LLM_BASE_URL", "LLM_API_KEY", "LLM_MODEL") if not env.get(k)]
+    if missing_llm:
+        rows.append(("LLM（verify 用）", True,
+                     f"未设置 {missing_llm}——评审不受影响；启用 verify（独立验收测试）时再设"))
     tm = env.get("LLM_TEST_MODEL")
     rows.append(("LLM_TEST_MODEL", True,
                  tm or "未设置（verify 独立验收测试将回落 LLM_MODEL；建议设为异模型）"))
-    # touchstone 模型不应等于 author 模型（异模型是独立验收测试/委员会的前提）
+    # touchstone 模型不应等于 author 模型（异模型是独立验收测试的前提）
     if env.get("LLM_MODEL") and tm and env["LLM_MODEL"] == tm:
         rows.append(("model-diversity", False, "LLM_MODEL == LLM_TEST_MODEL（应不同，避免同源盲点）"))
     # 常见坑：经代理访问公网时代理未配好会 407/挂起
