@@ -157,6 +157,8 @@ def check_secrets(added, rule_index):
         return []
     out = []
     for path, lines in added.items():
+        if _is_test(path):
+            continue            # 测试文件里的密钥是故意夹具，不据此阻断（真实泄密仍由外部 SAST 兜底）
         for lineno, text in lines:
             for pat, label in _SECRET_PATTERNS:
                 m = pat.search(text)

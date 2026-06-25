@@ -125,11 +125,11 @@ python -m touchstone.run --repo owner/name --pr 314 --post
 │   └── run.py                  # 独立入口:python -m touchstone.run --pr N
 ├── verify/
 │   └── verify_change.py        # 质量门禁的核心:独立验收测试 + 改前/改后对比 + 充分性阶梯
-├── tests/                      # 243 个离线用例(无需 LLM / 网络 / 外部服务)
+├── tests/                      # 244 个离线用例(无需 LLM / 网络 / 外部服务)
 └── .github/workflows/          # touchstone.yml · calibrate.yml · govern.yml
 ```
 
-生产代码约 3578 行 / 17 个模块;测试 243 个用例 / 12 个文件,全绿、离线;行覆盖率 83%(核心逻辑模块 85–100%;GitHub API / 子进程 / LLM / CLI 等集成层经 mock 覆盖)。
+生产代码约 3578 行 / 17 个模块;测试 244 个用例 / 12 个文件,全绿、离线;行覆盖率 83%(核心逻辑模块 85–100%;GitHub API / 子进程 / LLM / CLI 等集成层经 mock 覆盖)。
 
 ## 状态与边界(诚实交代)
 

@@ -100,13 +100,13 @@
 <section><div class="wrap">
   <span class="snum">§ 2 · 模块 → 接口 → 测试 对照</span>
   <h2>关键接口与覆盖它的测试</h2>
-  <p class="lede">12 个测试文件、243 个离线用例，覆盖各模块的关键接口。下表给出每个模块对外的主要接口，及主要覆盖它的测试文件。</p>
+  <p class="lede">12 个测试文件、244 个离线用例，覆盖各模块的关键接口。下表给出每个模块对外的主要接口，及主要覆盖它的测试文件。</p>
   <table>
     <tr><th>模块</th><th>关键接口</th><th>主要测试</th><th class="n">用例</th></tr>
     <tr><td><code>orchestrator.py</code></td><td><code>review_pr()</code> · <code>main()</code></td><td>test_review_provider · test_stack_rules · test_contract · test_e2e_smoke</td><td class="n">—</td></tr>
     <tr><td><code>review_provider.py</code></td><td><code>fetch</code> / <code>normalize</code> / <code>map_verdict</code> / <code>route</code></td><td>test_review_provider</td><td class="n">21</td></tr>
     <tr><td><code>stack_rules.py</code></td><td><code>check_stack_rules()</code></td><td>test_stack_rules</td><td class="n">17</td></tr>
-    <tr><td><code>contract_check.py</code></td><td><code>check_contract_consistency()</code> · <code>parse_diff()</code></td><td>test_contract</td><td class="n">22</td></tr>
+    <tr><td><code>contract_check.py</code></td><td><code>check_contract_consistency()</code> · <code>parse_diff()</code></td><td>test_contract</td><td class="n">23</td></tr>
     <tr><td><code>gen_best_practices.py</code></td><td>规则 → <code>best_practices.md</code></td><td>test_gen_best_practices</td><td class="n">6</td></tr>
     <tr><td><code>verify/verify_change.py</code></td><td><code>verify_change</code> · <code>check_adequacy</code> · <code>resolve_acceptance_spec</code> · <code>select_runner</code></td><td>test_verify</td><td class="n">30</td></tr>
     <tr><td><code>loop.py</code></td><td><code>loop_step()</code></td><td>test_loop_govern_calibrate · test_e2e_smoke</td><td class="n">—</td></tr>
@@ -117,7 +117,7 @@
     <tr><td><code>autonomy.py</code></td><td><code>decide_auto_merge()</code> · <code>change_class()</code></td><td>test_autonomy</td><td class="n">24</td></tr>
     <tr><td><code>preflight.py</code></td><td>仓库/凭据预检</td><td>test_preflight</td><td class="n">3</td></tr>
     <tr><td><code>orchestrator.py</code> + 全链路</td><td>端到端冒烟（评审→门禁→自治）</td><td>test_e2e_smoke</td><td class="n">1</td></tr>
-    <tr><td colspan="3" style="text-align:right;font-weight:600">合计</td><td class="n" style="font-weight:700">243</td></tr>
+    <tr><td colspan="3" style="text-align:right;font-weight:600">合计</td><td class="n" style="font-weight:700">244</td></tr>
     <tr><td colspan="4" style="font-size:0.85em;color:#666">注：标 “—” 的模块与它人共享测试文件（loop/govern/calibrate 共 <code>test_loop_govern_calibrate</code> 36 例；orchestrator/ghclient/run.py/preflight/pr_agent_runner 共 <code>test_integration_mock</code> 32 例），不重复计入单行。单行之和 + 共享文件 = 合计。</td></tr>
   </table>
 </div></section>
@@ -130,7 +130,7 @@
   <h3 style="color:var(--primary);font-size:15.5px;margin:18px 0 4px">代码与运行</h3>
   <ul>
     <li><b><code>touchstone-repo.tar.gz</code></b> —— 完整仓库（含 <code>.git</code>，标签 <code>v0.1.0</code>）</li>
-    <li><b>测试套件</b> —— 12 文件 / <b>243 用例全绿、离线</b>（无需 LLM / 网络 / 外部服务）</li>
+    <li><b>测试套件</b> —— 12 文件 / <b>244 用例全绿、离线</b>（无需 LLM / 网络 / 外部服务）</li>
     <li><b><code>.touchstone/</code> 配置与契约</b> —— <code>standards.yaml</code>（规范单一事实源）· <code>checks.yaml</code>（门禁策略）· <code>pr-agent.yaml</code>（归一映射）· <code>acceptance.yaml.example</code>（人核准验收规格模板）· <code>best_practices.md</code>（供 PR-Agent）</li>
     <li><b><code>.github/workflows/</code></b> —— 3 条：<code>touchstone</code> / <code>calibrate</code> / <code>govern</code></li>
   </ul>

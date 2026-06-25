@@ -91,6 +91,14 @@ def test_sec002_injection_not_built_in(rule_index):
     assert not any(f["rule_id"] == "SEC-002" for f in finds)
 
 
+def test_sec001_skips_test_file_fixtures(rule_index):
+    """测试文件里的密钥是故意夹具（测扫描器本身），不据此阻断——兑现『宁可漏不误拦』。"""
+    diff = build_diff([("tests/test_secrets.py",
+                        ['token = "ghp_abcdefghijklmnopqrstuvwxyz0123456789AB"'], True)])
+    finds = cc.check_contract_consistency(diff, {}, rule_index)
+    assert not any(f["rule_id"] == "SEC-001" for f in finds)
+
+
 # ---------------- 内联锚定（删除行/超界行降级）----------------
 _ANCHOR_DIFF = (
     "diff --git a/app/x.py b/app/x.py\n--- a/app/x.py\n+++ b/app/x.py\n"
