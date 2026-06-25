@@ -1,0 +1,11 @@
+com\huawei\ascend\examples\read\a2a\DocumentReader.class
+com\huawei\ascend\examples\read\a2a\ReadAgentConfiguration.class
+com\huawei\ascend\examples\read\a2a\SystemPromptBuilder.class
+com\huawei\ascend\examples\read\a2a\HtmlDocumentReader.class
+com\huawei\ascend\examples\read\a2a\ReadAgentConstants.class
+com\huawei\ascend\examples\read\a2a\StubDocumentReader.class
+com\huawei\ascend\examples\read\a2a\ReadUrlTool.class
+com\huawei\ascend\examples\read\a2a\DocumentReader$ReadDocument$Section.class
+com\huawei\ascend\examples\read\a2a\ReadAgentConfiguration$ReadAgentHandler.class
+com\huawei\ascend\examples\read\a2a\ReadAgentApplication.class
+com\huawei\ascend\examples\read\a2a\DocumentReader$ReadDocument.class

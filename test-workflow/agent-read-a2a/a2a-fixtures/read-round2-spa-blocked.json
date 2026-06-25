@@ -1,0 +1,21 @@
+{
+  "jsonrpc": "2.0",
+  "id": "read-r2-spa",
+  "method": "SendMessage",
+  "params": {
+    "message": {
+      "role": "ROLE_USER",
+      "messageId": "msg-read-r2",
+      "contextId": "session-read-2",
+      "metadata": {
+        "userId": "manual-user",
+        "agentId": "read-agent"
+      },
+      "parts": [
+        {
+          "text": "请抓取 https://spa.bigmodel.cn/pricing ，看看能不能拿到智谱的定价"
+        }
+      ]
+    }
+  }
+}
