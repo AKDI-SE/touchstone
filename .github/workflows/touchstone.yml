@@ -33,7 +33,7 @@ jobs:
       - name: Run review
         id: run
         env:
-          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           LLM_BASE_URL: ${{ secrets.LLM_BASE_URL }}
           LLM_API_KEY:  ${{ secrets.LLM_API_KEY }}
           LLM_MODEL:    ${{ secrets.LLM_MODEL }}      # 应不同于、且不弱于 author 模型
@@ -64,7 +64,7 @@ jobs:
         run: pip install -r requirements.txt
       - name: verify_change
         env:
-          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           LLM_BASE_URL: ${{ secrets.LLM_BASE_URL }}
           LLM_API_KEY:  ${{ secrets.LLM_API_KEY }}
           LLM_TEST_MODEL: ${{ secrets.LLM_TEST_MODEL }}   # 独立验收测试作者：异于 author/touchstone
@@ -106,7 +106,7 @@ jobs:
         continue-on-error: true
       - name: Aggregate & post the single gate
         env:
-          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           REPO_DIR: "."
         run: python touchstone/checks.py    # 发总闸并把含 verify 的结论写回 touchstone-findings.json
@@ -144,7 +144,7 @@ jobs:
         run: cp .touchstone/graduated-classes.json graduated-classes.json 2>/dev/null || echo '{"graduated_classes":[]}' > graduated-classes.json
       - name: Decide & (maybe) auto-merge
         env:
-          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           AUTONOMY_TRIPPED: ${{ vars.AUTONOMY_TRIPPED }}
           AUTONOMY_ENABLED: ${{ vars.AUTONOMY_ENABLED }}
