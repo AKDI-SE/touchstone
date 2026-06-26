@@ -1,0 +1,36 @@
+name: Seed Experiences
+
+on:
+  workflow_dispatch:
+    inputs:
+      seed_file:
+        description: '种子经验文件路径'
+        required: false
+        default: 'examples/seed_experiences.py'
+
+jobs:
+  seed:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run seed
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python ${{ github.event.inputs.seed_file }}

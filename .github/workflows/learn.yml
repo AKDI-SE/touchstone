@@ -1,0 +1,82 @@
+name: Touchstone Learning Loop
+
+on:
+  # 定时触发：每周一凌晨 2:00（UTC）运行
+  schedule:
+    - cron: '0 2 * * 1'
+  # 手动触发：支持 workflow_dispatch 手动运行
+  workflow_dispatch:
+    inputs:
+      force_ground_truth_rebuild:
+        description: '强制重建真值集'
+        required: false
+        default: 'false'
+        type: boolean
+
+jobs:
+  learn:
+    runs-on: ubuntu-latest
+    # 防止多个学习任务同时运行
+    concurrency:
+      group: touchstone-learning
+      cancel-in-progress: true
+
+    permissions:
+      contents: write        # 写入经验库
+      pull-requests: read    # 读取 PR 数据
+      issues: read           # 读取评论/审查数据
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run learning loop
+        id: learn
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LLM_BASE_URL: ${{ secrets.LLM_BASE_URL }}
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          LLM_MODEL: ${{ secrets.LLM_MODEL }}
+          # 旗舰模型（用于 TF-GRPO 的生成与内省）
+          TOUCHSTONE_FLAGSHIP_MODEL: ${{ secrets.TOUCHSTONE_FLAGSHIP_MODEL }}
+          # 可配置参数（从 Variables 读取）
+          TOUCHSTONE_W_NOISE: ${{ vars.TOUCHSTONE_W_NOISE || '0.5' }}
+          TOUCHSTONE_W_MISS: ${{ vars.TOUCHSTONE_W_MISS || '1.0' }}
+          TOUCHSTONE_PROTECTED_TYPES: ${{ vars.TOUCHSTONE_PROTECTED_TYPES || '' }}
+          TOUCHSTONE_LEARNING_ENABLED: ${{ vars.TOUCHSTONE_LEARNING_ENABLED || 'true' }}
+          TOUCHSTONE_SHADOW_ENABLED: ${{ vars.TOUCHSTONE_SHADOW_ENABLED || 'true' }}
+          TOUCHSTONE_GROUND_TRUTH_MIN: ${{ vars.TOUCHSTONE_GROUND_TRUTH_MIN || '10' }}
+          FORCE_REBUILD: ${{ github.event.inputs.force_ground_truth_rebuild || 'false' }}
+        run: |
+          python -m touchstone.learning_loop \
+            --store data/experience_store.json \
+            --ground-truth data/ground_truth.json \
+            --output data/learning_report.json
+
+      - name: Commit experience store if changed
+        if: steps.learn.outputs.changed == 'true'
+        run: |
+          git config user.name "Touchstone Bot"
+          git config user.email "touchstone-bot@users.noreply.github.com"
+          git add data/experience_store.json
+          git commit -m "chore: update experience store [skip ci]" || true
+          git push origin main
+
+      - name: Upload learning report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: learning-report
+          path: data/learning_report.json
