@@ -24,7 +24,13 @@
 import json
 import os
 import re
+import sys
 import time
+
+# 同目录模块（calibrate/ghclient）兼容 -m touchstone.learning_loop 与脚本两种运行方式
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
 
 # --- 阈值（保守：宁可慢些演进，不轻易注入/退役）---------------------------------
 DISTILL_MIN_FIRES   = 8      # 命中样本下限，才考虑蒸馏成候选经验
@@ -35,6 +41,10 @@ GRADUATE_MIN_LIFT   = 0.10   # 注入臂采纳率 - 不注入臂 ≥ 此 → 候
 RETIRE_ADOPT_MAX    = 0.15   # active 经验对应类型采纳率跌破此（且复发）→ 退役（govern 式）
 
 STORE_PATH = os.environ.get("TOUCHSTONE_EXPERIENCE", ".touchstone/experience.json")
+
+# --- 真值集采集（"根据每次人工合入的好坏自己学习"的数据入口）-------------------
+GT_WINDOW = int(os.environ.get("TOUCHSTONE_GT_WINDOW", "30"))   # 重建真值集回看的最近已关闭 PR 数
+GT_DIFF_BUDGET = 8000                                            # 单 PR diff 截断字符预算（喂 TF-GRPO 的上下文）
 
 
 # --- 经验库（JSON 产物，非服务）-------------------------------------------------
@@ -422,37 +432,244 @@ def active_types(store):
             if e.get("status") == "active" and e.get("finding_type")]
 
 
-def main():
-    """离线 cron 入口：读经验库 →（外部已备好 calib_agg / ab_results）→ 蒸馏/达标/退役 → 落盘。
-    真实编排（取 calibrate 记录、跑 A/B）在 CI/cron 脚本里组装；此处给最小可跑骨架。"""
-    import sys
-    store = load_store()
-    agg_path = os.environ.get("TOUCHSTONE_CALIB_AGG")
-    if not agg_path:
-        sys.exit("设置 TOUCHSTONE_CALIB_AGG=calibrate 聚合结果(JSON) 路径")
-    agg = json.load(open(agg_path, encoding="utf-8"))
-    gt_path = os.environ.get("TOUCHSTONE_TFGRPO_GROUNDTRUTH")
-    ctx = {"calib_agg": agg, "store": store, "repo": os.environ.get("REPO_DIR", ""),
-           "ground_truth": json.load(open(gt_path, encoding="utf-8")) if gt_path else None}
-    cands = distill(ctx)          # 按名分发：env TOUCHSTONE_DISTILLER；默认 有真值集→tfgrpo 否则 counting
+# --- 真值集采集：从 GitHub 人审裁决重建（喂 TF-GRPO 的学习信号）-----------------
+#   「根据每次人工合入的好坏自己学习」的数据入口：取最近已关闭 PR，
+#   把【人最终 resolve 了哪些发现线程】→ human_adopted（正例：该类发现值得挑）；
+#   人忽略的 → human_ignored（噪声负例）。PR 级 APPROVED/CHANGES_REQUESTED + 是否合入
+#   作为好坏信号一并记录。复用 calibrate 的 marker 解析与 GraphQL 线程采纳口径，不另建库。
+def _gh_get(path, token, accept="application/vnd.github+json"):
+    """GitHub REST GET（经 ghclient 连接池 + 退避）。accept 以 'diff' 结尾返回文本。"""
+    import ghclient
+    base = os.environ.get("GITHUB_API_URL", "https://api.github.com")
+    return ghclient.request("GET", base + path, token, accept=accept)
+
+
+def _stack_of(filenames):
+    """从改动文件后缀粗判技术栈（仅用于经验按栈归类；不确定 → 空串=通用）。"""
+    exts = {os.path.splitext(f)[1].lower() for f in (filenames or []) if f}
+    if exts & {".java"}:                       return "java"
+    if exts & {".py"}:                         return "python"
+    if exts & {".go"}:                         return "go"
+    if exts & {".ts", ".tsx", ".js", ".jsx"}:  return "typescript"
+    return ""
+
+
+def make_gt_entry(pr_number, repo, stack, summary, diff, touchstone_findings,
+                  resolved_types, human_state, merged):
+    """纯函数：单个 PR → TF-GRPO 真值条目。
+    human_adopted = 人 resolve 了线程的发现类型（正例：值得挑）；
+    human_ignored = touchstone 挑了但人没采纳的（噪声负例）。
+    与 _distill_via_llm 期望的 ground_truth schema 对齐（human_adopted 喂 score_review）。"""
+    adopted = sorted({t for t in (resolved_types or []) if t})
+    ts_types = {(f.get("rule_id") or f.get("finding_type")) for f in (touchstone_findings or [])}
+    ts_types = {t for t in ts_types if t}
+    return {"pr_id": str(pr_number), "repo": repo or "", "stack": stack or "",
+            "summary": summary or "", "diff": diff or "",
+            "human_adopted": adopted,
+            "human_ignored": sorted(ts_types - set(adopted)),
+            "human_state": human_state, "merged": bool(merged)}
+
+
+def build_ground_truth(owner, repo, token, *, window=GT_WINDOW, bot_login=None,
+                       diff_budget=GT_DIFF_BUDGET):
+    """从 GitHub 重建 TF-GRPO 真值集（离线学习的数据入口，需 GITHUB_TOKEN）。
+    复用 calibrate：touchstone 发现来自 <!-- touchstone-result: --> marker；
+    人采纳来自该发现的评审线程被 resolved（GraphQL isResolved）；
+    PR 级好坏来自人审 state(APPROVED/CHANGES_REQUESTED) + 是否合入。
+    返回 [make_gt_entry ...]。任一 PR 取数失败仅跳过该 PR，不中断整体。"""
+    import calibrate as C
+    bot_login = bot_login or os.environ.get("TOUCHSTONE_BOT_LOGIN", "github-actions[bot]")
+    prs = _gh_get(f"/repos/{owner}/{repo}/pulls?state=closed&sort=updated&direction=desc"
+                  f"&per_page={window}", token) or []
+    out = []
+    for pr in prs:
+        n = pr.get("number")
+        if not n:
+            continue
+        try:
+            comments = _gh_get(f"/repos/{owner}/{repo}/issues/{n}/comments?per_page=100", token) or []
+            result = C._parse_result([c.get("body", "") for c in comments], bot_login)
+            if not result:
+                continue                          # 未经过 touchstone 评审，无学习信号
+            ts_findings = result.get("findings", []) or []
+            try:
+                threads = C.parse_review_threads(
+                    C.gql(C._GQL_THREADS, {"owner": owner, "repo": repo, "num": n}, token))
+                fa = C.thread_findings(threads, bot_login)
+            except Exception:
+                fa = []
+            resolved_types = {f.get("rule_id") for f in fa if f.get("resolved")}
+            reviews = _gh_get(f"/repos/{owner}/{repo}/pulls/{n}/reviews?per_page=100", token) or []
+            human_state = C._human_verdict(reviews, bot_login)
+            try:
+                diff = _gh_get(f"/repos/{owner}/{repo}/pulls/{n}", token,
+                               accept="application/vnd.github.v3.diff")
+                if len(diff) > diff_budget:
+                    diff = diff[:diff_budget] + "\n... [diff truncated]"
+            except Exception:
+                diff = ""
+            files = [f.get("filename") for f in
+                     (_gh_get(f"/repos/{owner}/{repo}/pulls/{n}/files?per_page=100", token) or [])]
+            out.append(make_gt_entry(n, repo, _stack_of(files), pr.get("title", ""),
+                                     diff, ts_findings, resolved_types, human_state,
+                                     bool(pr.get("merged_at"))))
+        except Exception as e:
+            print(f"[learn] PR #{n} 取数失败，跳过：{e}", file=sys.stderr)
+            continue
+    return out
+
+
+def _flagship_configured():
+    """旗舰模型端点是否就绪（TF-GRPO 生成/内省用）。缺则自动回退计数式蒸馏。"""
+    return bool(os.environ.get("LLM_BASE_URL") and os.environ.get("LLM_API_KEY")
+                and (os.environ.get("TOUCHSTONE_FLAGSHIP_MODEL") or os.environ.get("LLM_MODEL")))
+
+
+def _parse_cli(argv):
+    import argparse
+    p = argparse.ArgumentParser(prog="touchstone.learning_loop",
+        description="离线自进化学习回路：人审裁决 → 蒸馏候选经验 → 达标激活/退役 → 落盘。")
+    p.add_argument("--store", help=f"经验库路径（默认 {STORE_PATH}）")
+    p.add_argument("--ground-truth", dest="ground_truth",
+                   help="TF-GRPO 真值集 JSON 路径（配合 --build-ground-truth 写入；存在则读）")
+    p.add_argument("--calib-agg", dest="calib_agg",
+                   help="calibrate 聚合结果 JSON（计数式蒸馏 + 退役用；支持 calibration.json 外层）")
+    p.add_argument("--ab-results", dest="ab_results", help="shadow A/B 结果 JSON（candidate→active 门控用）")
+    p.add_argument("--output", help="学习报告输出路径")
+    p.add_argument("--build-ground-truth", dest="build_ground_truth", action="store_true",
+                   help="从 GitHub 人审裁决重建真值集（需 GITHUB_TOKEN / GITHUB_REPOSITORY）")
+    p.add_argument("--window", type=int, default=GT_WINDOW, help="重建真值集时回看的最近已关闭 PR 数")
+    p.add_argument("--distiller", help="蒸馏器名(counting/tfgrpo/自定义)；缺省自动：有真值集+旗舰端点→tfgrpo")
+    return p.parse_args(argv)
+
+
+def main(argv=None):
+    """离线 cron 入口：读经验库 →(按需重建真值集 / 读 calib_agg)→ 蒸馏 → 并入候选 →
+    达标激活 / 退役 → 落盘 + 学习报告 + changed 输出。
+    被测试/库直接调用(argv=None)时走环境变量，保持既有行为；以 -m/脚本带 CLI 参数运行时解析参数。"""
+    if argv is not None:                       # CLI 路径（learn.yml 走这里）
+        a = _parse_cli(argv)
+        store_path = a.store or STORE_PATH
+        gt_path = a.ground_truth
+        agg_path = a.calib_agg or os.environ.get("TOUCHSTONE_CALIB_AGG")
+        ab_path = a.ab_results or os.environ.get("TOUCHSTONE_AB_RESULTS")
+        out_path = a.output
+        build_gt = a.build_ground_truth
+        window = a.window
+        distiller = a.distiller
+    else:                                      # 环境变量路径（库/测试）
+        store_path = STORE_PATH
+        agg_path = os.environ.get("TOUCHSTONE_CALIB_AGG")
+        gt_path = os.environ.get("TOUCHSTONE_TFGRPO_GROUNDTRUTH")
+        ab_path = os.environ.get("TOUCHSTONE_AB_RESULTS")
+        out_path = os.environ.get("TOUCHSTONE_LEARNING_REPORT")
+        build_gt = os.environ.get("TOUCHSTONE_BUILD_GROUND_TRUTH", "").lower() in ("1", "true", "yes")
+        window = GT_WINDOW
+        distiller = None
+
+    report = {"steps": [], "distiller": None, "candidates": 0, "graduated": [],
+              "retired": [], "active": 0, "total": 0, "ground_truth": 0}
+    store = load_store(store_path)
+    before = {(e.get("id"), e.get("status"), e.get("text")) for e in store.get("experiences", [])}
+
+    # ① 真值集：按需从 GitHub 人审裁决重建（"人工合入好坏" → TF-GRPO 学习信号）
+    ground_truth = None
+    if build_gt:
+        token = os.environ.get("GITHUB_TOKEN")
+        repo_full = os.environ.get("GITHUB_REPOSITORY") or ""
+        if token and "/" in repo_full:
+            owner, repo_name = repo_full.split("/", 1)
+            try:
+                ground_truth = build_ground_truth(owner, repo_name, token, window=window)
+                if gt_path:
+                    os.makedirs(os.path.dirname(gt_path) or ".", exist_ok=True)
+                    json.dump(ground_truth, open(gt_path, "w", encoding="utf-8"),
+                              ensure_ascii=False, indent=2)
+                report["steps"].append(f"build_ground_truth: 重建 {len(ground_truth)} 条真值")
+            except Exception as e:
+                report["steps"].append(f"build_ground_truth 失败: {e}")
+        else:
+            report["steps"].append("build_ground_truth 跳过：缺 GITHUB_TOKEN/GITHUB_REPOSITORY")
+    if ground_truth is None and gt_path and os.path.exists(gt_path):
+        try:
+            ground_truth = json.load(open(gt_path, encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            ground_truth = None
+
+    # 真值集下限门控（TOUCHSTONE_GROUND_TRUTH_MIN）：不足则不跑 TF-GRPO，回退计数式
+    gt_min = int(os.environ.get("TOUCHSTONE_GROUND_TRUTH_MIN", "0"))
+    if ground_truth and gt_min and len(ground_truth) < gt_min:
+        report["steps"].append(f"真值集 {len(ground_truth)} < 下限 {gt_min}，TF-GRPO 跳过")
+        ground_truth = None
+    report["ground_truth"] = len(ground_truth or [])
+
+    # ② calibrate 聚合（计数式蒸馏的奖励 + 退役的前提信号）
+    agg = None
+    if agg_path and os.path.exists(agg_path):
+        try:
+            raw = json.load(open(agg_path, encoding="utf-8"))
+            agg = raw.get("aggregate", raw) if isinstance(raw, dict) else raw   # 兼容 calibration.json
+        except (OSError, json.JSONDecodeError):
+            agg = None
+
+    # ③ 蒸馏：有真值集 + 旗舰端点 → TF-GRPO（语义优势）；否则计数式
+    name = distiller or os.environ.get("TOUCHSTONE_DISTILLER")
+    ctx = {"calib_agg": agg or {}, "ground_truth": ground_truth,
+           "store": store, "repo": os.environ.get("REPO_DIR", ""),
+           "stack": os.environ.get("TOUCHSTONE_STACK", "")}
+    if not name:
+        name = "tfgrpo" if (ground_truth and _flagship_configured()) else "counting"
+    try:
+        cands = distill(ctx, name)
+    except RuntimeError as e:                  # 旗舰端点未配置等 → 回退计数式
+        report["steps"].append(f"distill({name}) 失败：{e}（回退 counting）")
+        cands = distill(ctx, "counting")
+        name = "counting"
+    report["distiller"] = name
+    report["candidates"] = len(cands)
     merge_candidates(store, cands)
-    # candidate → active（shadow A/B 达标）。ab_results 由 env TOUCHSTONE_AB_RESULTS 指向的 JSON 提供
-    # （calibrate 按 marker 的 injected_types 切臂后产出——该采集到位前，candidate 不自动激活，
-    # 注入由人写 seed 驱动；这是「最小接通 + 诚实」：graduate 已在管线中，但不伪造数据）。
-    ab_path = os.environ.get("TOUCHSTONE_AB_RESULTS")
+
+    # ④ candidate → active（shadow A/B 达标）
+    ab = None
     if ab_path and os.path.exists(ab_path):
         try:
-            grad = graduate(store, json.load(open(ab_path, encoding="utf-8")))
-            print(f"[learn] graduate 达标转 active：{len(grad)} 条 {grad}")
-        except (OSError, json.JSONDecodeError) as e:
-            print(f"[learn] graduate 跳过（A/B 数据无效：{e}）", file=sys.stderr)
+            ab = json.load(open(ab_path, encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            ab = None
+    if ab:
+        grad = graduate(store, ab)
+        report["graduated"] = grad
+        report["steps"].append(f"graduate 达标转 active：{len(grad)} 条 {grad}")
     else:
-        print("[learn] graduate 跳过（无 A/B 数据；当前注入由人写 seed 驱动，自动达标需积累样本）")
-    retire(store, agg)
-    save_store(store)
-    print(f"[learn] 经验库：{sum(1 for e in store['experiences'] if e['status']=='active')} active / "
-          f"{len(store['experiences'])} 总")
+        report["steps"].append("graduate 跳过（无 A/B 数据；自动达标需积累样本）")
+
+    # ⑤ active → retired（前提不再成立）
+    if agg:
+        retired = retire(store, agg)
+        report["retired"] = retired
+        if retired:
+            report["steps"].append(f"retire 退役：{len(retired)} 条 {retired}")
+
+    save_store(store, store_path)
+    report["active"] = sum(1 for e in store["experiences"] if e["status"] == "active")
+    report["total"] = len(store["experiences"])
+
+    # ⑥ 学习报告 + changed 输出（供 workflow 决定是否提交经验库）
+    if out_path:
+        os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+        json.dump(report, open(out_path, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+    after = {(e.get("id"), e.get("status"), e.get("text")) for e in store.get("experiences", [])}
+    changed = "true" if before != after else "false"
+    gho = os.environ.get("GITHUB_OUTPUT")
+    if gho:
+        with open(gho, "a", encoding="utf-8") as f:
+            f.write(f"changed={changed}\n")
+    print(f"[learn] distiller={name} 候选={report['candidates']} "
+          f"真值={report['ground_truth']} active={report['active']}/{report['total']} changed={changed}")
+    for s in report["steps"]:
+        print(f"[learn] {s}")
+    return report
 
 
 if __name__ == "__main__":
-    main()
+    main(sys.argv[1:])

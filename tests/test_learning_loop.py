@@ -360,3 +360,119 @@ def test_main_skips_graduate_without_ab(tmp_path, monkeypatch):
     e = next(x for x in L.load_store(str(store_path))["experiences"]
              if x["finding_type"] == "PRA-X")
     assert e["status"] == "candidate"                                       # 无 A/B 数据 → 不自动激活
+
+
+# ---------------- 真值集采集：从人工合入裁决重建（build_ground_truth）----------------
+def test_stack_of_infers():
+    assert L._stack_of(["a.py", "b.py"]) == "python"
+    assert L._stack_of(["A.java"]) == "java"
+    assert L._stack_of(["main.go"]) == "go"
+    assert L._stack_of(["x.ts"]) == "typescript"
+    assert L._stack_of(["README.md"]) == ""                                # 不确定 → 通用
+
+
+def test_make_gt_entry_splits_adopted_and_ignored():
+    ts = [{"rule_id": "PRA-A"}, {"rule_id": "PRA-B"}, {"rule_id": "SCOPE-001"}]
+    e = L.make_gt_entry(7, "o/r", "python", "title", "diff", ts,
+                        {"PRA-A"}, "APPROVED", True)
+    assert e["human_adopted"] == ["PRA-A"]                                 # 人 resolve 的 → 正例
+    assert e["human_ignored"] == ["PRA-B", "SCOPE-001"]                    # 挑了但人没采纳 → 噪声负例
+    assert e["pr_id"] == "7" and e["merged"] is True and e["human_state"] == "APPROVED"
+
+
+def test_build_ground_truth_from_human_verdicts(tmp_path, monkeypatch):
+    """离线模拟 GitHub 重建：PR#1 有 touchstone marker + 线程采纳信号；PR#2 无 marker → 跳过。"""
+    import calibrate as C
+    marker = ("<!-- touchstone-result: " + json.dumps(
+        {"findings": [{"rule_id": "PRA-POSSIBLE_BUG"}, {"rule_id": "PRA-TYPO"}]}) + " -->")
+    threads_payload = {"data": {"repository": {"pullRequest": {"reviewThreads": {"nodes": [
+        {"isResolved": True, "comments": {"nodes": [{"author": {"login": "alice"}, "body":
+            "<!-- touchstone-finding: " + json.dumps({"rule_id": "PRA-POSSIBLE_BUG"}) + " -->"}]}},
+        {"isResolved": False, "comments": {"nodes": [{"body":
+            "<!-- touchstone-finding: " + json.dumps({"rule_id": "PRA-TYPO"}) + " -->"}]}},
+    ]}}}}}
+
+    def fake_gh(path, token, accept="application/vnd.github+json"):
+        if "state=closed" in path:
+            return [{"number": 1, "title": "fix bug", "merged_at": "2026-01-01"},
+                    {"number": 2, "title": "docs", "merged_at": None}]
+        if "issues/1/comments" in path:
+            return [{"body": marker}]
+        if "issues/2/comments" in path:
+            return []                                                       # 无 marker → 跳过
+        if "pulls/1/reviews" in path:
+            return [{"state": "APPROVED", "user": {"login": "alice"}}]
+        if "pulls/1/files" in path:
+            return [{"filename": "src/a.py"}]
+        if path.endswith("/pulls/1") and accept.endswith("diff"):
+            return "diff --git a.py"
+        return []
+    monkeypatch.setattr(L, "_gh_get", fake_gh)
+    monkeypatch.setattr(C, "gql", lambda q, v, t: threads_payload if v["num"] == 1 else {"data": {}})
+
+    gt = L.build_ground_truth("o", "r", "tok")
+    assert len(gt) == 1                                                     # PR#2 无 marker 被跳过
+    entry = gt[0]
+    assert entry["pr_id"] == "1" and entry["stack"] == "python"
+    assert entry["human_adopted"] == ["PRA-POSSIBLE_BUG"]                   # 人 resolve 的 → 采纳
+    assert entry["human_ignored"] == ["PRA-TYPO"]                           # 人没采纳 → 噪声
+    assert entry["merged"] is True and entry["human_state"] == "APPROVED"
+
+
+# ---------------- main() 的 CLI 路径（learn.yml 走这里）----------------
+def test_main_cli_path_counting_then_graduate(tmp_path, monkeypatch):
+    store_path = tmp_path / "exp.json"
+    store_path.write_text(json.dumps({"experiences": []}), encoding="utf-8")
+    (tmp_path / "agg.json").write_text(json.dumps(
+        {"by_rule": {"PRA-X": {"fires": 12, "adoption_rate": 0.9}}}), encoding="utf-8")   # 高采纳→emphasize 候选
+    (tmp_path / "ab.json").write_text(json.dumps({"PRA-X": {
+        "with_seen": 25, "with_adopted": 20, "without_seen": 25, "without_adopted": 10}}),
+        encoding="utf-8")                                                    # lift 0.4 ≥ 0.10
+    out_path = tmp_path / "report.json"
+    gho = tmp_path / "gh.txt"
+    monkeypatch.delenv("TOUCHSTONE_DISTILLER", raising=False)
+    monkeypatch.setenv("GITHUB_OUTPUT", str(gho))
+    report = L.main(["--store", str(store_path), "--calib-agg", str(tmp_path / "agg.json"),
+                     "--ab-results", str(tmp_path / "ab.json"), "--output", str(out_path)])
+    assert report["distiller"] == "counting"                                # 无旗舰端点/真值集 → 计数式
+    assert report["candidates"] >= 1
+    e = next(x for x in L.load_store(str(store_path))["experiences"]
+             if x["finding_type"] == "PRA-X")
+    assert e["status"] == "active"                                          # 达标转 active
+    assert json.load(open(out_path, encoding="utf-8"))["candidates"] >= 1   # 学习报告落盘
+    assert "changed=true" in gho.read_text(encoding="utf-8")                # 输出 changed 供 workflow 提交
+
+
+def test_main_cli_build_ground_truth(tmp_path, monkeypatch):
+    store_path = tmp_path / "exp.json"
+    store_path.write_text(json.dumps({"experiences": []}), encoding="utf-8")
+    gt_path = tmp_path / "gt.json"
+    monkeypatch.setenv("GITHUB_TOKEN", "tk")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "o/r")
+    monkeypatch.delenv("TOUCHSTONE_DISTILLER", raising=False)
+    called = {}
+
+    def fake_bgt(owner, repo, token, **kw):
+        called["args"] = (owner, repo)
+        return [{"pr_id": "1", "repo": "o/r", "stack": "python", "summary": "s",
+                 "diff": "d", "human_adopted": ["PRA-A"]}]
+    monkeypatch.setattr(L, "build_ground_truth", fake_bgt)
+    report = L.main(["--store", str(store_path), "--build-ground-truth",
+                     "--ground-truth", str(gt_path)])
+    assert called["args"] == ("o", "r")                                     # 从 GITHUB_REPOSITORY 解析
+    assert report["ground_truth"] == 1                                      # 真值集已采集
+    assert gt_path.exists()                                                 # 并落盘供后续 TF-GRPO 复用
+
+
+def test_main_cli_ground_truth_min_skips_tfgrpo(tmp_path, monkeypatch):
+    """真值集不足下限时，即便有旗舰端点也回退计数式（不伪造 TF-GRPO 数据）。"""
+    store_path = tmp_path / "exp.json"
+    store_path.write_text(json.dumps({"experiences": []}), encoding="utf-8")
+    gt_path = tmp_path / "gt.json"
+    gt_path.write_text(json.dumps([{"pr_id": "1", "human_adopted": ["PRA-A"]}]), encoding="utf-8")
+    monkeypatch.setenv("LLM_BASE_URL", "http://x"); monkeypatch.setenv("LLM_API_KEY", "k")
+    monkeypatch.setenv("TOUCHSTONE_FLAGSHIP_MODEL", "m"); monkeypatch.setenv("TOUCHSTONE_GROUND_TRUTH_MIN", "10")
+    monkeypatch.delenv("TOUCHSTONE_DISTILLER", raising=False)
+    report = L.main(["--store", str(store_path), "--ground-truth", str(gt_path)])
+    assert report["ground_truth"] == 0                                      # 不足下限 → 视作无真值集
+    assert report["distiller"] == "counting"                                # 回退计数式

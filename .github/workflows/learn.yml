@@ -42,10 +42,18 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      # 先校准：从最近已关闭 PR 重建人审裁决，产出 calibration.json（计数式蒸馏的奖励 + 退役信号）
+      - name: Calibrate (produce calibration.json)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CALIBRATE_WINDOW: "50"
+        run: python touchstone/calibrate.py
+
       - name: Run learning loop
         id: learn
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
           LLM_BASE_URL: ${{ secrets.LLM_BASE_URL }}
           LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
           LLM_MODEL: ${{ secrets.LLM_MODEL }}
@@ -56,13 +64,14 @@ jobs:
           TOUCHSTONE_W_MISS: ${{ vars.TOUCHSTONE_W_MISS || '1.0' }}
           TOUCHSTONE_PROTECTED_TYPES: ${{ vars.TOUCHSTONE_PROTECTED_TYPES || '' }}
           TOUCHSTONE_LEARNING_ENABLED: ${{ vars.TOUCHSTONE_LEARNING_ENABLED || 'true' }}
-          TOUCHSTONE_SHADOW_ENABLED: ${{ vars.TOUCHSTONE_SHADOW_ENABLED || 'true' }}
           TOUCHSTONE_GROUND_TRUTH_MIN: ${{ vars.TOUCHSTONE_GROUND_TRUTH_MIN || '10' }}
           FORCE_REBUILD: ${{ github.event.inputs.force_ground_truth_rebuild || 'false' }}
         run: |
           python -m touchstone.learning_loop \
             --store data/experience_store.json \
+            --build-ground-truth \
             --ground-truth data/ground_truth.json \
+            --calib-agg calibration.json \
             --output data/learning_report.json
 
       - name: Commit experience store if changed
@@ -70,8 +79,8 @@ jobs:
         run: |
           git config user.name "Touchstone Bot"
           git config user.email "touchstone-bot@users.noreply.github.com"
-          git add data/experience_store.json
-          git commit -m "chore: update experience store [skip ci]" || true
+          git add data/experience_store.json data/ground_truth.json
+          git commit -m "chore: update experience store + ground truth [skip ci]" || true
           git push origin main
 
       - name: Upload learning report
