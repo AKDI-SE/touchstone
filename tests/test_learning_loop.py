@@ -386,9 +386,9 @@ def test_build_ground_truth_from_human_verdicts(tmp_path, monkeypatch):
     marker = ("<!-- touchstone-result: " + json.dumps(
         {"findings": [{"rule_id": "PRA-POSSIBLE_BUG"}, {"rule_id": "PRA-TYPO"}]}) + " -->")
     threads_payload = {"data": {"repository": {"pullRequest": {"reviewThreads": {"nodes": [
-        {"isResolved": True, "comments": {"nodes": [{"author": {"login": "alice"}, "body":
+        {"isResolved": True, "comments": {"nodes": [{"author": {"login": "github-actions[bot]"}, "body":
             "<!-- touchstone-finding: " + json.dumps({"rule_id": "PRA-POSSIBLE_BUG"}) + " -->"}]}},
-        {"isResolved": False, "comments": {"nodes": [{"body":
+        {"isResolved": False, "comments": {"nodes": [{"author": {"login": "github-actions[bot]"}, "body":
             "<!-- touchstone-finding: " + json.dumps({"rule_id": "PRA-TYPO"}) + " -->"}]}},
     ]}}}}}
 
@@ -397,7 +397,7 @@ def test_build_ground_truth_from_human_verdicts(tmp_path, monkeypatch):
             return [{"number": 1, "title": "fix bug", "merged_at": "2026-01-01"},
                     {"number": 2, "title": "docs", "merged_at": None}]
         if "issues/1/comments" in path:
-            return [{"body": marker}]
+            return [{"body": marker, "user": {"login": "github-actions[bot]"}}]
         if "issues/2/comments" in path:
             return []                                                       # 无 marker → 跳过
         if "pulls/1/reviews" in path:

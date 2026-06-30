@@ -553,7 +553,7 @@ def build_ground_truth(owner, repo, token, *, window=GT_WINDOW, bot_login=None,
             continue
         try:
             comments = _gh_get(f"/repos/{owner}/{repo}/issues/{n}/comments?per_page=100", token) or []
-            result = C._parse_result([c.get("body", "") for c in comments], bot_login)
+            result = C._parse_result(C._trusted_bodies(comments, bot_login), bot_login)
             if not result:
                 continue                          # 未经过 touchstone 评审，无学习信号
             ts_findings = result.get("findings", []) or []

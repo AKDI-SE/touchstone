@@ -86,6 +86,8 @@ def thread_findings(threads, bot_login=None):
     out = []
     for t in threads:
         for c in t.get("comments", []):
+            if not _is_trusted_marker_author(c.get("author") or "", bot_login):
+                continue            # 信任根：只认 touchstone 自己发的 finding marker（防伪造）
             m = _FINDING.search(c.get("body") or "")
             if not m:
                 continue
@@ -129,6 +131,19 @@ def _human_verdict(reviews, bot_login):
         if s in ("APPROVED", "CHANGES_REQUESTED"):
             state = s
     return state
+
+
+def _is_trusted_marker_author(login, bot_login):
+    """marker 信任根：只认 touchstone 自己（PAT 身份或 [bot] 后缀）发的评论里的 marker。
+    防 PR author/任意评论者发假 <!-- touchstone-result/finding/auto_handled --> marker 伪造
+    校准/学习/熔断数据——这是整个自学习闭环的信任根。"""
+    return bool(login) and (login == bot_login or login.endswith("[bot]"))
+
+
+def _trusted_bodies(comments, bot_login):
+    """只取 trusted 作者的评论 body（供 _parse_result / auto_handled 等 marker 解析）。"""
+    return [c.get("body", "") for c in comments
+            if _is_trusted_marker_author((c.get("user") or {}).get("login", ""), bot_login)]
 
 
 # --- 纯聚合（可测）-----------------------------------------------------------
@@ -272,11 +287,11 @@ def main():
     for pr in prs:
         n = pr["number"]
         comments = gh(f"/repos/{owner}/{repo}/issues/{n}/comments?per_page=100", token)
-        result = _parse_result([c.get("body", "") for c in comments], bot)
+        result = _parse_result(_trusted_bodies(comments, bot), bot)
         if not result:
             continue                      # 该 PR 没经过 touchstone，跳过
-        # 真实自动放行标记（autonomy.execute_auto_merge 发布的隐藏 marker）；熔断据此归因
-        auto_handled = any("touchstone:auto_handled" in (c.get("body") or "") for c in comments)
+        # 真实自动放行标记（autonomy.execute_auto_merge 发布的隐藏 marker）；只信 bot 发的（防伪造）
+        auto_handled = any("touchstone:auto_handled" in b for b in _trusted_bodies(comments, bot))
         reviews = gh(f"/repos/{owner}/{repo}/pulls/{n}/reviews?per_page=100", token)
         try:
             fa = thread_findings(fetch_review_threads(owner, repo, n, token), bot)

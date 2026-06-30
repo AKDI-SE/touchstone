@@ -347,9 +347,9 @@ _RESULT_MARKER = ("<!-- touchstone-result: " +
 
 def test_calibrate_pure_parsers():
     data = {"data": {"repository": {"pullRequest": {"reviewThreads": {"nodes": [
-        {"isResolved": True, "comments": {"nodes": [{"author": {"login": "a"}, "body": _FINDING_MARKER}]}}]}}}}}
+        {"isResolved": True, "comments": {"nodes": [{"author": {"login": "github-actions[bot]"}, "body": _FINDING_MARKER}]}}]}}}}}
     threads = CAL.parse_review_threads(data)
-    assert threads[0]["isResolved"] and threads[0]["comments"][0]["author"] == "a"
+    assert threads[0]["isResolved"] and threads[0]["comments"][0]["author"] == "github-actions[bot]"
     tf = CAL.thread_findings(threads)
     assert tf[0]["rule_id"] == "R" and tf[0]["resolved"] is True
     assert CAL._parse_result([_RESULT_MARKER], "bot")["risk_band"] == "low"
@@ -378,7 +378,7 @@ def test_calibrate_main(monkeypatch, tmp_path, capsys):
         if "/pulls?state=closed" in path:
             return [{"number": 1, "merged_at": "t", "merge_commit_sha": "sha"}]
         if "/issues/1/comments" in path:
-            return [{"body": _RESULT_MARKER}]
+            return [{"body": _RESULT_MARKER, "user": {"login": "github-actions[bot]"}}]
         if "/pulls/1/reviews" in path:
             return [{"user": {"login": "alice"}, "state": "APPROVED"}]
         return []
