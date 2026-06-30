@@ -61,9 +61,13 @@ def load_store(path=None):
 
 
 def save_store(store, path=None):
+    """原子写入：先写 .tmp 再 os.replace（崩溃/取消不留半文件→不静默清空经验库）。"""
     path = path or STORE_PATH
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    json.dump(store, open(path, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(store, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, path)
     return store
 
 

@@ -16,6 +16,7 @@ import ast
 import json
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 import urllib.request
@@ -121,15 +122,25 @@ def generate_spec_blind_tests(acceptance_criteria, interface, llm_cfg, framework
 
 # --- git worktree：物化某 ref 到临时目录 -------------------------------------
 def _worktree(repo_dir, ref):
+    """git worktree add；失败时清临时目录 + prune（防泄漏）。"""
     dest = tempfile.mkdtemp(prefix="touchstone_wt_")
-    subprocess.run(["git", "-C", repo_dir, "worktree", "add", "--detach", dest, ref],
-                   check=True, capture_output=True)
+    try:
+        subprocess.run(["git", "-C", repo_dir, "worktree", "add", "--detach", dest, ref],
+                       check=True, capture_output=True)
+    except Exception:
+        shutil.rmtree(dest, ignore_errors=True)
+        subprocess.run(["git", "-C", repo_dir, "worktree", "prune"], capture_output=True)
+        raise
     return dest
 
 
 def _rm_worktree(repo_dir, dest):
-    subprocess.run(["git", "-C", repo_dir, "worktree", "remove", "--force", dest],
-                   capture_output=True)
+    """git worktree remove；失败兜底 rmtree + prune。"""
+    r = subprocess.run(["git", "-C", repo_dir, "worktree", "remove", "--force", dest],
+                       capture_output=True)
+    if r.returncode != 0:
+        shutil.rmtree(dest, ignore_errors=True)
+        subprocess.run(["git", "-C", repo_dir, "worktree", "prune"], capture_output=True)
 
 
 # --- 跑生成测试（LANG RUNNER）。返回 (passed, output) -------------------------
@@ -139,7 +150,7 @@ def _run_tests(work_dir, test_code):
         f.write(test_code)
     try:
         r = subprocess.run(["python", "-m", "pytest", "-q", "_touchstone_spec_test.py"],
-                           cwd=work_dir, capture_output=True, text=True, timeout=TEST_TIMEOUT)
+                           cwd=work_dir, capture_output=True, encoding="utf-8", errors="replace", timeout=TEST_TIMEOUT)
         return r.returncode == 0, (r.stdout + r.stderr)[-2000:]
     except subprocess.TimeoutExpired:
         return False, "timeout"
@@ -159,9 +170,9 @@ def _changed_file_coverage(work_dir, test_code, changed_files, changed_lines=Non
     try:
         subprocess.run(["python", "-m", "coverage", "run", "--source=.",
                        "-m", "pytest", "-q", "_touchstone_spec_test.py"],
-                       cwd=work_dir, capture_output=True, text=True, timeout=TEST_TIMEOUT)
+                       cwd=work_dir, capture_output=True, encoding="utf-8", errors="replace", timeout=TEST_TIMEOUT)
         cj = subprocess.run(["python", "-m", "coverage", "json", "-o", "-"],
-                           cwd=work_dir, capture_output=True, text=True)
+                           cwd=work_dir, capture_output=True, encoding="utf-8", errors="replace")
         data = json.loads(cj.stdout) if cj.stdout.strip().startswith("{") else {}
         if changed_lines:                                  # 改动行级（优先）
             return _coverage_json_line_ratio(data, changed_lines)
@@ -258,7 +269,7 @@ def _mutation_check(work_dir, test_code, changed_files):
 # ============================================================================
 def _run(cmd, work_dir, timeout=TEST_TIMEOUT):
     try:
-        r = subprocess.run(cmd, cwd=work_dir, capture_output=True, text=True, timeout=timeout)
+        r = subprocess.run(cmd, cwd=work_dir, capture_output=True, encoding="utf-8", errors="replace", timeout=timeout)
         return r.returncode == 0, (r.stdout + r.stderr)[-2000:]
     except subprocess.TimeoutExpired:
         return False, "timeout"
@@ -403,9 +414,9 @@ def _suite_coverage_python(work_dir, changed_files, changed_lines=None):
         return 1.0
     try:
         subprocess.run(["python", "-m", "coverage", "run", "--source=.", "-m", "pytest", "-q"],
-                       cwd=work_dir, capture_output=True, text=True, timeout=TEST_TIMEOUT)
+                       cwd=work_dir, capture_output=True, encoding="utf-8", errors="replace", timeout=TEST_TIMEOUT)
         cj = subprocess.run(["python", "-m", "coverage", "json", "-o", "-"],
-                            cwd=work_dir, capture_output=True, text=True)
+                            cwd=work_dir, capture_output=True, encoding="utf-8", errors="replace")
         data = json.loads(cj.stdout) if cj.stdout.strip().startswith("{") else {}
         if changed_lines:
             return _coverage_json_line_ratio(data, changed_lines)
@@ -444,7 +455,7 @@ def parse_changed_lines(diff_text):
 def _changed_lines(repo_dir, base_ref, head_ref):
     try:
         r = subprocess.run(["git", "-C", repo_dir, "diff", "--unified=0", base_ref, head_ref],
-                           capture_output=True, text=True, timeout=60)
+                           capture_output=True, encoding="utf-8", errors="replace", timeout=60)
         return parse_changed_lines(r.stdout) if r.returncode == 0 else {}
     except (subprocess.SubprocessError, OSError):
         return {}
@@ -648,7 +659,7 @@ if __name__ == "__main__":
                               ".touchstone/pr.yaml"), encoding="utf-8")) or {}
     changed = subprocess.run(["git", "-C", repo, "diff", "--name-only",
                              f"{base_ref}..{head_ref}"],
-                            capture_output=True, text=True).stdout.split()
+                            capture_output=True, encoding="utf-8", errors="replace").stdout.split()
     res = verify_change(repo, contract, changed, base_ref, head_ref, mode,
                         {"base_url": base_url, "api_key": api_key, "model": model},
                         os.environ.get("PR_TITLE", ""))
