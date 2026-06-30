@@ -38,8 +38,10 @@ jobs:
           LLM_API_KEY:  ${{ secrets.LLM_API_KEY }}
           LLM_MODEL:    ${{ secrets.LLM_MODEL }}      # 应不同于、且不弱于 author 模型
           TOUCHSTONE_SKIP_GATE: "true"                 # 不自发总闸：由下方 gate job 在(可选)verify 之后统一发
-          TOUCHSTONE_STORE_PATH: "data/experience_store.json"
-          TOUCHSTONE_EXPERIENCE_ENABLED: "true"
+          # 经验库路径：必须用 learning_loop 认的 env 名 TOUCHSTONE_EXPERIENCE（不是 STORE_PATH），
+          # 否则评审侧 load_store() 读不到 learn.yml 维护的 data/experience_store.json。
+          TOUCHSTONE_EXPERIENCE: "data/experience_store.json"
+          TOUCHSTONE_EXPERIENCE_ENABLED: "true"         # 评审路径注入开关（review_provider._experience_injection 认）
         run: python touchstone/orchestrator.py
       - name: Upload findings (校准入口 + gate/auto_merge 组装输入)
         if: always()

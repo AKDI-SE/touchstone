@@ -123,7 +123,10 @@ def _provider_mode(pr_ctx):
 
 def _experience_injection(repo_dir):
     """学习回路的 active 经验 → PR-Agent extra_instructions（只读、可空、失败即空）。
-    符合"评审路径只读经验库"的边界；经验只调建议、不进闸。"""
+    符合"评审路径只读经验库"的边界；经验只调建议、不进闸。
+    TOUCHSTONE_EXPERIENCE_ENABLED=false 时整体关闭注入（默认开）。"""
+    if os.environ.get("TOUCHSTONE_EXPERIENCE_ENABLED", "true").lower() not in ("1", "true", "yes", "on"):
+        return ""
     try:
         import learning_loop
         return learning_loop.render_injection(learning_loop.load_store()) or ""

@@ -432,6 +432,32 @@ def active_types(store):
             if e.get("status") == "active" and e.get("finding_type")]
 
 
+def aggregate_ab(ground_truth):
+    """从真值集算 shadow A/B 的每类型采纳率分臂（graduate 用，无需外部 --ab-results 文件）。
+    with 臂 = 该类型【被注入过经验】的那批 PR；without 臂 = 未注入的那批。
+    seen = 该类型被 touchstone 挑过的 PR 数；adopted = 其中人 resolve 了该类型的 PR 数。
+    返回 graduate 期望的 {finding_type: {with_seen, with_adopted, without_seen, without_adopted}}。
+    注意：注入臂需先有 active 经验实际注入过（result marker 的 injected_types）才非空——
+    冷启动期（从未注入过）with 臂为 0，graduate 因 ws<下限而跳过，属预期：需先靠 seed 注入积累。"""
+    arms = {}
+    for pr in ground_truth or []:
+        injected = {t for t in (pr.get("injected_types") or []) if t}
+        raised = {t for t in (pr.get("raised_types") or []) if t}
+        adopted = {t for t in (pr.get("human_adopted") or []) if t}
+        for ftype in raised:
+            a = arms.setdefault(ftype, {"with_seen": 0, "with_adopted": 0,
+                                        "without_seen": 0, "without_adopted": 0})
+            if ftype in injected:
+                a["with_seen"] += 1
+                if ftype in adopted:
+                    a["with_adopted"] += 1
+            else:
+                a["without_seen"] += 1
+                if ftype in adopted:
+                    a["without_adopted"] += 1
+    return arms
+
+
 # --- 真值集采集：从 GitHub 人审裁决重建（喂 TF-GRPO 的学习信号）-----------------
 #   「根据每次人工合入的好坏自己学习」的数据入口：取最近已关闭 PR，
 #   把【人最终 resolve 了哪些发现线程】→ human_adopted（正例：该类发现值得挑）；
@@ -455,10 +481,12 @@ def _stack_of(filenames):
 
 
 def make_gt_entry(pr_number, repo, stack, summary, diff, touchstone_findings,
-                  resolved_types, human_state, merged):
+                  resolved_types, human_state, merged, injected_types=None):
     """纯函数：单个 PR → TF-GRPO 真值条目。
     human_adopted = 人 resolve 了线程的发现类型（正例：值得挑）；
     human_ignored = touchstone 挑了但人没采纳的（噪声负例）。
+    raised_types = 本 PR touchstone 挑过的类型（A/B 分臂的 seen 基数）；
+    injected_types = 本 PR 评审时注入了哪些经验类型（来自 result marker；A/B 分臂的 with/without 依据）。
     与 _distill_via_llm 期望的 ground_truth schema 对齐（human_adopted 喂 score_review）。"""
     adopted = sorted({t for t in (resolved_types or []) if t})
     ts_types = {(f.get("rule_id") or f.get("finding_type")) for f in (touchstone_findings or [])}
@@ -467,6 +495,8 @@ def make_gt_entry(pr_number, repo, stack, summary, diff, touchstone_findings,
             "summary": summary or "", "diff": diff or "",
             "human_adopted": adopted,
             "human_ignored": sorted(ts_types - set(adopted)),
+            "raised_types": sorted(ts_types),
+            "injected_types": sorted({t for t in (injected_types or []) if t}),
             "human_state": human_state, "merged": bool(merged)}
 
 
@@ -512,7 +542,8 @@ def build_ground_truth(owner, repo, token, *, window=GT_WINDOW, bot_login=None,
                      (_gh_get(f"/repos/{owner}/{repo}/pulls/{n}/files?per_page=100", token) or [])]
             out.append(make_gt_entry(n, repo, _stack_of(files), pr.get("title", ""),
                                      diff, ts_findings, resolved_types, human_state,
-                                     bool(pr.get("merged_at"))))
+                                     bool(pr.get("merged_at")),
+                                     injected_types=result.get("injected_types")))
         except Exception as e:
             print(f"[learn] PR #{n} 取数失败，跳过：{e}", file=sys.stderr)
             continue
@@ -629,13 +660,16 @@ def main(argv=None):
     report["candidates"] = len(cands)
     merge_candidates(store, cands)
 
-    # ④ candidate → active（shadow A/B 达标）
+    # ④ candidate → active（shadow A/B 达标）。无显式 ab 文件时，自动从真值集算 A/B。
     ab = None
     if ab_path and os.path.exists(ab_path):
         try:
             ab = json.load(open(ab_path, encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             ab = None
+    if ab is None and ground_truth:
+        ab = aggregate_ab(ground_truth)            # 按每 PR 的 injected_types 切 with/without 两臂
+        report["steps"].append(f"aggregate_ab: 从 {len(ground_truth)} 条真值切 A/B（注入臂需积累才有效）")
     if ab:
         grad = graduate(store, ab)
         report["graduated"] = grad

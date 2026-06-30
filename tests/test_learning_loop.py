@@ -476,3 +476,47 @@ def test_main_cli_ground_truth_min_skips_tfgrpo(tmp_path, monkeypatch):
     report = L.main(["--store", str(store_path), "--ground-truth", str(gt_path)])
     assert report["ground_truth"] == 0                                      # 不足下限 → 视作无真值集
     assert report["distiller"] == "counting"                                # 回退计数式
+
+
+# ---------------- aggregate_ab + 自动 graduate（修复 N2 接线）----------------
+def test_make_gt_entry_carries_injected_and_raised():
+    ts = [{"rule_id": "PRA-A"}, {"rule_id": "PRA-B"}]
+    e = L.make_gt_entry(1, "o/r", "python", "t", "d", ts, {"PRA-A"}, "APPROVED", True,
+                        injected_types=["PRA-A", "PRA-C"])
+    assert e["raised_types"] == ["PRA-A", "PRA-B"]
+    assert e["injected_types"] == ["PRA-A", "PRA-C"]
+
+
+def test_aggregate_ab_splits_by_injection():
+    gt = [
+        {"raised_types": ["PRA-A"], "injected_types": ["PRA-A"], "human_adopted": ["PRA-A"]},
+        {"raised_types": ["PRA-A"], "injected_types": [], "human_adopted": []},
+        {"raised_types": ["PRA-B"], "injected_types": [], "human_adopted": []},
+    ]
+    ab = L.aggregate_ab(gt)
+    assert ab["PRA-A"] == {"with_seen": 1, "with_adopted": 1,
+                           "without_seen": 1, "without_adopted": 0}
+    assert ab["PRA-B"] == {"with_seen": 0, "with_adopted": 0,
+                           "without_seen": 1, "without_adopted": 0}
+    assert L.aggregate_ab([]) == {}
+
+
+def test_main_auto_graduates_from_ground_truth(tmp_path, monkeypatch):
+    """无 --ab-results 时，main 自动从 ground_truth 的 injected_types 算 A/B → graduate。"""
+    store_path = tmp_path / "exp.json"
+    store_path.write_text(json.dumps({"experiences": [
+        {"id": "emphasize:PRA-X", "finding_type": "PRA-X", "kind": "emphasize",
+         "status": "candidate", "locked": False, "source_prs": [], "evidence": {}}]}),
+        encoding="utf-8")
+    gt_path = tmp_path / "gt.json"
+    gt = ([{"pr_id": str(i), "raised_types": ["PRA-X"], "injected_types": ["PRA-X"],
+            "human_adopted": ["PRA-X"]} for i in range(25)] +                 # 注入臂：全采纳
+          [{"pr_id": str(100 + i), "raised_types": ["PRA-X"], "injected_types": [],
+            "human_adopted": []} for i in range(25)])                          # 对照臂：全未采纳
+    gt_path.write_text(json.dumps(gt), encoding="utf-8")
+    monkeypatch.delenv("TOUCHSTONE_DISTILLER", raising=False)
+    monkeypatch.delenv("LLM_BASE_URL", raising=False)
+    report = L.main(["--store", str(store_path), "--ground-truth", str(gt_path)])
+    e = next(x for x in L.load_store(str(store_path))["experiences"] if x["finding_type"] == "PRA-X")
+    assert e["status"] == "active"                                            # 自动 A/B → 达标激活
+    assert any("aggregate_ab" in s for s in report["steps"])
