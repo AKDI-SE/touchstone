@@ -520,3 +520,46 @@ def test_main_auto_graduates_from_ground_truth(tmp_path, monkeypatch):
     e = next(x for x in L.load_store(str(store_path))["experiences"] if x["finding_type"] == "PRA-X")
     assert e["status"] == "active"                                            # 自动 A/B → 达标激活
     assert any("aggregate_ab" in s for s in report["steps"])
+
+
+# ---------------- 健壮性：I3 矛盾消解 / I4 退化组 / I2 真迭代 ----------------
+def test_render_injection_drops_contradictory_same_type():
+    """I3：同 finding_type 的 emphasize + suppress 都 active → 矛盾，两者都不注入。"""
+    store = {"experiences": [
+        {"finding_type": "PRA-X", "kind": "emphasize", "status": "active", "text": "do X"},
+        {"finding_type": "PRA-X", "kind": "suppress",  "status": "active", "text": "dont X"},
+        {"finding_type": "PRA-Y", "kind": "emphasize", "status": "active", "text": "do Y"}]}
+    inj = L.render_injection(store)
+    assert "do Y" in inj                                        # 无冲突的保留
+    assert "do X" not in inj and "dont X" not in inj           # 冲突对都丢
+
+
+def test_distill_semantic_advantage_skips_degenerate_group():
+    """I4：所有 rollout 都空（端点全失败等）→ 无可内省对象，跳过避免幻觉式产经验。"""
+    pr = {"pr_id": "1", "summary": "s"}
+    llm = lambda m: '[{"finding_type":"PRA-A","kind":"emphasize","text":"x"}]'   # 即便 llm 想产，全空组也拦
+    assert L.distill_semantic_advantage(pr, {"outputs": [[], []], "rewards": [0.0, 0.0]}, llm) == []
+
+
+def test_conditioning_text_includes_active_and_candidate():
+    """I2：rollout 自条件文本含 active + candidate（区别于 render_injection 只 active）。"""
+    store = {"experiences": [
+        {"finding_type": "PRA-A", "status": "active",    "text": "active one"},
+        {"finding_type": "PRA-B", "status": "candidate", "text": "cand one"},
+        {"finding_type": "PRA-C", "status": "retired",   "text": "gone"}]}
+    txt = L._conditioning_text(store)
+    assert "active one" in txt and "cand one" in txt and "gone" not in txt
+    assert L._conditioning_text({"experiences": []}) == ""
+
+
+def test_distill_via_llm_iterates_across_epochs():
+    """I2：epochs>1 不崩、仍返回候选；多轮用工作库（active+candidate）自条件。"""
+    def fake_llm(messages):
+        sysp, user = messages[0]["content"], messages[1]["content"]
+        if "emphasize|suppress" in sysp:                                  # distill 步
+            return '[{"finding_type":"PRA-A","kind":"emphasize","text":"keep A"}]'
+        return '[{"finding_type":"PRA-A"}]' if "variant 0" in user \
+            else '[{"finding_type":"PRA-Z"}]'                             # variant1 报噪声 → 奖励不同
+    gt = [{"pr_id": "1", "summary": "s", "diff": "d", "human_adopted": ["PRA-A"]}]
+    cands = L._distill_via_llm(gt, {"experiences": []}, llm=fake_llm, group_size=2, epochs=3)
+    assert len(cands) == 1 and cands[0]["finding_type"] == "PRA-A"        # 跨 3 轮去重仍 1 条
