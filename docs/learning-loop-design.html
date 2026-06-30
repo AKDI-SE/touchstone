@@ -187,6 +187,7 @@
     <p class="snum">03</p>
     <h2>TF-GRPO 机制（Touchstone 自己的核心）</h2>
     <p>评审引擎复用了开源的 PR-Agent，所以 Touchstone 真正自己的、有差异化价值的部分，是让评审<strong>随真实使用自我改进</strong>这条回路——而 TF-GRPO 就是它的引擎。本节把这块机制写细。它直接取自 <em>Training-Free Group Relative Policy Optimization</em>（arXiv&nbsp;2510.08191，2025-10），核心思想是：<strong>策略模型一概冻结、不更新任何权重</strong>，改为维护一份外部的"经验知识"当作注入提示词的 token prior；每一步对一个查询并行采样一组输出，用奖励打分，但<strong>不计算数值优势做梯度上升</strong>，而是让大模型内省这一组输出、提炼出"语义优势"（一段自然语言经验），累进地更新那份经验知识。</p>
+    <blockquote class="note"><b>诚实交代（命名与范围）</b>：本方法借鉴 GRPO 的 <b>分组采样 + 冻结策略 + 经验作 token prior</b>，但用「让大模型内省高分 vs 低分评审、提炼自然语言经验」替代了 GRPO 的<b>数值组内相对优势</b>——这是 Touchstone 的改写，<b>并非完整复现 GRPO</b>。代价：只取 top/bottom 少数样本做内省，<b>方差比归一化优势更高</b>。与 arXiv 2510.08191 的具体偏差，以原论文为准。</blockquote>
 
     <h3>3.1 概念映射（从论文到 PR 评审）</h3>
     <table class="tbl">
@@ -244,7 +245,7 @@
       <tr><th>结构</th><th>关键成员</th></tr>
       <tr><td class="mono">Experience</td><td><code>id · repo · stack · finding_type · kind(suppress/emphasize) · text(NL) · evidence{fires, adoption} · status(candidate/active/retired) · source(human/tfgrpo/counting) · locked(bool) · source_prs[]</code></td></tr>
       <tr><td class="mono">RolloutGroup</td><td><code>outputs[o_i] · rewards[r_i]</code>——一个历史 PR 的一组评审及其得分</td></tr>
-      <tr><td class="mono">奖励定义 R</td><td>对一份评审：命中人采纳集的发现数（真阳）− 人忽略的发现数（噪声/假阳）− 漏报权重；与 calibrate 的吻合度/噪声同源</td></tr>
+      <tr><td class="mono">奖励定义 R</td><td>对一份评审：命中人采纳集的发现数（真阳）− 人忽略的发现数（噪声/假阳）− 漏报权重；与 calibrate 的吻合度/噪声同源。<b>人采纳 = 线程 resolved 且非 wontfix</b>；且 <b>⊆ touchstone 已挑过的类型</b>（回路只能调既有类型，详见 §3.5 已知上限）</td></tr>
     </table>
 
     <h3>3.4 接口（设计名）</h3>
@@ -259,9 +260,11 @@
     <p>把这些接口连起来：<span class="mono">_distill_via_llm</span> 对真值集里的每个 PR 跑 <span class="mono">rollout_reviews</span> 取一组评审，用 <span class="mono">score_review</span> 离线打分，用 <span class="mono">distill_semantic_advantage</span> 内省出候选经验并返回；调用方再用 <span class="mono">merge_candidates</span> 并入经验库，经 shadow A/B（<span class="mono">graduate</span>）达标才转 active 注入评审。</p>
 
     <h3>3.5 忠于论文、为 PR 评审做的改写（与诚实交代）</h3>
-    <div class="principle"><span class="k">忠实保留</span>策略冻结、组内"语义优势"取代数值优势、经验作 token prior 注入、多轮迭代——与论文一致。</div>
-    <div class="principle"><span class="k">关键改写</span><strong>奖励改为离线</strong>：PR 评审拿不到每次 rollout 的即时人反馈，所以不在线打分，而是用历史已合 PR 的人审真值离线评分（这正是 calibrate 已经在算的）。经验严格<strong>按 仓·栈·发现类型归类</strong>，且<strong>只对 PR-Agent 源的发现产经验</strong>；确定性 <code>contract_check</code> 永不进经验库、不受其影响，作为经验出问题时的固定基准。</div>
-    <div class="principle"><span class="k">实现与验证</span>本机制<strong>已实现并经本团队验证</strong>（<code>touchstone/learning_loop.py</code>：<code>rollout_reviews</code> / <code>score_review</code> / <code>distill_semantic_advantage</code> / <code>_distill_via_llm</code>，旗舰模型经注入的 <code>llm</code> 调用、离线以假 llm 覆盖测试）。安全上坚持<strong>稳健上线</strong>：经验只调建议、不碰合入门禁，新经验先 shadow A/B 达标才启用（见下节）。唯一的运行期依赖是一个<strong>参数固定的旗舰模型端点</strong>（①生成与③内省用它；端点可靠性见下节坑 1）。</div>
+    <div class="principle"><span class="k">借自论文</span>策略冻结、对查询分组采样一组输出、经验作 token prior 注入、多轮迭代。</div>
+    <div class="principle warn"><span class="k">Touchstone 的改写（非论文原貌）</span>用「LLM 内省 high/low reward 的评审 → 自然语言经验」替代 GRPO 的<b>数值组内相对优势</b>——这是本系统的自创，不是论文机制。代价：仅取 top/bottom 少数样本内省，<b>方差高于归一化优势</b>。</div>
+    <div class="principle"><span class="k">关键改写</span><strong>奖励改为离线</strong>：PR 评审拿不到每次 rollout 的即时人反馈，所以不在线打分，而是用历史已合 PR 的人审真值离线评分（这正是 calibrate 已经在算的）。经验带 <code>repo/stack</code> 字段；<strong>store 每仓一份</strong>，去重键 <code>(kind:finding_type)</code> 仓内唯一（多仓共享同一 store 时才需把 repo/stack 纳入键）。且<strong>只对 PR-Agent 源的发现产经验</strong>；确定性 <code>contract_check</code> 永不进经验库、不受其影响，作为经验出问题时的固定基准。</div>
+    <div class="principle"><span class="k">实现与验证（诚实）</span>本机制<strong>已实现，离线单元测试覆盖 plumbing</strong>——<code>rollout_reviews / score_review / distill_semantic_advantage / _distill_via_llm</code>，旗舰模型经注入的 <code>llm</code>，离线以假 llm 验步骤串联 / JSON 解析 / protected / locked。<b>未实证的部分</b>：蒸馏出的经验是否真能提升采纳率，靠 shadow A/B（<code>graduate</code>）事后验证，且需先有注入历史才生效——其端到端效果<b>离线测不了</b>（测不了 LLM 质量）。数据管线已接通：<code>build_ground_truth</code> 从 GitHub 人审裁决重建真值集；<code>aggregate_ab</code> 按 result marker 的 <code>injected_types</code> 自动切 A/B 两臂喂 <code>graduate</code>（无需手填 <code>--ab-results</code>）；多轮 epoch 用 active+candidate 工作库逐轮重条件（真迭代）。奖励信号：<code>thread_findings</code> 已过滤 wontfix（人不采纳的不当正例）。安全上坚持<strong>稳健上线</strong>：经验只调建议、不碰合入门禁，新经验先 shadow A/B 达标才启用（见下节）。唯一运行期依赖是一个<strong>参数固定的旗舰模型端点</strong>（①生成与③内省用它；端点可靠性见下节坑 1）。</div>
+    <div class="principle warn"><span class="k">已知上限</span>① <b>发现类型天花板</b>：<code>human_adopted</code> ⊆ touchstone 自己挑过的类型，故回路只能调既有类型的强调/压制，<b>学不出"人关心但 touchstone 没挑过"的新类型</b>；突破需把人写的评审评论也当 ground truth（未来扩展）。② <b>奖励粒度粗</b>：finding_type 集合级匹配（如 PRA-SECURITY），hits/noise 都偏粗。③ <b>bootstrap</b>：candidate→active 需"注入臂"有数据，冷启动靠 seed 种子注入积累后才自动达标。</div>
   </div>
 </section>
 
