@@ -242,10 +242,13 @@ def main():
     _out = review_pr(pr_ctx_review, contract, standards)
     findings, risk = _out["findings"], _out["risk"]
 
-    # 反馈循环：从历史评论 marker 取状态 → 决策 → 回贴附状态与新 marker（author 无法篡改轮次）
+    # 反馈循环：从历史评论 marker 取状态 → 决策 → 回贴附状态与新 marker
+    # 信任根：只取 touchstone 自己（[bot] 后缀）发的评论里的 loop marker——防 author 发假 marker 篡改轮次
     try:
         comments = gh("GET", f"/repos/{owner}/{repo}/issues/{number}/comments", token)
-        bodies = [c.get("body", "") for c in comments] if isinstance(comments, list) else []
+        bodies = [c.get("body", "") for c in comments
+                  if ((c.get("user") or {}).get("login", "").endswith("[bot]"))
+                 ] if isinstance(comments, list) else []
     except (urllib.error.HTTPError, requests.exceptions.RequestException):
         bodies = []
     state = loop.parse_latest_state(bodies)

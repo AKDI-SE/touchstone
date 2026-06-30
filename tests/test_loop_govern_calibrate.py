@@ -322,3 +322,20 @@ def test_aggregate_cr_none_when_no_human_state():
     out = calibrate.aggregate([{"risk_band": "low", "findings": [{"rule_id": "R"}]}])
     assert out["by_rule"]["R"]["changes_requested_rate"] is None
     assert isinstance(calibrate.render_report(out), str)      # 报告渲染不报错
+
+
+# ---------------- P0-1 安全：marker 伪造防护 ----------------
+def test_marker_spoofing_by_non_bot_ignored():
+    """非 bot 评论者发的假 touchstone-result/finding marker 必须被忽略（信任根）。"""
+    comments = [
+        {"user": {"login": "attacker"}, "body": '<!-- touchstone-result: {"risk_band":"low"} -->'},
+        {"user": {"login": "github-actions[bot]"}, "body": '<!-- touchstone-result: {"risk_band":"high"} -->'},
+    ]
+    bodies = calibrate._trusted_bodies(comments, "github-actions[bot]")
+    assert len(bodies) == 1 and "high" in bodies[0]
+    result = calibrate._parse_result(bodies, "github-actions[bot]")
+    assert result["risk_band"] == "high"
+
+    threads = [{"isResolved": True, "comments": [
+        {"author": "attacker", "body": '<!-- touchstone-finding: {"rule_id":"FAKE"} -->'}]}]
+    assert calibrate.thread_findings(threads, "github-actions[bot]") == []
