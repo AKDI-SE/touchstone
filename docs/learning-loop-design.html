@@ -355,6 +355,26 @@
   </div>
 </section>
 
+<section>
+  <div class="wrap">
+    <p class="snum">07</p>
+    <h2>相关工作与可借鉴点</h2>
+    <p class="lede">「从评审反馈学习偏好」并非 Touchstone 首创——既有学术原型（NL 经验库 + 无训练），也有商业工具已落地。本节定位 Touchstone 在版图中的位置，并标出可借鉴的差异点。</p>
+    <table class="tbl">
+      <tr><th>代表</th><th>类别</th><th>与 Touchstone 的关系</th><th>差异 / 可借鉴</th></tr>
+      <tr><td class="mono">TF-GRPO<br>arXiv 2510.08191</td><td>方法（本回路引擎）</td><td>直接取自：组内语义优势 + 上下文空间无梯度 + 经验作 token prior</td><td>本实现忠于论文；方法固有方差（top/bottom 少样本内省），G 越大越稳越贵</td></tr>
+      <tr><td class="mono">ExpeL<br>AAAI 2024</td><td>方法（最贴本质）</td><td>从轨迹用自然语言提炼可泛化 insight、存经验库、推理时检索注入、无 fine-tune</td><td>几乎就是本回路的理论原型；<strong>借鉴</strong>：按当前 PR 上下文<strong>检索</strong>相关经验注入（而非全量 active 灌入）</td></tr>
+      <tr><td class="mono">CodeRabbit<br>Learnings</td><td>业界（SaaS）</td><td>从 PR 评论回复学团队评审偏好、自动应用；基线规则 + 自适应 learnings</td><td>商业先行者；Touchstone 差异 = 自托管 + advisory-only + 客观合入门禁</td></tr>
+      <tr><td class="mono">Greptile<br>AI Memory</td><td>业界（SaaS）</td><td>从 PR 👍/👎 学标准 + 显式 rules + 按 codebase 区域 scoped</td><td><strong>借鉴</strong>：用显式 👍/👎 当采纳信号（比「线程 resolved 含 wontfix」干净，呼应 N4a）</td></tr>
+      <tr><td class="mono">Qodo<br>(PR-Agent 母公司)</td><td>业界</td><td>Touchstone 复用的 PR-Agent 的官方商业化路径</td><td>盯其 learning/governance 方向；rules + context-aware 是其主线</td></tr>
+      <tr><td class="mono">MuTAP / Meta<br>LLM + mutation</td><td>verify 强化</td><td>LLM 生成专杀变异的测试 + 变异优先级</td><td><strong>借鉴</strong>：Python 侧自写 AST 变异可换 mutmut/cosmic-ray + mutant prioritization 提效</td></tr>
+      <tr><td class="mono">GiGPO<br>arXiv 2505.10978</td><td>方法（GRPO 家族）</td><td>Group-in-Group 细粒度 credit assignment</td><td><strong>借鉴</strong>：把「整份评审一个分」细化到 finding 级（呼应奖励粒度粗，N4）</td></tr>
+    </table>
+    <div class="principle"><span class="k">定位（诚实）</span>「从人审反馈学习评审偏好」已有商业产品（CodeRabbit / Greptile）与学术原型（ExpeL）。Touchstone 的差异化不在「能学」，而在：<strong>自托管</strong>（数据不出仓）、<strong>advisory-only</strong>（学习产物只调建议、绝不进合入门禁）、<strong>客观门禁</strong>（合入由 verify / 确定性规则裁定，不押在学到的评审判断上）——即贯穿全系统的「自主边界 = 验证边界」。</div>
+    <div class="principle"><span class="k">可落地的借鉴（按性价比）</span>① 采纳信号：显式 👍/👎 / 关键词回复替代「线程 resolved」代理（N4a）。② 经验检索：按当前 PR 的栈/路径/类型<strong>检索</strong>相关经验注入，替代全量 active 灌入（经验多后全量会噪声爆炸且超 prompt 预算，à la ExpeL retrieval）。③ verify 提效：mutmut/cosmic-ray + mutant prioritization（甚至 MuTAP 思路）。④ 细粒度奖励：GiGPO 式按 finding 而非整份评审打分。</div>
+  </div>
+</section>
+
 <footer>
   <div class="wrap">Touchstone · 自进化评审学习回路 · v0.9 · 2026-06-23 · 自包含离线文档（内联 SVG，无外部依赖）</div>
 </footer>
