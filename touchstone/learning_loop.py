@@ -73,6 +73,9 @@ def _is_review_type(finding_type):
 
 
 def _exp_id(finding_type, kind):
+    """经验去重键。store 是【每仓一份】（learn.yml 按 GITHUB_REPOSITORY 各仓各跑），
+    故 id 只含 (kind, finding_type) 即可在仓内唯一；repo/stack 仅作字段记录、不进键。
+    若未来要【多仓共享同一个 store】，需把 repo/stack 纳入 id，否则 (kind:ftype) 会跨仓相撞。"""
     return f"{kind}:{finding_type}"
 
 
@@ -193,7 +196,11 @@ def distill_semantic_advantage(pr, group, llm, repo="", stack=""):
     """③ 组内相对语义优势：把一组带分数的评审交旗舰模型内省——高分挑对了什么、低分挑偏/漏了什么——
     按 仓·栈·发现类型 提炼候选经验。返回与 distill_candidates 同 schema 的 Experience(candidate)；
     只保留 PR-Agent 源类型（确定性 contract 类型永不进经验，坑 2b）。"""
-    ranked = sorted(zip(group["outputs"], group["rewards"]), key=lambda x: -x[1])
+    rewards = group.get("rewards") or []
+    outputs = group.get("outputs") or []
+    if not any(outputs):                  # 所有 rollout 都空（如端点全失败）→ 无可内省对象，跳过避免幻觉
+        return []
+    ranked = sorted(zip(outputs, rewards), key=lambda x: -x[1])
     payload = {"pr_id": pr.get("pr_id"),
                "high_reward_reviews": [r for r, _ in ranked[:2]],
                "low_reward_reviews": [r for r, _ in ranked[-2:]],
@@ -244,6 +251,18 @@ def _flagship_llm():
     return _call
 
 
+def _conditioning_text(store):
+    """_distill_via_llm 内部多轮迭代用的 rollout 条件文本 = active + candidate 经验
+    （让上一轮蒸出的候选参与下一轮的条件，兑现"经验库逐轮累积修正"）。
+    区别于 render_injection：后者只把 active 注入 PR-Agent；本函数仅用于离线 rollout 的自条件。"""
+    exps = [e for e in (store or {}).get("experiences", [])
+            if e.get("status") in ("active", "candidate") and (e.get("text") or "").strip()]
+    if not exps:
+        return ""
+    return "# Current learned experience (advisory — inform your review angle):\n" + \
+           "\n".join(f"- {e['text']}" for e in exps)
+
+
 def _distill_via_llm(ground_truth, store, llm=None, *, group_size=TFGRPO_GROUP_SIZE,
                      epochs=1, repo="", stack="",
                      rollout=None, score=None, distill_advantage=None):
@@ -262,21 +281,26 @@ def _distill_via_llm(ground_truth, store, llm=None, *, group_size=TFGRPO_GROUP_S
     rollout = rollout or rollout_reviews
     score = score or score_review
     distill_advantage = distill_advantage or distill_semantic_advantage
-    experience_text = render_injection(store or {"experiences": []})
+    import copy
+    working = copy.deepcopy(store or {"experiences": []})   # 累积候选的工作库；供下轮 rollout 自条件
     acc = {}
     for _ in range(max(1, epochs)):
+        # 每轮重算条件文本（含上轮蒸出的 candidate）——兑现"经验库逐轮累积修正"，而非首轮 E 固定到底
+        experience_text = _conditioning_text(working)
         for pr in ground_truth or []:
             reviews = rollout(pr, experience_text, llm, group_size)
             rewards = [score(o, pr.get("human_adopted")) for o in reviews]
             group = {"outputs": reviews, "rewards": rewards}
-            for c in distill_advantage(pr, group, llm,
-                                                pr.get("repo", repo), pr.get("stack", stack)):
+            new = distill_advantage(pr, group, llm,
+                                    pr.get("repo", repo), pr.get("stack", stack))
+            for c in new:
                 prev = acc.get(c["id"])
                 if prev:
                     prev["source_prs"] = sorted(set(prev["source_prs"]) | set(c["source_prs"]))
                     prev["updated_at"] = c["updated_at"]
                 else:
                     acc[c["id"]] = c
+            merge_candidates(working, new)                   # 候选入工作库 → 下一轮 rollout 可见
     return list(acc.values())
 
 
@@ -415,8 +439,15 @@ def disable(store, exp_id):
 def render_injection(store):
     """把 active 经验渲染成注入 PR-Agent 的 extra_instructions 文本。
     仅 active；candidate/retired 不注入。输出纯指令文本——只影响 PR-Agent 的建议，
-    不触碰确定性 contract_check / 总闸（评审与合入闸的边界）。"""
+    不触碰确定性 contract_check / 总闸（评审与合入闸的边界）。
+    同 finding_type 的 emphasize 与 suppress 不可同时注入（矛盾指令）→ 两者都丢，宁可不注入。"""
     active = [e for e in store.get("experiences", []) if e["status"] == "active"]
+    if not active:
+        return ""
+    # 同 ftype 出现 >1 条 active ⟺ emphasize+suppress 并存（同 kind:ftype 已被 id 去重）→ 冲突，全丢
+    conflict = {ft for ft in {e.get("finding_type") for e in active}
+                if sum(1 for e in active if e.get("finding_type") == ft) > 1}
+    active = [e for e in active if e.get("finding_type") not in conflict]
     if not active:
         return ""
     lines = ["# Learned review experience (repo-specific, advisory only — do not gate merges):"]
