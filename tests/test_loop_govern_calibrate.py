@@ -170,8 +170,24 @@ def test_thread_findings_matches_marker_only():
            _thread(False, "github-actions[bot]", _mk("JAVA-EQ-001")),
            _thread(True, "alice", "纯人类讨论，无标记")]   # 无标记 → 不计
     fa = calibrate.thread_findings(calibrate.parse_review_threads(_gql(raw)))
-    assert fa == [{"rule_id": "SPR-DI-001", "agent": "A", "resolved": True},
-                  {"rule_id": "JAVA-EQ-001", "agent": "A", "resolved": False}]
+    assert fa == [{"rule_id": "SPR-DI-001", "agent": "A", "resolved": True, "dismissed": False},
+                  {"rule_id": "JAVA-EQ-001", "agent": "A", "resolved": False, "dismissed": False}]
+
+
+def test_thread_findings_wontfix_not_adopted():
+    """N4a：线程 resolved 但评论含 wontfix/驳回语 → 不算采纳（resolved=False, dismissed=True）。"""
+    def t(resolved, ftype, replies):
+        nodes = [{"author": {"login": "github-actions[bot]"}, "body": _mk(ftype)}]
+        nodes += [{"author": {"login": a}, "body": b} for a, b in replies]
+        return {"isResolved": resolved, "comments": {"nodes": nodes}}
+    raw = [t(True, "PRA-A", [("alice", "won't fix, not a bug")]),
+           t(True, "PRA-B", [("alice", "fixed, thanks")]),
+           t(True, "PRA-C", [("bob", "误报，无需修改")])]
+    fa = calibrate.thread_findings(calibrate.parse_review_threads(_gql(raw)))
+    by = {f["rule_id"]: f for f in fa}
+    assert by["PRA-A"]["resolved"] is False and by["PRA-A"]["dismissed"] is True   # wontfix → 不采纳
+    assert by["PRA-B"]["resolved"] is True and by["PRA-B"]["dismissed"] is False    # 正常采纳
+    assert by["PRA-C"]["resolved"] is False and by["PRA-C"]["dismissed"] is True    # 中文驳回 → 不采纳
 
 
 def test_calibrate_finding_adoption_rate():

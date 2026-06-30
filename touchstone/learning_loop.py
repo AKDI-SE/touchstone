@@ -514,11 +514,15 @@ def _stack_of(filenames):
 def make_gt_entry(pr_number, repo, stack, summary, diff, touchstone_findings,
                   resolved_types, human_state, merged, injected_types=None):
     """纯函数：单个 PR → TF-GRPO 真值条目。
-    human_adopted = 人 resolve 了线程的发现类型（正例：值得挑）；
+    human_adopted = 人 resolve 了线程的发现类型（正例：值得挑；wontfix 已在 calibrate.thread_findings 剔除）；
     human_ignored = touchstone 挑了但人没采纳的（噪声负例）。
     raised_types = 本 PR touchstone 挑过的类型（A/B 分臂的 seen 基数）；
     injected_types = 本 PR 评审时注入了哪些经验类型（来自 result marker；A/B 分臂的 with/without 依据）。
-    与 _distill_via_llm 期望的 ground_truth schema 对齐（human_adopted 喂 score_review）。"""
+    与 _distill_via_llm 期望的 ground_truth schema 对齐（human_adopted 喂 score_review）。
+
+    已知上限（N4b）：human_adopted ⊆ touchstone 自己挑过的类型（来自其 finding 线程），
+    故回路只能【调既有类型的强调/压制】，学不出"人关心但 touchstone 从没挑过"的新类型。
+    要突破此上限，需把【人写的评审评论】也当 ground-truth 发现纳入真值集（未来扩展）。"""
     adopted = sorted({t for t in (resolved_types or []) if t})
     ts_types = {(f.get("rule_id") or f.get("finding_type")) for f in (touchstone_findings or [])}
     ts_types = {t for t in ts_types if t}

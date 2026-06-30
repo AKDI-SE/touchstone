@@ -66,9 +66,23 @@ def parse_review_threads(data):
     return out
 
 
+_DISMISS = re.compile(
+    r"wont[\s-]*fix|won't[\s-]*fix|not\s+a\s+bug|by\s+design|false\s+positive|"
+    r"not\s+applicable|out\s+of\s+scope|误报|无需修改|不必修改|不采纳|驳回|不在范围|不修",
+    re.IGNORECASE)
+
+
+def _thread_dismissed(comments):
+    """线程里是否出现 wontfix/驳回 信号（粗启发式，宁可漏判也不把真采纳误判为驳回）。
+    用于把"resolved 但实为 wontfix"从采纳里剔除——修正 N4a：isResolved 含 wontfix 解决。"""
+    return any(_DISMISS.search(c.get("body") or "") for c in comments)
+
+
 def thread_findings(threads, bot_login=None):
     """把每条评论线程对回某条 touchstone 发现：线程内带 touchstone-finding 标记的评论
-    → {rule_id, agent, resolved=线程 isResolved}。线程被 resolved 视作该条被采纳(proxy)。"""
+    → {rule_id, agent, resolved, dismissed}。
+    resolved = 线程 isResolved 且未被 wontfix/驳回（N4a：resolved 含 wontfix 解决，
+    那种不算采纳——否则会把人明确驳回的当正例，污染校准与 TF-GRPO 奖励）。"""
     out = []
     for t in threads:
         for c in t.get("comments", []):
@@ -79,8 +93,10 @@ def thread_findings(threads, bot_login=None):
                 meta = json.loads(m.group(1))
             except json.JSONDecodeError:
                 continue
+            dismissed = _thread_dismissed(t.get("comments", []))
             out.append({"rule_id": meta.get("rule_id"), "agent": meta.get("agent"),
-                        "resolved": bool(t.get("isResolved"))})
+                        "resolved": bool(t.get("isResolved")) and not dismissed,
+                        "dismissed": dismissed})
             break                      # 一个线程只对一条发现
     return out
 
