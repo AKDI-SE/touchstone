@@ -263,7 +263,8 @@ def main():
     try:
         import learning_loop as _ll
         injected_types = _ll.active_types(_ll.load_store())
-    except Exception:
+    except Exception as e:
+        print(f"[warn] injected_types 取经验失败（经验库损坏？）: {type(e).__name__}: {e}", file=sys.stderr)
         injected_types = []
 
     post_results(owner, repo, number, head_sha, token, risk, findings, loop_info, cls, diff,

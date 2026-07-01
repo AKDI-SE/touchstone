@@ -169,7 +169,8 @@ def _llm_json(llm, messages, default):
     """调用注入的 llm(messages)->str 并抽 JSON；任何失败都回退 default（鲁棒，离线可注入假 llm）。"""
     try:
         return _extract_json(llm(messages), default)
-    except Exception:
+    except Exception as e:
+        print(f"[warn] LLM 调用失败（静默回退 default）: {type(e).__name__}: {e}", file=sys.stderr)
         return default
 
 
