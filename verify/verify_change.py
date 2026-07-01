@@ -160,6 +160,41 @@ def _run_tests(work_dir, test_code):
 
 
 # --- 改动文件覆盖率（简化：文件级；改动行级映射为后续细化）-------------------
+def _run_coverage_subprocess(work_dir, pytest_args):
+    """在 work_dir 跑 coverage run + pytest（子进程隔离），返回 coverage.Coverage 对象。
+    用 coverage API 直接读 .coverage 数据文件（替代脆弱的 coverage json -o - stdout 解析）。"""
+    subprocess.run(["python", "-m", "coverage", "run", "--source=."] + pytest_args,
+                   cwd=work_dir, capture_output=True, encoding="utf-8", errors="replace",
+                   timeout=TEST_TIMEOUT)
+    import coverage
+    cov = coverage.Coverage(data_file=os.path.join(work_dir, ".coverage"))
+    cov.load()
+    return cov
+
+
+def _coverage_ratio(cov, py_files, changed_lines=None):
+    """从 coverage.Coverage 对象算覆盖率。改动行级（若有）优先，否则文件级。"""
+    data = cov.get_data()
+    if changed_lines:
+        coverable = covered = 0
+        for path, lines in (changed_lines or {}).items():
+            executed = set(data.lines(path) or [])
+            missing = set(data.missing_lines(path) or [])
+            cov_set = (executed | missing) & lines
+            coverable += len(cov_set)
+            covered += len(executed & cov_set)
+        return (covered / coverable) if coverable else 1.0
+    ratios = []
+    for f in py_files:
+        executed = data.lines(f)
+        if executed is None:
+            continue
+        missing = data.missing_lines(f)
+        total = len(executed or []) + len(missing or [])
+        ratios.append(len(executed or []) / total if total else 0.0)
+    return sum(ratios) / len(ratios) if ratios else 0.0
+
+
 def _changed_file_coverage(work_dir, test_code, changed_files, changed_lines=None):
     py = [f for f in changed_files if f.endswith(".py")]
     if not py:
@@ -168,19 +203,9 @@ def _changed_file_coverage(work_dir, test_code, changed_files, changed_lines=Non
     with open(tf, "w", encoding="utf-8") as f:
         f.write(test_code)
     try:
-        subprocess.run(["python", "-m", "coverage", "run", "--source=.",
-                       "-m", "pytest", "-q", "_touchstone_spec_test.py"],
-                       cwd=work_dir, capture_output=True, encoding="utf-8", errors="replace", timeout=TEST_TIMEOUT)
-        cj = subprocess.run(["python", "-m", "coverage", "json", "-o", "-"],
-                           cwd=work_dir, capture_output=True, encoding="utf-8", errors="replace")
-        data = json.loads(cj.stdout) if cj.stdout.strip().startswith("{") else {}
-        if changed_lines:                                  # 改动行级（优先）
-            return _coverage_json_line_ratio(data, changed_lines)
-        files = data.get("files", {})                      # 回落文件级
-        ratios = [files[f]["summary"]["percent_covered"] / 100.0
-                  for f in py if f in files]
-        return sum(ratios) / len(ratios) if ratios else 0.0
-    except (subprocess.TimeoutExpired, json.JSONDecodeError, KeyError, ZeroDivisionError):
+        cov = _run_coverage_subprocess(work_dir, ["-m", "pytest", "-q", "_touchstone_spec_test.py"])
+        return _coverage_ratio(cov, py, changed_lines)
+    except Exception:
         return 0.0
     finally:
         if os.path.exists(tf):
@@ -438,17 +463,9 @@ def _suite_coverage_python(work_dir, changed_files, changed_lines=None):
     if not py:
         return 1.0
     try:
-        subprocess.run(["python", "-m", "coverage", "run", "--source=.", "-m", "pytest", "-q"],
-                       cwd=work_dir, capture_output=True, encoding="utf-8", errors="replace", timeout=TEST_TIMEOUT)
-        cj = subprocess.run(["python", "-m", "coverage", "json", "-o", "-"],
-                            cwd=work_dir, capture_output=True, encoding="utf-8", errors="replace")
-        data = json.loads(cj.stdout) if cj.stdout.strip().startswith("{") else {}
-        if changed_lines:
-            return _coverage_json_line_ratio(data, changed_lines)
-        files = data.get("files", {})
-        ratios = [files[f]["summary"]["percent_covered"] / 100.0 for f in py if f in files]
-        return sum(ratios) / len(ratios) if ratios else 0.0
-    except (subprocess.TimeoutExpired, json.JSONDecodeError, KeyError, ZeroDivisionError):
+        cov = _run_coverage_subprocess(work_dir, ["-m", "pytest", "-q"])
+        return _coverage_ratio(cov, py, changed_lines)
+    except Exception:
         return 0.0
 
 
