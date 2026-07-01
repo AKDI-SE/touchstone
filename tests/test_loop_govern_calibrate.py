@@ -1,4 +1,6 @@
 """反馈循环 + 治理(固化/熔断) + 校准聚合。"""
+import json
+
 import calibrate
 import govern
 import loop
@@ -339,3 +341,33 @@ def test_marker_spoofing_by_non_bot_ignored():
     threads = [{"isResolved": True, "comments": [
         {"author": "attacker", "body": '<!-- touchstone-finding: {"rule_id":"FAKE"} -->'}]}]
     assert calibrate.thread_findings(threads, "github-actions[bot]") == []
+
+
+# ---------------- 测试缺口 P0-6/P0-7：loop 无推进 + govern trip→exit(2) --------
+def test_loop_escalate_on_no_progress(rule_index):
+    """发现集是上轮的超集（加新发现但没解决任何旧的）→ 无推进 → escalate。"""
+    st = loop.LoopState(round=1, history=[["OE-001:f:1"]])
+    acts = [_f("OE-001", line=1), _f("OE-002", line=1)]   # 超集：OE-001 还在 + 加了 OE-002
+    dec, reason, _ = loop.loop_step(acts, rule_index, st)
+    assert dec == "escalate" and "无推进" in reason
+
+
+def test_govern_main_exits_2_on_circuit_break(tmp_path, monkeypatch):
+    """govern.main 熔断触发时 sys.exit(2)——CI 里这个退出码是运维告警信号。"""
+    import pytest
+    (tmp_path / "cal.json").write_text(json.dumps({
+        "aggregate": {},
+        "records": [{"pr": 1, "merged": True, "merge_commit_sha": "abc123",
+                      "auto_handled": True}]
+    }), encoding="utf-8")
+    (tmp_path / "std.yaml").write_text("rules:\n- {id: DUMMY, machine_checkable: false}\n",
+                                        encoding="utf-8")
+    monkeypatch.setenv("CALIBRATION_JSON", str(tmp_path / "cal.json"))
+    monkeypatch.setenv("TOUCHSTONE_STANDARDS", str(tmp_path / "std.yaml"))
+    monkeypatch.setenv("REPO_DIR", ".")
+    monkeypatch.setenv("BASE_REF", "HEAD")
+    monkeypatch.setattr(govern, "detect_revert_shas", lambda *a, **k: {"abc123"})
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(SystemExit) as exc:
+        govern.main()
+    assert exc.value.code == 2

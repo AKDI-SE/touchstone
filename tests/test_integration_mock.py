@@ -445,6 +445,21 @@ def test_autonomy_execute_auto_merge(monkeypatch):
     assert res == {"merged": True} and any("/merge" in u for u in seen)
 
 
+def test_execute_auto_merge_posts_marker_comment(monkeypatch):
+    """P0-5: execute_auto_merge 必须发 touchstone:auto_handled marker 评论
+    （calibrate 据此重建自动放行归因；marker 丢了 → 熔断数据全错）。"""
+    posts = []
+
+    def fake_urlopen(req, timeout=30):
+        posts.append((req.get_full_url(), req.data.decode() if req.data else ""))
+        return _UR({"merged": True})
+    monkeypatch.setattr(AUT.urllib.request, "urlopen", fake_urlopen)
+    AUT.execute_auto_merge("o/r", 5, "sha", "tok")
+    comment_posts = [(u, b) for u, b in posts if "/issues/5/comments" in u]
+    assert comment_posts, "未发 auto_handled marker 评论"
+    assert "touchstone:auto_handled" in comment_posts[0][1]
+
+
 # ============================ verify_change（mock LLM/runner，不碰子进程）========
 import verify_change as V          # noqa: E402
 
