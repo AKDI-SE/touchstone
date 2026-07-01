@@ -429,27 +429,42 @@ def _suite_coverage_python(work_dir, changed_files, changed_lines=None):
 
 # --- 改动行级覆盖：从 diff 取改动行，与覆盖数据取交 -------------------------
 def parse_changed_lines(diff_text):
-    """unified diff(建议 --unified=0) → {path: set(新文件侧改动行号)}。纯函数。"""
-    out, cur, newline = {}, None, 0
-    for line in (diff_text or "").splitlines():
-        if line.startswith("+++ "):
-            p = line[4:].strip()
-            cur = None if p == "/dev/null" else (p[2:] if p.startswith("b/") else p)
-            if cur:
-                out.setdefault(cur, set())
-        elif line.startswith("@@"):
-            m = re.search(r"\+(\d+)", line)
-            newline = int(m.group(1)) if m else 1
-        elif cur is None or line.startswith("---") or line.startswith("diff "):
+    """unified diff → {path: set(新文件侧改动行号)}。纯函数。
+    复用 unidiff.PatchSet（与 contract_check.parse_diff 同库），替代手写行号状态机——
+    消除两套 diff 解析实现的行为不一致风险。
+    注意：unidiff 对 /dev/null（纯删除）的解析在某些格式下会抛异常，
+    需逐 hunk 块解析并容错跳过（与 contract_check.parse_diff 的容错策略一致）。"""
+    from unidiff import PatchSet
+    from unidiff.errors import UnidiffParseError
+    out = {}
+    # 逐 diff 块（以 --- 开头分割）解析，跳过含 /dev/null 的块（unidiff 对此会报错）
+    for chunk in _split_diff_chunks(diff_text or ""):
+        try:
+            patch = PatchSet(chunk)
+        except (UnidiffParseError, Exception):
             continue
-        elif line.startswith("+"):
-            out[cur].add(newline)
-            newline += 1
-        elif line.startswith("-") or line.startswith("\\"):
-            pass
-        else:
-            newline += 1
-    return {k: v for k, v in out.items() if v}
+        for pf in patch:
+            if pf.is_removed_file:
+                continue
+            for hunk in pf:
+                for line in hunk:
+                    if line.is_added:
+                        out.setdefault(pf.path, set()).add(line.target_line_no)
+    return out
+
+
+def _split_diff_chunks(diff_text):
+    """把多文件 unified diff 拆成单文件块（每块以 --- 开头）。
+    unidiff 对含 /dev/null 的块会抛异常，逐块解析可容错跳过。"""
+    chunks, cur = [], []
+    for line in (diff_text or "").splitlines(keepends=True):
+        if line.startswith("--- ") and cur:
+            chunks.append("".join(cur))
+            cur = []
+        cur.append(line)
+    if cur:
+        chunks.append("".join(cur))
+    return chunks
 
 
 def _changed_lines(repo_dir, base_ref, head_ref):

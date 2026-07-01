@@ -297,8 +297,9 @@ def test_is_refactor_variants():
 
 
 def test_parse_changed_lines_and_coverage_ratio():
-    diff = ("--- a/x.py\n+++ b/x.py\n@@ -1,2 +1,3 @@\n ctx\n+new1\n+new2\n"
-            "--- a/d.py\n+++ /dev/null\n@@ -1 +0,0 @@\n-gone\n")
+    # diff hunk 必须自洽：@@ -1,1 +1,3 @@ = 原 1 行、新 3 行（ctx + 2 added）
+    diff = ("--- a/x.py\n+++ b/x.py\n@@ -1,1 +1,3 @@\n ctx\n+new1\n+new2\n"
+            "--- a/d.py\n+++ /dev/null\n@@ -1,1 +0,0 @@\n-gone\n")
     assert V.parse_changed_lines(diff) == {"x.py": {2, 3}}      # 删除文件(/dev/null)不计
     cov = {"files": {"x.py": {"executed_lines": [2], "missing_lines": [3]}}}
     assert V._coverage_json_line_ratio(cov, {"x.py": {2, 3}}) == 0.5
