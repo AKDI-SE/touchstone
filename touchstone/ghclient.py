@@ -79,3 +79,17 @@ def paginate(url, token, *, per_page=100, max_pages=20, accept="application/vnd.
             break
         sep = "&"
     return out
+
+
+def paginate_check_runs(url, token, *, per_page=100, max_pages=20):
+    """check-runs 专用翻页：API 返回 {check_runs:[...]} 而非纯 list。"""
+    sep = "&" if "?" in url else "?"
+    all_runs = []
+    for page in range(1, max_pages + 1):
+        data = request("GET", f"{url}{sep}page={page}&per_page={per_page}", token)
+        runs = (data or {}).get("check_runs") or []
+        all_runs.extend(runs)
+        if len(runs) < per_page:
+            break
+        sep = "&"
+    return {"check_runs": all_runs, "total_count": len(all_runs)}

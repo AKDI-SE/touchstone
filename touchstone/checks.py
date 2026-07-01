@@ -64,7 +64,9 @@ def _gh(pr, method, path):
 def _run_relay(pr, cfg):
     """读某个已有 check-run 的结论（工具在自己的 CI 跑过，这里只转达）。"""
     src = cfg.get("source_check")
-    data = _gh(pr, "GET", f"/repos/{pr['owner']}/{pr['repo']}/commits/{pr['sha']}/check-runs")
+    base = os.environ.get("GITHUB_API_URL", "https://api.github.com")
+    data = ghclient.paginate_check_runs(
+        base + f"/repos/{pr['owner']}/{pr['repo']}/commits/{pr['sha']}/check-runs", pr["token"])
     runs = [r for r in (data.get("check_runs") or []) if r.get("name") == src]
     if not runs:
         return None, f"未找到检查 {src}"

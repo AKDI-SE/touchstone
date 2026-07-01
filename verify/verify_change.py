@@ -649,11 +649,15 @@ if __name__ == "__main__":
     api_key = os.environ.get("LLM_API_KEY")
     model = os.environ.get("LLM_TEST_MODEL") or os.environ.get("LLM_MODEL")
     if not (base_url and api_key and model):
-        sys.exit("缺少 LLM_BASE_URL/LLM_API_KEY/LLM_(TEST_)MODEL")
+        print("缺少 LLM_BASE_URL/LLM_API_KEY/LLM_(TEST_)MODEL（配置错误，非代码不过）", file=sys.stderr)
+        sys.exit(2)                                           # exit 2=配置错（exit 1=verify 不过）
     print(f"[verify] base_url={base_url} model={model}")
     repo = os.environ.get("REPO_DIR", ".")
-    base_ref = os.environ["BASE_REF"]
-    head_ref = os.environ["HEAD_REF"]
+    base_ref = os.environ.get("BASE_REF")
+    head_ref = os.environ.get("HEAD_REF")
+    if not (base_ref and head_ref):
+        print("缺少 BASE_REF/HEAD_REF（配置错误）", file=sys.stderr)
+        sys.exit(2)
     mode = os.environ.get("VERIFY_MODE", "targeted_tests")
     contract = yaml.safe_load(open(os.environ.get("TOUCHSTONE_CONTRACT",
                               ".touchstone/pr.yaml"), encoding="utf-8")) or {}
