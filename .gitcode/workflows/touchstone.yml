@@ -1,0 +1,91 @@
+# .gitcode/workflows/touchstone.yml
+# Touchstone on GitCode —— 自己狗粮自己吃
+#
+# 三步门禁：
+#   1. CI 测试（263 个用例，全绿）
+#   2. PR-Agent AI 评审（顾问式，不阻断）
+#   3. 确定性门禁（契约核对 + 栈规则 + 密钥扫描，阻断级才拦）
+#
+# 需要配置的 Secrets（仓库 Settings → CI/CD → Secrets）：
+#   LLM_API_KEY      - LLM 端点 API key（OpenAI 兼容）
+#   LLM_BASE_URL     - LLM 端点 base URL（OpenAI 兼容 /chat/completions）
+#   GITCODE_TOKEN    - GitCode 个人访问令牌（用于 API 调用）
+#
+# 可选 Secrets（verify 独立验证，默认不跑）：
+#   LLM_TEST_MODEL   - 验收测试模型（必须 ≠ 评审模型，避免同源盲点）
+
+name: Touchstone Gate
+
+"on":
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  touchstone:
+    runs-on: euleros-2.10.1
+    steps:
+      # ── 1. 拉取代码 ──
+      - uses: checkout-action@0.0.1
+
+      # ── 2. 配置 Python 环境 ──
+      - name: Setup Python
+        uses: setup-python@0.0.1
+        with:
+          python-version: '3.10'
+
+      # ── 3. 安装依赖 ──
+      - name: Install dependencies
+        run: |
+          cd repo_workspace
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # ── 4. CI：单元测试 ──
+      - name: Run unit tests
+        run: |
+          cd repo_workspace
+          python -m pytest tests/ -q --tb=short
+
+      # ── 5. PR-Agent AI 评审（顾问式建议）──
+      - name: PR-Agent review
+        env:
+          OPENAI_API_KEY: ${{ secrets.LLM_API_KEY }}
+          OPENAI_API_BASE: ${{ secrets.LLM_BASE_URL }}
+        run: |
+          cd repo_workspace
+          pip install pr-agent 2>&1 | tail -3
+          echo "[touchstone] PR-Agent installed, running review..."
+
+          # 构建 PR URL（GitCode 格式：https://gitcode.com/{owner}/{repo}/pulls/{num}）
+          # GitCode Pipeline 注入的上下文变量（按实际环境调整）：
+          #   CI_REPO_OWNER / CI_REPO_NAME / CI_PULL_REQUEST_NUMBER
+          PR_URL="https://gitcode.com/${CI_REPO_OWNER:-akdi-distribution}/${CI_REPO_NAME:-touchstone}/pulls/${CI_PULL_REQUEST_NUMBER:-1}"
+          echo "[touchstone] PR URL: $PR_URL"
+
+          # 调 PR-Agent（不发评论，JSON 打到 stdout）
+          python touchstone/pr_agent_runner.py --pr-url "$PR_URL" --mode improve+review \
+            > pr_agent_output.json 2>pr_agent_stderr.log || {
+              echo "[touchstone] PR-Agent failed (可能 LLM key 未配或端点不通)，跳过 AI 评审，继续跑确定性门禁"
+              echo '{"code_suggestions":[],"review":{"key_issues_to_review":[]}}' > pr_agent_output.json
+            }
+
+          # 打印评审摘要
+          python -c "
+          import json
+          data = json.load(open('pr_agent_output.json'))
+          suggestions = data.get('code_suggestions', [])
+          issues = data.get('review', {}).get('key_issues_to_review', [])
+          print(f'[touchstone] PR-Agent: {len(suggestions)} suggestions, {len(issues)} review issues')
+          for s in suggestions[:5]:
+              print(f'  - [{s.get(\"label\",\"?\")}] {s.get(\"one_sentence_summary\",\"\")[:120]}')
+          for i in issues[:5]:
+              print(f'  - [review] {i.get(\"issue_header\",\"\")[:120]}')
+          "
+
+      # ── 6. 确定性门禁（契约核对 + 栈规则 + 密钥扫描）──
+      - name: Deterministic gate
+        run: |
+          cd repo_workspace
+          python touchstone/gitcode_check.py
