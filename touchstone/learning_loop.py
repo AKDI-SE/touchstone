@@ -506,6 +506,13 @@ def _gh_get(path, token, accept="application/vnd.github+json"):
     return ghclient.request("GET", base + path, token, accept=accept)
 
 
+def _gh_paginate(path, token):
+    """翻页版 _gh_get：自动跟 ?page=N&per_page=100 直到无更多（防 >100 条截断）。"""
+    import ghclient
+    base = os.environ.get("GITHUB_API_URL", "https://api.github.com")
+    return ghclient.paginate(base + path, token)
+
+
 def _stack_of(filenames):
     """从改动文件后缀粗判技术栈（仅用于经验按栈归类；不确定 → 空串=通用）。"""
     exts = {os.path.splitext(f)[1].lower() for f in (filenames or []) if f}
@@ -557,7 +564,7 @@ def build_ground_truth(owner, repo, token, *, window=GT_WINDOW, bot_login=None,
         if not n:
             continue
         try:
-            comments = _gh_get(f"/repos/{owner}/{repo}/issues/{n}/comments?per_page=100", token) or []
+            comments = _gh_paginate(f"/repos/{owner}/{repo}/issues/{n}/comments", token) or []
             result = C._parse_result(C._trusted_bodies(comments, bot_login), bot_login)
             if not result:
                 continue                          # 未经过 touchstone 评审，无学习信号
@@ -569,7 +576,7 @@ def build_ground_truth(owner, repo, token, *, window=GT_WINDOW, bot_login=None,
             except Exception:
                 fa = []
             resolved_types = {f.get("rule_id") for f in fa if f.get("resolved")}
-            reviews = _gh_get(f"/repos/{owner}/{repo}/pulls/{n}/reviews?per_page=100", token) or []
+            reviews = _gh_paginate(f"/repos/{owner}/{repo}/pulls/{n}/reviews", token) or []
             human_state = C._human_verdict(reviews, bot_login)
             try:
                 diff = _gh_get(f"/repos/{owner}/{repo}/pulls/{n}", token,
@@ -579,7 +586,7 @@ def build_ground_truth(owner, repo, token, *, window=GT_WINDOW, bot_login=None,
             except Exception:
                 diff = ""
             files = [f.get("filename") for f in
-                     (_gh_get(f"/repos/{owner}/{repo}/pulls/{n}/files?per_page=100", token) or [])]
+                     (_gh_paginate(f"/repos/{owner}/{repo}/pulls/{n}/files", token) or [])]
             out.append(make_gt_entry(n, repo, _stack_of(files), pr.get("title", ""),
                                      diff, ts_findings, resolved_types, human_state,
                                      bool(pr.get("merged_at")),

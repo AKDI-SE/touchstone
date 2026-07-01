@@ -63,3 +63,19 @@ def request(method, url, token, data=None, accept="application/vnd.github+json",
     if accept.endswith("diff"):
         return r.text
     return r.json() if r.text else {}
+
+
+def paginate(url, token, *, per_page=100, max_pages=20, accept="application/vnd.github+json"):
+    """GitHub 列表翻页：自动加 &page=N&per_page=M 直到 <per_page 或 max_pages 页。
+    防单页 per_page=100 截断 >100 条数据（评论/评审/check-runs 等）。"""
+    sep = "&" if "?" in url else "?"
+    out = []
+    for page in range(1, max_pages + 1):
+        data = request("GET", f"{url}{sep}page={page}&per_page={per_page}", token, accept=accept)
+        if not isinstance(data, list):
+            break
+        out.extend(data)
+        if len(data) < per_page:
+            break
+        sep = "&"
+    return out

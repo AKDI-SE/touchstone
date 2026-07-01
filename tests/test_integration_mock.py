@@ -383,6 +383,7 @@ def test_calibrate_main(monkeypatch, tmp_path, capsys):
             return [{"user": {"login": "alice"}, "state": "APPROVED"}]
         return []
     monkeypatch.setattr(CAL, "gh", fake_gh)
+    monkeypatch.setattr(CAL, "gh_paginate", fake_gh)
     monkeypatch.setattr(CAL, "fetch_review_threads", lambda *a: [])
     CAL.main()
     rep = json.loads((tmp_path / "calibration.json").read_text(encoding="utf-8"))
