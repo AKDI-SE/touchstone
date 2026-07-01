@@ -1,0 +1,30 @@
+name: Python CI
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build:
+    runs-on: euleros-2.10.1  # 使用 GitCode 提供的默认运行器[reference:5][reference:6]
+    steps:
+      # 1. 拉取你的代码
+      - uses: checkout-action@0.0.1[reference:7]
+      
+      # 2. 配置 Python 环境
+      - name: Setup Python
+        uses: setup-python@0.0.1[reference:8][reference:9]
+        with:
+          python-version: '3.9'  # 你可以根据需要修改版本
+      
+      # 3. 安装项目依赖 (假设你有 requirements.txt)
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+      
+      # 4. 运行一个简单的测试 (这里只打印信息，你可以替换成实际测试命令)
+      - name: Run a simple test
+        run: echo "Hello from touchstone CI!"
