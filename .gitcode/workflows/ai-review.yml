@@ -1,10 +1,13 @@
 # .gitcode/workflows/ai-review.yml
-name: AI Code Review
+# AI 辅助审查（补充 workflow，手动触发）
+#
+# 当需要 AI 深度审查时手动触发。日常确定性门禁由 touchstone.yml 自动运行。
+# 注意：完整 AI 评审（PR-Agent）需要 LLM 端点配置，本 workflow 仅跑确定性检查。
+name: AI Assisted Review
+
 on:
-  push:
-    branches: [ "main" ]
-  pull_request:
-    branches: [ "main" ]
+  workflow_dispatch:
+
 jobs:
   review:
     runs-on: euleros-2.10.1
@@ -14,8 +17,16 @@ jobs:
         uses: setup-python@0.0.1
         with:
           python-version: '3.10'
-      - name: Run AI Review
+      - name: Install dependencies
         run: |
           cd repo_workspace
+          python -m pip install --upgrade pip
           pip install -r requirements.txt
-          python -m touchstone.ai_commit review-pr
+      - name: Run tests
+        run: |
+          cd repo_workspace
+          python -m pytest tests/ -q --tb=short
+      - name: Run deterministic checks
+        run: |
+          cd repo_workspace
+          python touchstone/gitcode_check.py
