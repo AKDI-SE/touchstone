@@ -408,6 +408,7 @@ def test_build_ground_truth_from_human_verdicts(tmp_path, monkeypatch):
             return "diff --git a.py"
         return []
     monkeypatch.setattr(L, "_gh_get", fake_gh)
+    monkeypatch.setattr(L, "_gh_paginate", fake_gh)
     monkeypatch.setattr(C, "gql", lambda q, v, t: threads_payload if v["num"] == 1 else {"data": {}})
 
     gt = L.build_ground_truth("o", "r", "tok")

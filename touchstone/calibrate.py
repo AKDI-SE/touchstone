@@ -34,6 +34,12 @@ def gh(path, token):
     return ghclient.request("GET", base + path, token)
 
 
+def gh_paginate(path, token):
+    """翻页版 gh：自动跟 ?page=N&per_page=100 直到无更多（防 >100 条截断）。"""
+    base = os.environ.get("GITHUB_API_URL", "https://api.github.com")
+    return ghclient.paginate(base + path, token)
+
+
 # --- GitHub GraphQL：取 PR 评论线程的 isResolved（REST 不暴露线程解决状态）------
 _GQL_THREADS = """
 query($owner:String!,$repo:String!,$num:Int!){
@@ -286,13 +292,13 @@ def main():
     records = []
     for pr in prs:
         n = pr["number"]
-        comments = gh(f"/repos/{owner}/{repo}/issues/{n}/comments?per_page=100", token)
+        comments = gh_paginate(f"/repos/{owner}/{repo}/issues/{n}/comments", token)
         result = _parse_result(_trusted_bodies(comments, bot), bot)
         if not result:
             continue                      # 该 PR 没经过 touchstone，跳过
         # 真实自动放行标记（autonomy.execute_auto_merge 发布的隐藏 marker）；只信 bot 发的（防伪造）
         auto_handled = any("touchstone:auto_handled" in b for b in _trusted_bodies(comments, bot))
-        reviews = gh(f"/repos/{owner}/{repo}/pulls/{n}/reviews?per_page=100", token)
+        reviews = gh_paginate(f"/repos/{owner}/{repo}/pulls/{n}/reviews", token)
         try:
             fa = thread_findings(fetch_review_threads(owner, repo, n, token), bot)
         except (requests.exceptions.RequestException, KeyError, ValueError) as e:
