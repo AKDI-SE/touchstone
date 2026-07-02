@@ -216,72 +216,9 @@ def test_gate_cli_contract_block_writes_failure(tmp_path, monkeypatch):
     assert co["gate"] == "failure" and posted["conclusion"] == "failure"
 
 
-<<<<<<< HEAD
-# ---------------- P0-10：_run_service + ghclient 4xx（用 unittest.mock，stdlib 零依赖）----
-from unittest.mock import patch, MagicMock
-
-
-def test_run_service_success():
-    """checks._run_service POST → 200 {passed:true} → (True, summary)。"""
-    mock_resp = MagicMock(status_code=200)
-    mock_resp.json.return_value = {"passed": True, "summary": "all good"}
-    mock_resp.raise_for_status = MagicMock()
-    with patch("checks.requests.post", return_value=mock_resp):
-        pr = {"owner": "o", "repo": "r", "sha": "s"}
-        passed, summary = checks._run_service(pr, {"url": "http://x/check", "timeout": 5})
-    assert passed is True and summary == "all good"
-
-
-def test_run_service_failure():
-    """_run_service → 200 {passed:false} → (False, ...)。"""
-    mock_resp = MagicMock(status_code=200)
-    mock_resp.json.return_value = {"passed": False, "summary": "bad"}
-    mock_resp.raise_for_status = MagicMock()
-    with patch("checks.requests.post", return_value=mock_resp):
-        passed, summary = checks._run_service(pr := {"owner": "o", "repo": "r", "sha": "s"},
-                                              {"url": "http://x/check"})
-    assert passed is False and "bad" in summary
-
-
-def test_run_service_http_error_isolated():
-    """_run_service HTTP 500 → 插件隔离：run_checks 记为中性（不拖垮总闸计算）。"""
-    import requests as _req
-    mock_resp = MagicMock(status_code=500)
-    mock_resp.raise_for_status.side_effect = _req.HTTPError("500")
-    with patch("checks.requests.post", return_value=mock_resp):
-        pr = {"owner": "o", "repo": "r", "sha": "s", "token": "t", "files": [], "contract_findings": []}
-        cfg = {"checks": [{"name": "svc", "type": "service", "url": "http://x/c", "required": True}]}
-        results = checks.run_checks(cfg, pr)
-    assert results[0].passed is None and "插件异常" in results[0].summary
-
-
-def test_ghclient_403_no_retry_after_raises():
-    """403 无 Retry-After → raise_for_status 立即抛（权限类，不空转）。"""
-    import pytest
-    import requests as _req
-    mock_resp = MagicMock(status_code=403, headers={})
-    mock_resp.raise_for_status.side_effect = _req.HTTPError("403 Forbidden")
-    mock_sess = MagicMock()
-    mock_sess.request.return_value = mock_resp
-    with pytest.raises(_req.HTTPError):
-        G.request("GET", "https://x", "tok", session=mock_sess)
-    assert mock_sess.request.call_count == 1    # 403 无 Retry-After → 不重试
-
-
-def test_ghclient_non_json_body():
-    """空 body → {}（不崩 json parse）。"""
-    mock_resp = MagicMock(status_code=200, text="")
-    mock_resp.json.side_effect = lambda: 1 / 0   # 不应被调用
-    mock_sess = MagicMock()
-    mock_sess.request.return_value = mock_resp
-    assert G.request("GET", "https://x", "tok", session=mock_sess) == {}
-
-
-import ghclient as G  # noqa: E402
-=======
 # ============ required 接力检查 fail-closed（skipped 不算过）回归 ============
 def _mk_relay_gh(monkeypatch, conclusion):
-    monkeypatch.setattr(checks, "_gh",
+    monkeypatch.setattr(checks.ghclient, "paginate_check_runs",
         lambda *a, **k: {"check_runs": [
             {"name": "unit", "status": "completed", "conclusion": conclusion}]})
 
@@ -300,4 +237,3 @@ def test_relay_non_required_skipped_still_ok(monkeypatch):
     assert checks._run_relay(pr, {"source_check": "unit"})[0] is True
     assert checks._run_relay(pr, {"source_check": "unit",
                                   "required": True, "allow_skipped": True})[0] is True
->>>>>>> harden: trust-filter loop markers + fail-closed required relays

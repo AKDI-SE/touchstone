@@ -393,9 +393,9 @@ def test_build_ground_truth_from_human_verdicts(tmp_path, monkeypatch):
     marker = ("<!-- touchstone-result: " + json.dumps(
         {"findings": [{"rule_id": "PRA-POSSIBLE_BUG"}, {"rule_id": "PRA-TYPO"}]}) + " -->")
     threads_payload = {"data": {"repository": {"pullRequest": {"reviewThreads": {"nodes": [
-        {"isResolved": True, "comments": {"nodes": [{"author": {"login": "alice"}, "body":
+        {"isResolved": True, "comments": {"nodes": [{"author": {"login": "github-actions[bot]"}, "body":
             "<!-- touchstone-finding: " + json.dumps({"rule_id": "PRA-POSSIBLE_BUG"}) + " -->"}]}},
-        {"isResolved": False, "comments": {"nodes": [{"body":
+        {"isResolved": False, "comments": {"nodes": [{"author": {"login": "github-actions[bot]"}, "body":
             "<!-- touchstone-finding: " + json.dumps({"rule_id": "PRA-TYPO"}) + " -->"}]}},
     ]}}}}}
 

@@ -46,7 +46,7 @@ query($owner:String!,$repo:String!,$num:Int!){
   repository(owner:$owner,name:$repo){
     pullRequest(number:$num){
       reviewThreads(first:100){
-        nodes{ isResolved comments(first:20){ nodes{ author{login} body } } }
+        nodes{ isResolved resolvedBy{login} comments(first:20){ nodes{ author{login} body } } }
       }
     }
   }
@@ -68,7 +68,9 @@ def parse_review_threads(data):
         comments = [{"author": ((c.get("author") or {}).get("login") or ""),
                      "body": c.get("body") or ""}
                     for c in (((t.get("comments") or {}).get("nodes")) or [])]
-        out.append({"isResolved": bool(t.get("isResolved")), "comments": comments})
+        out.append({"isResolved": bool(t.get("isResolved")),
+                    "resolved_by": ((t.get("resolvedBy") or {}).get("login") or ""),
+                    "comments": comments})
     return out
 
 
@@ -84,13 +86,16 @@ def _thread_dismissed(comments):
     return any(_DISMISS.search(c.get("body") or "") for c in comments)
 
 
-def thread_findings(threads, bot_login=None):
+def thread_findings(threads, bot_login=None, pr_author=None):
     """把每条评论线程对回某条 touchstone 发现：线程内带 touchstone-finding 标记的评论
     → {rule_id, agent, resolved, dismissed}。
     resolved = 线程 isResolved 且未被 wontfix/驳回（N4a：resolved 含 wontfix 解决，
     那种不算采纳——否则会把人明确驳回的当正例，污染校准与 TF-GRPO 奖励）。"""
     out = []
     for t in threads:
+        resolved = bool(t.get("isResolved"))
+        if resolved and pr_author and t.get("resolved_by") == pr_author:
+            resolved = False           # 作者自 resolve → 不作为采纳信号
         for c in t.get("comments", []):
             if not _is_trusted_marker_author(c.get("author") or "", bot_login):
                 continue            # 信任根：只认 touchstone 自己发的 finding marker（防伪造）
@@ -103,7 +108,7 @@ def thread_findings(threads, bot_login=None):
                 continue
             dismissed = _thread_dismissed(t.get("comments", []))
             out.append({"rule_id": meta.get("rule_id"), "agent": meta.get("agent"),
-                        "resolved": bool(t.get("isResolved")) and not dismissed,
+                        "resolved": resolved and not dismissed,
                         "dismissed": dismissed})
             break                      # 一个线程只对一条发现
     return out
