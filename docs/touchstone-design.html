@@ -633,7 +633,7 @@ checks:
       <li><strong>模型多样性的去相关收益有限、且在衰减。</strong>让评审侧与 author 用不同模型能带来一些独立性，但这条收益会随前沿模型趋同而衰减，且它不跨越验证边界（两个模型读代码仍然只是"读"）。因此本设计不把模型多样性当作主力独立性来源；评审复用 PR-Agent（单一配置模型），评审侧所用模型要求不弱于 author 所用模型。</li>
       <li><strong>评审层只改判断层。</strong>评审层（复用 PR-Agent）只能扩展评审广度、降低相关性盲点，而不会新增"客观验证"这一能力。因此（可选的）自动合并的天花板，始终由验证覆盖率决定，而不由评审 agent 的数量或模型多样性决定。</li>
       <li><strong>充分性 ≠ 测试意图正确。</strong>哨兵与变异只能逮出弱测试，逮不住「强而错」的测试（规格被误读却写得很强）。接受：由人核准的验收规格从源头压低误读、变异部分覆盖、事后熔断保障——充分性层只保证「测了改动」、不保证「测的是对的性质」。</li>
-      <li><strong>风险分流的安全性部分压在判断层。</strong>「Touchstone 全错也越不过门禁」只对<strong>准入门禁</strong>成立（评审层不能批准合入）；但一个 PR 跑哪一档验证由（会误判的）评审层决定，被误判为 low 的错改只走 cheap_only，自动合并下可能仅凭 CI 绿放行。缓解而非根除：blast_radius 的 touches_public_api / schema / security_surface 等因子尽量确定性计算、保守取并，把伤害面大的改动强制抬到 full_suite；并由事后熔断保障。</li>
+      <li><strong>风险分流的安全性部分压在判断层。</strong>「Touchstone 全错也越不过门禁」只对<strong>准入门禁</strong>成立（评审层不能批准合入）；但一个 PR 跑哪一档验证由（会误判的）评审层决定，被误判为 low 的错改只走 cheap_only，自动合并下可能仅凭 CI 绿放行。缓解而非根除：<code>map_verdict</code> 除按类别定级外，再<strong>从改动文件路径确定性计算 blast_radius</strong>（<code>review_provider.deterministic_blast</code>：migration/*.sql/*.proto/schema → cross_module_contract；auth/crypto/secrets 等路径 → security_surface），与评审侧结果<strong>保守取并</strong>；一旦命中严重影响面，<strong>无视 LLM 类别直接抬到 high → full_suite</strong>，并触发（可选的）自动合并否决。即评审侧漏判类别时，路径证据仍把伤害面大的改动拦在自动放行之外；再由事后熔断兜底。</li>
     </ul>
   </div>
 </section>

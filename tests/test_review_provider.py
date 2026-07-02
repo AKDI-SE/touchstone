@@ -202,3 +202,27 @@ def test_runner_imports_without_pr_agent():
 def test_fetch_unknown_provider():
     with pytest.raises(ValueError):
         RP.fetch({"pr_agent_output": _RAW}, provider="nope")
+
+
+# ============ 确定性影响面（不依赖 LLM 类别）·安全兜底回归 ============
+def test_deterministic_blast_by_path():
+    from touchstone import review_provider as rp
+    assert "cross_module_contract" in rp.deterministic_blast(["db/migrations/0007_add.sql"])
+    assert "cross_module_contract" in rp.deterministic_blast(["api/user.proto"])
+    assert "security_surface" in rp.deterministic_blast(["svc/auth/login.py"])
+    assert rp.deterministic_blast(["svc/pay/charge.py", "README.md"]) == []   # 普通路径不误报
+
+
+def test_llm_missed_category_still_elevated_by_path():
+    """评审侧【漏判】类别（category 不含 security/contract）时，
+    改动却触及 migration/安全面 → 确定性 blast 仍把它抬到 high → full_suite。"""
+    from touchstone import review_provider as rp
+    findings = [{"rule_id": "PRA-STYLE", "category": "style", "severity": "warn", "confidence": 0.9}]
+    # 不给 changed_files：沿用旧行为（低风险）
+    _, risk0 = rp.map_verdict(list(findings))
+    assert risk0["risk_band"] != "high"
+    # 给出触及 schema 迁移的改动文件：即便 LLM 只报了 style，也被抬到 high + full_suite
+    _, risk1 = rp.map_verdict(list(findings), changed_files=["db/migrations/0007_add.sql"])
+    assert risk1["risk_band"] == "high"
+    assert "cross_module_contract" in risk1["blast_radius"]
+    assert risk1["verification_decision"] == "full_suite"

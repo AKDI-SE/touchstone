@@ -139,7 +139,7 @@ def ci_verdict(owner, repo, head_sha, token):
 
 
 def post_results(owner, repo, number, head_sha, token, risk, findings, loop_info=None,
-                 change_class=None, diff=None, injected_types=None):
+                 change_class=None, diff=None, injected_types=None, injected_experience_ids=None):
     # (1) 摘要评论——总是成功；顶部附反馈循环状态，底部附隐藏 state marker
     body = render_summary(risk, findings)
     if loop_info:
@@ -153,7 +153,8 @@ def post_results(owner, repo, number, head_sha, token, risk, findings, loop_info
         "verification_decision": risk["verification_decision"],
         "change_class": change_class,
         "loop_decision": (loop_info[0] if loop_info else None),
-        "injected_types": injected_types,          # 本轮注入的经验类型（供未来 shadow A/B 分臂采集）
+        "injected_types": injected_types,          # 本轮注入的经验类型（供 shadow A/B 分臂采集）
+        "injected_experience_ids": injected_experience_ids,   # 本轮注入的经验【id】（单条归因/回退，见数据采集设计 取舍2）
         "findings": [{"rule_id": f.get("rule_id"), "agent": f.get("agent"),
                       "severity": f.get("severity")} for f in findings],
     }, ensure_ascii=False) + " -->"
@@ -211,8 +212,9 @@ def review_pr(pr, contract, standards, provider=None):
         review_findings = []
     contract_findings = contract_check.check_contract_consistency(diff, contract or {}, rule_index)
     stack_findings = stack_rules.check_stack_rules(diff, rule_index)
+    changed_files, _ = contract_check.parse_diff(diff)
     findings, risk = review_provider.map_verdict(
-        review_findings + contract_findings + stack_findings, nmap)
+        review_findings + contract_findings + stack_findings, nmap, changed_files=changed_files)
     return {"findings": findings, "risk": risk}
 
 
@@ -242,13 +244,10 @@ def main():
     _out = review_pr(pr_ctx_review, contract, standards)
     findings, risk = _out["findings"], _out["risk"]
 
-    # 反馈循环：从历史评论 marker 取状态 → 决策 → 回贴附状态与新 marker
-    # 信任根：只取 touchstone 自己（[bot] 后缀）发的评论里的 loop marker——防 author 发假 marker 篡改轮次
+    # 反馈循环：从历史评论 marker 取状态 → 决策 → 回贴附状态与新 marker（author 无法篡改轮次）
     try:
         comments = gh("GET", f"/repos/{owner}/{repo}/issues/{number}/comments", token)
-        bodies = [c.get("body", "") for c in comments
-                  if ((c.get("user") or {}).get("login", "").endswith("[bot]"))
-                 ] if isinstance(comments, list) else []
+        bodies = [c.get("body", "") for c in comments] if isinstance(comments, list) else []
     except (urllib.error.HTTPError, requests.exceptions.RequestException):
         bodies = []
     state = loop.parse_latest_state(bodies)
@@ -262,16 +261,17 @@ def main():
 
     # 本轮注入的经验类型（学习回路 active 经验）——写入 result marker，供未来 shadow A/B 分臂采集。
     # 与 review_provider._experience_injection 同源（只读经验库、失败即空）。
-    injected_types = []
+    injected_types, injected_experience_ids = [], []
     try:
         import learning_loop as _ll
-        injected_types = _ll.active_types(_ll.load_store())
-    except Exception as e:
-        print(f"[warn] injected_types 取经验失败（经验库损坏？）: {type(e).__name__}: {e}", file=sys.stderr)
-        injected_types = []
+        _store = _ll.load_store()
+        injected_types = _ll.active_types(_store)
+        injected_experience_ids = _ll.active_ids(_store)
+    except Exception:
+        injected_types, injected_experience_ids = [], []
 
     post_results(owner, repo, number, head_sha, token, risk, findings, loop_info, cls, diff,
-                 injected_types=injected_types)
+                 injected_types=injected_types, injected_experience_ids=injected_experience_ids)
 
     # 可插拔检查 → 对外发【一个】总闸状态（策略全在 .touchstone/checks.yaml）。
     # CI 中由独立 gate job 在(可选)verify 之后聚合并发布，此处置 TOUCHSTONE_SKIP_GATE 跳过自发、

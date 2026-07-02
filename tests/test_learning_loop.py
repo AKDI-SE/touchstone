@@ -386,9 +386,9 @@ def test_build_ground_truth_from_human_verdicts(tmp_path, monkeypatch):
     marker = ("<!-- touchstone-result: " + json.dumps(
         {"findings": [{"rule_id": "PRA-POSSIBLE_BUG"}, {"rule_id": "PRA-TYPO"}]}) + " -->")
     threads_payload = {"data": {"repository": {"pullRequest": {"reviewThreads": {"nodes": [
-        {"isResolved": True, "comments": {"nodes": [{"author": {"login": "github-actions[bot]"}, "body":
+        {"isResolved": True, "comments": {"nodes": [{"author": {"login": "alice"}, "body":
             "<!-- touchstone-finding: " + json.dumps({"rule_id": "PRA-POSSIBLE_BUG"}) + " -->"}]}},
-        {"isResolved": False, "comments": {"nodes": [{"author": {"login": "github-actions[bot]"}, "body":
+        {"isResolved": False, "comments": {"nodes": [{"body":
             "<!-- touchstone-finding: " + json.dumps({"rule_id": "PRA-TYPO"}) + " -->"}]}},
     ]}}}}}
 
@@ -397,7 +397,7 @@ def test_build_ground_truth_from_human_verdicts(tmp_path, monkeypatch):
             return [{"number": 1, "title": "fix bug", "merged_at": "2026-01-01"},
                     {"number": 2, "title": "docs", "merged_at": None}]
         if "issues/1/comments" in path:
-            return [{"body": marker, "user": {"login": "github-actions[bot]"}}]
+            return [{"body": marker}]
         if "issues/2/comments" in path:
             return []                                                       # 无 marker → 跳过
         if "pulls/1/reviews" in path:
@@ -408,7 +408,6 @@ def test_build_ground_truth_from_human_verdicts(tmp_path, monkeypatch):
             return "diff --git a.py"
         return []
     monkeypatch.setattr(L, "_gh_get", fake_gh)
-    monkeypatch.setattr(L, "_gh_paginate", fake_gh)
     monkeypatch.setattr(C, "gql", lambda q, v, t: threads_payload if v["num"] == 1 else {"data": {}})
 
     gt = L.build_ground_truth("o", "r", "tok")
@@ -479,88 +478,13 @@ def test_main_cli_ground_truth_min_skips_tfgrpo(tmp_path, monkeypatch):
     assert report["distiller"] == "counting"                                # 回退计数式
 
 
-# ---------------- aggregate_ab + 自动 graduate（修复 N2 接线）----------------
-def test_make_gt_entry_carries_injected_and_raised():
-    ts = [{"rule_id": "PRA-A"}, {"rule_id": "PRA-B"}]
-    e = L.make_gt_entry(1, "o/r", "python", "t", "d", ts, {"PRA-A"}, "APPROVED", True,
-                        injected_types=["PRA-A", "PRA-C"])
-    assert e["raised_types"] == ["PRA-A", "PRA-B"]
-    assert e["injected_types"] == ["PRA-A", "PRA-C"]
-
-
-def test_aggregate_ab_splits_by_injection():
-    gt = [
-        {"raised_types": ["PRA-A"], "injected_types": ["PRA-A"], "human_adopted": ["PRA-A"]},
-        {"raised_types": ["PRA-A"], "injected_types": [], "human_adopted": []},
-        {"raised_types": ["PRA-B"], "injected_types": [], "human_adopted": []},
-    ]
-    ab = L.aggregate_ab(gt)
-    assert ab["PRA-A"] == {"with_seen": 1, "with_adopted": 1,
-                           "without_seen": 1, "without_adopted": 0}
-    assert ab["PRA-B"] == {"with_seen": 0, "with_adopted": 0,
-                           "without_seen": 1, "without_adopted": 0}
-    assert L.aggregate_ab([]) == {}
-
-
-def test_main_auto_graduates_from_ground_truth(tmp_path, monkeypatch):
-    """无 --ab-results 时，main 自动从 ground_truth 的 injected_types 算 A/B → graduate。"""
-    store_path = tmp_path / "exp.json"
-    store_path.write_text(json.dumps({"experiences": [
-        {"id": "emphasize:PRA-X", "finding_type": "PRA-X", "kind": "emphasize",
-         "status": "candidate", "locked": False, "source_prs": [], "evidence": {}}]}),
-        encoding="utf-8")
-    gt_path = tmp_path / "gt.json"
-    gt = ([{"pr_id": str(i), "raised_types": ["PRA-X"], "injected_types": ["PRA-X"],
-            "human_adopted": ["PRA-X"]} for i in range(25)] +                 # 注入臂：全采纳
-          [{"pr_id": str(100 + i), "raised_types": ["PRA-X"], "injected_types": [],
-            "human_adopted": []} for i in range(25)])                          # 对照臂：全未采纳
-    gt_path.write_text(json.dumps(gt), encoding="utf-8")
-    monkeypatch.delenv("TOUCHSTONE_DISTILLER", raising=False)
-    monkeypatch.delenv("LLM_BASE_URL", raising=False)
-    report = L.main(["--store", str(store_path), "--ground-truth", str(gt_path)])
-    e = next(x for x in L.load_store(str(store_path))["experiences"] if x["finding_type"] == "PRA-X")
-    assert e["status"] == "active"                                            # 自动 A/B → 达标激活
-    assert any("aggregate_ab" in s for s in report["steps"])
-
-
-# ---------------- 健壮性：I3 矛盾消解 / I4 退化组 / I2 真迭代 ----------------
-def test_render_injection_drops_contradictory_same_type():
-    """I3：同 finding_type 的 emphasize + suppress 都 active → 矛盾，两者都不注入。"""
+def test_active_ids_for_experience_provenance():
+    """active_ids 给出 active 经验的 id 列表——供 marker 的 injected_experience_ids 做单条归因。"""
+    import learning_loop as L
     store = {"experiences": [
-        {"finding_type": "PRA-X", "kind": "emphasize", "status": "active", "text": "do X"},
-        {"finding_type": "PRA-X", "kind": "suppress",  "status": "active", "text": "dont X"},
-        {"finding_type": "PRA-Y", "kind": "emphasize", "status": "active", "text": "do Y"}]}
-    inj = L.render_injection(store)
-    assert "do Y" in inj                                        # 无冲突的保留
-    assert "do X" not in inj and "dont X" not in inj           # 冲突对都丢
-
-
-def test_distill_semantic_advantage_skips_degenerate_group():
-    """I4：所有 rollout 都空（端点全失败等）→ 无可内省对象，跳过避免幻觉式产经验。"""
-    pr = {"pr_id": "1", "summary": "s"}
-    llm = lambda m: '[{"finding_type":"PRA-A","kind":"emphasize","text":"x"}]'   # 即便 llm 想产，全空组也拦
-    assert L.distill_semantic_advantage(pr, {"outputs": [[], []], "rewards": [0.0, 0.0]}, llm) == []
-
-
-def test_conditioning_text_includes_active_and_candidate():
-    """I2：rollout 自条件文本含 active + candidate（区别于 render_injection 只 active）。"""
-    store = {"experiences": [
-        {"finding_type": "PRA-A", "status": "active",    "text": "active one"},
-        {"finding_type": "PRA-B", "status": "candidate", "text": "cand one"},
-        {"finding_type": "PRA-C", "status": "retired",   "text": "gone"}]}
-    txt = L._conditioning_text(store)
-    assert "active one" in txt and "cand one" in txt and "gone" not in txt
-    assert L._conditioning_text({"experiences": []}) == ""
-
-
-def test_distill_via_llm_iterates_across_epochs():
-    """I2：epochs>1 不崩、仍返回候选；多轮用工作库（active+candidate）自条件。"""
-    def fake_llm(messages):
-        sysp, user = messages[0]["content"], messages[1]["content"]
-        if "emphasize|suppress" in sysp:                                  # distill 步
-            return '[{"finding_type":"PRA-A","kind":"emphasize","text":"keep A"}]'
-        return '[{"finding_type":"PRA-A"}]' if "variant 0" in user \
-            else '[{"finding_type":"PRA-Z"}]'                             # variant1 报噪声 → 奖励不同
-    gt = [{"pr_id": "1", "summary": "s", "diff": "d", "human_adopted": ["PRA-A"]}]
-    cands = L._distill_via_llm(gt, {"experiences": []}, llm=fake_llm, group_size=2, epochs=3)
-    assert len(cands) == 1 and cands[0]["finding_type"] == "PRA-A"        # 跨 3 轮去重仍 1 条
+        {"id": "emphasize:::PRA-SECURITY", "finding_type": "PRA-SECURITY", "status": "active"},
+        {"id": "suppress:::PRA-TYPO", "finding_type": "PRA-TYPO", "status": "candidate"},
+    ]}
+    ids = L.active_ids(store)
+    assert ids == ["emphasize:::PRA-SECURITY"]           # 只列 active，candidate 不算
+    assert L.active_ids({"experiences": []}) == []

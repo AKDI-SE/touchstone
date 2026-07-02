@@ -163,7 +163,7 @@
 
     <h3>2.3 三个核心取舍</h3>
     <div class="principle warn"><span class="k">取舍 1 · 奖励可信度（最关键）</span>TF-GRPO 朝奖励方向优化，奖励测得糙，就会把噪声当信号学进去。<strong>显式反馈</strong>（每条意见上的 👍/👎 或「有用/已知/误报/已改」）信噪比最高，但需要一个轻量反馈通道——在不建库的前提下，可用<strong>评论 reaction</strong> 或作者<strong>回复关键词</strong>承载，仍从 GitHub 重建。退而求其次用自动关联（线程 resolved / 位置改动），最次用推断。本设计把三档都纳入 <code>采纳证据</code>，每条标注<strong>来源与可信度</strong>，让奖励可以分档加权、也便于抽检。</div>
-    <div class="principle warn"><span class="k">取舍 2 · provenance 必须评审时留</span>「这条发现产生时注入了哪些经验」只能<strong>评审当时</strong>写进 marker，事后无法从 GitHub 反推。缺了它：注入对照无法分臂（<code>graduate</code> 失效）、坏经验无法单条归因与回退、抽检无从谈起。所以扩充 marker 的<strong>第一要务是 <code>injected_experience_ids</code></strong>，其次才是 file/line/模型。</div>
+    <div class="principle warn"><span class="k">取舍 2 · provenance 必须评审时留</span>「这条发现产生时注入了哪些经验」只能<strong>评审当时</strong>写进 marker，事后无法从 GitHub 反推。缺了它：注入对照无法分臂（<code>graduate</code> 失效）、坏经验无法单条归因与回退、抽检无从谈起。所以扩充 marker 的<strong>第一要务是 <code>injected_experience_ids（已在 orchestrator result marker 落地：learning_loop.active_ids）</code></strong>，其次才是 file/line/模型。</div>
     <div class="principle"><span class="k">取舍 3 · 类型级先行、位置级择机</span>当前 <code>score_review</code> 只按 finding_type 的集合重合度算命中/噪声（见 learning-loop §3，已知简化）。marker 与采纳证据里<strong>保留 file/line/内容</strong>，就为日后把奖励从类型级升级到位置级预留了字段；先做类型级，位置级作为奖励函数的后续增强，不阻塞采集落地。</div>
   </div>
 </section>
