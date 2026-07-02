@@ -534,3 +534,15 @@ def test_epochs_rerender_experience():
     L._distill_via_llm(gt, {"experiences": []}, llm=lambda m: "[]", group_size=2, epochs=2,
                        rollout=rollout, score=lambda r, h: 1.0, distill_advantage=dist)
     assert len(seen) == 2 and seen[0] == "" and "E1-EXP" in seen[1]
+
+
+def test_store_path_prefers_new_env(monkeypatch, tmp_path):
+    """TOUCHSTONE_STORE_PATH 优先于旧名 TOUCHSTONE_EXPERIENCE。"""
+    import importlib, learning_loop
+    f = tmp_path / 's.json'; f.write_text('{"experiences": [{"id": "x", "status": "active", "finding_type": "T"}]}')
+    monkeypatch.setenv('TOUCHSTONE_STORE_PATH', str(f))
+    importlib.reload(learning_loop)
+    try:
+        assert learning_loop.load_store()['experiences'][0]['id'] == 'x'
+    finally:
+        monkeypatch.delenv('TOUCHSTONE_STORE_PATH', raising=False); importlib.reload(learning_loop)

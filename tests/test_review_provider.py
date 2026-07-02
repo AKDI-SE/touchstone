@@ -247,3 +247,16 @@ def test_to_rdjson_shape():
     assert rd["source"]["name"] == "touchstone" and len(d) == 2
     assert d[0]["severity"] == "ERROR" and d[0]["location"]["range"]["start"]["line"] == 3
     assert d[1]["severity"] == "WARNING" and d[1]["location"]["range"]["start"]["line"] == 1
+
+
+def test_injection_disabled_switch(monkeypatch):
+    from touchstone import review_provider as rp
+    monkeypatch.setenv('TOUCHSTONE_EXPERIENCE_ENABLED', 'false')
+    assert rp._experience_injection('.') == ''
+
+def test_injection_skipped_in_pr_without_trusted_ref(monkeypatch):
+    from touchstone import review_provider as rp
+    monkeypatch.setenv('TOUCHSTONE_EXPERIENCE_ENABLED', 'true')
+    monkeypatch.setenv('GITHUB_EVENT_NAME', 'pull_request')
+    monkeypatch.delenv('TOUCHSTONE_EXPERIENCE_REF', raising=False)
+    assert rp._experience_injection('.') == ''

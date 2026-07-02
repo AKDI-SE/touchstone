@@ -321,3 +321,18 @@ def test_trusted_bodies_filters_forged_marker():
     assert st.history == [["A"], ["A"]]                            # 伪造的空 history 没生效
     # bot 身份未知 → 退回全量（可用性优先，调用方已告警）
     assert len(loop.trusted_bodies(comments, None)) == 2
+
+
+def test_author_self_resolve_not_counted_as_adoption():
+    """作者自己 resolve 自己 PR 的 bot 发现线程 → 不算采纳（防伪造正例毒化学习奖励）。"""
+    import calibrate, json
+    body = '<!-- touchstone-finding: ' + json.dumps({'rule_id': 'PRA-X', 'agent': 'pr-agent:review'}) + ' -->'
+    threads = [{'isResolved': True, 'resolved_by': 'author1',
+                'comments': [{'author': 'github-actions[bot]', 'body': body}]}]
+    # 不传 pr_author：沿旧行为算采纳
+    assert calibrate.thread_findings(threads, 'github-actions[bot]')[0]['resolved'] is True
+    # 传 pr_author=author1（作者自 resolve）→ 不算采纳
+    assert calibrate.thread_findings(threads, 'github-actions[bot]', pr_author='author1')[0]['resolved'] is False
+    # 他人 resolve → 仍算采纳
+    threads[0]['resolved_by'] = 'reviewer2'
+    assert calibrate.thread_findings(threads, 'github-actions[bot]', pr_author='author1')[0]['resolved'] is True
