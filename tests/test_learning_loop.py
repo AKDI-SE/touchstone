@@ -73,7 +73,7 @@ def test_graduate_on_sufficient_lift_and_samples():
                                "without_seen": 8, "without_adopted": 4}}
     grad = L.graduate(store, ab)
     st = {e["finding_type"]: e["status"] for e in store["experiences"]}
-    assert "PRA-MAINTAINABILITY" in [s.split(":")[1] for s in grad] or "suppress:PRA-MAINTAINABILITY" in grad
+    assert "PRA-MAINTAINABILITY" in [s.split(":")[-1] for s in grad]
     assert st["PRA-MAINTAINABILITY"] == "active"
     assert st["PRA-POSSIBLE_BUG"] == "candidate"     # 样本不足 → 不达标
 
@@ -127,9 +127,14 @@ def test_render_injection_only_active_no_anchor():
 def _fake_llm(messages):
     """确定性假旗舰模型：rollout 请求→固定评审；内省请求→固定候选经验（含一个确定性锚，应被剔除）。"""
     sysp = messages[0]["content"]
+    user = messages[1]["content"] if len(messages) > 1 else ""
     if "list the review findings" in sysp:
-        return ('[{"finding_type":"PRA-POSSIBLE_BUG","file":"a.py","note":"npe"},'
-                '{"finding_type":"PRA-TYPO","file":"a.py","note":"typo"}]')
+        if "variant 0" in user:      # 各 variant 产出不同 → 组内奖励有差异（配合 I4 守卫）
+            return ('[{"finding_type":"PRA-POSSIBLE_BUG","file":"a.py","note":"npe"},'
+                    '{"finding_type":"PRA-TYPO","file":"a.py","note":"typo"}]')
+        if "variant 1" in user:
+            return '[{"finding_type":"PRA-POSSIBLE_BUG","file":"a.py","note":"npe"}]'
+        return "[]"
     if "distill repo-specific review experience" in sysp:
         return ('```json\n[{"finding_type":"PRA-POSSIBLE_BUG","kind":"emphasize",'
                 '"text":"Emphasize possible-bug findings in this repo."},'
@@ -247,7 +252,7 @@ def test_seed_experience_human_active_locked():
     store = {"experiences": []}
     e = L.seed_experience(store, "PRA-SECURITY", "emphasize", "Always flag auth changes.")
     assert e["source"] == "human" and e["locked"] is True and e["status"] == "active"
-    assert store["experiences"][0]["id"] == "emphasize:PRA-SECURITY"
+    assert store["experiences"][0]["id"] == "emphasize:::PRA-SECURITY"   # I1：id 含 repo/stack（此处空）
     assert "Always flag auth changes." in L.render_injection(store)   # 人写的 active 经验会被注入
 
 
@@ -279,7 +284,9 @@ def test_protected_type_never_suppressed_tfgrpo(monkeypatch):
     fake = lambda m: ('[{"finding_type":"PRA-SECURITY","kind":"suppress","text":"drop sec"},'
                       '{"finding_type":"PRA-TYPO","kind":"suppress","text":"drop typo"}]')
     cands = L.distill_semantic_advantage({"pr_id": "1"},
-                                         {"outputs": [[{"finding_type": "PRA-SECURITY"}]], "rewards": [0.0]},
+                                         {"outputs": [[{"finding_type": "PRA-SECURITY"}],
+                                                      [{"finding_type": "PRA-TYPO"}]],
+                                          "rewards": [1.0, 0.0]},      # 非退化组
                                          fake, "o/r", "py")
     kinds = {(c["finding_type"], c["kind"]) for c in cands}
     assert ("PRA-SECURITY", "suppress") not in kinds                  # 红线挡住
@@ -386,9 +393,9 @@ def test_build_ground_truth_from_human_verdicts(tmp_path, monkeypatch):
     marker = ("<!-- touchstone-result: " + json.dumps(
         {"findings": [{"rule_id": "PRA-POSSIBLE_BUG"}, {"rule_id": "PRA-TYPO"}]}) + " -->")
     threads_payload = {"data": {"repository": {"pullRequest": {"reviewThreads": {"nodes": [
-        {"isResolved": True, "comments": {"nodes": [{"author": {"login": "alice"}, "body":
+        {"isResolved": True, "comments": {"nodes": [{"author": {"login": "github-actions[bot]"}, "body":
             "<!-- touchstone-finding: " + json.dumps({"rule_id": "PRA-POSSIBLE_BUG"}) + " -->"}]}},
-        {"isResolved": False, "comments": {"nodes": [{"body":
+        {"isResolved": False, "comments": {"nodes": [{"author": {"login": "github-actions[bot]"}, "body":
             "<!-- touchstone-finding: " + json.dumps({"rule_id": "PRA-TYPO"}) + " -->"}]}},
     ]}}}}}
 
@@ -476,3 +483,66 @@ def test_main_cli_ground_truth_min_skips_tfgrpo(tmp_path, monkeypatch):
     report = L.main(["--store", str(store_path), "--ground-truth", str(gt_path)])
     assert report["ground_truth"] == 0                                      # 不足下限 → 视作无真值集
     assert report["distiller"] == "counting"                                # 回退计数式
+
+
+def test_active_ids_for_experience_provenance():
+    """active_ids 给出 active 经验的 id 列表——供 marker 的 injected_experience_ids 做单条归因。"""
+    import learning_loop as L
+    store = {"experiences": [
+        {"id": "emphasize:::PRA-SECURITY", "finding_type": "PRA-SECURITY", "status": "active"},
+        {"id": "suppress:::PRA-TYPO", "finding_type": "PRA-TYPO", "status": "candidate"},
+    ]}
+    ids = L.active_ids(store)
+    assert ids == ["emphasize:::PRA-SECURITY"]           # 只列 active，candidate 不算
+    assert L.active_ids({"experiences": []}) == []
+
+
+# ==================== TF-GRPO 加固回归（I1/I2/I3/I4，重施于新基线）====================
+def test_exp_id_scoped_no_multirepo_collision():
+    fake = lambda m: '[{"finding_type":"PRA-X","kind":"emphasize","text":"x"}]'
+    g = {"outputs": [[{"finding_type": "PRA-X"}], [{"finding_type": "PRA-Y"}]], "rewards": [1.0, 0.0]}
+    a = L.distill_semantic_advantage({"pr_id": "1"}, g, fake, "acme/pay", "java")
+    b = L.distill_semantic_advantage({"pr_id": "2"}, g, fake, "acme/risk", "py")
+    store = {"experiences": []}
+    L.merge_candidates(store, a); L.merge_candidates(store, b)
+    assert a[0]["id"] != b[0]["id"] and len(store["experiences"]) == 2
+
+def test_degenerate_group_skipped():
+    fake = lambda m: '[{"finding_type":"PRA-X","kind":"emphasize","text":"x"}]'
+    same = {"outputs": [[{"finding_type": "PRA-X"}]] * 2, "rewards": [0.5, 0.5]}
+    assert L.distill_semantic_advantage({"pr_id": "1"}, same, fake, "o/r", "py") == []
+
+def test_injection_conflict_resolved():
+    store = {"experiences": [
+        {"id": "e", "repo": "o/r", "stack": "py", "finding_type": "PRA-X", "kind": "emphasize",
+         "text": "DO flag PRA-X", "status": "active", "updated_at": 100},
+        {"id": "s", "repo": "o/r", "stack": "py", "finding_type": "PRA-X", "kind": "suppress",
+         "text": "do NOT flag PRA-X", "status": "active", "updated_at": 200}]}
+    out = L.render_injection(store)
+    assert "do NOT flag PRA-X" in out and "DO flag PRA-X" not in out
+
+def test_epochs_rerender_experience():
+    seen = []
+    rollout = lambda pr, E, llm, g: (seen.append(E) or
+        [[{"finding_type": "PRA-X"}], [{"finding_type": "PRA-Y"}]])
+    dist = lambda pr, g, llm, repo, stack: [{"id": L._exp_id("PRA-X", "emphasize", repo, stack),
+        "repo": repo, "stack": stack, "finding_type": "PRA-X", "kind": "emphasize",
+        "text": "E1-EXP", "status": "candidate", "source": "tfgrpo", "locked": False,
+        "source_prs": ["1"], "created_at": 1, "updated_at": 1}]
+    gt = [{"pr_id": "1", "repo": "o/r", "stack": "py", "summary": "s", "diff": "d",
+           "human_adopted": ["PRA-X"]}]
+    L._distill_via_llm(gt, {"experiences": []}, llm=lambda m: "[]", group_size=2, epochs=2,
+                       rollout=rollout, score=lambda r, h: 1.0, distill_advantage=dist)
+    assert len(seen) == 2 and seen[0] == "" and "E1-EXP" in seen[1]
+
+
+def test_store_path_prefers_new_env(monkeypatch, tmp_path):
+    """TOUCHSTONE_STORE_PATH 优先于旧名 TOUCHSTONE_EXPERIENCE。"""
+    import importlib, learning_loop
+    f = tmp_path / 's.json'; f.write_text('{"experiences": [{"id": "x", "status": "active", "finding_type": "T"}]}')
+    monkeypatch.setenv('TOUCHSTONE_STORE_PATH', str(f))
+    importlib.reload(learning_loop)
+    try:
+        assert learning_loop.load_store()['experiences'][0]['id'] == 'x'
+    finally:
+        monkeypatch.delenv('TOUCHSTONE_STORE_PATH', raising=False); importlib.reload(learning_loop)

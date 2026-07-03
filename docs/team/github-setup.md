@@ -26,7 +26,7 @@
 
 | Variable | 起步值 | 作用 |
 |---|---|---|
-| `VERIFY_ENABLED` | 不设（默认关） | 设 `true` 才跑 verify 深检（需 `LLM_TEST_MODEL` + `acceptance.yaml`） |
+| `VERIFY_ENABLED` | 不设（默认关） | 设 `true` 才跑 verify 深检（需 `LLM_TEST_MODEL` + `acceptance.yaml`）。**⚠ 开启前必读 `docs/touchstone-design.html` §6.6**——verify 在持密上下文执行 PR 代码，需先实施隔离方案（Environments / 拆事件 / 容器） |
 | `AUTONOMY_ENABLED` | 不设（默认关） | 自动合并；**起步别开**，等校准数据够再说 |
 
 > 起步什么开关都不设：touchstone 只产出评审意见 + 发一个总闸，不跑验证、不自动合 —— 最稳的狗粮起点。

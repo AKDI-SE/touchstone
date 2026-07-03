@@ -64,13 +64,20 @@ def _gh(pr, method, path):
 def _run_relay(pr, cfg):
     """读某个已有 check-run 的结论（工具在自己的 CI 跑过，这里只转达）。"""
     src = cfg.get("source_check")
-    data = _gh(pr, "GET", f"/repos/{pr['owner']}/{pr['repo']}/commits/{pr['sha']}/check-runs")
+    base = os.environ.get("GITHUB_API_URL", "https://api.github.com")
+    data = ghclient.paginate_check_runs(
+        base + f"/repos/{pr['owner']}/{pr['repo']}/commits/{pr['sha']}/check-runs", pr["token"])
     runs = [r for r in (data.get("check_runs") or []) if r.get("name") == src]
     if not runs:
         return None, f"未找到检查 {src}"
     if any(r.get("status") != "completed" for r in runs):
         return None, f"{src} 未完成"
-    bad = [r for r in runs if r.get("conclusion") not in _RELAY_OK]
+    # required 的接力检查 fail-closed：只有 success 算过——否则 author 让源 CI 跳过
+    # （[skip ci]/路径过滤/条件）即可绿总闸，自动合并下会放行未经验证的代码。
+    # 非 required 保持宽松（neutral/skipped 视为过，兼容既有流水线）；
+    # 个别 required 检查确需放宽时，在 checks.yaml 里对该检查设 allow_skipped: true。
+    ok_set = {"success"} if (cfg.get("required") and not cfg.get("allow_skipped")) else _RELAY_OK
+    bad = [r for r in runs if r.get("conclusion") not in ok_set]
     return (not bad), f"{src}=" + ",".join(r.get("conclusion") or "?" for r in runs)
 
 

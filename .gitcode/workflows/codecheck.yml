@@ -1,0 +1,25 @@
+# .gitcode/workflows/codecheck.yml
+# GitCode CodeCheck 静态代码分析 —— 对 touchstone 自身做代码质量扫描
+#
+# 使用 GitCode 原生 codecheck-action，扫描 Python 代码中的常见问题。
+# 与 touchstone 确定性门禁互补：CodeCheck 关注语言级规范，
+# touchstone 关注 PR 级契约/安全/栈规则。
+name: CodeCheck
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  codecheck:
+    runs-on: euleros-2.10.1
+    steps:
+      - name: codecheck-action-task
+        uses: codecheck-action@0.0.3
+        with:
+          repo_url: 'https://gitcode.com/akdi-distribution/touchstone.git'
+          branch: 'main'
+          rule_sets: '[{"language":"PYTHON"},{"language":"SHELL"}]'
+          access_token: '${{ secrets.GITCODE_TOKEN }}'

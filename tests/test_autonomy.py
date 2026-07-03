@@ -219,3 +219,38 @@ def test_graduate_from_calibration_and_decision_inputs():
     inp = A.build_decision_inputs({"risk": {"risk_band": "low"}, "gate": "success",
                                    "change_class": _CLS, "loop_decision": "converged"}, {}, {_CLS})
     assert inp["gate"] == "success" and inp["cls"] == _CLS
+
+
+# ============ 第七道闸·基线新鲜度（merge skew 防护）回归 ============
+def test_base_fresh_gate_blocks_stale_base():
+    """基线过期（base_fresh=False）→ 即便其余闸全绿也拒绝自动放行；None（未评估）保持兼容不拦。"""
+    import autonomy as A
+    kw = dict(risk={"risk_band": "low"}, findings=[], loop_decision="converged",
+              gate="success", autonomy_state={}, graduated_classes={"low|code"},
+              cls="low|code", enabled=True, shadow=False)
+    assert A.decide_auto_merge(**kw, base_fresh=None)["merge"] is True     # 未评估：兼容旧行为
+    dec = A.decide_auto_merge(**kw, base_fresh=False)
+    assert dec["merge"] is False and "base_fresh" in dec["failed"]         # 过期：拒放行
+    assert A.decide_auto_merge(**kw, base_fresh=True)["merge"] is True
+
+
+def test_is_base_fresh_pure_compare():
+    import autonomy as A
+    assert A.is_base_fresh({"base": {"sha": "abc"}}, "abc") is True
+    assert A.is_base_fresh({"base": {"sha": "abc"}}, "def") is False       # main 已前进 → 过期
+    assert A.is_base_fresh({}, "abc") is False                             # 数据缺失 → 不算新鲜
+
+
+def test_enqueue_auto_merge_uses_graphql_queue(monkeypatch):
+    """queue 模式：GraphQL 取 node id → enablePullRequestAutoMerge，排队/批测交给平台。"""
+    import autonomy as A
+    calls = []
+    def fake(url, headers, payload):
+        calls.append(payload["query"][:30])
+        if "enablePullRequestAutoMerge" in payload["query"]:
+            assert payload["variables"]["id"] == "NODE1"
+            return {"data": {"enablePullRequestAutoMerge": {}}}
+        return {"data": {"repository": {"pullRequest": {"id": "NODE1"}}}}
+    monkeypatch.setattr(A, "_gql_post", fake)
+    A.enqueue_auto_merge("o/r", 7, "tok")
+    assert len(calls) == 2 and "mutation" in calls[1]

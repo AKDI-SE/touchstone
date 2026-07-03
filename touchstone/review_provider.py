@@ -15,6 +15,7 @@
 #   REVIEW_PROVIDER 目前仅支持 "pr-agent"（默认）；端点未配置时 orchestrator 降级为只跑确定性核对。
 # ============================================================================
 
+import re
 import json
 import os
 import shlex
@@ -123,7 +124,10 @@ def _provider_mode(pr_ctx):
 
 def _experience_injection(repo_dir):
     """学习回路的 active 经验 → PR-Agent extra_instructions（只读、可空、失败即空）。
-    符合"评审路径只读经验库"的边界；经验只调建议、不进闸。"""
+    符合"评审路径只读经验库"的边界；经验只调建议、不进闸。
+    TOUCHSTONE_EXPERIENCE_ENABLED=false 时整体关闭注入（默认开）。"""
+    if os.environ.get("TOUCHSTONE_EXPERIENCE_ENABLED", "true").lower() not in ("1", "true", "yes", "on"):
+        return ""
     try:
         import learning_loop
         return learning_loop.render_injection(learning_loop.load_store()) or ""
@@ -230,9 +234,32 @@ _HUMAN = {"high": "read+arbitrate", "mid": "read", "low": "skip"}
 
 
 # 影响面严重因子：高风险 + 命中其一 → 升到 full_suite（最强一档，多跑变异）。
-# 仅列 map_verdict 实际会产出（security_surface / cross_module_contract）的因子——
-# 其余（如 touches_public_api / schema）当前无产出路径，不在此避免「看着有、其实空」。
 _SEVERE_BLAST = {"cross_module_contract", "security_surface"}
+
+# 确定性影响面：直接从改动文件【路径】判定，不依赖 PR-Agent 给的 category。
+# 目的：即便评审侧误判了类别（把该 high 的改动判成 low），命中这些路径的改动仍会被
+# 强制抬到 high → full_suite，并触发（可选的）自动合并否决。这是「风险分流的安全性不能
+# 全押在会误判的判断层」的确定性兜底（对应主设计 §5 该遗留项的缓解，此处落地）。
+_DET_BLAST_PATTERNS = {
+    "cross_module_contract": [
+        r"(^|/)migrations?/", r"\.sql$", r"\.proto$", r"\.graphql$", r"\.avsc$", r"\.thrift$",
+        r"(^|/)schema[./]", r"schema\.\w+$", r"openapi", r"swagger",
+    ],
+    "security_surface": [
+        r"(^|/)(auth|oauth|iam|security|crypto|secrets?|credentials?)([/_.]|$)",
+        r"(password|keystore|private[_-]?key)",
+    ],
+}
+
+
+def deterministic_blast(changed_files):
+    """从改动文件路径确定性推断影响面因子（不依赖 LLM 类别）。命中即强证据。"""
+    files = [str(f).lower() for f in (changed_files or [])]
+    out = []
+    for factor, pats in _DET_BLAST_PATTERNS.items():
+        if any(any(re.search(p, f) for p in pats) for f in files):
+            out.append(factor)
+    return out
 
 
 def route(risk):
@@ -255,7 +282,7 @@ def route(risk):
     return {"human_action": _HUMAN.get(band, "read"), "verification_decision": vd}
 
 
-def map_verdict(findings, nmap=None):
+def map_verdict(findings, nmap=None, changed_files=None):
     """把归一后的 Finding 按 category 映射到风险等级与验证预算决策（风险路由）。
     取代自研 aggregate 的"评审侧定级"，但去掉去重/共识——那由 PR-Agent 完成。
     返回 (过滤后 findings, RiskAssessment)，结构与主文档 RiskAssessment 一致。"""
@@ -269,8 +296,27 @@ def map_verdict(findings, nmap=None):
         blast.append("security_surface")
     if "contract" in cats:                 # 一般来自 contract_check，而非 PR-Agent
         blast.append("cross_module_contract")
-    high = bool(set(nmap.get("high_categories", ["security", "correctness"])) & cats)
+    det = deterministic_blast(changed_files)      # 确定性影响面（按路径，不信 LLM 类别）
+    blast = sorted(set(blast) | set(det))
+    # 命中高危类别，或【确定性】命中严重影响面 → high。后者保证：即便评审侧漏判类别，
+    # 触及 migration/schema/proto/安全面的改动也会被抬到 full_suite、并被自动合并否决拦下。
+    high = bool(set(nmap.get("high_categories", ["security", "correctness"])) & cats) \
+        or bool(_SEVERE_BLAST & set(det))
     band = "high" if high else ("mid" if kept else "low")
     risk = {"risk_band": band, "blast_radius": blast}
     risk.update(route(risk))          # §4.2 风险分流：人看不看 / 跑哪档验证
     return kept, risk
+
+
+def to_rdjson(findings, source_name="touchstone"):
+    """把发现转成 Reviewdog Diagnostic Format(rdjson)——成熟行内评论后端的接缝：
+    reviewdog 处理行锚定长尾（过滤模式/位置修正），本系统不必自研。纯函数，供导出。"""
+    sev = {"block_candidate": "ERROR", "warn": "WARNING"}
+    return {"source": {"name": source_name},
+            "diagnostics": [{
+                "message": (f.get("rationale") or f.get("rule_id") or ""),
+                "code": {"value": f.get("rule_id") or ""},
+                "location": {"path": f.get("file") or "",
+                             "range": {"start": {"line": int(f.get("line") or 1)}}},
+                "severity": sev.get(f.get("severity"), "INFO"),
+            } for f in (findings or [])]}

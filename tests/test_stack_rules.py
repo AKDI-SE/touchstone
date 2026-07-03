@@ -144,3 +144,9 @@ def test_record_calibration_clean_approved():
     co = {"findings": [], "risk": {"risk_band": "low"}}
     rec = calibrate.record_calibration("o/r#2", co, "APPROVED")
     assert rec["agreement"] is True          # 都没标 → 一致
+
+
+def test_stack_rules_empty_diff_no_crash(rule_index):
+    """空 diff / None diff 不应崩，返回空列表（极端边界）。"""
+    assert stack_rules.check_stack_rules("", rule_index) == []
+    assert stack_rules.check_stack_rules(None, rule_index) == []

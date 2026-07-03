@@ -66,6 +66,13 @@ def test_touchstone_rules_passes_when_clean():
     assert passed is True
 
 
+def test_touchstone_rules_blocks_on_category_contract():
+    """category=contract（即便 severity=warn）也必须阻断——契约类发现走门禁不走建议。"""
+    pr = {"contract_findings": [{"rule_id": "CTR-001", "severity": "warn", "category": "contract"}]}
+    passed, summary = checks._check_touchstone_rules(pr, {})
+    assert passed is False and "CTR-001" in summary
+
+
 # ---------------- 端到端：确定性栈规则进总闸（F1/F3 回归）----------------
 def test_ctr001_reaches_gate_and_blocks(rule_index):
     """CTR-001（破坏性契约变更）经 stack_rules 产出 block_candidate，进总闸 → failure。"""
@@ -207,3 +214,26 @@ def test_gate_cli_contract_block_writes_failure(tmp_path, monkeypatch):
     co, posted = _gate_cli(tmp_path, monkeypatch,
                            [{"agent": "contract-check", "rule_id": "CTR-001", "severity": "block_candidate"}])
     assert co["gate"] == "failure" and posted["conclusion"] == "failure"
+
+
+# ============ required 接力检查 fail-closed（skipped 不算过）回归 ============
+def _mk_relay_gh(monkeypatch, conclusion):
+    monkeypatch.setattr(checks.ghclient, "paginate_check_runs",
+        lambda *a, **k: {"check_runs": [
+            {"name": "unit", "status": "completed", "conclusion": conclusion}]})
+
+def test_relay_required_skipped_fails_closed(monkeypatch):
+    """required 的接力检查，源 CI 被跳过（[skip ci]/路径过滤）不能算过——否则总闸被绕。"""
+    pr = {"owner": "o", "repo": "r", "sha": "s", "token": "t"}
+    _mk_relay_gh(monkeypatch, "skipped")
+    assert checks._run_relay(pr, {"source_check": "unit", "required": True})[0] is False
+    _mk_relay_gh(monkeypatch, "neutral")
+    assert checks._run_relay(pr, {"source_check": "unit", "required": True})[0] is False
+
+def test_relay_non_required_skipped_still_ok(monkeypatch):
+    """非 required 保持宽松（兼容既有流水线）；required 可用 allow_skipped 显式放宽。"""
+    pr = {"owner": "o", "repo": "r", "sha": "s", "token": "t"}
+    _mk_relay_gh(monkeypatch, "skipped")
+    assert checks._run_relay(pr, {"source_check": "unit"})[0] is True
+    assert checks._run_relay(pr, {"source_check": "unit",
+                                  "required": True, "allow_skipped": True})[0] is True

@@ -187,6 +187,7 @@
     <p class="snum">03</p>
     <h2>TF-GRPO 机制（Touchstone 自己的核心）</h2>
     <p>评审引擎复用了开源的 PR-Agent，所以 Touchstone 真正自己的、有差异化价值的部分，是让评审<strong>随真实使用自我改进</strong>这条回路——而 TF-GRPO 就是它的引擎。本节把这块机制写细。它直接取自 <em>Training-Free Group Relative Policy Optimization</em>（arXiv&nbsp;2510.08191，2025-10），核心思想是：<strong>策略模型一概冻结、不更新任何权重</strong>，改为维护一份外部的"经验知识"当作注入提示词的 token prior；每一步对一个查询并行采样一组输出，用奖励打分，但<strong>不计算数值优势做梯度上升</strong>，而是让大模型内省这一组输出、提炼出"语义优势"（一段自然语言经验），累进地更新那份经验知识。</p>
+    <blockquote class="note"><b>关于命名</b>：TF-GRPO（arXiv 2510.08191）的核心贡献正是——用<b>组内语义优势</b>替代经典 GRPO 的数值优势、把策略优化从参数空间挪到<b>上下文空间</b>（无梯度）、把经验当 <b>token prior</b> 注入。本实现按此路：冻结模型 → 分组 rollout → 旗舰模型内省 high/low 提炼自然语言经验 → 注入提示词。<b>方法固有代价</b>：语义优势只取 top/bottom 少数样本做对比，方差比大样本数值归一化高，组越大越稳但越贵。</blockquote>
 
     <h3>3.1 概念映射（从论文到 PR 评审）</h3>
     <table class="tbl">
@@ -244,7 +245,7 @@
       <tr><th>结构</th><th>关键成员</th></tr>
       <tr><td class="mono">Experience</td><td><code>id · repo · stack · finding_type · kind(suppress/emphasize) · text(NL) · evidence{fires, adoption} · status(candidate/active/retired) · source(human/tfgrpo/counting) · locked(bool) · source_prs[]</code></td></tr>
       <tr><td class="mono">RolloutGroup</td><td><code>outputs[o_i] · rewards[r_i]</code>——一个历史 PR 的一组评审及其得分</td></tr>
-      <tr><td class="mono">奖励定义 R</td><td>对一份评审：命中人采纳集的发现数（真阳）− 人忽略的发现数（噪声/假阳）− 漏报权重；与 calibrate 的吻合度/噪声同源</td></tr>
+      <tr><td class="mono">奖励定义 R</td><td>对一份评审：命中人采纳集的发现数（真阳）− 人忽略的发现数（噪声/假阳）− 漏报权重；与 calibrate 的吻合度/噪声同源。<b>人采纳 = 线程 resolved 且非 wontfix</b>；且 <b>⊆ touchstone 已挑过的类型</b>（回路只能调既有类型，详见 §3.5 已知上限）</td></tr>
     </table>
 
     <h3>3.4 接口（设计名）</h3>
@@ -259,9 +260,11 @@
     <p>把这些接口连起来：<span class="mono">_distill_via_llm</span> 对真值集里的每个 PR 跑 <span class="mono">rollout_reviews</span> 取一组评审，用 <span class="mono">score_review</span> 离线打分，用 <span class="mono">distill_semantic_advantage</span> 内省出候选经验并返回；调用方再用 <span class="mono">merge_candidates</span> 并入经验库，经 shadow A/B（<span class="mono">graduate</span>）达标才转 active 注入评审。</p>
 
     <h3>3.5 忠于论文、为 PR 评审做的改写（与诚实交代）</h3>
-    <div class="principle"><span class="k">忠实保留</span>策略冻结、组内"语义优势"取代数值优势、经验作 token prior 注入、多轮迭代——与论文一致。</div>
-    <div class="principle"><span class="k">关键改写</span><strong>奖励改为离线</strong>：PR 评审拿不到每次 rollout 的即时人反馈，所以不在线打分，而是用历史已合 PR 的人审真值离线评分（这正是 calibrate 已经在算的）。经验严格<strong>按 仓·栈·发现类型归类</strong>，且<strong>只对 PR-Agent 源的发现产经验</strong>；确定性 <code>contract_check</code> 永不进经验库、不受其影响，作为经验出问题时的固定基准。</div>
-    <div class="principle"><span class="k">实现与验证</span>本机制<strong>已实现并经本团队验证</strong>（<code>touchstone/learning_loop.py</code>：<code>rollout_reviews</code> / <code>score_review</code> / <code>distill_semantic_advantage</code> / <code>_distill_via_llm</code>，旗舰模型经注入的 <code>llm</code> 调用、离线以假 llm 覆盖测试）。安全上坚持<strong>稳健上线</strong>：经验只调建议、不碰合入门禁，新经验先 shadow A/B 达标才启用（见下节）。唯一的运行期依赖是一个<strong>参数固定的旗舰模型端点</strong>（①生成与③内省用它；端点可靠性见下节坑 1）。</div>
+    <div class="principle"><span class="k">忠实于 TF-GRPO（2510.08191）</span>策略冻结、对查询分组采样一组输出、用<b>组内语义优势</b>（而非数值优势）提炼经验、经验作 token prior 注入、上下文空间无梯度优化、多轮迭代——与论文一致。</div>
+    <div class="principle warn"><span class="k">方法固有的方差代价</span>语义优势靠旗舰模型内省 top/bottom 少数评审得出，<b>方差比大样本数值归一化高</b>——组 G 越大越稳但 LLM 调用越贵（默认 G=4，<code>TOUCHSTONE_TFGRPO_G</code> 可调）。这是 TF-GRPO 这类 training-free 方法的通病，非本实现独有。</div>
+    <div class="principle"><span class="k">关键改写</span><strong>奖励改为离线</strong>：PR 评审拿不到每次 rollout 的即时人反馈，所以不在线打分，而是用历史已合 PR 的人审真值离线评分（这正是 calibrate 已经在算的）。经验带 <code>repo/stack</code> 字段；<strong>store 每仓一份</strong>，去重键 <code>(kind:finding_type)</code> 仓内唯一（多仓共享同一 store 时才需把 repo/stack 纳入键）。且<strong>只对 PR-Agent 源的发现产经验</strong>；确定性 <code>contract_check</code> 永不进经验库、不受其影响，作为经验出问题时的固定基准。</div>
+    <div class="principle"><span class="k">实现与验证（诚实）</span>本机制<strong>已实现，离线单元测试覆盖 plumbing</strong>——<code>rollout_reviews / score_review / distill_semantic_advantage / _distill_via_llm</code>，旗舰模型经注入的 <code>llm</code>，离线以假 llm 验步骤串联 / JSON 解析 / protected / locked。<b>未实证的部分</b>：蒸馏出的经验是否真能提升采纳率，靠 shadow A/B（<code>graduate</code>）事后验证，且需先有注入历史才生效——其端到端效果<b>离线测不了</b>（测不了 LLM 质量）。数据管线已接通：<code>build_ground_truth</code> 从 GitHub 人审裁决重建真值集；<code>aggregate_ab</code> 按 result marker 的 <code>injected_types</code> 自动切 A/B 两臂喂 <code>graduate</code>（无需手填 <code>--ab-results</code>）；多轮 epoch 用 active+candidate 工作库逐轮重条件（真迭代）。奖励信号：<code>thread_findings</code> 已过滤 wontfix（人不采纳的不当正例）。安全上坚持<strong>稳健上线</strong>：经验只调建议、不碰合入门禁，新经验先 shadow A/B 达标才启用（见下节）。唯一运行期依赖是一个<strong>参数固定的旗舰模型端点</strong>（①生成与③内省用它；端点可靠性见下节坑 1）。</div>
+    <div class="principle warn"><span class="k">已知上限</span>① <b>发现类型天花板</b>：<code>human_adopted</code> ⊆ touchstone 自己挑过的类型，故回路只能调既有类型的强调/压制，<b>学不出"人关心但 touchstone 没挑过"的新类型</b>；突破需把人写的评审评论也当 ground truth（未来扩展）。② <b>奖励粒度粗</b>：finding_type 集合级匹配（如 PRA-SECURITY），hits/noise 都偏粗。③ <b>bootstrap</b>：candidate→active 需"注入臂"有数据，冷启动靠 seed 种子注入积累后才自动达标。</div>
   </div>
 </section>
 
@@ -278,6 +281,68 @@
 
     <div class="principle warn"><span class="k">坑 3 · 经验偏离的应对（shadow 先行）</span>
       经验由模型从人的采纳里蒸馏，难免有偏；为防一条坏经验拉低评审，新经验默认<strong>不直接注入</strong>，先离线对最近 PR 做 A/B（注入 vs 不注入）比采纳率，达标才转 active；小步、可回退；每条经验<strong>留来源 PR 与证据</strong>，可单条停用。</div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <p class="snum">04B</p>
+    <h2>§3.6 生产化差距清单（诚实标注）</h2>
+    <div class="principle"><span class="k">定位</span>
+    下列差距<strong>只影响评审建议质量</strong>，不影响合入门禁——经验库永远只走 advisory 路径（注入 PR-Agent 的 extra_instructions），坏经验最坏让一条建议偏一点，人忽略即可。与 <code>VERIFY_ENABLED</code> / <code>AUTONOMY_ENABLED</code> 无关（verify 走独立验收测试、autonomy 读总闸状态，都不读经验库）。</div>
+
+    <p class="lede">当前 TF-GRPO 的 ~185 行核心代码是<strong>论文机制的可跑骨架</strong>（rollout → score → distill → inject 三步编排 + 离线测试覆盖 plumbing）。以下是把骨架变成生产系统还差的工程，按影响面排序。</p>
+
+    <table class="tbl">
+      <tr><th>差距</th><th>当前状态</th><th>生产需要</th><th>影响</th></tr>
+
+      <tr><td class="mono" rowspan="3"><strong>1. 奖励质量</strong></td>
+          <td>类型级集合匹配（PRA-X == PRA-X，不区分文件/行/severity）</td>
+          <td>位置级匹配 + 语义近似 + 部分信用（发现对了但 severity 错了）</td>
+          <td>reward 噪声大 → 蒸馏出低质量经验</td></tr>
+      <tr><td>不校验 finding_type 是否在 taxonomy 内</td>
+          <td>LLM 可能产出不存在的 finding_type → 需校验/映射/丢弃</td>
+          <td>幻觉类型污染经验库</td></tr>
+      <tr><td>人审盲区：resolved 但人没真看</td>
+          <td>多信号交叉（resolved + 代码实际改在 finding 位置 + reviewer 分级加权）</td>
+          <td>奖励有偏 → 回路学偏</td></tr>
+
+      <tr><td class="mono" rowspan="3"><strong>2. 蒸馏质量</strong></td>
+          <td>单 PR 的 high reward 直接当经验依据</td>
+          <td>跨多 PR 同类型聚合（区分「运气」vs「能力」）+ 加权投票消解冲突</td>
+          <td>运气被当成规律学进去</td></tr>
+      <tr><td>经验措辞 LLM 自由生成</td>
+          <td>结构化模板（finding_type + 条件 + 动作）+ 模糊/歧义/注入式过滤</td>
+          <td>措辞不准 → 注入后 PR-Agent 误解</td></tr>
+      <tr><td>冲突消解取 updated_at 最新的</td>
+          <td>需基于证据强度（样本数 × 一致性）加权决策，不是「新的覆盖旧的」</td>
+          <td>一条坏经验覆盖一条好经验</td></tr>
+
+      <tr><td class="mono" rowspan="2"><strong>3. 收敛与诊断</strong></td>
+          <td>每轮 cron 全量重跑，无收敛检测</td>
+          <td>某 finding_type 经验已稳定 → 停止蒸馏 + 只处理新 PR（增量）</td>
+          <td>算力浪费 + 已稳定经验被反复改写</td></tr>
+      <tr><td>无效果指标（注入前后采纳率变化）</td>
+          <td>differential metrics（注入前 vs 注入后的采纳率/噪声率趋势）+ 回滚机制</td>
+          <td>无法知道经验是在改善还是在恶化评审</td></tr>
+
+      <tr><td class="mono" rowspan="2"><strong>4. 规模与成本</strong></td>
+          <td>无缓存（同 PR 每轮重 rollout）、无预算管控</td>
+          <td>缓存 + 增量蒸馏（只处理新 PR）+ 成本预算 + 批优化</td>
+          <td>LLM 调用量 = G(4) × PR数 × epoch数，大仓不可承受</td></tr>
+      <tr><td>超参硬编码（G=4, W_NOISE=0.5, W_MISS=0.25）</td>
+          <td>基于真实数据调优（不同仓最优值不同）</td>
+          <td>参数不对 → 效果差但无人知道</td></tr>
+
+      <tr><td class="mono"><strong>5. 真值清洗</strong></td>
+          <td>过滤了 wontfix / self-resolve</td>
+          <td>剔除 LGTM-only 无实质审查的 PR、reviewer 分级加权、坏真值检测</td>
+          <td>坏真值比没有更糟（坑 2 已承认）</td></tr>
+    </table>
+
+    <div class="principle warn"><span class="k">估计</span>把上述差距全部补齐，约需 <strong>1500–2000 行</strong>附加工程代码（当前核心 ~185 行 + 基础设施 ~525 行 = 710 行）。其中奖励质量与收敛诊断各占约 1/3，蒸馏质量与规模管控各约 1/6，真值清洗约 1/12。</div>
+
+    <div class="principle"><span class="k">与论文的关系</span>arXiv 2510.08191 给的是<strong>机制骨架</strong>（策略冻结 + 组内语义优势 + 经验作 token prior），没有覆盖上述任何一个生产化维度。论文的价值是「证明策略优化可以在上下文空间而非参数空间进行」；生产化是工程层的责任，不靠论文。</div>
   </div>
 </section>
 
@@ -349,6 +414,26 @@
     <div class="principle"><span class="k">用这组种子的两点</span>① <strong>一条经验 = 一个（动作 × finding_type）</strong>：同一类型想表达多点，合并进一条文字，别写两条同 kind+type（后写的会覆盖）。② 安全三类记得设 <code>TOUCHSTONE_PROTECTED_TYPES=PRA-SEC-AUTHZ,PRA-SEC-SQLI,PRA-SEC-SECRET-LOG</code>，防回路反过来学出"别挑安全问题"。写完默认 active+locked：立刻注入评审、且不被回路改写或退役。</div>
     <div class="principle"><span class="k">schema 与红线</span>经验 schema 加两字段：<code>source</code>（human / tfgrpo / counting，标来源）与 <code>locked</code>（人锁定 → 学习回路不得改写或退役）。<strong>红线是最关键的人类输入</strong>：坑 2 是"人的采纳本身有盲区、回路会忠实放大"，受保护类型（永不 suppress）与锁定经验专门挡这个失败模式，让回路只在人立的边界内学。性价比最高的三样：<strong>手写种子</strong>（冷启动）、<strong>审校候选</strong>（纠偏）、<strong>红线</strong>（防放大盲区）。</div>
     <div class="principle" style="border-left-color:#0E7C7B;background:#EAF1F4"><span class="k" style="color:#0E7C7B">实现状态</span>已实现并离线测试覆盖：<code>seed_experience</code>；<code>TOUCHSTONE_PROTECTED_TYPES</code>（计数式与 TF-GRPO 两条蒸馏都拦住受保护类型的 suppress）；<code>locked</code>（<code>retire</code> 与 <code>merge_candidates</code> 都尊重，人锁定的经验不被自动退役或改写）；奖励权重 env 可配 + <code>score_review</code> 权重参数。设计、随后做：候选经验审校界面（建议走 GitHub 评论批准）、标杆评审、真值集人工筛选、上线人工最终批准。</div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <p class="snum">07</p>
+    <h2>相关工作与可借鉴点</h2>
+    <p class="lede">「从评审反馈学习偏好」并非 Touchstone 首创——既有学术原型（NL 经验库 + 无训练），也有商业工具已落地。本节定位 Touchstone 在版图中的位置，并标出可借鉴的差异点。</p>
+    <table class="tbl">
+      <tr><th>代表</th><th>类别</th><th>与 Touchstone 的关系</th><th>差异 / 可借鉴</th></tr>
+      <tr><td class="mono">TF-GRPO<br>arXiv 2510.08191</td><td>方法（本回路引擎）</td><td>直接取自：组内语义优势 + 上下文空间无梯度 + 经验作 token prior</td><td>本实现忠于论文；方法固有方差（top/bottom 少样本内省），G 越大越稳越贵</td></tr>
+      <tr><td class="mono">ExpeL<br>AAAI 2024</td><td>方法（最贴本质）</td><td>从轨迹用自然语言提炼可泛化 insight、存经验库、推理时检索注入、无 fine-tune</td><td>几乎就是本回路的理论原型；<strong>借鉴</strong>：按当前 PR 上下文<strong>检索</strong>相关经验注入（而非全量 active 灌入）</td></tr>
+      <tr><td class="mono">CodeRabbit<br>Learnings</td><td>业界（SaaS）</td><td>从 PR 评论回复学团队评审偏好、自动应用；基线规则 + 自适应 learnings</td><td>商业先行者；Touchstone 差异 = 自托管 + advisory-only + 客观合入门禁</td></tr>
+      <tr><td class="mono">Greptile<br>AI Memory</td><td>业界（SaaS）</td><td>从 PR 👍/👎 学标准 + 显式 rules + 按 codebase 区域 scoped</td><td><strong>借鉴</strong>：用显式 👍/👎 当采纳信号（比「线程 resolved 含 wontfix」干净，呼应 N4a）</td></tr>
+      <tr><td class="mono">Qodo<br>(PR-Agent 母公司)</td><td>业界</td><td>Touchstone 复用的 PR-Agent 的官方商业化路径</td><td>盯其 learning/governance 方向；rules + context-aware 是其主线</td></tr>
+      <tr><td class="mono">MuTAP / Meta<br>LLM + mutation</td><td>verify 强化</td><td>LLM 生成专杀变异的测试 + 变异优先级</td><td><strong>借鉴</strong>：Python 侧自写 AST 变异可换 mutmut/cosmic-ray + mutant prioritization 提效</td></tr>
+      <tr><td class="mono">GiGPO<br>arXiv 2505.10978</td><td>方法（GRPO 家族）</td><td>Group-in-Group 细粒度 credit assignment</td><td><strong>借鉴</strong>：把「整份评审一个分」细化到 finding 级（呼应奖励粒度粗，N4）</td></tr>
+    </table>
+    <div class="principle"><span class="k">定位（诚实）</span>「从人审反馈学习评审偏好」已有商业产品（CodeRabbit / Greptile）与学术原型（ExpeL）。Touchstone 的差异化不在「能学」，而在：<strong>自托管</strong>（数据不出仓）、<strong>advisory-only</strong>（学习产物只调建议、绝不进合入门禁）、<strong>客观门禁</strong>（合入由 verify / 确定性规则裁定，不押在学到的评审判断上）——即贯穿全系统的「自主边界 = 验证边界」。</div>
+    <div class="principle"><span class="k">可落地的借鉴（按性价比）</span>① 采纳信号：显式 👍/👎 / 关键词回复替代「线程 resolved」代理（N4a）。② 经验检索：按当前 PR 的栈/路径/类型<strong>检索</strong>相关经验注入，替代全量 active 灌入（经验多后全量会噪声爆炸且超 prompt 预算，à la ExpeL retrieval）。③ verify 提效：mutmut/cosmic-ray + mutant prioritization（甚至 MuTAP 思路）。④ 细粒度奖励：GiGPO 式按 finding 而非整份评审打分。</div>
   </div>
 </section>
 

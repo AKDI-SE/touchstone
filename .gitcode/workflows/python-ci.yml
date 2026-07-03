@@ -1,0 +1,39 @@
+name: Python CI
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build:
+    runs-on: euleros-2.10.1
+    steps:
+      # 1. 拉取代码
+      - uses: checkout-action@0.0.1
+
+      # 2. 配置 Python 环境
+      - name: Setup Python
+        uses: setup-python@0.0.1
+        with:
+          python-version: '3.10'
+
+      # 3. 安装项目依赖
+      - name: Install dependencies
+        run: |
+          cd repo_workspace
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # 4. 运行单元测试 (245 个离线用例)
+      - name: Run unit tests
+        run: |
+          cd repo_workspace
+          python -m pytest tests/ -q --tb=short
+
+      # 5. 确定性门禁检查
+      - name: Deterministic gate check
+        run: |
+          cd repo_workspace
+          python touchstone/gitcode_check.py

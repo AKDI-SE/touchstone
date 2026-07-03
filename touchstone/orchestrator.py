@@ -139,7 +139,7 @@ def ci_verdict(owner, repo, head_sha, token):
 
 
 def post_results(owner, repo, number, head_sha, token, risk, findings, loop_info=None,
-                 change_class=None, diff=None, injected_types=None):
+                 change_class=None, diff=None, injected_types=None, injected_experience_ids=None):
     # (1) 摘要评论——总是成功；顶部附反馈循环状态，底部附隐藏 state marker
     body = render_summary(risk, findings)
     if loop_info:
@@ -153,7 +153,8 @@ def post_results(owner, repo, number, head_sha, token, risk, findings, loop_info
         "verification_decision": risk["verification_decision"],
         "change_class": change_class,
         "loop_decision": (loop_info[0] if loop_info else None),
-        "injected_types": injected_types,          # 本轮注入的经验类型（供未来 shadow A/B 分臂采集）
+        "injected_types": injected_types,          # 本轮注入的经验类型（供 shadow A/B 分臂采集）
+        "injected_experience_ids": injected_experience_ids,   # 本轮注入的经验【id】（单条归因/回退，见数据采集设计 取舍2）
         "findings": [{"rule_id": f.get("rule_id"), "agent": f.get("agent"),
                       "severity": f.get("severity")} for f in findings],
     }, ensure_ascii=False) + " -->"
@@ -211,8 +212,9 @@ def review_pr(pr, contract, standards, provider=None):
         review_findings = []
     contract_findings = contract_check.check_contract_consistency(diff, contract or {}, rule_index)
     stack_findings = stack_rules.check_stack_rules(diff, rule_index)
+    changed_files, _ = contract_check.parse_diff(diff)
     findings, risk = review_provider.map_verdict(
-        review_findings + contract_findings + stack_findings, nmap)
+        review_findings + contract_findings + stack_findings, nmap, changed_files=changed_files)
     return {"findings": findings, "risk": risk}
 
 
@@ -242,10 +244,18 @@ def main():
     _out = review_pr(pr_ctx_review, contract, standards)
     findings, risk = _out["findings"], _out["risk"]
 
-    # 反馈循环：从历史评论 marker 取状态 → 决策 → 回贴附状态与新 marker（author 无法篡改轮次）
+    # 反馈循环：从历史评论 marker 取状态 → 决策 → 回贴附状态与新 marker。
+    # 只信机器人自己发的评论（按发帖人过滤）——否则 author 可自己发伪造 marker 洗掉抗博弈闸。
     try:
         comments = gh("GET", f"/repos/{owner}/{repo}/issues/{number}/comments", token)
-        bodies = [c.get("body", "") for c in comments] if isinstance(comments, list) else []
+        comments = comments if isinstance(comments, list) else []
+        try:
+            bot_login = (gh("GET", "/user", token) or {}).get("login")
+        except (urllib.error.HTTPError, requests.exceptions.RequestException):
+            bot_login = None
+        if not bot_login:
+            print("[warn] 无法确认机器人身份，loop marker 未按发帖人过滤（伪造防护降级）", file=sys.stderr)
+        bodies = loop.trusted_bodies(comments, bot_login)
     except (urllib.error.HTTPError, requests.exceptions.RequestException):
         bodies = []
     state = loop.parse_latest_state(bodies)
@@ -259,15 +269,25 @@ def main():
 
     # 本轮注入的经验类型（学习回路 active 经验）——写入 result marker，供未来 shadow A/B 分臂采集。
     # 与 review_provider._experience_injection 同源（只读经验库、失败即空）。
-    injected_types = []
+    injected_types, injected_experience_ids = [], []
     try:
         import learning_loop as _ll
-        injected_types = _ll.active_types(_ll.load_store())
+        _store = _ll.load_store()
+        injected_types = _ll.active_types(_store)
+        injected_experience_ids = _ll.active_ids(_store)
     except Exception:
-        injected_types = []
+        injected_types, injected_experience_ids = [], []
+
+    rd_path = os.environ.get("TOUCHSTONE_RDJSON_PATH")
+    if rd_path:                       # 可选 reviewdog 后端：导出 RDFormat，行内投递交 reviewdog
+        try:
+            with open(rd_path, "w", encoding="utf-8") as _rf:
+                json.dump(review_provider.to_rdjson(findings), _rf, ensure_ascii=False)
+        except OSError as e:
+            print(f"[warn] RDJSON 写出失败: {e}", file=sys.stderr)
 
     post_results(owner, repo, number, head_sha, token, risk, findings, loop_info, cls, diff,
-                 injected_types=injected_types)
+                 injected_types=injected_types, injected_experience_ids=injected_experience_ids)
 
     # 可插拔检查 → 对外发【一个】总闸状态（策略全在 .touchstone/checks.yaml）。
     # CI 中由独立 gate job 在(可选)verify 之后聚合并发布，此处置 TOUCHSTONE_SKIP_GATE 跳过自发、

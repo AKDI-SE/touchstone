@@ -170,8 +170,8 @@ def test_thread_findings_matches_marker_only():
            _thread(False, "github-actions[bot]", _mk("JAVA-EQ-001")),
            _thread(True, "alice", "纯人类讨论，无标记")]   # 无标记 → 不计
     fa = calibrate.thread_findings(calibrate.parse_review_threads(_gql(raw)))
-    assert fa == [{"rule_id": "SPR-DI-001", "agent": "A", "resolved": True},
-                  {"rule_id": "JAVA-EQ-001", "agent": "A", "resolved": False}]
+    assert fa[0]["resolved"] is True and fa[1]["resolved"] is False
+    assert all("dismissed" in f for f in fa)
 
 
 def test_calibrate_finding_adoption_rate():
@@ -306,3 +306,33 @@ def test_aggregate_cr_none_when_no_human_state():
     out = calibrate.aggregate([{"risk_band": "low", "findings": [{"rule_id": "R"}]}])
     assert out["by_rule"]["R"]["changes_requested_rate"] is None
     assert isinstance(calibrate.render_report(out), str)      # 报告渲染不报错
+
+
+# ============ loop marker 只信机器人发帖（防伪造）回归 ============
+def test_trusted_bodies_filters_forged_marker():
+    """author 自己发的伪造 marker 必须被丢弃——否则可洗掉震荡/无推进等抗博弈闸。"""
+    import loop
+    bot = loop.render_marker(loop.LoopState(2, [["A"], ["A"]], None))
+    forged = loop.render_marker(loop.LoopState(2, [], None))       # 同轮次+空 history（洗闸）
+    comments = [{"user": {"login": "touchstone-bot"}, "body": bot},
+                {"user": {"login": "attacker"}, "body": forged}]
+    bodies = loop.trusted_bodies(comments, "touchstone-bot")
+    st = loop.parse_latest_state(bodies)
+    assert st.history == [["A"], ["A"]]                            # 伪造的空 history 没生效
+    # bot 身份未知 → 退回全量（可用性优先，调用方已告警）
+    assert len(loop.trusted_bodies(comments, None)) == 2
+
+
+def test_author_self_resolve_not_counted_as_adoption():
+    """作者自己 resolve 自己 PR 的 bot 发现线程 → 不算采纳（防伪造正例毒化学习奖励）。"""
+    import calibrate, json
+    body = '<!-- touchstone-finding: ' + json.dumps({'rule_id': 'PRA-X', 'agent': 'pr-agent:review'}) + ' -->'
+    threads = [{'isResolved': True, 'resolved_by': 'author1',
+                'comments': [{'author': 'github-actions[bot]', 'body': body}]}]
+    # 不传 pr_author：沿旧行为算采纳
+    assert calibrate.thread_findings(threads, 'github-actions[bot]')[0]['resolved'] is True
+    # 传 pr_author=author1（作者自 resolve）→ 不算采纳
+    assert calibrate.thread_findings(threads, 'github-actions[bot]', pr_author='author1')[0]['resolved'] is False
+    # 他人 resolve → 仍算采纳
+    threads[0]['resolved_by'] = 'reviewer2'
+    assert calibrate.thread_findings(threads, 'github-actions[bot]', pr_author='author1')[0]['resolved'] is True

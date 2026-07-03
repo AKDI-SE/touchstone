@@ -139,7 +139,7 @@
     <tr><td>判断层</td><td class="mono">loop.py</td><td>反馈循环：把可自改发现交回 author，有界、防震荡、可升级</td></tr>
     <tr><td>门禁层</td><td class="mono">checks.py</td><td>可插拔检查框架（builtin/relay/service）→ 聚合成对外一个汇总状态检查</td></tr>
     <tr><td>门禁层</td><td class="mono">verify/verify_change.py</td><td>正确性验证（可选）：独立验收测试 + 充分性校验（覆盖/哨兵/变异），Python 与 Java/Maven 双 runner</td></tr>
-    <tr><td>门禁层</td><td class="mono">autonomy.py</td><td>自动合并（可选）：只读统一门禁 + 六项条件串联 + 变更分类达标 + 熔断</td></tr>
+    <tr><td>门禁层</td><td class="mono">autonomy.py</td><td>自动合并（可选）：只读统一门禁 + 七项条件串联 + 变更分类达标 + 熔断</td></tr>
     <tr><td>离线层</td><td class="mono">calibrate.py / govern.py</td><td>校准（从 GitHub API 重建、算吻合度/噪声）；治理（固化复发发现为门禁、熔断按结果收回或给予自主权）</td></tr>
     <tr><td>离线层</td><td class="mono">learning_loop.py</td><td>Phase 2 学习回路：训练-free 蒸馏 + TF-GRPO（已实现，可插拔），经验只调建议不进门禁</td></tr>
   </table>
@@ -220,11 +220,11 @@
     <tr><td class="mono">verify/</td><td>正确性验证子系统 <code>verify_change.py</code></td></tr>
     <tr><td class="mono">.touchstone/</td><td>策略与契约：<code>standards.yaml</code>（规范）、<code>checks.yaml</code>（门禁策略）、<code>pr-agent.yaml</code>（归一映射）、<code>acceptance.yaml</code>（人核准验收规格）、<code>best_practices.md</code>（供 PR-Agent）</td></tr>
     <tr><td class="mono">.github/workflows/</td><td>touchstone / calibrate / govern 三条工作流</td></tr>
-    <tr><td class="mono">tests/</td><td>离线 pytest 套件（228 用例，无需 LLM/网络/外部服务）</td></tr>
+    <tr><td class="mono">tests/</td><td>离线 pytest 套件（268 用例，无需 LLM/网络/外部服务）</td></tr>
     <tr><td class="mono">docs/</td><td>详细设计、本架构视图、配套的 PR-Agent 集成文档与学习回路文档</td></tr>
   </table>
 
-  <h3>自写代码量与分布（生产代码 3427 行）</h3>
+  <h3>自写代码量与分布（生产代码 4041 行）</h3>
   <table>
     <tr><th>功能区</th><th>行数</th><th>主要模块</th></tr>
     <tr><td>评审主链</td><td class="mono">950</td><td>touchstone / review_provider / stack_rules / contract_check / gen_best_practices</td></tr>
@@ -325,7 +325,7 @@
   <ol>
     <li>离线 calibrate 从已合 PR 重建：touchstone 发现 vs 人审裁决 → 算吻合度、标噪声来源。</li>
     <li>govern 把复发且证实有害的发现固化为门禁；按变更分类影子观察、达标后发布"可自动放行"的类。</li>
-    <li>开启 autonomy 后，对已达标的类、且统一门禁绿 + 六项条件全过，才自动合并；合入后 revert/hotfix 越阈 → 熔断收回自主权。</li>
+    <li>开启 autonomy 后，对已达标的类、且统一门禁绿 + 七项条件全过，才自动合并；合入后 revert/hotfix 越阈 → 熔断收回自主权。</li>
   </ol>
 </div></section>
 

@@ -61,7 +61,7 @@ jobs:
           TOUCHSTONE_FLAGSHIP_MODEL: ${{ secrets.TOUCHSTONE_FLAGSHIP_MODEL }}
           # 可配置参数（从 Variables 读取）
           TOUCHSTONE_W_NOISE: ${{ vars.TOUCHSTONE_W_NOISE || '0.5' }}
-          TOUCHSTONE_W_MISS: ${{ vars.TOUCHSTONE_W_MISS || '1.0' }}
+          TOUCHSTONE_W_MISS: ${{ vars.TOUCHSTONE_W_MISS || '0.25' }}    # 对齐 learning_loop._W_MISS 默认（曾误为 1.0）
           TOUCHSTONE_PROTECTED_TYPES: ${{ vars.TOUCHSTONE_PROTECTED_TYPES || '' }}
           TOUCHSTONE_LEARNING_ENABLED: ${{ vars.TOUCHSTONE_LEARNING_ENABLED || 'true' }}
           TOUCHSTONE_GROUND_TRUTH_MIN: ${{ vars.TOUCHSTONE_GROUND_TRUTH_MIN || '10' }}

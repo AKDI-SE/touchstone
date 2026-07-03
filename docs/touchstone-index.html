@@ -53,7 +53,7 @@
   <p class="thesis">一页看清这个项目由哪些大模块组成、每个模块的关键接口与覆盖它的测试、以及全部交付物。评审引擎复用开源 PR-Agent（不在仓库）；以下为本项目自写的部分。</p>
   <p class="byline"><b>作者</b> 朱家法（00538128）　|　<b>评审</b> 李成（00494329）</p>
   <div class="anchor">
-    <span class="pill"><b>3427</b> 行生产代码</span>
+    <span class="pill"><b>4041</b> 行生产代码</span>
     <span class="pill"><b>17</b> 模块</span>
     <span class="pill"><b>228</b> 测试全绿 · 离线</span>
     <span class="pill"><b>5</b> 大功能区</span>
@@ -64,7 +64,7 @@
 <!-- ===== 1 主要大模块 ===== -->
 <section><div class="wrap">
   <span class="snum">§ 1 · 主要大模块</span>
-  <h2>按功能区划分（生产代码 3427 行）</h2>
+  <h2>按功能区划分（生产代码 4041 行）</h2>
   <p class="lede">五个功能区。判断层只产建议与风险，准入只由质量门禁层产生。</p>
   <table>
     <tr><th>功能区</th><th class="n">行数</th><th>模块</th><th>职责</th></tr>
@@ -100,7 +100,7 @@
 <section><div class="wrap">
   <span class="snum">§ 2 · 模块 → 接口 → 测试 对照</span>
   <h2>关键接口与覆盖它的测试</h2>
-  <p class="lede">12 个测试文件、245 个离线用例，覆盖各模块的关键接口。下表给出每个模块对外的主要接口，及主要覆盖它的测试文件。</p>
+  <p class="lede">12 个测试文件、254 个离线用例，覆盖各模块的关键接口。下表给出每个模块对外的主要接口，及主要覆盖它的测试文件。</p>
   <table>
     <tr><th>模块</th><th>关键接口</th><th>主要测试</th><th class="n">用例</th></tr>
     <tr><td><code>orchestrator.py</code></td><td><code>review_pr()</code> · <code>main()</code></td><td>test_review_provider · test_stack_rules · test_contract · test_e2e_smoke</td><td class="n">—</td></tr>
@@ -112,12 +112,12 @@
     <tr><td><code>loop.py</code></td><td><code>loop_step()</code></td><td>test_loop_govern_calibrate · test_e2e_smoke</td><td class="n">—</td></tr>
     <tr><td><code>calibrate.py</code></td><td><code>record_calibration()</code> · <code>aggregate()</code></td><td>test_loop_govern_calibrate · test_stack_rules</td><td class="n">—</td></tr>
     <tr><td><code>govern.py</code></td><td><code>promote_to_gate()</code> · <code>update_autonomy()</code></td><td>test_loop_govern_calibrate</td><td class="n">—</td></tr>
-    <tr><td><code>learning_loop.py</code></td><td><code>distill_candidates</code> / <code>merge</code> / <code>graduate</code> / <code>retire</code></td><td>test_learning_loop</td><td class="n">30</td></tr>
+    <tr><td><code>learning_loop.py</code></td><td><code>distill_candidates</code> / <code>merge</code> / <code>graduate</code> / <code>retire</code></td><td>test_learning_loop</td><td class="n">39</td></tr>
     <tr><td><code>checks.py</code></td><td><code>run_checks</code> · <code>aggregate_gate</code> · <code>post_gate</code></td><td>test_checks</td><td class="n">21</td></tr>
     <tr><td><code>autonomy.py</code></td><td><code>decide_auto_merge()</code> · <code>change_class()</code></td><td>test_autonomy</td><td class="n">24</td></tr>
     <tr><td><code>preflight.py</code></td><td>仓库/凭据预检</td><td>test_preflight</td><td class="n">3</td></tr>
     <tr><td><code>orchestrator.py</code> + 全链路</td><td>端到端冒烟（评审→门禁→自治）</td><td>test_e2e_smoke</td><td class="n">1</td></tr>
-    <tr><td colspan="3" style="text-align:right;font-weight:600">合计</td><td class="n" style="font-weight:700">245</td></tr>
+    <tr><td colspan="3" style="text-align:right;font-weight:600">合计</td><td class="n" style="font-weight:700">254</td></tr>
     <tr><td colspan="4" style="font-size:0.85em;color:#666">注：标 “—” 的模块与它人共享测试文件（loop/govern/calibrate 共 <code>test_loop_govern_calibrate</code> 36 例；orchestrator/ghclient/run.py/preflight/pr_agent_runner 共 <code>test_integration_mock</code> 32 例），不重复计入单行。单行之和 + 共享文件 = 合计。</td></tr>
   </table>
 </div></section>
@@ -130,7 +130,7 @@
   <h3 style="color:var(--primary);font-size:15.5px;margin:18px 0 4px">代码与运行</h3>
   <ul>
     <li><b><code>touchstone-repo.tar.gz</code></b> —— 完整仓库（含 <code>.git</code>，标签 <code>v0.1.0</code>）</li>
-    <li><b>测试套件</b> —— 12 文件 / <b>245 用例全绿、离线</b>（无需 LLM / 网络 / 外部服务）</li>
+    <li><b>测试套件</b> —— 12 文件 / <b>254 用例全绿、离线</b>（无需 LLM / 网络 / 外部服务）</li>
     <li><b><code>.touchstone/</code> 配置与契约</b> —— <code>standards.yaml</code>（规范单一事实源）· <code>checks.yaml</code>（门禁策略）· <code>pr-agent.yaml</code>（归一映射）· <code>acceptance.yaml.example</code>（人核准验收规格模板）· <code>best_practices.md</code>（供 PR-Agent）</li>
     <li><b><code>.github/workflows/</code></b> —— 3 条：<code>touchstone</code> / <code>calibrate</code> / <code>govern</code></li>
   </ul>

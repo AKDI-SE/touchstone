@@ -122,6 +122,18 @@ def test_map_verdict_high_categories_configurable():
     assert risk["risk_band"] == "high"
 
 
+def test_map_verdict_contract_category_path():
+    """contract 类发现 → blast 含 cross_module_contract。
+    注意：contract 不在默认 high_categories → band=mid → cheap_only（当前行为）；
+    高风险升级需配 high_categories 纳入 contract，或改 route() 逻辑。此处锁定现状。"""
+    findings = [{"category": "contract", "confidence": 0.9, "rule_id": "CTR-001",
+                 "agent": "touchstone-rules", "severity": "block_candidate"}]
+    _, risk = RP.map_verdict(findings)
+    assert "cross_module_contract" in risk["blast_radius"]
+    assert risk["risk_band"] == "mid"          # 当前：contract 不在 high_categories
+    assert risk["verification_decision"] == "cheap_only"   # 因 band != high
+
+
 # ---------------- 评审提供器 fetch（注入 vs 子进程集成）----------------
 def test_fetch_with_injected_output():
     items = RP.fetch({"pr_agent_output": _RAW})
@@ -190,3 +202,61 @@ def test_runner_imports_without_pr_agent():
 def test_fetch_unknown_provider():
     with pytest.raises(ValueError):
         RP.fetch({"pr_agent_output": _RAW}, provider="nope")
+
+
+# ============ 确定性影响面（不依赖 LLM 类别）·安全兜底回归 ============
+def test_deterministic_blast_by_path():
+    from touchstone import review_provider as rp
+    assert "cross_module_contract" in rp.deterministic_blast(["db/migrations/0007_add.sql"])
+    assert "cross_module_contract" in rp.deterministic_blast(["api/user.proto"])
+    assert "security_surface" in rp.deterministic_blast(["svc/auth/login.py"])
+    assert rp.deterministic_blast(["svc/pay/charge.py", "README.md"]) == []   # 普通路径不误报
+
+
+def test_llm_missed_category_still_elevated_by_path():
+    """评审侧【漏判】类别（category 不含 security/contract）时，
+    改动却触及 migration/安全面 → 确定性 blast 仍把它抬到 high → full_suite。"""
+    from touchstone import review_provider as rp
+    findings = [{"rule_id": "PRA-STYLE", "category": "style", "severity": "warn", "confidence": 0.9}]
+    # 不给 changed_files：沿用旧行为（低风险）
+    _, risk0 = rp.map_verdict(list(findings))
+    assert risk0["risk_band"] != "high"
+    # 给出触及 schema 迁移的改动文件：即便 LLM 只报了 style，也被抬到 high + full_suite
+    _, risk1 = rp.map_verdict(list(findings), changed_files=["db/migrations/0007_add.sql"])
+    assert risk1["risk_band"] == "high"
+    assert "cross_module_contract" in risk1["blast_radius"]
+    assert risk1["verification_decision"] == "full_suite"
+
+
+def test_to_rdjson_reviewdog_backend():
+    """rdjson 导出：行内评论可交 reviewdog（成熟锚定后端），severity 正确映射。"""
+    from touchstone import review_provider as rp
+    d = rp.to_rdjson([{"rule_id": "SCOPE-001", "file": "m.sql", "line": 1,
+                       "severity": "block_candidate", "rationale": "超出 scope"}])
+    diag = d["diagnostics"][0]
+    assert d["source"]["name"] == "touchstone"
+    assert diag["severity"] == "ERROR" and diag["location"]["path"] == "m.sql"
+    assert diag["code"]["value"] == "SCOPE-001"
+
+
+def test_to_rdjson_shape():
+    rd = RP.to_rdjson([{"rule_id": "SCOPE-001", "file": "a.sql", "line": 3,
+                       "severity": "block_candidate", "rationale": "超出 scope"},
+                      {"rule_id": "PRA-STYLE", "file": "b.py", "severity": "warn"}])
+    d = rd["diagnostics"]
+    assert rd["source"]["name"] == "touchstone" and len(d) == 2
+    assert d[0]["severity"] == "ERROR" and d[0]["location"]["range"]["start"]["line"] == 3
+    assert d[1]["severity"] == "WARNING" and d[1]["location"]["range"]["start"]["line"] == 1
+
+
+def test_injection_disabled_switch(monkeypatch):
+    from touchstone import review_provider as rp
+    monkeypatch.setenv('TOUCHSTONE_EXPERIENCE_ENABLED', 'false')
+    assert rp._experience_injection('.') == ''
+
+def test_injection_skipped_in_pr_without_trusted_ref(monkeypatch):
+    from touchstone import review_provider as rp
+    monkeypatch.setenv('TOUCHSTONE_EXPERIENCE_ENABLED', 'true')
+    monkeypatch.setenv('GITHUB_EVENT_NAME', 'pull_request')
+    monkeypatch.delenv('TOUCHSTONE_EXPERIENCE_REF', raising=False)
+    assert rp._experience_injection('.') == ''

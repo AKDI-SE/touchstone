@@ -6,7 +6,9 @@
 # 只管【可自改发现】(结构层 = 非正确性类 且 有 suggested_fix)；
 #   正确性不在此解决——交 verify/人。
 # converged ≠ correct：converged 仅表示无更多可自改发现，正确性由 verify job 正交把关。
-# 状态持久化：存在 PR 评论的隐藏 marker 里，轮次由历史 marker 派生（author 无法篡改）。
+# 状态持久化：存在 PR 评论的隐藏 marker 里，轮次由历史 marker 派生。
+# 防篡改前提：只解析【机器人自己】发的评论（trusted_bodies 按发帖人过滤）——评论任何人都能发，
+# 不过滤则 author 可伪造 marker（如同轮次+空 history）洗掉震荡/无推进闸。
 # ============================================================================
 
 import json
@@ -93,6 +95,16 @@ def render_marker(state):
     payload = json.dumps({"round": state.round, "history": state.history,
                           "last_verdict": state.last_verdict}, ensure_ascii=False)
     return f"{_OPEN} {payload} {_CLOSE}"
+
+
+def trusted_bodies(comments, bot_login):
+    """只保留【机器人自己】发的评论正文，供 parse_latest_state 使用。
+    评论任何人都能发；不按发帖人过滤，author 就能伪造 loop marker（例如同轮次 + 空 history）
+    洗掉震荡/无推进等抗博弈闸。bot_login 未知（None/空）时退回全量并由调用方告警。"""
+    if not bot_login:
+        return [c.get("body", "") for c in (comments or [])]
+    return [c.get("body", "") for c in (comments or [])
+            if ((c.get("user") or {}).get("login")) == bot_login]
 
 
 def parse_latest_state(comment_bodies):

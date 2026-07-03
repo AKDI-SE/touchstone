@@ -2,6 +2,21 @@
 
 本文件记录 Touchstone 的发布版本。设计的逐版迭代历史见 `docs/touchstone-design.html` 的变更历史。
 
+## v0.2.1 — 2026-07-02
+
+架构审查后的安全加固与文档对齐（不改冻结契约字段、marker 仅追加、测试只增不削）。
+
+- **确定性影响面兜底（P0，最关键）**：`map_verdict` 除按 category 定级外，新增 `review_provider.deterministic_blast`——直接从改动文件【路径】判定影响面（migration/`*.sql`/`*.proto`/schema → cross_module_contract；auth/crypto/secrets 等路径 → security_surface），与评审侧结果保守取并；命中严重影响面即【无视 LLM 类别】抬到 high → full_suite，并触发（可选的）自动合并否决。此前 blast 仅由 PR-Agent 给的 category 推导，评审侧漏判类别时高危改动会被误走 cheap_only、自动合并下仅凭 CI 绿放行——本条把主设计 §5 承诺的「确定性兜底」真正落地。
+- **经验 provenance 到 id 级（P1）**：result marker 追加 `injected_experience_ids`（`learning_loop.active_ids`），使坏经验可【单条】归因与回退（此前仅 `injected_types` 类型级，见数据采集设计 取舍 2）。
+- **文档对齐**：4+1 / index / slides 的「生产代码行数」「测试用例数」更新到当前值（3840 行 / 254 用例）；主设计 §5 该遗留项改为「已落地」。
+- **loop marker 防伪造（P0）**：loop 状态此前从 PR 的【全部】评论解析——评论任何人都能发，author 可伪造 marker（同轮次+空 history）洗掉震荡/无推进等抗博弈闸。现只解析机器人自己发的评论（`loop.trusted_bodies` 按发帖人过滤，orchestrator 经 `GET /user` 确认身份；无法确认时降级全量并告警）。
+- **required 接力检查 fail-closed（P0）**：`_run_relay` 此前把 skipped/neutral 一律算过——author 用 [skip ci]/路径过滤让源 CI 跳过即可绿总闸，自动合并下会放行未经验证的代码。现 required 的 relay 只认 success；非 required 保持宽松（兼容既有流水线）；确需放宽对该检查设 `allow_skipped: true`。
+- **第七道闸·基线新鲜度（P0，对照 bors/merge queue）**：`decide_auto_merge` 新增 `base_fresh` 闸——CI 绿是对旧 main 算的就不自动合（两个各自绿的 PR 合在一起可能语义冲突，即 merge skew；`sha` 参数只防 head 再 push、不防基线过期）。live 执行前 `check_base_fresh` 比对 PR base sha 与 base 分支当前 head；过期则调 GitHub update-branch 带上最新 main、CI 重绿后下轮再判；评估失败仅记 None 不误拦，评出过期必拦。长期演进建议改用 GitHub 原生 merge queue（见主设计 §2.6），不自建合并执行器。
+- **SEC-\* 规则冻结（P1）**：内置 SEC-001 只作离线兜底、不再新增模式——完整密钥扫描经 checks.yaml 的 relay 挂 gitleaks/semgrep（主设计 §4.7 已加示例行）。
+- **成熟工具接缝三件（P1/P2）**：① 变异测试可经 `TOUCHSTONE_MUTATION_CMD` 换用 mutmut/cosmic-ray（外部命令，stdout 末尾数字作击杀率，失败回退内置 AST 变异）；② `AUTONOMY_MERGE_MODE=queue` 经 GraphQL enablePullRequestAutoMerge 走 GitHub 原生 merge queue/auto-merge（不自建合并执行器，direct 保留兜底）；③ 设 `TOUCHSTONE_RDJSON_PATH` 导出 Reviewdog rdjson，行内评论锚定长尾可交 reviewdog。
+- **TF-GRPO 加固重施（P0，专项复检）**：审查发现 I1–I4 加固未曾合入 main，而新自学习代码把多仓真值采集接通后，I1（经验 id 不含仓·栈，多仓同类型互相覆盖）已成实际缺陷。现重施于新基线：`_exp_id` 含 `kind:repo:stack:finding_type`（I1）；`_distill_via_llm` 每轮用已蒸出候选重渲染注入 E（I2，真 multi-epoch）；`render_injection` 前 `_resolve_conflicts` 消解同 仓·栈·类型 的 emphasize/suppress 矛盾（I3）；`distill_semantic_advantage` 退化组（组内奖励无差异）跳过、并对【整组】带分对比归纳替代 top-2/bottom-2（I4，贴合论文、降小组取样方差）。
+- 测试 251 → 268（+17：确定性 blast 按路径 / 评审漏判仍被路径抬级 / active_ids / 伪造 marker 过滤 / required-relay skipped 拒过 ×2 / base_fresh 闸 / is_base_fresh 纯判定 / 变异输出解析 / 外部变异命令 / rdjson 导出），全绿、离线。
+
 ## v0.2.0 — 2026-06-25
 
 审查后修复：让「确定性红线门禁」真正生效，并接通若干悬空的安全机制（均不改冻结契约字段、marker 仅追加、测试只增不削）。

@@ -133,6 +133,8 @@ def check_untested_code(files, rule_index):
 
 
 # --- SEC-001：硬编码密钥/凭据（离线、确定性正则扫描）----------------------------
+# 规则集【冻结】：只作离线兜底，不再新增模式——沿此路线扩张终点是维护一个更差的
+# gitleaks。完整密钥扫描请经 checks.yaml 的 relay 检查挂 gitleaks/semgrep（见主设计 §4.7）。
 # 高精度特征串（已知格式的云/Git 凭据 + PEM 私钥头 + 通用凭据赋值）。
 # SEC-002（SQL/命令注入）是污点分析、需外部 SAST 数据流，不在此——经 checks.yaml relay 接入。
 _SECRET_PATTERNS = [
@@ -143,6 +145,11 @@ _SECRET_PATTERNS = [
     (re.compile(r"\bgithub_pat_[A-Za-z0-9_]{59,}"), "GitHub fine-grained PAT"),
     (re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b"), "Google API key"),
     (re.compile(r"-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY-----"), "PEM 私钥"),
+    (re.compile(r"\bsk-proj-[A-Za-z0-9]{40,}\b"), "OpenAI API key"),
+    (re.compile(r"\bsk-[A-Za-z0-9]{40,}\b"), "OpenAI legacy key"),
+    (re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b"), "Slack token"),
+    (re.compile(r"\bsk_live_[A-Za-z0-9]{24}\b"), "Stripe secret key"),
+    (re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b"), "JWT token"),
     (re.compile(r"(?:api[_-]?key|secret|token|passwd|password|pwd)\b\s*[:=]\s*['\"]"
                 r"([A-Za-z0-9_\-+/=]{16,})['\"]", re.I), "硬编码凭据赋值"),
 ]

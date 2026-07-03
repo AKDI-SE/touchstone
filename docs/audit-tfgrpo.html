@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Touchstone · TF-GRPO 审查</title>
+<style>
+  :root{
+    --paper:#FAFAF8; --panel:#FFFFFF; --ink:#15181D; --muted:#6B7178;
+    --line:#E6E4DD; --line2:#D8D6CD;
+    --primary:#14506B; --c1:#0E7C7B; --c2:#3D52A0; --c3:#B5651D;
+    --high:#A23E3E; --good:#0E7C7B;
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue","PingFang SC","Microsoft YaHei",sans-serif;
+  }
+  *{box-sizing:border-box}
+  body{margin:0; background:var(--paper); color:var(--ink); font-family:var(--sans); font-size:16px; line-height:1.66; -webkit-font-smoothing:antialiased}
+  .wrap{max-width:920px; margin:0 auto; padding:0 24px}
+  header.hero{padding:60px 0 38px; border-bottom:1px solid var(--line)}
+  .eyebrow{font-family:var(--mono); font-size:12px; letter-spacing:.22em; text-transform:uppercase; color:var(--primary); margin:0 0 18px}
+  h1{font-size:38px; line-height:1.14; font-weight:760; letter-spacing:-.018em; margin:0 0 18px}
+  .thesis{font-size:18px; line-height:1.56; max-width:44em; margin:0 0 24px}
+  .thesis b{color:var(--primary)}
+  .meta{font-size:13px; color:var(--muted); font-family:var(--mono); line-height:1.9}
+  .meta b{color:var(--ink); font-weight:600}
+  section{padding:44px 0; border-bottom:1px solid var(--line)}
+  .snum{font-family:var(--mono); font-size:13px; color:var(--primary); letter-spacing:.04em}
+  h2{font-size:26px; font-weight:720; letter-spacing:-.012em; margin:6px 0 18px}
+  h3{font-size:17px; font-weight:680; margin:22px 0 8px; font-family:var(--mono)}
+  p{margin:0 0 14px}
+  strong{font-weight:670}
+  code{font-family:var(--mono); font-size:.9em; background:#F1F0EA; padding:1px 6px; border-radius:4px; color:#2a2d33}
+  ul,ol{margin:0 0 14px; padding-left:1.25em} li{margin:6px 0}
+  .muted{color:var(--muted)}
+  .principle{margin:16px 0; padding:14px 18px; border-left:3px solid var(--primary); background:#F3F6F8; border-radius:0 7px 7px 0}
+  .principle .k{font-family:var(--mono); font-size:11px; letter-spacing:.16em; text-transform:uppercase; color:var(--primary); display:block; margin-bottom:6px}
+  .principle.warn{border-left-color:var(--high); background:#FAF1F0}
+  .principle.warn .k{color:var(--high)}
+  .principle.good{border-left-color:var(--good); background:#EAF1F4}
+  .principle.good .k{color:var(--good)}
+  blockquote.note{margin:14px 0; padding:12px 16px; background:#FAF6EE; border:1px solid var(--line); border-radius:7px; color:#4a4030; font-size:14.5px}
+  blockquote.note b{color:var(--c3)}
+  .tbl{width:100%; border-collapse:collapse; margin:16px 0; font-size:14px}
+  .tbl th,.tbl td{border:1px solid var(--line2); padding:9px 11px; text-align:left; vertical-align:top}
+  .tbl th{background:#F1F0EA; font-weight:640; font-size:12.5px}
+  .tbl .mono{font-family:var(--mono); font-size:12.5px; color:#2a2d33}
+  .tbl td.ok{color:var(--good); font-weight:640}
+  .tbl td.no{color:var(--high); font-weight:640}
+  .tbl td.mid{color:var(--c3); font-weight:640}
+  footer{padding:36px 0 72px; color:var(--muted); font-size:13px; font-family:var(--mono)}
+  @media (max-width:700px){h1{font-size:28px}}
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <div class="wrap">
+    <p class="eyebrow">专项审查 · TF-GRPO（自演进回路）</p>
+    <h1>TF-GRPO 审查</h1>
+    <p class="thesis">管道干净、安全模型想得清楚、对「离线 / 假-llm 测试」也诚实；但<b>方法命名夸大</b>（没用 GRPO 的定义性机制）、<b>「自进化」默认是惰性的</b>（达标门控与数据管线多半未接通），并有<b>几处实现与设计文档不符</b>。</p>
+    <p class="meta">
+      <b>审查对象</b>　<code>touchstone/learning_loop.py</code> · <code>docs/learning-loop-design.html §3</code> · <code>tests/test_learning_loop.py</code><br>
+      <b>日期</b>　2026-06-25<br>
+      <b>方法</b>　精读设计原文 → 对照代码逐函数核验 → grep 核实数据管线 → 用测试反推实际覆盖
+    </p>
+  </div>
+</header>
+
+<section style="padding:24px 0">
+  <div class="wrap">
+    <div class="principle good" style="margin:0"><span class="k" style="color:#0E7C7B">修复状态（2026-06-30 更新）</span>
+    本审查为 2026-06-25 快照。下列发现<strong>已基本落地</strong>（见 gitcode MR）：D2 自进化惰性、I1 文档、I2 真迭代、I3 矛盾消解、I4 退化组 → <strong>MR #1/#2</strong>；N4 wontfix 过滤 + 上限文档 → <strong>MR #3</strong>；D1 命名正名 + 文档同步 → <strong>MR #4</strong>。下方原文保留作历史记录；与代码现状的差异以 <code>learning_loop.py</code> / <code>calibrate.py</code> 与各 MR 为准。</div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <p class="snum">01</p>
+    <h2>总评</h2>
+    <div class="principle warn"><span class="k">问题一 · 方法命名夸大</span>没用 GRPO 的定义性机制（组内相对数值优势），实质是 <b>group-sampling + LLM critique-distillation</b>，叫 TF-GRPO 是营销性拔高。</div>
+    <div class="principle warn"><span class="k">问题二 · 「自进化」默认惰性</span>达标门控（<code>graduate</code> 的 A/B）与数据管线（<code>ground_truth</code>、<code>aggregate_ab</code>）多半未接通 → candidate 永不自动 active，唯一进注入的是人手写种子。</div>
+    <div class="principle warn"><span class="k">问题三 · 实现与设计不符</span>经验 id 不按仓·栈归类、多轮不迭代精化、跨 kind 冲突无消解、退化组无防护。</div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <p class="snum">02</p>
+    <h2>设计层</h2>
+
+    <h3>D1 · 名不副实：这不是 GRPO（最尖锐）</h3>
+    <p>设计 §3.1 自己写明：论文的「数值优势 <code>(r_i−mean)/std</code>」→ <strong>不用</strong>，换成「语义优势」（让旗舰模型内省高分 vs 低分评审）。</p>
+    <p>但 <strong>GRPO 的「R」(Relative) 指的就是组内相对数值优势归一化</strong>——这是它降噪、降方差的定义性机制。本实现只保留了 GRPO 的<strong>词汇</strong>（rollout / group / advantage），把核心数学换成了「LLM 看两份评审总结一句话」。这在算法分类上是 <strong>group-sampling + LLM critique-distillation</strong>，不是 GRPO。代价实打实：</p>
+    <ul>
+      <li><code>distill_semantic_advantage</code>（<code>learning_loop.py:184</code>）只取 <code>ranked[:2]</code> 和 <code>ranked[-2:]</code> 做对比。G=4 时有效样本就 2 高 vs 2 低，<strong>方差极高</strong>——一份评审碰巧命中了人关心的类型就「高分」，并不代表它代表可泛化策略。GRPO 的全组归一化正是用来压这个方差的，这里被丢了，设计未承认这一成本。</li>
+    </ul>
+    <blockquote class="note">无论 arXiv 2510.08191 具体如何（无法核实其精确内容），本实现独立地看就是「冻结模型 rollout + LLM 内省蒸馏」。建议改名或显式声明「只取 group-sampling 思想、不用其优势归一化」。</blockquote>
+
+    <h3>D2 · 「自进化」默认是惰性的（最实际）</h3>
+    <p>设计画的闭环：<code>distill → candidate → shadow A/B 达标 → active → 注入</code>。代码实际：</p>
+    <table class="tbl">
+      <tr><th>环节</th><th>实现?</th></tr>
+      <tr><td class="mono">distill_* 产 candidate</td><td class="ok">✅</td></tr>
+      <tr><td class="mono">merge_candidates 入候选池</td><td class="ok">✅</td></tr>
+      <tr><td class="mono">candidate→active 自动通道（graduate 的 ab_results）</td><td class="no">❌ 无生产者</td></tr>
+      <tr><td class="mono">ground_truth（TF-GRPO 输入）</td><td class="no">❌ 无 build_ground_truth，只能手填 JSON</td></tr>
+      <tr><td class="mono">injected_experience_ids（A/B 分臂依据）</td><td class="mid">⚠️ marker 已埋 injected_types，但消费端 aggregate_ab 不存在</td></tr>
+    </table>
+    <p><code>grep</code> 确认：<code>build_ground_truth</code> / <code>aggregate_ab</code> 全仓不存在；<code>main()</code> 里 <code>graduate</code> 只在 <code>TOUCHSTONE_AB_RESULTS</code> 文件存在时才跑，而那份数据没人产。</p>
+    <div class="principle warn"><span class="k">净效果</span>TF-GRPO 蒸出的 candidate 永远不会自动变 active；唯一能让经验进注入的是人手写 <code>seed_experience</code>。所以「评审越用越准」的自动闭环不通——它是个「人写种子 + 一个产出永不激活的候选的离线脚本」。这是「自进化」卖点和实现落差最大的地方。</div>
+
+    <h3>D3 · 奖励粒度过粗</h3>
+    <p><code>score_review</code>（<code>learning_loop.py:125</code>）把评审和人采纳都当成 <strong>finding_type 集合</strong>做交并差。但 finding_type 是 <code>PRA-SECURITY</code> / <code>PRA-POSSIBLE_BUG</code> 这种粗类型——两份评审在不同文件报了同一个 <code>PRA-SECURITY</code>，都算同一个 hit。hits/noise 因此都很粗，奖励信号噪声大。设计 §3.3 没讨论这个粒度问题。</p>
+
+    <h3>D4 · 奖励有偏（人审盲区）—— 已承认、应对合理</h3>
+    <div class="principle good"><span class="k">优点</span>坑 2 正是此点；应对（advisory-only + protected types + locked + contract_check 作固定基准）是想清楚了的好设计。</div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <p class="snum">03</p>
+    <h2>实现 vs 设计 的具体差异</h2>
+
+    <h3>I1 · 经验 id 不含 repo/stack（与设计声称矛盾）</h3>
+    <p>设计 §3.3 / §3.5 反复说「严格按 <strong>仓·栈·发现类型</strong> 归类」，Experience 也确实有 <code>repo</code> / <code>stack</code> 字段——但去重键 <code>_exp_id</code>（<code>learning_loop.py:65</code>）只是 <code>f"{kind}:{finding_type}"</code>，<strong>不含 repo/stack</strong>。多仓部署下，A 仓的 <code>emphasize:PRA-X</code> 会和 B 仓的撞成同一条、互相覆盖。要么 id 纳入 repo/stack，要么文档明确「当前仅单仓」。</p>
+
+    <h3>I2 · 多轮 epoch 不更新 conditioning E（与「逐轮修正」矛盾）</h3>
+    <p><code>_distill_via_llm</code>（<code>learning_loop.py:253</code>）在循环外算一次 <code>experience_text = render_injection(store)</code>，然后所有 epoch、所有 PR 的 rollout 都用这<strong>同一份 E</strong> 做条件。设计 §3.1/§3.2 说「经验库逐轮累积、修正」「下轮注入」，但代码里 distilled candidate 进的是局部 <code>acc</code>，<strong>不回灌进 conditioning E</strong>。所以 <code>epochs&gt;1</code> 只是多攒几条 candidate（且因 LLM 随机可能出变体），不是「迭代精化 E」。要么每轮用上一轮结果重渲染 E，要么文档别说「逐轮修正」。</p>
+
+    <h3>I3 · 同类型的 emphasize/suppress 可并存且都被注入</h3>
+    <p><code>emphasize:PRA-X</code> 与 <code>suppress:PRA-X</code> 是<strong>不同 id</strong> → <code>merge_candidates</code> 各存各的；一旦都 active，<code>render_injection</code> 会把「该挑 PRA-X」和「别挑 PRA-X」<strong>同时</strong>塞进 PR-Agent 的 extra_instructions —— 矛盾指令。无跨 kind 冲突消解。设计 §6 只提醒了「同 kind+type 别写两条」，没处理跨 kind 冲突。</p>
+
+    <h3>I4 · 退化组无防护</h3>
+    <p><code>distill_semantic_advantage</code> 取 top-2/bottom-2；若整组 reward 同分（如都是空评审、或 LLM 返回全 <code>[]</code>），high 与 low 重叠/无差异，内省「对比」无意义，仍会强制产出（多半是垃圾）经验。无「组内方差为 0 / 有效评审过少则跳过」的守卫。</p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <p class="snum">04</p>
+    <h2>测试 / 验证</h2>
+    <ul>
+      <li><strong>全程 <code>_fake_llm</code></strong>（<code>tests/test_learning_loop.py:127</code> 等确定性假 llm）：只验证 <strong>plumbing</strong>——步骤串联、JSON 解析、protected/locked 生效、<code>score_review</code> 精确值。<strong>蒸馏的「质量」、以及「注入后采纳率是否真升」从未被验证</strong>（离线也确实测不了 LLM 质量）。这点设计 §3.5 是诚实的（「离线以假 llm 覆盖测试」），但要清楚：TF-GRPO 的核心价值（让评审更准）目前是<strong>未经验证的假设</strong>，且 D2 说连验证它的 A/B 管线都没接。</li>
+    </ul>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <p class="snum">05</p>
+    <h2>值得肯定的地方</h2>
+    <div class="principle good"><span class="k">架构</span><strong>评审 / 学习解耦</strong>：PR 关键路径只读经验库、毫秒级；学习挂了评审用上一版。</div>
+    <div class="principle good"><span class="k">安全模型</span>advisory-only + 经验不进合入闸 + protected types + locked + 可单条 <code>disable</code> + <code>contract_check</code> 作固定基准——防「回路放大人审盲区」的几道闸都想到了。</div>
+    <div class="principle good"><span class="k">可插拔</span><code>register_distiller</code> + rollout/score/distill 三步可注入，扩展性好。</div>
+    <div class="principle good"><span class="k">奖励</span>奖励函数合理，权重可配（<code>TOUCHSTONE_W_NOISE</code> / <code>TOUCHSTONE_W_MISS</code>）。</div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <p class="snum">06</p>
+    <h2>建议（按性价比）</h2>
+    <table class="tbl">
+      <tr><th>#</th><th>对应</th><th>建议</th></tr>
+      <tr><td class="mono">1</td><td class="mono">D1</td><td><strong>正名</strong>：文档把「TF-GRPO」降调为「rollout + LLM 经验蒸馏」，或显式声明「只借 group-sampling，不用 GRPO 的优势归一化」。</td></tr>
+      <tr><td class="mono">2</td><td class="mono">D2</td><td><strong>接通自进化</strong>（最该做）：补 <code>build_ground_truth</code>（从 calibrate 重建）+ <code>aggregate_ab</code>（按 marker 的 <code>injected_types</code> 切 A/B 两臂）→ 喂给 <code>graduate</code>。否则「自进化」始终是手动。</td></tr>
+      <tr><td class="mono">3</td><td class="mono">I1</td><td><strong>id 纳入 repo/stack</strong>，或文档限定单仓。</td></tr>
+      <tr><td class="mono">4</td><td class="mono">I2</td><td><strong>真迭代</strong>：每轮用上轮 active/candidate 重渲染 <code>experience_text</code> 再 rollout。</td></tr>
+      <tr><td class="mono">5</td><td class="mono">I3</td><td><strong>冲突消解</strong>：同 finding_type 的 emphasize/suppress 不可同时 active。</td></tr>
+      <tr><td class="mono">6</td><td class="mono">I4</td><td><strong>退化组守卫</strong>：组内 reward 方差为 0 或有效评审 &lt; 阈值时跳过 distill。</td></tr>
+    </table>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <p class="snum">07</p>
+    <h2>附：可举证项（用真实函数可跑出）</h2>
+    <ul>
+      <li><strong>多仓 id 撞</strong>（I1）：两个不同 repo 蒸出同 <code>kind:finding_type</code> → <code>merge_candidates</code> 互相覆盖（后写覆盖先写 repo/stack/text）。</li>
+      <li><strong>candidate 永不自动 active</strong>（D2）：<code>graduate</code> 在 <code>main()</code> 中仅当 <code>TOUCHSTONE_AB_RESULTS</code> 存在才调用；无 <code>aggregate_ab</code> → 候选恒为 candidate，<code>render_injection</code> 不注入。</li>
+      <li><strong>矛盾共存</strong>（I3）：同 <code>finding_type</code> 的 emphasize + suppress 都 active → <code>render_injection</code> 同时输出两条相反指令。</li>
+    </ul>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">Touchstone · TF-GRPO 审查 · 2026-06-25 · 自包含离线文档（与 <code>learning-loop-design.html</code> 同一套样式）</div>
+</footer>
+
+</body>
+</html>

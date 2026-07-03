@@ -32,5 +32,6 @@ jobs:
       - name: Run seed
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SEED_FILE: ${{ github.event.inputs.seed_file }}
         run: |
-          python ${{ github.event.inputs.seed_file }}
+          python "$SEED_FILE"

@@ -33,7 +33,8 @@ jobs:
           BASE_REF: ${{ github.event.repository.default_branch }}
           REPO_DIR: "."
         run: python touchstone/govern.py
-        continue-on-error: true   # 熔断触发会退出 2，仍上传产物
+        # 不用 continue-on-error：熔断触发 sys.exit(2) 应在 Actions UI 可见（安全信号）。
+        # 下方 upload 步骤的 if: always() 确保产物仍上传。
       - name: Publish graduated change-classes (经验层)
         run: |
           python -m touchstone.autonomy --graduate

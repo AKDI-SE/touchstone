@@ -34,16 +34,23 @@ def _gh_host():
 
 
 def _checkout(repo, head_sha, token):
-    """浅 clone 到 PR head；返回 (repo_dir, created?)。"""
+    """浅 clone 到 PR head；返回 (repo_dir, created?)。
+    token 不入 clone URL（避免写进 .git/config / reflog），改经 http.extraheader 一次性传递。"""
     d = tempfile.mkdtemp(prefix="touchstone_pr_")
     host = _gh_host()
-    url = f"https://{token}@{host}/{repo}.git" if token else f"https://{host}/{repo}.git"
+    url = f"https://{host}/{repo}.git"              # 干净 URL，不含 token
     try:
         subprocess.run(["git", "init", "-q", d], check=True, capture_output=True)
         subprocess.run(["git", "-C", d, "remote", "add", "origin", url],
                        check=True, capture_output=True)
-        subprocess.run(["git", "-C", d, "fetch", "--depth", "1", "-q", "origin", head_sha],
-                       check=True, capture_output=True)
+        fetch_cmd = ["git", "-C", d, "fetch", "--depth", "1", "-q", "origin", head_sha]
+        if token:                                    # token 经 extraheader 传，不入 .git/config
+            import base64
+            auth = base64.b64encode(f"x-access-token:{token}".encode()).decode()
+            fetch_cmd = ["git", "-C", d, "-c",
+                         f"http.extraheader=Authorization: Basic {auth}",
+                         "fetch", "--depth", "1", "-q", "origin", head_sha]
+        subprocess.run(fetch_cmd, check=True, capture_output=True)
         subprocess.run(["git", "-C", d, "checkout", "-q", "FETCH_HEAD"],
                        check=True, capture_output=True)
     except subprocess.CalledProcessError as e:
