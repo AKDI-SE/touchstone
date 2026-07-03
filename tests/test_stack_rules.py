@@ -92,9 +92,11 @@ def test_review_pr_composes_stack_and_returns_risk(monkeypatch):
                         ["@Autowired", "private UserService svc;"], True)])
     pr = {"owner": "o", "repo": "r", "number": 1, "sha": "abc", "token": "t", "diff": diff}
     out = orchestrator.review_pr(pr, {}, _standards())
-    assert set(out) == {"findings", "risk", "engine_status", "det_warning"}
+    assert set(out) == {"findings", "risk", "engine_status", "det_warning",
+                        "ai_raw_count", "added_lines", "changed_files"}
     assert out["engine_status"] == "ok"                  # fetch 打桩成功 → 引擎正常
     assert out["det_warning"] == ""                      # diff 解析正常 → 无确定性核对告警
+    assert out["ai_raw_count"] == 0                      # fetch 打桩返回空 → 0 原始建议
     assert "SPR-DI-001" in {f["rule_id"] for f in out["findings"]}
     assert out["risk"]["risk_band"] in ("low", "mid", "high")
     assert "human_action" in out["risk"] and "verification_decision" in out["risk"]

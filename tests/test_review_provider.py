@@ -251,6 +251,22 @@ def test_engine_banner_combines_det_warning():
     assert orc._engine_banner("ok") == ""
 
 
+def test_clean_review_trace_disambiguates_zero_findings():
+    # 0 发现时溯源：让人区分"LLM 真审了没问题" vs "没真审"（防静默故障）
+    from touchstone import orchestrator as orc
+    # 引擎正常 + 改动小 + 0 原始建议 → 合理（非空回）
+    t = orc._clean_review_trace("ok", ai_raw_count=0, added_lines=3, n_changed=1)
+    assert "已端到端运行" in t and "0 条原始建议" in t and "合理" in t
+    # 引擎正常 + 改动大 + 0 原始建议 → 可疑，提示人工扫一眼
+    t2 = orc._clean_review_trace("ok", ai_raw_count=0, added_lines=120, n_changed=8)
+    assert "人工扫一眼" in t2
+    # 引擎正常 + pr-agent 真有返回 → 不可疑（归一后 0 是被过滤）
+    t3 = orc._clean_review_trace("ok", ai_raw_count=5, added_lines=120, n_changed=8)
+    assert "5 条原始建议" in t3 and "人工扫一眼" not in t3
+    # 降级时不输出溯源（由 _engine_banner 负责）
+    assert orc._clean_review_trace("llm_failed", 0, 0, 0) == ""
+
+
 def test_runner_imports_without_pr_agent():
     # 适配器模块本身可被导入、不在导入期触碰 pr-agent（pr-agent 只在 run() 内 import）
     import pr_agent_runner as R
