@@ -35,13 +35,21 @@ jobs:
       - name: Install deps
         run: pip install -r requirements.txt
         # 自托管 runner 若经代理访问公网：按需设置/清理 *_PROXY；可选用私有/就近 PyPI 镜像加速 pip install
+      - name: Set up PR-Agent (independent venv)
+        # PR-Agent 是评审引擎（Apache-2.0 pip 包），按"不进本仓依赖"原则装在独立 venv。
+        # 不装/装失败时 orchestrator 会优雅降级并在 PR 评审里显式标注（防静默故障，见 README）。
+        run: |
+          python -m venv .pragent-venv
+          .pragent-venv/bin/pip install -U pip
+          .pragent-venv/bin/pip install pr-agent
       - name: Run review
         id: run
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           LLM_BASE_URL: ${{ secrets.LLM_BASE_URL }}
           LLM_API_KEY:  ${{ secrets.LLM_API_KEY }}
-          LLM_MODEL:    ${{ secrets.LLM_MODEL }}      # 应不同于、且不弱于 author 模型
+          LLM_MODEL:    ${{ secrets.LLM_MODEL }}      # pr_agent_runner 映射成 LiteLLM 的 openai/<model> + OPENAI_API_KEY/BASE
+          TOUCHSTONE_PRAGENT_CMD: ".pragent-venv/bin/python -m touchstone.pr_agent_runner"
           TOUCHSTONE_SKIP_GATE: "true"                 # 不自发总闸：由下方 gate job 在(可选)verify 之后统一发
           # 经验库路径：必须用 learning_loop 认的 env 名 TOUCHSTONE_EXPERIENCE（不是 STORE_PATH），
           # 否则评审侧 load_store() 读不到 learn.yml 维护的 data/experience_store.json。

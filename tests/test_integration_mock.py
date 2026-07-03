@@ -112,9 +112,27 @@ def test_pr_agent_read(tmp_path):
 
 
 def test_pr_agent_run_import_missing(monkeypatch):
-    monkeypatch.setitem(sys.modules, "pr_agent", None)   # 不可导入 → sys.exit
-    with pytest.raises(SystemExit):
-        R.run("https://pr", "improve")
+    monkeypatch.setitem(sys.modules, "pr_agent", None)   # 不可导入 → 上报 no_engine（不抛、不非零退出）
+    out = R.run("https://pr", "improve")
+    assert out["_degraded"] == "no_engine"
+    assert "pr-agent" in out["reason"]
+
+
+def test_pr_agent_run_llm_failed(monkeypatch):
+    # pr-agent 装了，但工具调用抛错（LLM 端点/鉴权/超时类）→ 上报 llm_failed（防静默故障）
+    _install_fake_pr_agent(monkeypatch)
+    import pr_agent.tools.pr_code_suggestions as cs_mod
+
+    class CrashingCS:
+        def __init__(self, url):
+            self.data = {}
+
+        async def run(self):
+            raise RuntimeError("LLM 401 unauthorized")
+    cs_mod.PRCodeSuggestions = CrashingCS
+    out = R.run("https://pr", "improve")
+    assert out["_degraded"] == "llm_failed"
+    assert "401" in out["reason"]
 
 
 def _install_fake_pr_agent(monkeypatch):
@@ -155,12 +173,12 @@ def _install_fake_pr_agent(monkeypatch):
     return settings
 
 
-def test_pr_agent_run_happy(monkeypatch, capsys):
+def test_pr_agent_run_happy(monkeypatch):
     settings = _install_fake_pr_agent(monkeypatch)
-    R.run("https://pr", "improve+review", extra_instructions="be strict")
-    out = json.loads(capsys.readouterr().out)
+    out = R.run("https://pr", "improve+review", extra_instructions="be strict")
     assert out["code_suggestions"] == [{"s": 1}]
     assert out["review"]["key_issues_to_review"] == [{"x": 1}]
+    assert out.get("_degraded") is None                     # 正常：无降级标记
     assert settings.config.publish_output is False          # 关键：不往 PR 发评论
     assert settings.pr_reviewer.extra_instructions == "be strict"
 

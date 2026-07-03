@@ -92,7 +92,8 @@ def test_review_pr_composes_stack_and_returns_risk(monkeypatch):
                         ["@Autowired", "private UserService svc;"], True)])
     pr = {"owner": "o", "repo": "r", "number": 1, "sha": "abc", "token": "t", "diff": diff}
     out = orchestrator.review_pr(pr, {}, _standards())
-    assert set(out) == {"findings", "risk"}
+    assert set(out) == {"findings", "risk", "engine_status"}
+    assert out["engine_status"] == "ok"                  # fetch 打桩成功 → 引擎正常
     assert "SPR-DI-001" in {f["rule_id"] for f in out["findings"]}
     assert out["risk"]["risk_band"] in ("low", "mid", "high")
     assert "human_action" in out["risk"] and "verification_decision" in out["risk"]

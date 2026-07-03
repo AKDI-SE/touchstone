@@ -192,6 +192,36 @@ def test_invoke_endpoint_no_pr_url_raises(monkeypatch):
         RP.fetch({"sha": "s"})                                       # 无 pr_url / owner-repo-number
 
 
+def test_invoke_endpoint_degraded_json_raises_typed(monkeypatch):
+    # 适配器结构化降级：子进程退出 0 但 JSON 带 _degraded → 抛 ReviewEngineDegraded（带 degraded/reason）
+    monkeypatch.setattr(RP.subprocess, "run", lambda a, **k:
+                        _Proc(0, out=json.dumps({"_degraded": "llm_failed", "reason": "AuthError: 401"})))
+    monkeypatch.setattr(RP, "_experience_injection", lambda d: "")
+    with pytest.raises(RP.ReviewEngineDegraded) as ei:
+        RP.fetch({"owner": "o", "repo": "r", "number": 3})
+    assert ei.value.degraded == "llm_failed"
+    assert "401" in ei.value.reason
+
+
+def test_engine_banner():
+    from touchstone import orchestrator as orc
+    assert "AI 评审未运行" in orc._engine_banner("no_engine")
+    assert "LLM 调用失败" in orc._engine_banner("llm_failed")
+    assert orc._engine_banner("ok") == ""
+
+
+def test_review_pr_engine_status_on_degradation(monkeypatch):
+    # fetch 抛 ReviewEngineDegraded → review_pr 仍返回确定性核对结果，但 engine_status 标降级
+    from touchstone import orchestrator as orc
+
+    def _degrade(pr, provider=None):
+        raise RP.ReviewEngineDegraded("no_engine", "pr-agent 未安装")
+    monkeypatch.setattr(RP, "fetch", _degrade)
+    out = orc.review_pr({"diff": ""}, {}, {})
+    assert out["engine_status"] == "no_engine"
+    assert out["findings"] == []                       # 降级：无评审发现，仅确定性核对（空 diff→空）
+
+
 def test_runner_imports_without_pr_agent():
     # 适配器模块本身可被导入、不在导入期触碰 pr-agent（pr-agent 只在 run() 内 import）
     import pr_agent_runner as R
