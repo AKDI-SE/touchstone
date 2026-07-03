@@ -134,6 +134,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
+          TOUCHSTONE_HEAD_SHA: ${{ github.event.pull_request.head.sha }}   # findings 缺失时据它发"未产出结果"failure check
           REPO_DIR: "."
         run: python touchstone/checks.py    # 发总闸并把含 verify 的结论写回 touchstone-findings.json
       - name: Re-upload findings with final gate (供 auto_merge 读含 verify 的总闸)

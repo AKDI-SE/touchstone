@@ -48,7 +48,13 @@ def load_config(repo_dir):
                           os.path.join(repo_dir, ".touchstone", "checks.yaml"))
     try:
         data = yaml.safe_load(open(path, encoding="utf-8")) or {}
-    except (OSError, yaml.YAMLError):
+    except FileNotFoundError:
+        data = {}                       # 未配置：合法空策略（不挡）
+    except yaml.YAMLError as e:
+        # 文件存在但解析失败 = 配置坏了：不能当成"空策略"静默放行（防静默故障）。
+        # 标 _config_error，post_gate 据此 fail-closed 并在总闸 summary 显式报警。
+        data = {"_config_error": f"checks.yaml 解析失败（{e}）——按 fail-closed 处理，请修正配置"}
+    except OSError:
         data = {}
     data.setdefault("gate", {}).setdefault("status_name", DEFAULT_GATE)
     data.setdefault("checks", [])
@@ -132,11 +138,17 @@ def aggregate_gate(results):
 
 def post_gate(pr, config, results):
     """把汇总后的总闸发成【一个】GitHub check-run；明细列在 summary 里。"""
-    gate = aggregate_gate(results)
     name = config["gate"]["status_name"]
     mark = {True: "✓", False: "✗", None: "–"}
     lines = [f"{mark[r.passed]} {r.name}{'（必须）' if r.required else ''}: {r.summary}"
              for r in results]
+    # 配置解析失败 → fail-closed（不能静默当空策略放行），并在 summary 顶部报警（防静默故障）
+    cfg_err = config.get("_config_error")
+    if cfg_err:
+        gate = "failure"
+        lines.insert(0, f"⚠️ {cfg_err}")
+    else:
+        gate = aggregate_gate(results)
     base = os.environ.get("GITHUB_API_URL", "https://api.github.com")
     ghclient.request("POST", base + f"/repos/{pr['owner']}/{pr['repo']}/check-runs",
                      pr["token"], data={
@@ -186,7 +198,26 @@ def main():
     try:
         co = json.load(open("touchstone-findings.json", encoding="utf-8"))
     except (OSError, ValueError):
-        print("[gate] 无 touchstone-findings.json；no-op")
+        # findings 缺失 = touchstone job 没产出结果（崩溃/被取消/artifact 下载失败）。
+        # 不能静默 no-op：否则 PR 要么看起来"没事"，要么 required 总闸凭空消失且无说明。
+        # 用 workflow 透传的 head sha 发一个明确的 failure check-run 说明情况（防静默故障）。
+        owner, _, name = os.environ.get("GITHUB_REPOSITORY", "/").partition("/")
+        sha = os.environ.get("TOUCHSTONE_HEAD_SHA") or os.environ.get("GITHUB_SHA")
+        msg = ("评审流水线未产出结果（touchstone-findings.json 缺失）——"
+               "touchstone job 失败/被取消或 artifact 下载失败，总闸无法计算。请重跑或查看 touchstone job 日志。")
+        print(f"[gate] {msg}")
+        if sha and os.environ.get("GITHUB_TOKEN"):
+            try:
+                base = os.environ.get("GITHUB_API_URL", "https://api.github.com")
+                gate_name = load_config(os.environ.get("REPO_DIR", "."))["gate"]["status_name"]
+                ghclient.request("POST", base + f"/repos/{owner}/{name}/check-runs",
+                                 os.environ["GITHUB_TOKEN"], data={
+                                     "name": gate_name, "head_sha": sha, "status": "completed",
+                                     "conclusion": "failure",
+                                     "output": {"title": "Touchstone 总闸：评审流水线未产出结果",
+                                                "summary": "⚠️ " + msg}})
+            except Exception as e:
+                print(f"[gate] 无法发布'未产出结果' check-run: {e}", file=sys.stderr)
         return
     owner, _, name = os.environ.get("GITHUB_REPOSITORY", "/").partition("/")
     findings = co.get("findings", [])

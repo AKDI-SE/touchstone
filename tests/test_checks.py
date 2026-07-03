@@ -237,3 +237,43 @@ def test_relay_non_required_skipped_still_ok(monkeypatch):
     assert checks._run_relay(pr, {"source_check": "unit"})[0] is True
     assert checks._run_relay(pr, {"source_check": "unit",
                                   "required": True, "allow_skipped": True})[0] is True
+
+
+# ============ 防静默故障：坏配置 fail-closed（B）+ findings 缺失显式 failure（A）============
+def test_load_config_malformed_yaml_is_config_error(tmp_path, monkeypatch):
+    # 文件存在但 YAML 坏 → 标 _config_error（不当成空策略静默放行）
+    p = tmp_path / "checks.yaml"
+    p.write_text("gate: [unclosed\n  - : :\n", encoding="utf-8")   # 故意非法 YAML
+    monkeypatch.setenv("TOUCHSTONE_CHECKS", str(p))
+    cfg = checks.load_config(str(tmp_path))
+    assert cfg.get("_config_error")
+
+
+def test_post_gate_config_error_fails_closed(monkeypatch):
+    posted = {}
+    monkeypatch.setattr(checks.ghclient, "request",
+                        lambda method, url, token, data=None, **k: posted.update(data or {}) or {})
+    pr = {"owner": "o", "repo": "r", "sha": "s", "token": "t"}
+    cfg = {"gate": {"status_name": "touchstone/gate"},
+           "_config_error": "checks.yaml 解析失败（boom）"}
+    gate, _ = checks.post_gate(pr, cfg, [])                       # 空结果 + 坏配置
+    assert gate == "failure"
+    assert posted["conclusion"] == "failure"
+    assert "checks.yaml 解析失败" in posted["output"]["summary"]  # summary 显式报警
+
+
+def test_gate_cli_missing_findings_posts_failure(tmp_path, monkeypatch):
+    # A：touchstone-findings.json 缺失 → 不静默 no-op，发 failure check-run 说明情况
+    import json
+    posted = {}
+    monkeypatch.setattr(checks.ghclient, "request",
+                        lambda method, url, token, data=None, **k: posted.update(data or {}) or {})
+    monkeypatch.setenv("GITHUB_REPOSITORY", "o/r")
+    monkeypatch.setenv("GITHUB_TOKEN", "t")
+    monkeypatch.setenv("TOUCHSTONE_HEAD_SHA", "deadbee")
+    monkeypatch.setenv("REPO_DIR", str(tmp_path))                 # 无 checks.yaml → 默认 gate 名
+    monkeypatch.chdir(tmp_path)                                   # cwd 无 touchstone-findings.json
+    checks.main()                                                 # 不抛、不静默 return
+    assert posted.get("conclusion") == "failure"
+    assert posted.get("head_sha") == "deadbee"
+    assert "未产出结果" in posted["output"]["summary"]
