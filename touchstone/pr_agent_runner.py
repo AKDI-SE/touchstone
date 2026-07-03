@@ -88,33 +88,52 @@ def run(pr_url, mode, extra_instructions=None):
     if extra_instructions:
         s.pr_code_suggestions.extra_instructions = extra_instructions
         s.pr_reviewer.extra_instructions = extra_instructions
+    # 压一压 LiteLLM 的 stdout 噪音（"LiteLLM.Info / Give Feedback" 等 print），减少 stderr 干扰
+    try:
+        import litellm
+        litellm.suppress_debug_info = True
+        litellm.set_verbose = False
+    except Exception:
+        pass
 
     out = {"code_suggestions": [], "review": {"key_issues_to_review": []}}
     tools = set(mode.split("+"))
-    # 阶段一：构造 provider + 取 PR（pre-LLM）。构造时即拉取 PR diff，失败归 provider_failed。
-    instances = {}
+    # pr-agent/LiteLLM 运行期会把 Info/调试信息 print 到 stdout，污染我们最后打印的 JSON
+    # （曾导致 review_provider json.loads 失败、误判 no_engine）。这里在 fd 级把 stdout
+    # 重定向到 stderr：库的任何 print（含 C 级写）都进 stderr（被 _invoke_endpoint 当诊断捕获），
+    # 只有 main() 最后的 json.dump 走真正的 stdout。防 stdout 污染导致的静默故障。
+    sys.stdout.flush()
+    _saved_stdout_fd = os.dup(1)
+    os.dup2(2, 1)
     try:
-        if "improve" in tools:
-            instances["cs"] = PRCodeSuggestions(pr_url)
-        if "review" in tools:
-            instances["rv"] = PRReviewer(pr_url)
-    except Exception as e:
-        return {"_degraded": "provider_failed",
-                "reason": f"取 PR / git provider 失败（pre-LLM）：{type(e).__name__}: {e}"}
-    # 阶段二：跑工具（LLM 调用）+ 解析。失败归 llm_failed。
-    try:
-        if "cs" in instances:
-            asyncio.run(instances["cs"].run())           # 结果落在 cs.data = {"code_suggestions": [...]}
-            out["code_suggestions"] = (getattr(instances["cs"], "data", None) or {}).get("code_suggestions") or []
-        if "rv" in instances:
-            asyncio.run(instances["rv"].run())           # rv.prediction 是原始 YAML 串；自行解析
-            data = load_yaml((instances["rv"].prediction or "").strip(),
-                             keys_fix_yaml=_REVIEW_KEYS_FIX,
-                             first_key="review", last_key="security_concerns") or {}
-            out["review"]["key_issues_to_review"] = (data.get("review") or {}).get("key_issues_to_review") or []
-    except Exception as e:   # LLM 端点/鉴权/超时/解析失败等 —— 不静默吞掉，上报为 llm_failed
-        return {"_degraded": "llm_failed", "reason": f"{type(e).__name__}: {e}"}
-    return out
+        # 阶段一：构造 provider + 取 PR（pre-LLM）。构造时即拉取 PR diff，失败归 provider_failed。
+        instances = {}
+        try:
+            if "improve" in tools:
+                instances["cs"] = PRCodeSuggestions(pr_url)
+            if "review" in tools:
+                instances["rv"] = PRReviewer(pr_url)
+        except Exception as e:
+            return {"_degraded": "provider_failed",
+                    "reason": f"取 PR / git provider 失败（pre-LLM）：{type(e).__name__}: {e}"}
+        # 阶段二：跑工具（LLM 调用）+ 解析。失败归 llm_failed。
+        try:
+            if "cs" in instances:
+                asyncio.run(instances["cs"].run())           # 结果落在 cs.data = {"code_suggestions": [...]}
+                out["code_suggestions"] = (getattr(instances["cs"], "data", None) or {}).get("code_suggestions") or []
+            if "rv" in instances:
+                asyncio.run(instances["rv"].run())           # rv.prediction 是原始 YAML 串；自行解析
+                data = load_yaml((instances["rv"].prediction or "").strip(),
+                                 keys_fix_yaml=_REVIEW_KEYS_FIX,
+                                 first_key="review", last_key="security_concerns") or {}
+                out["review"]["key_issues_to_review"] = (data.get("review") or {}).get("key_issues_to_review") or []
+        except Exception as e:   # LLM 端点/鉴权/超时/解析失败等 —— 不静默吞掉，上报为 llm_failed
+            return {"_degraded": "llm_failed", "reason": f"{type(e).__name__}: {e}"}
+        return out
+    finally:
+        sys.stdout.flush()
+        os.dup2(_saved_stdout_fd, 1)
+        os.close(_saved_stdout_fd)
 
 
 def main():
