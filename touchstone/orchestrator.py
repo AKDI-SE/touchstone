@@ -138,10 +138,25 @@ def ci_verdict(owner, repo, head_sha, token):
     return True
 
 
+def _engine_banner(engine_status):
+    """评审引擎降级的人可见说明（防静默故障）。贴在评审评论顶部 + check-run 标题里。"""
+    if engine_status == "no_engine":
+        return ("⚠️ **AI 评审未运行**：PR-Agent 未安装或不可用，本次评审**只含确定性契约与栈规则核对**，"
+                "不含 LLM 代码评审。请确认 workflow 安装了 pr-agent（见 README「GitHub 集成」）。")
+    if engine_status == "llm_failed":
+        return ("⚠️ **AI 评审的 LLM 调用失败**：PR-Agent 已运行但 LLM 端点未成功响应，本次**只含确定性核对**。"
+                "请检查 `LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MODEL` 配置与端点可达性。")
+    return ""
+
+
 def post_results(owner, repo, number, head_sha, token, risk, findings, loop_info=None,
-                 change_class=None, diff=None, injected_types=None, injected_experience_ids=None):
-    # (1) 摘要评论——总是成功；顶部附反馈循环状态，底部附隐藏 state marker
+                 change_class=None, diff=None, injected_types=None, injected_experience_ids=None,
+                 engine_status="ok"):
+    # (1) 摘要评论——总是成功；顶部附【引擎降级说明（若有）】+ 反馈循环状态，底部附隐藏 state marker
     body = render_summary(risk, findings)
+    banner = _engine_banner(engine_status)
+    if banner:
+        body = banner + "\n\n" + body
     if loop_info:
         decision, reason, marker = loop_info
         head = {"continue": "🔁 继续", "converged": "✅ 收敛",
@@ -184,11 +199,12 @@ def post_results(owner, repo, number, head_sha, token, risk, findings, loop_info
             print(f"[info] 内联评论降级(行不在 diff 内属正常): {e}", file=sys.stderr)
     # (3) 中性 check run（advisory，永不 failure）
     if head_sha:
+        flag = "⚠️ AI 评审降级 · " if engine_status != "ok" else ""
         try:
             gh("POST", f"/repos/{owner}/{repo}/check-runs", token, {
                 "name": "touchstone", "head_sha": head_sha, "status": "completed",
                 "conclusion": "neutral",
-                "output": {"title": f"风险等级 {risk['risk_band']} · {len(findings)} 条发现",
+                "output": {"title": f"{flag}风险等级 {risk['risk_band']} · {len(findings)} 条发现",
                            "summary": body[:600]},
             })
         except (urllib.error.HTTPError, requests.exceptions.RequestException) as e:
@@ -205,9 +221,17 @@ def review_pr(pr, contract, standards, provider=None):
     rules = standards.get("rules", []) if isinstance(standards, dict) else (standards or [])
     rule_index = {r["id"]: r for r in rules}
     diff = pr.get("diff", "")
+    # 评审引擎状态（防静默故障）：ok / no_engine（pr-agent 没装或不可用）/ llm_failed（已跑但 LLM 调用失败）。
+    # 降级时仍跑确定性核对，但 engine_status 会写进贴到 PR 的人可见评审，不静默成"0 条发现"。
+    engine_status = "ok"
     try:
         review_findings = review_provider.normalize(review_provider.fetch(pr, provider), nmap)
+    except review_provider.ReviewEngineDegraded as e:
+        engine_status = e.degraded
+        print(f"[review_pr] 评审引擎降级（{e.degraded}）：{e.reason} — 仅跑确定性核对", file=sys.stderr)
+        review_findings = []
     except RuntimeError as e:
+        engine_status = "no_engine"
         print(f"[review_pr] PR-Agent 端点未配置或不可用，跳过评审、仅跑确定性核对：{e}", file=sys.stderr)
         review_findings = []
     contract_findings = contract_check.check_contract_consistency(diff, contract or {}, rule_index)
@@ -215,7 +239,7 @@ def review_pr(pr, contract, standards, provider=None):
     changed_files, _ = contract_check.parse_diff(diff)
     findings, risk = review_provider.map_verdict(
         review_findings + contract_findings + stack_findings, nmap, changed_files=changed_files)
-    return {"findings": findings, "risk": risk}
+    return {"findings": findings, "risk": risk, "engine_status": engine_status}
 
 
 def main():
@@ -243,6 +267,7 @@ def main():
                      "token": token, "diff": diff, "standards": standards}
     _out = review_pr(pr_ctx_review, contract, standards)
     findings, risk = _out["findings"], _out["risk"]
+    engine_status = _out.get("engine_status", "ok")
 
     # 反馈循环：从历史评论 marker 取状态 → 决策 → 回贴附状态与新 marker。
     # 只信机器人自己发的评论（按发帖人过滤）——否则 author 可自己发伪造 marker 洗掉抗博弈闸。
@@ -287,7 +312,8 @@ def main():
             print(f"[warn] RDJSON 写出失败: {e}", file=sys.stderr)
 
     post_results(owner, repo, number, head_sha, token, risk, findings, loop_info, cls, diff,
-                 injected_types=injected_types, injected_experience_ids=injected_experience_ids)
+                 injected_types=injected_types, injected_experience_ids=injected_experience_ids,
+                 engine_status=engine_status)
 
     # 可插拔检查 → 对外发【一个】总闸状态（策略全在 .touchstone/checks.yaml）。
     # CI 中由独立 gate job 在(可选)verify 之后聚合并发布，此处置 TOUCHSTONE_SKIP_GATE 跳过自发、

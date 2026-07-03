@@ -92,9 +92,12 @@ def main():
         pr_ctx = {"owner": owner, "repo": name, "number": args.pr, "sha": head_sha,
                   "token": token, "diff": diff, "standards": standards}
         # 评审主链（§4.1）：PR-Agent 归一 + 契约核对 + 栈专项确定性规则 → 裁决映射
-        # （review_pr 内部对 PR-Agent 端点未配置已做降级：仅跑确定性核对）
+        # （review_pr 内部对 PR-Agent 不可用已做降级：仅跑确定性核对；engine_status 标注降级原因）
         out = C.review_pr(pr_ctx, contract, standards)
         findings, risk = out["findings"], out["risk"]
+        _banner = C._engine_banner(out.get("engine_status", "ok"))
+        if _banner:
+            print(_banner)
         dec, reason, new_state = C.loop.loop_step(findings, rule_index, C.loop.LoopState())
 
         print("\n=== 结果 ===")

@@ -474,10 +474,12 @@
 <pre><span class="cm"># 主入口：复用 PR-Agent 评审 → 归一 → 裁决映射，不产出"过/不过"（详见 touchstone-on-pr-agent.html）</span>
 <span class="fn">review_pr</span>(pr, contract, standards)
     <span class="cm"># = map_verdict(normalize(fetch(...)) + check_contract_consistency(...) + check_stack_rules(...))</span>
-    <span class="cm"># 返回 → { findings[], risk:RiskAssessment }</span>
+    <span class="cm"># 返回 → { findings[], risk:RiskAssessment, engine_status }  # engine_status: ok|no_engine|llm_failed</span>
 
 <span class="cm"># 评审来源：复用开源 PR-Agent（评审提供器封装其调用，真实端点见 _invoke_endpoint）</span>
 <span class="fn">review_provider.fetch</span>(pr_ctx)            <span class="cm"># → [ReviewItem]（PR-Agent improve/review 输出）</span>
+<span class="cm">#   引擎层失败（pr-agent 没装 / LLM 调用失败）抛 ReviewEngineDegraded，不静默成"0 发现"</span>
+<span class="cm">#   —— orchestrator 据此在 PR 评审里显式标注"AI 评审未运行/LLM 失败"，仍跑确定性核对。详见 touchstone-on-pr-agent.html。</span>
 <span class="fn">review_provider.normalize</span>(items, nmap)   <span class="cm"># → [Finding]（label→category，顾问式一律 warn）</span>
 
 <span class="cm"># 裁决映射：按 category 定风险等级，不做共识（去重/排序已由 PR-Agent 完成）</span>

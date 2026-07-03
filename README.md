@@ -53,7 +53,7 @@ Touchstone 把一个 PR 上要回答的问题分成三类,各用各的依据:
 
 ## 复用而非重造
 
-Touchstone **不自己实现通用代码评审**——那部分复用成熟的 PR-Agent(跑在独立 venv,经子进程调用,不进本仓依赖)。Touchstone 只做 PR-Agent 没有的事:把不同来源的评审**归一**、把意见**映射**成风险档、确定性的**契约/栈规则**核对、**单一总闸**、**独立验证**、**自治**、以及**校准与学习**。其中**让评审越用越准的学习回路(TF-GRPO)是 Touchstone 最有差异化价值的一块**——评审引擎本身是复用的,自我改进才是 Touchstone 自己的创造(机制设计见 `docs/learning-loop-design.html` 第 3 节)。PR-Agent 没装时,评审优雅降级为只跑契约核对 + 栈规则。
+Touchstone **不自己实现通用代码评审**——那部分复用成熟的 PR-Agent(跑在独立 venv,经子进程调用,不进本仓依赖)。Touchstone 只做 PR-Agent 没有的事:把不同来源的评审**归一**、把意见**映射**成风险档、确定性的**契约/栈规则**核对、**单一总闸**、**独立验证**、**自治**、以及**校准与学习**。其中**让评审越用越准的学习回路(TF-GRPO)是 Touchstone 最有差异化价值的一块**——评审引擎本身是复用的,自我改进才是 Touchstone 自己的创造(机制设计见 `docs/learning-loop-design.html` 第 3 节)。PR-Agent 没装或 LLM 没调通时,评审降级为只跑契约核对 + 栈规则,**并在 PR 评审里显式标注**(防静默故障,见下文「GitHub 集成」)。
 
 ## 快速开始
 
@@ -95,6 +95,19 @@ python -m touchstone.run --repo owner/name --pr 314 --post
 - `govern.yml` —— 定时:把复发的发现固化为硬门禁、按 revert/hotfix 信号做熔断校准。
 - `learn.yml` —— 定时:离线学习回路(计数式蒸馏 + TF-GRPO),产出经验库并经 PR 合入。
 - `seed.yml` —— 手动/定时:从手写种子案例初始化或补充经验库。
+
+### 让 AI 评审真正跑起来（PR-Agent + LLM）
+
+评审引擎是开源的 **PR-Agent**(Apache-2.0,pip 包),装在**独立 venv**、不进本仓依赖,经子进程适配器 `pr_agent_runner.py` 调用。`touchstone.yml` 已含一步把 pr-agent 装进 `.pragent-venv`,并用 `TOUCHSTONE_PRAGENT_CMD` 指过去。要让 LLM 评审生效,在仓库 **Settings → Secrets** 配三个:
+
+- `LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MODEL` —— 你的 OpenAI 兼容端点(如 GLM)。`pr_agent_runner` 会把它们映射成 PR-Agent/LiteLLM 认的键(`OPENAI_API_KEY`/`OPENAI_API_BASE` + `model=openai/<LLM_MODEL>`),无需在 workflow 里重复散落凭据。
+
+**反静默故障**:若 pr-agent 没装好、或 LLM 端点没调通,Touchstone **不会**静默降级成"0 条发现"——它会把降级说明写在贴到 PR 的评审评论顶部、并反映在 check 标题里:
+
+- `⚠️ AI 评审未运行` —— pr-agent 未安装/不可用,本次只含确定性契约与栈规则核对;
+- `⚠️ AI 评审的 LLM 调用失败` —— pr-agent 已跑但 LLM 未成功响应,请检查 `LLM_*` 配置。
+
+这样人一眼就能看出"这次到底有没有 AI 评审",不会被空评审误导。
 
 分支保护设为 **Require `touchstone/gate`**,即可让这道总闸成为合入的硬前提。仓库需放开工作流的写权限以便回贴评论/check。
 

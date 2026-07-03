@@ -49,6 +49,18 @@ _DEFAULT_NMAP = {
 }
 
 
+class ReviewEngineDegraded(RuntimeError):
+    """PR-Agent 评审引擎降级信号（防静默故障）。
+
+    `degraded` ∈ {"no_engine", "llm_failed"}，由 `pr_agent_runner.run` 经 `_degraded` 字段上报、
+    `_invoke_endpoint` 抛出；orchestrator 捕获后把对应说明写进贴到 PR 的人可见评审内容，
+    而不是静默降级成"0 条发现"。子类 RuntimeError 以兼容既有宽泛捕获。"""
+    def __init__(self, degraded, reason=""):
+        super().__init__(f"{degraded}: {reason}")
+        self.degraded = degraded
+        self.reason = reason
+
+
 def load_nmap(repo_dir="."):
     """读 .touchstone/pr-agent.yaml 的 normalization 段（缺省用内置默认）。env TOUCHSTONE_PRAGENT 可覆盖路径。"""
     path = os.environ.get("TOUCHSTONE_PRAGENT", os.path.join(repo_dir, ".touchstone", "pr-agent.yaml"))
@@ -182,16 +194,27 @@ class PRAgentProvider:
                 proc = subprocess.run(args, capture_output=True, text=True,
                                       timeout=int(os.environ.get("TOUCHSTONE_PRAGENT_TIMEOUT", "600")))
             except FileNotFoundError as e:
-                raise RuntimeError(f"找不到 PR-Agent 适配命令 {cmd!r}：请 `pip install pr-agent` 并确保 "
-                                   f"touchstone.pr_agent_runner 可运行，或用 TOUCHSTONE_PRAGENT_CMD 指定。原始：{e}")
+                raise ReviewEngineDegraded(
+                    "no_engine",
+                    f"找不到 PR-Agent 适配命令 {cmd!r}：请 `pip install pr-agent` 并确保 "
+                    f"touchstone.pr_agent_runner 可运行，或用 TOUCHSTONE_PRAGENT_CMD 指定。原始：{e}")
             if proc.returncode != 0:
-                raise RuntimeError(f"PR-Agent 适配子进程非零退出（{proc.returncode}）。stderr 末尾：\n"
-                                   f"{(proc.stderr or '').strip()[-600:]}")
+                # 适配器本应总退出 0 并用 _degraded 上报；走到这里说明它自身崩了（venv 缺失/bug）
+                raise ReviewEngineDegraded(
+                    "no_engine",
+                    f"PR-Agent 适配子进程非零退出（{proc.returncode}）。stderr 末尾：\n"
+                    f"{(proc.stderr or '').strip()[-600:]}")
             try:
-                return json.loads(proc.stdout)
+                data = json.loads(proc.stdout)
             except json.JSONDecodeError as e:
-                raise RuntimeError(f"PR-Agent 适配输出非合法 JSON：{e}；stdout 末尾：\n"
-                                   f"{(proc.stdout or '').strip()[-300:]}")
+                raise ReviewEngineDegraded(
+                    "no_engine",
+                    f"PR-Agent 适配输出非合法 JSON：{e}；stdout 末尾：\n"
+                    f"{(proc.stdout or '').strip()[-300:]}")
+            # 适配器的结构化降级上报（pr-agent 没装 / LLM 调用失败）——转成异常供 orchestrator 显式标注
+            if isinstance(data, dict) and data.get("_degraded"):
+                raise ReviewEngineDegraded(data["_degraded"], data.get("reason", ""))
+            return data
         finally:
             if tmp:
                 try:
