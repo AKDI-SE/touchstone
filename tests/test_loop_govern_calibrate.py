@@ -314,13 +314,19 @@ def test_trusted_bodies_filters_forged_marker():
     import loop
     bot = loop.render_marker(loop.LoopState(2, [["A"], ["A"]], None))
     forged = loop.render_marker(loop.LoopState(2, [], None))       # 同轮次+空 history（洗闸）
-    comments = [{"user": {"login": "touchstone-bot"}, "body": bot},
+    comments = [{"user": {"login": "github-actions[bot]"}, "body": bot},
                 {"user": {"login": "attacker"}, "body": forged}]
-    bodies = loop.trusted_bodies(comments, "touchstone-bot")
-    st = loop.parse_latest_state(bodies)
-    assert st.history == [["A"], ["A"]]                            # 伪造的空 history 没生效
-    # bot 身份未知 → 退回全量（可用性优先，调用方已告警）
-    assert len(loop.trusted_bodies(comments, None)) == 2
+    # bot_login 已知 → 精确过滤，伪造 marker 不生效
+    bodies = loop.trusted_bodies(comments, "github-actions[bot]")
+    assert loop.parse_latest_state(bodies).history == [["A"], ["A"]]
+    # bot_login 未知（GET /user 失败，默认 GITHUB_TOKEN 常见）→ 改按 [bot] 后缀过滤，
+    # 防伪造仍生效（不再退回全量）——attacker 的伪造 marker 被丢
+    bodies2 = loop.trusted_bodies(comments, None)
+    assert len(bodies2) == 1
+    assert loop.parse_latest_state(bodies2).history == [["A"], ["A"]]
+    # 既非已知 bot、login 也不带 [bot] 后缀时（如 PAT 部署但 GET /user 挂）→ fail-safe：无 marker 读入
+    comments2 = [{"user": {"login": "some-user"}, "body": forged}]
+    assert loop.trusted_bodies(comments2, None) == []
 
 
 def test_author_self_resolve_not_counted_as_adoption():
