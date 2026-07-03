@@ -130,11 +130,12 @@ def run(pr_url, mode, extra_instructions=None):
         # pr-agent 的 get_max_tokens 要求模型在内置 MAX_TOKENS 表里，否则报
         # "Model ... is not defined in MAX_TOKENS ... no custom_model_max_tokens is set"
         # 直接判"Failed to generate prediction"（glm-5.2 等自定义模型不在表里——这是多日"0 建议"的真根因）。
-        # 必须显式给 custom_model_max_tokens（env TOUCHSTONE_LLM_MAX_TOKENS 可覆盖）。
+        # 取自 llm_budget（部署方用 secret TOUCHSTONE_LLM_OUTPUT_TOKENS 按模型卡声明，不再硬编码）。
         try:
-            s.config.custom_model_max_tokens = int(os.environ.get("TOUCHSTONE_LLM_MAX_TOKENS", "8192"))
-        except (TypeError, ValueError):
-            s.config.custom_model_max_tokens = 8192
+            from llm_budget import output_tokens
+            s.config.custom_model_max_tokens = output_tokens()
+        except Exception:
+            s.config.custom_model_max_tokens = 4096
         # 清空 fallback_models：默认 fallback（gpt-5.4-mini 等）发到我们的 base 会返回"模型不存在"，徒增失败噪音。
         try:
             s.config.fallback_models = []

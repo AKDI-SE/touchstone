@@ -88,8 +88,12 @@ def parse_pr_agent(raw):
     """把 PR-Agent improve（code_suggestions）与 review（key_issues_to_review）输出解析为 ReviewItem 列表。
     raw 形如 {'code_suggestions': [...], 'review': {'key_issues_to_review': [...], ...}}。
     字段名按 PR-Agent improve/review schema；不同版本字段略有差异，对接时以你的 PR-Agent 实际版本为准。"""
+    if not isinstance(raw, dict):
+        raw = {}
     items = []
     for s in (raw or {}).get("code_suggestions", []) or []:
+        if not isinstance(s, dict):            # 容错：跳过 malformed 条目（属性测试发现 pr-agent
+            continue                           # 输出非 dict 元素时原会 AttributeError 崩）
         items.append({
             "kind": "suggestion",
             "file": s.get("relevant_file"),
@@ -100,8 +104,12 @@ def parse_pr_agent(raw):
             "label": (s.get("label") or "").strip(),
             "tool": "improve",
         })
-    review = (raw or {}).get("review", {}) or {}
+    review = (raw or {}).get("review", {})
+    if not isinstance(review, dict):
+        review = {}
     for k in review.get("key_issues_to_review", []) or []:
+        if not isinstance(k, dict):
+            continue
         items.append({
             "kind": "review",
             "file": k.get("relevant_file"),

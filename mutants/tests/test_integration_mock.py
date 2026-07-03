@@ -685,10 +685,10 @@ def test_verify_regression_path_with_fake_runner(monkeypatch, tmp_path):
 
 # ---------------- pr_agent_runner 健壮性：glm-5.2 修复不能静默回退 ----------------
 def test_custom_max_tokens_bad_env_falls_back(monkeypatch):
-    # TOUCHSTONE_LLM_OUTPUT_TOKENS 非整数 → 回退默认 4096，不崩
+    # TOUCHSTONE_LLM_MAX_TOKENS 非整数 → 回退 8192，不崩（崩了 glm-5.2 的 0-建议 bug 复发）
     settings = _install_fake_pr_agent(monkeypatch)
     _stub_llm(monkeypatch)
-    monkeypatch.setenv("TOUCHSTONE_LLM_OUTPUT_TOKENS", "not-a-number")
+    monkeypatch.setenv("TOUCHSTONE_LLM_MAX_TOKENS", "not-a-number")
     import pr_agent.tools.pr_code_suggestions as cs_mod
 
     class CS:
@@ -698,7 +698,7 @@ def test_custom_max_tokens_bad_env_falls_back(monkeypatch):
             return None
     cs_mod.PRCodeSuggestions = CS
     R.run("https://pr", "improve")
-    assert settings.config.custom_model_max_tokens == 4096   # 回退默认，非 None、非崩溃
+    assert settings.config.custom_model_max_tokens == 8192   # 回退值，非 None、非崩溃
 
 
 def test_custom_max_tokens_and_fallback_actually_set(monkeypatch):
@@ -706,7 +706,7 @@ def test_custom_max_tokens_and_fallback_actually_set(monkeypatch):
     # 这两项正是 glm-5.2 出真实意见的根因修复——若静默失败会回到"0 建议"。
     settings = _install_fake_pr_agent(monkeypatch)
     _stub_llm(monkeypatch)
-    monkeypatch.setenv("TOUCHSTONE_LLM_OUTPUT_TOKENS", "3333")
+    monkeypatch.setenv("TOUCHSTONE_LLM_MAX_TOKENS", "4096")
     import pr_agent.tools.pr_code_suggestions as cs_mod
 
     class CS:
@@ -716,7 +716,7 @@ def test_custom_max_tokens_and_fallback_actually_set(monkeypatch):
             return None
     cs_mod.PRCodeSuggestions = CS
     R.run("https://pr", "improve+review")
-    assert settings.config.custom_model_max_tokens == 3333
+    assert settings.config.custom_model_max_tokens == 4096
     assert settings.config.fallback_models == []             # 清空，不再试不存在的 gpt-5.4-mini
     assert settings.config.model == "openai/m"               # provider 前缀就位
     assert settings.config.git_provider == "github"
