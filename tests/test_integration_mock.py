@@ -262,6 +262,24 @@ def test_pr_agent_main(monkeypatch, capsys):
     assert "code_suggestions" in capsys.readouterr().out
 
 
+def test_interaction_log_written_and_redacts_key(monkeypatch, tmp_path):
+    # 完整 LLM 交互日志写入 artifact 文件，含 pr-agent 原始输出 + 配置轨迹；api_key 脱敏
+    _install_fake_pr_agent(monkeypatch)
+    _stub_llm(monkeypatch)
+    logpath = tmp_path / "ix.log"
+    monkeypatch.setenv("TOUCHSTONE_INTERACTION_LOG", str(logpath))
+    out = R.run("https://pr", "improve+review", extra_instructions="x")
+    R._write_interaction_log(out)
+    txt = logpath.read_text(encoding="utf-8")
+    assert "完整交互日志" in txt
+    assert "code_suggestions" in txt          # 完整 pr-agent 输出
+    assert "LLM 配置" in txt and "ping: 成功" in txt   # 交互轨迹
+    assert "k" != txt  # 不写真实 api_key（_stub_llm 用了占位，但配置行只写'已设'）
+    # 不设 env → 不写
+    monkeypatch.delenv("TOUCHSTONE_INTERACTION_LOG", raising=False)
+    R._write_interaction_log(out)   # 不抛、不写文件
+
+
 # ============================ run.py（独立运行入口）============================
 def _prep_repo_dir(tmp_path):
     import shutil

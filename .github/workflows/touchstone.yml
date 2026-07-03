@@ -53,6 +53,7 @@ jobs:
           LLM_API_KEY:  ${{ secrets.LLM_API_KEY }}
           LLM_MODEL:    ${{ secrets.LLM_MODEL }}      # pr_agent_runner 映射成 LiteLLM 的 openai/<model> + OPENAI_API_KEY/BASE
           TOUCHSTONE_PRAGENT_CMD: ".pragent-venv/bin/python -m touchstone.pr_agent_runner"
+          TOUCHSTONE_INTERACTION_LOG: "pr-agent-interaction.log"   # 完整 LLM 交互日志（artifact，评审评论里贴链接）
           TOUCHSTONE_SKIP_GATE: "true"                 # 不自发总闸：由下方 gate job 在(可选)verify 之后统一发
           # 经验库路径：必须用 learning_loop 认的 env 名 TOUCHSTONE_EXPERIENCE（不是 STORE_PATH），
           # 否则评审侧 load_store() 读不到 learn.yml 维护的 data/experience_store.json。
@@ -60,6 +61,13 @@ jobs:
           TOUCHSTONE_EXPERIENCE_ENABLED: "true"
           TOUCHSTONE_EXPERIENCE_REF: "origin/${{ github.event.pull_request.base.ref || github.event.repository.default_branch }}"  # 从受信 base ref 读经验库（防 PR 篡改工作树投毒）         # 评审路径注入开关（review_provider._experience_injection 认）
         run: python touchstone/orchestrator.py
+      - name: Upload LLM interaction log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr-agent-interaction
+          path: pr-agent-interaction.log
+          if-no-files-found: ignore
       - name: Upload findings (校准入口 + gate/auto_merge 组装输入)
         if: always()
         uses: actions/upload-artifact@v4

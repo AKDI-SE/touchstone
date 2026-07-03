@@ -252,7 +252,6 @@ def test_engine_banner_combines_det_warning():
 
 
 def test_clean_review_trace_disambiguates_zero_findings():
-    # 0 发现时溯源：让人区分"LLM 真审了没问题" vs "没真审"（防静默故障）
     from touchstone import orchestrator as orc
     # 引擎正常 + 改动小 + 0 原始建议 → 合理（非空回）
     t = orc._clean_review_trace("ok", ai_raw_count=0, added_lines=3, n_changed=1)
@@ -265,6 +264,17 @@ def test_clean_review_trace_disambiguates_zero_findings():
     assert "5 条原始建议" in t3 and "人工扫一眼" not in t3
     # 降级时不输出溯源（由 _engine_banner 负责）
     assert orc._clean_review_trace("llm_failed", 0, 0, 0) == ""
+
+
+def test_run_link_from_actions_env(monkeypatch):
+    # 评审评论里贴的"完整 LLM 交互日志"链接，由 Actions env 构造；非 Actions 环境为空
+    from touchstone import orchestrator as orc
+    monkeypatch.setenv("GITHUB_RUN_ID", "12345")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "o/r")
+    monkeypatch.setenv("GITHUB_SERVER_URL", "https://github.com")
+    assert orc._run_link() == "https://github.com/o/r/actions/runs/12345"
+    monkeypatch.delenv("GITHUB_RUN_ID", raising=False)
+    assert orc._run_link() == ""
 
 
 def test_runner_imports_without_pr_agent():
