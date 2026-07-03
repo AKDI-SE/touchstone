@@ -86,7 +86,7 @@ jobs:
           fetch-depth: 0           # worktree 需要 base/head 两个 commit
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.x"
+          python-version: "3.13"
       - name: Install deps
         run: pip install -r requirements.txt
       - name: verify_change
@@ -126,7 +126,7 @@ jobs:
           ref: ${{ github.event.pull_request.base.ref }}
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.x"
+          python-version: "3.13"
       - run: pip install -r requirements.txt
       - name: Download touchstone (+ verify if ran) outputs
         uses: actions/download-artifact@v4
@@ -162,7 +162,7 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.base.ref }}
       - uses: actions/setup-python@v5
-        with: { python-version: "3.x" }
+        with: { python-version: "3.13" }
       - run: pip install -r requirements.txt
       - name: Download touchstone findings (final, gate-updated)
         uses: actions/download-artifact@v4
