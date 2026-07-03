@@ -216,23 +216,23 @@
   <h3>仓库布局</h3>
   <table>
     <tr><th>目录</th><th>内容</th></tr>
-    <tr><td class="mono">touchstone/</td><td>判断层 + 门禁/集成 + 离线层（15 个模块）</td></tr>
+    <tr><td class="mono">touchstone/</td><td>判断层 + 门禁/集成 + 离线层（17 个模块，含 gitcode_check）</td></tr>
     <tr><td class="mono">verify/</td><td>正确性验证子系统 <code>verify_change.py</code></td></tr>
     <tr><td class="mono">.touchstone/</td><td>策略与契约：<code>standards.yaml</code>（规范）、<code>checks.yaml</code>（门禁策略）、<code>pr-agent.yaml</code>（归一映射）、<code>acceptance.yaml</code>（人核准验收规格）、<code>best_practices.md</code>（供 PR-Agent）</td></tr>
-    <tr><td class="mono">.github/workflows/</td><td>touchstone / calibrate / govern 三条工作流</td></tr>
-    <tr><td class="mono">tests/</td><td>离线 pytest 套件（268 用例，无需 LLM/网络/外部服务）</td></tr>
+    <tr><td class="mono">.github/workflows/</td><td>touchstone / calibrate / govern / learn / seed 五条工作流</td></tr>
+    <tr><td class="mono">tests/</td><td>离线 pytest 套件（276 用例，无需 LLM/网络/外部服务）</td></tr>
     <tr><td class="mono">docs/</td><td>详细设计、本架构视图、配套的 PR-Agent 集成文档与学习回路文档</td></tr>
   </table>
 
-  <h3>自写代码量与分布（生产代码 4041 行）</h3>
+  <h3>自写代码量与分布（生产代码 4445 行）</h3>
   <table>
     <tr><th>功能区</th><th>行数</th><th>主要模块</th></tr>
-    <tr><td>评审主链</td><td class="mono">950</td><td>touchstone / review_provider / stack_rules / contract_check / gen_best_practices</td></tr>
-    <tr><td>验证子系统</td><td class="mono">701</td><td>verify/verify_change</td></tr>
-    <tr><td>闭环·校准·学习</td><td class="mono">587</td><td>loop / calibrate / learning_loop</td></tr>
-    <tr><td>质量门禁·集成</td><td class="mono">563</td><td>checks / run / pr_agent_runner / ghclient / preflight</td></tr>
-    <tr><td>治理·自治</td><td class="mono">393</td><td>govern / autonomy</td></tr>
-    <tr><td class="muted">（另：测试 2472 行 · 配置/规范 515 行）</td><td class="mono muted">—</td><td class="muted">tests/ · .touchstone/</td></tr>
+    <tr><td>评审主链</td><td class="mono">1103</td><td>orchestrator / review_provider / stack_rules / contract_check / gen_best_practices</td></tr>
+    <tr><td>验证子系统</td><td class="mono">809</td><td>verify/verify_change</td></tr>
+    <tr><td>闭环·校准·学习</td><td class="mono">1168</td><td>loop / calibrate / learning_loop</td></tr>
+    <tr><td>质量门禁·集成</td><td class="mono">882</td><td>checks / run / pr_agent_runner / ghclient / preflight / gitcode_check</td></tr>
+    <tr><td>治理·自治</td><td class="mono">480</td><td>govern / autonomy</td></tr>
+    <tr><td class="muted">（另：测试 3056 行 · 配置/规范 529 行）</td><td class="mono muted">—</td><td class="muted">tests/ · .touchstone/</td></tr>
   </table>
 
   <h3>依赖与复用边界</h3>

@@ -2,6 +2,16 @@
 
 本文件记录 Touchstone 的发布版本。设计的逐版迭代历史见 `docs/touchstone-design.html` 的变更历史。
 
+## 未发布 — 2026-07-03
+
+v0.2.1 之后的积累：基准仓收敛到 **AKDI-SE/touchstone** main（PR #16 合入），并补齐文档与代码的一致性。
+
+- **新增模块** `touchstone/gitcode_check.py`（GitCode 平台适配的可插拔检查闸）。生产代码 3840 → **4445 行**（17 模块）。
+- **TF-GRPO 生产化差距**：`docs/learning-loop-design.html` 新增 §3.6，列出论文实现（~185 行）与生产落地之间的差距（奖励质量 / 蒸馏质量 / 收敛性 / 规模 / ground-truth 清理）——明确为建议性、与 `VERIFY_ENABLED`/`AUTONOMY_ENABLED` 无关。
+- **workflow 加固**：`learn.yml` 的 `TOUCHSTONE_EXPERIENCE_REF`（经验库从受信任引用读取，防工作树投毒）+ 4 条回归测试。
+- **文档对齐（本次）**：README / index / slides / 4+1 的「生产代码行数 / 测试用例数 / 工作流条数 / 功能区行数」全部更新到当前真实值（**4445 行 / 276 用例 / 14 测试文件 / 5 条 workflow**）；补回遗漏的 `gitcode_check` 模块；`gitcode-sync-todo.md` 的基准仓从 1587 改为 AKDI-SE。
+- 测试 268 → **276**（+8：经验引用受信读取、TF-GRPO 生产化回归等），全绿、离线、无新增运行时依赖。
+
 ## v0.2.1 — 2026-07-02
 
 架构审查后的安全加固与文档对齐（不改冻结契约字段、marker 仅追加、测试只增不削）。

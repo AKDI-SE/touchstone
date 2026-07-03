@@ -1,7 +1,7 @@
 # Gitcode 同步 TODO
 
-> GitHub 1587/touchstone 是后续的主仓库；gitcode akdi-distribution/touchstone 是镜像。
-> 本文件记录 gitcode 侧需要跟进的修改（从 GitHub main 同步时需注意的差异点）。
+> GitHub **AKDI-SE/touchstone** 是主仓库；gitcode akdi-distribution/touchstone 是镜像（2026-07-03 起以 AKDI-SE main 为唯一基准）。
+> 本文件记录 gitcode 侧需要跟进的修改（从 AKDI-SE main 同步时需注意的差异点）。
 
 ## 已在 GitHub main 但 gitcode 侧可能缺或不同的
 
@@ -25,10 +25,10 @@
 ## 同步方式
 
 ```bash
-# gitcode 侧从 GitHub 拉
-git remote add github git@github.com:1587/touchstone.git
-git fetch github main
+# gitcode 侧从 AKDI-SE 拉
+git remote add akdi git@github.com:AKDI-SE/touchstone.git
+git fetch akdi main
 git checkout main
-git merge github/main  # 解冲突（取 GitHub 版为主）
+git merge akdi/main  # 解冲突（取 AKDI-SE 版为主）
 git push origin main
 ```

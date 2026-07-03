@@ -88,11 +88,13 @@ python -m touchstone.run --repo owner/name --pr 314 --post
 
 ## GitHub 集成
 
-三条工作流:
+五条工作流:
 
 - `touchstone.yml` —— PR 触发:评审 + 高风险时的 verify → 回贴 + 汇总成总闸。
 - `calibrate.yml` —— 定时:从已合 PR 重建"与人审吻合度 / 噪声"报告。
 - `govern.yml` —— 定时:把复发的发现固化为硬门禁、按 revert/hotfix 信号做熔断校准。
+- `learn.yml` —— 定时:离线学习回路(计数式蒸馏 + TF-GRPO),产出经验库并经 PR 合入。
+- `seed.yml` —— 手动/定时:从手写种子案例初始化或补充经验库。
 
 分支保护设为 **Require `touchstone/gate`**,即可让这道总闸成为合入的硬前提。仓库需放开工作流的写权限以便回贴评论/check。
 
@@ -121,15 +123,16 @@ python -m touchstone.run --repo owner/name --pr 314 --post
 │   ├── govern.py               # 治理:固化提案(发现→硬门禁)+ 熔断
 │   ├── autonomy.py             # 渐进开放自动合并(可选、默认关)
 │   ├── ghclient.py             # GitHub REST/GraphQL 客户端(连接池 + 退避)
+│   ├── gitcode_check.py        # GitCode 平台适配检查(可插拔检查闸)
 │   ├── preflight.py            # 起步自检
 │   └── run.py                  # 独立入口:python -m touchstone.run --pr N
 ├── verify/
 │   └── verify_change.py        # 质量门禁的核心:独立验收测试 + 改前/改后对比 + 充分性阶梯
-├── tests/                      # 245 个离线用例(无需 LLM / 网络 / 外部服务)
-└── .github/workflows/          # touchstone.yml · calibrate.yml · govern.yml
+├── tests/                      # 276 个离线用例(无需 LLM / 网络 / 外部服务)
+└── .github/workflows/          # touchstone.yml · calibrate.yml · govern.yml · learn.yml · seed.yml
 ```
 
-生产代码约 3578 行 / 17 个模块;测试 245 个用例 / 12 个文件,全绿、离线;行覆盖率 83%(核心逻辑模块 85–100%;GitHub API / 子进程 / LLM / CLI 等集成层经 mock 覆盖)。
+生产代码约 4445 行 / 17 个模块;测试 276 个用例 / 14 个文件,全绿、离线;行覆盖率 83%(核心逻辑模块 85–100%;GitHub API / 子进程 / LLM / CLI 等集成层经 mock 覆盖)。
 
 ## 状态与边界(诚实交代)
 
