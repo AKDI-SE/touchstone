@@ -41,6 +41,15 @@ def _read(path):
         return f.read()
 
 
+def _ping_llm(base, key, model):
+    """直接探测 LLM 端点（1-token 请求），确认 base/key/model 可用。失败抛异常（带真实错误）。
+    抽成函数便于测试 monkeypatch（离线测试不真发请求）。"""
+    import openai
+    c = openai.OpenAI(base_url=base, api_key=key, timeout=30)
+    c.chat.completions.create(model=model,
+                              messages=[{"role": "user", "content": "ping"}], max_tokens=1)
+
+
 def run(pr_url, mode, extra_instructions=None):
     """调 PR-Agent（不发评论）→ 返回 dict 供 touchstone 解析。
 
@@ -88,13 +97,33 @@ def run(pr_url, mode, extra_instructions=None):
     if extra_instructions:
         s.pr_code_suggestions.extra_instructions = extra_instructions
         s.pr_reviewer.extra_instructions = extra_instructions
-    # 压一压 LiteLLM 的 stdout 噪音（"LiteLLM.Info / Give Feedback" 等 print），减少 stderr 干扰
+    # 压一压 LiteLLM 的 stdout 噪音（"LiteLLM.Info / Give Feedback" 等 print），减少 stderr 干扰。
+    # 需排查"LLM 到底被调了没"时设 TOUCHSTONE_LITELLM_VERBOSE=true，litellm 会把请求打到 stderr。
     try:
         import litellm
         litellm.suppress_debug_info = True
-        litellm.set_verbose = False
+        litellm.set_verbose = os.environ.get("TOUCHSTONE_LITELLM_VERBOSE", "").lower() in ("1", "true", "yes")
     except Exception:
         pass
+
+    # 【关键节点】LLM 配置日志 + 预检 ping：用同样的 base/key/model 直接发一个 1-token 请求，
+    # 确认端点可达、凭据有效（成功会出现在 LLM 服务端请求日志里）。这是回答"LLM key 是否被调用"
+    # 的决定性观测点——否则 pr-agent 可能在内部静默跳过 LLM、返回空建议，我们无从得知。
+    _base = os.environ.get("OPENAI_API_BASE") or os.environ.get("LLM_BASE_URL")
+    _key = os.environ.get("OPENAI_API_KEY") or os.environ.get("LLM_API_KEY")
+    print(f"[pr-agent] LLM 配置：model={model_override!r} base_url={_base!r} "
+          f"api_key={'已设' if _key else '缺失'}", file=sys.stderr)
+    if not (_base and _key and model_override):
+        return {"_degraded": "llm_failed",
+                "reason": (f"LLM 配置不全：需 LLM_BASE_URL/LLM_API_KEY/LLM_MODEL 都设"
+                           f"（model={model_override!r}, base={'有' if _base else '无'}, "
+                           f"key={'有' if _key else '无'}）")}
+    try:
+        _ping_llm(_base, _key, model_override)
+        print(f"[pr-agent] LLM 预检 ping 成功（端点可达、凭据有效）", file=sys.stderr)
+    except Exception as e:
+        return {"_degraded": "llm_failed",
+                "reason": f"LLM 端点探测失败（{type(e).__name__}: {e}）—— base={_base} model={model_override}"}
 
     out = {"code_suggestions": [], "review": {"key_issues_to_review": []}}
     tools = set(mode.split("+"))
