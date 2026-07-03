@@ -143,6 +143,10 @@ def _engine_banner(engine_status):
     if engine_status == "no_engine":
         return ("⚠️ **AI 评审未运行**：PR-Agent 未安装或不可用，本次评审**只含确定性契约与栈规则核对**，"
                 "不含 LLM 代码评审。请确认 workflow 安装了 pr-agent（见 README「GitHub 集成」）。")
+    if engine_status == "provider_failed":
+        return ("⚠️ **AI 评审取 PR 失败**：PR-Agent 已启动但无法获取该 PR（git provider/凭据/网络），"
+                "本次**只含确定性核对**。请检查 pr-agent 的 GitHub token（`GITHUB_TOKEN`）与 "
+                "`git_provider` 配置。")
     if engine_status == "llm_failed":
         return ("⚠️ **AI 评审的 LLM 调用失败**：PR-Agent 已运行但 LLM 端点未成功响应，本次**只含确定性核对**。"
                 "请检查 `LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MODEL` 配置与端点可达性。")
