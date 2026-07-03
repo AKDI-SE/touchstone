@@ -138,6 +138,19 @@ def ci_verdict(owner, repo, head_sha, token):
     return True
 
 
+def _run_link():
+    """构造本次 workflow run 的链接（Actions 自动注入的 env）。用于在评审评论里指向
+    pr-agent-interaction artifact（完整 LLM 交互日志）。非 Actions 环境返回空。"""
+    run_id = os.environ.get("GITHUB_RUN_ID")
+    if not run_id:
+        return ""
+    server = os.environ.get("GITHUB_SERVER_URL", "https://github.com")
+    repo = os.environ.get("GITHUB_REPOSITORY", "")
+    if not repo:
+        return ""
+    return f"{server}/{repo}/actions/runs/{run_id}"
+
+
 def _engine_banner(engine_status):
     """评审引擎降级的人可见说明（防静默故障）。贴在评审评论顶部 + check-run 标题里。"""
     if engine_status == "no_engine":
@@ -178,8 +191,12 @@ def post_results(owner, repo, number, head_sha, token, risk, findings, loop_info
     # 引擎正常但 0 发现时，附溯源——让人能区分"LLM 真审了没问题"与"没真审"（防静默故障）
     if not banner and not findings:
         banner = _clean_review_trace(engine_status, ai_raw_count, added_lines, n_changed)
+    # 完整 LLM 交互日志的链接（pr-agent 原始输出 + LLM 配置 + ping，见 artifact pr-agent-interaction）
+    run_link = _run_link()
     if banner:
         body = banner + "\n\n" + body
+    if run_link:
+        body = body + f"\n\n📄 **完整 LLM 交互日志**（pr-agent 原始输出 / LLM 配置 / ping）：{run_link}"
     if loop_info:
         decision, reason, marker = loop_info
         head = {"continue": "🔁 继续", "converged": "✅ 收敛",

@@ -121,6 +121,7 @@ def test_pr_agent_run_import_missing(monkeypatch):
 def test_pr_agent_run_llm_failed(monkeypatch):
     # pr-agent 装了，但工具调用抛错（LLM 端点/鉴权/超时类）→ 上报 llm_failed（防静默故障）
     _install_fake_pr_agent(monkeypatch)
+    _stub_llm(monkeypatch)
     import pr_agent.tools.pr_code_suggestions as cs_mod
 
     class CrashingCS:
@@ -135,9 +136,36 @@ def test_pr_agent_run_llm_failed(monkeypatch):
     assert "401" in out["reason"]
 
 
+def test_pr_agent_run_llm_preflight_fails(monkeypatch):
+    # LLM 预检 ping 失败（端点不可达/鉴权坏）→ 立即 llm_failed 带真实错误，不进 pr-agent
+    _install_fake_pr_agent(monkeypatch)
+    monkeypatch.setenv("LLM_BASE_URL", "http://x")
+    monkeypatch.setenv("LLM_API_KEY", "k")
+    monkeypatch.setenv("LLM_MODEL", "m")
+
+    def _boom(*a):
+        raise RuntimeError("401 unauthorized")
+    monkeypatch.setattr(R, "_ping_llm", _boom)
+    out = R.run("https://pr", "improve")
+    assert out["_degraded"] == "llm_failed"
+    assert "探测失败" in out["reason"] and "401" in out["reason"]
+
+
+def test_pr_agent_run_llm_config_incomplete(monkeypatch):
+    # LLM 配置缺项（如没设 LLM_MODEL）→ llm_failed，明确告知缺哪个
+    _install_fake_pr_agent(monkeypatch)
+    monkeypatch.setenv("LLM_BASE_URL", "http://x")
+    monkeypatch.setenv("LLM_API_KEY", "k")
+    monkeypatch.delenv("LLM_MODEL", raising=False)
+    out = R.run("https://pr", "improve")
+    assert out["_degraded"] == "llm_failed"
+    assert "配置不全" in out["reason"]
+
+
 def test_pr_agent_run_provider_failed(monkeypatch):
     # pr-agent 装了，但构造时取 PR/git provider 失败（pre-LLM）→ 上报 provider_failed，与 llm_failed 区分
     _install_fake_pr_agent(monkeypatch)
+    _stub_llm(monkeypatch)
     import pr_agent.tools.pr_code_suggestions as cs_mod
 
     class NoProviderCS:
@@ -152,6 +180,7 @@ def test_pr_agent_run_provider_failed(monkeypatch):
 def test_pr_agent_run_maps_github_token(monkeypatch):
     # GITHUB_TOKEN → pr-agent settings.github.user_token；git_provider 显式 github
     settings = _install_fake_pr_agent(monkeypatch)
+    _stub_llm(monkeypatch)
     monkeypatch.setenv("GITHUB_TOKEN", "ghs_test_token")
     import pr_agent.tools.pr_code_suggestions as cs_mod
 
@@ -206,8 +235,17 @@ def _install_fake_pr_agent(monkeypatch):
     return settings
 
 
+def _stub_llm(monkeypatch):
+    """让 runner 的 LLM 预检 ping 在离线测试里直接通过（设 LLM_* env + 打桩 _ping_llm 不真发请求）。"""
+    monkeypatch.setenv("LLM_BASE_URL", "http://x")
+    monkeypatch.setenv("LLM_API_KEY", "k")
+    monkeypatch.setenv("LLM_MODEL", "m")
+    monkeypatch.setattr(R, "_ping_llm", lambda *a: None)
+
+
 def test_pr_agent_run_happy(monkeypatch):
     settings = _install_fake_pr_agent(monkeypatch)
+    _stub_llm(monkeypatch)
     out = R.run("https://pr", "improve+review", extra_instructions="be strict")
     assert out["code_suggestions"] == [{"s": 1}]
     assert out["review"]["key_issues_to_review"] == [{"x": 1}]
@@ -218,9 +256,28 @@ def test_pr_agent_run_happy(monkeypatch):
 
 def test_pr_agent_main(monkeypatch, capsys):
     _install_fake_pr_agent(monkeypatch)
+    _stub_llm(monkeypatch)
     monkeypatch.setattr(sys, "argv", ["pr_agent_runner", "--pr-url", "https://pr", "--mode", "improve"])
     R.main()
     assert "code_suggestions" in capsys.readouterr().out
+
+
+def test_interaction_log_written_and_redacts_key(monkeypatch, tmp_path):
+    # 完整 LLM 交互日志写入 artifact 文件，含 pr-agent 原始输出 + 配置轨迹；api_key 脱敏
+    _install_fake_pr_agent(monkeypatch)
+    _stub_llm(monkeypatch)
+    logpath = tmp_path / "ix.log"
+    monkeypatch.setenv("TOUCHSTONE_INTERACTION_LOG", str(logpath))
+    out = R.run("https://pr", "improve+review", extra_instructions="x")
+    R._write_interaction_log(out)
+    txt = logpath.read_text(encoding="utf-8")
+    assert "完整交互日志" in txt
+    assert "code_suggestions" in txt          # 完整 pr-agent 输出
+    assert "LLM 配置" in txt and "ping: 成功" in txt   # 交互轨迹
+    assert "k" != txt  # 不写真实 api_key（_stub_llm 用了占位，但配置行只写'已设'）
+    # 不设 env → 不写
+    monkeypatch.delenv("TOUCHSTONE_INTERACTION_LOG", raising=False)
+    R._write_interaction_log(out)   # 不抛、不写文件
 
 
 # ============================ run.py（独立运行入口）============================
