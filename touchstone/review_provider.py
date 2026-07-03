@@ -214,6 +214,15 @@ class PRAgentProvider:
             # 适配器的结构化降级上报（pr-agent 没装 / LLM 调用失败）——转成异常供 orchestrator 显式标注
             if isinstance(data, dict) and data.get("_degraded"):
                 raise ReviewEngineDegraded(data["_degraded"], data.get("reason", ""))
+            # 诊断（防"0 建议但不知真假"的静默故障）：把 pr-agent 原始返回的计数打到 stderr 进 job 日志，
+            # 让人能区分"LLM 真没建议"与"返回了内容但 parse 没解析出来"。stderr 不污染 stdout JSON。
+            try:
+                _cs = len((data.get("code_suggestions") or []))
+                _ki = len(((data.get("review") or {}).get("key_issues_to_review") or []))
+                print(f"[pr-agent] 原始返回：code_suggestions={_cs} key_issues={_ki} "
+                      f"(stdout {len(proc.stdout or '')}B, stderr {len(proc.stderr or '')}B)", file=sys.stderr)
+            except Exception:
+                pass
             return data
         finally:
             if tmp:
