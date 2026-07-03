@@ -128,6 +128,14 @@ def _experience_injection(repo_dir):
     TOUCHSTONE_EXPERIENCE_ENABLED=false 时整体关闭注入（默认开）。"""
     if os.environ.get("TOUCHSTONE_EXPERIENCE_ENABLED", "true").lower() not in ("1", "true", "yes", "on"):
         return ""
+    # 纵深防御：PR 事件下未配受信 ref（TOUCHSTONE_EXPERIENCE_REF）则跳过注入——
+    # 否则经验库会从可被本 PR 篡改的工作树读（投毒/提示注入）。工作流已配 ref 时无影响。
+    if (os.environ.get("GITHUB_EVENT_NAME") == "pull_request"
+            and not os.environ.get("TOUCHSTONE_EXPERIENCE_REF")):
+        import sys as _sys
+        print("[warn] PR 评审未配置 TOUCHSTONE_EXPERIENCE_REF → 跳过经验注入（防经验库投毒）",
+              file=_sys.stderr)
+        return ""
     try:
         import learning_loop
         return learning_loop.render_injection(learning_loop.load_store()) or ""
