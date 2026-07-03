@@ -314,7 +314,10 @@ def main():
         except (urllib.error.HTTPError, requests.exceptions.RequestException):
             bot_login = None
         if not bot_login:
-            print("[warn] 无法确认机器人身份，loop marker 未按发帖人过滤（伪造防护降级）", file=sys.stderr)
+            # GET /user 未返回身份（默认 GITHUB_TOKEN 常见）——不降级：trusted_bodies 改按
+            # [bot] 后缀过滤（github-actions[bot]），防伪造仍生效（人无法注册 [bot] 后缀）。
+            print("[info] GET /user 未返回身份：loop marker 改按 [bot] 后缀过滤（防伪造仍生效）",
+                  file=sys.stderr)
         bodies = loop.trusted_bodies(comments, bot_login)
     except (urllib.error.HTTPError, requests.exceptions.RequestException):
         bodies = []

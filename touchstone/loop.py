@@ -97,14 +97,26 @@ def render_marker(state):
     return f"{_OPEN} {payload} {_CLOSE}"
 
 
+def _is_bot_login(login):
+    """是否是 bot 账号。GitHub 保留 `[bot]` 后缀给 bot（如 github-actions[bot]），
+    人不能注册——故 login 以 [bot] 结尾即可靠判为 bot。"""
+    return bool(login) and (login.endswith("[bot]") or login == "github-actions")
+
+
 def trusted_bodies(comments, bot_login):
     """只保留【机器人自己】发的评论正文，供 parse_latest_state 使用。
     评论任何人都能发；不按发帖人过滤，author 就能伪造 loop marker（例如同轮次 + 空 history）
-    洗掉震荡/无推进等抗博弈闸。bot_login 未知（None/空）时退回全量并由调用方告警。"""
-    if not bot_login:
-        return [c.get("body", "") for c in (comments or [])]
+    洗掉震荡/无推进等抗博弈闸。
+
+    bot_login 已知（GET /user 成功，如 PAT 部署）→ 精确按该 login 过滤。
+    bot_login 未知（GET /user 失败，如默认 GITHUB_TOKEN）→ **不退回全量**，改按
+    `[bot]` 后缀过滤：默认 GITHUB_TOKEN 发评论即 github-actions[bot]，仍能可靠区分
+    bot 与人（人无法注册 [bot] 后缀），防伪造不降级。"""
+    if bot_login:
+        return [c.get("body", "") for c in (comments or [])
+                if ((c.get("user") or {}).get("login")) == bot_login]
     return [c.get("body", "") for c in (comments or [])
-            if ((c.get("user") or {}).get("login")) == bot_login]
+            if _is_bot_login((c.get("user") or {}).get("login"))]
 
 
 def parse_latest_state(comment_bodies):
