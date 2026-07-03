@@ -31,13 +31,16 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.x"
+          # 钉 3.13：pr-agent 的原生依赖（tiktoken 经 PyO3 0.22.6）暂不支持 3.14，会源码编译失败。
+          python-version: "3.13"
       - name: Install deps
         run: pip install -r requirements.txt
         # 自托管 runner 若经代理访问公网：按需设置/清理 *_PROXY；可选用私有/就近 PyPI 镜像加速 pip install
       - name: Set up PR-Agent (independent venv)
         # PR-Agent 是评审引擎（Apache-2.0 pip 包），按"不进本仓依赖"原则装在独立 venv。
-        # 不装/装失败时 orchestrator 会优雅降级并在 PR 评审里显式标注（防静默故障，见 README）。
+        # continue-on-error：装失败不让整个评审 job 崩（那样连评审都不发）；orchestrator 会优雅降级、
+        # 在 PR 评审里显式标注"AI 评审未运行"（防静默故障，见 README）。
+        continue-on-error: true
         run: |
           python -m venv .pragent-venv
           .pragent-venv/bin/pip install -U pip
