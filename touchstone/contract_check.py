@@ -18,14 +18,23 @@ from unidiff import PatchSet
 from unidiff.errors import UnidiffParseError
 
 
+_PARSE_WARNING = None   # 最近一次 parse_diff 的告警：diff 解析失败时置位，orchestrator 读取后写进评审（防静默故障）。
+# 单线程评审路径下安全；解析成功会清空。
+
+
 def parse_diff(diff_text):
     """返回 (changed_files:set[str], added_lines:dict[file -> list[(lineno, text)]])。
-    用成熟库 unidiff 解析，稳妥处理重命名/合并/边界等长尾（替代早期手写状态机）。"""
+    用成熟库 unidiff 解析，稳妥处理重命名/合并/边界等长尾（替代早期手写状态机）。
+    解析失败时返回空、并把原因写进模块级 _PARSE_WARNING——调用方（orchestrator）据此在评审里
+    显式标注"确定性核对未生效"，而不是让 0 条发现被读成"干净"（防静默故障）。"""
+    global _PARSE_WARNING
     files, added = set(), {}
     try:
         patch = PatchSet(diff_text or "")
-    except UnidiffParseError:
-        return files, added                  # 解析失败 → 返回空，调用方据空降级
+    except UnidiffParseError as e:
+        _PARSE_WARNING = f"diff 解析失败（{e}）：确定性契约/栈核对未生效，本次仅含 AI 评审（若有）"
+        return files, added
+    _PARSE_WARNING = None
     for pf in patch:
         if pf.is_removed_file:               # 整文件删除(+++ /dev/null) 不计入变更文件
             continue

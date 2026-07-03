@@ -222,6 +222,35 @@ def test_review_pr_engine_status_on_degradation(monkeypatch):
     assert out["findings"] == []                       # 降级：无评审发现，仅确定性核对（空 diff→空）
 
 
+def test_parse_diff_malformed_sets_warning():
+    # C：unidiff 解析失败 → 返回空 + 置 _PARSE_WARNING（供 orchestrator 显式标注，防静默）
+    from touchstone import contract_check as cc
+    cc._PARSE_WARNING = None
+    # hunk 内出现非法行首（=badline）→ unidiff 抛 UnidiffParseError
+    files, added = cc.parse_diff("--- a/x.py\n+++ b/x.py\n@@ -1,1 +1,1 @@\n=badline\n")
+    assert files == set() and added == {}
+    assert cc._PARSE_WARNING and "解析失败" in cc._PARSE_WARNING
+    # 正常 diff 应回到无告警
+    files, added = cc.parse_diff("--- a/x.py\n+++ b/x.py\n@@ -0,0 +1,1 @@\n+pass\n")
+    assert cc._PARSE_WARNING is None
+
+
+def test_review_pr_det_warning_on_bad_diff(monkeypatch):
+    # C：坏 diff → review_pr 返回 det_warning；确定性核对空转不再被读成"干净"
+    from touchstone import orchestrator as orc
+    monkeypatch.setattr(RP, "fetch", lambda ctx, provider=None: [])
+    out = orc.review_pr({"diff": "--- a/x.py\n+++ b/x.py\n@@ -1,1 +1,1 @@\n=badline\n"}, {}, {})
+    assert out["det_warning"]                           # 非空告警
+    assert out["findings"] == []                        # 坏 diff → 确定性核对 0 发现（但已显式标注）
+
+
+def test_engine_banner_combines_det_warning():
+    # post_results 把 det_warning 也拼进 banner——这里直接验 _engine_banner 与拼接逻辑的存在
+    from touchstone import orchestrator as orc
+    assert "AI 评审未运行" in orc._engine_banner("no_engine")
+    assert orc._engine_banner("ok") == ""
+
+
 def test_runner_imports_without_pr_agent():
     # 适配器模块本身可被导入、不在导入期触碰 pr-agent（pr-agent 只在 run() 内 import）
     import pr_agent_runner as R

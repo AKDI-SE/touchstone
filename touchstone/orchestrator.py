@@ -151,10 +151,12 @@ def _engine_banner(engine_status):
 
 def post_results(owner, repo, number, head_sha, token, risk, findings, loop_info=None,
                  change_class=None, diff=None, injected_types=None, injected_experience_ids=None,
-                 engine_status="ok"):
-    # (1) 摘要评论——总是成功；顶部附【引擎降级说明（若有）】+ 反馈循环状态，底部附隐藏 state marker
+                 engine_status="ok", det_warning=""):
+    # (1) 摘要评论——总是成功；顶部附【引擎/确定性核对降级说明（若有）】+ 反馈循环状态，底部附隐藏 state marker
     body = render_summary(risk, findings)
     banner = _engine_banner(engine_status)
+    if det_warning:
+        banner = (banner + "\n\n" if banner else "") + f"⚠️ **{det_warning}**"
     if banner:
         body = banner + "\n\n" + body
     if loop_info:
@@ -199,7 +201,7 @@ def post_results(owner, repo, number, head_sha, token, risk, findings, loop_info
             print(f"[info] 内联评论降级(行不在 diff 内属正常): {e}", file=sys.stderr)
     # (3) 中性 check run（advisory，永不 failure）
     if head_sha:
-        flag = "⚠️ AI 评审降级 · " if engine_status != "ok" else ""
+        flag = "⚠️ 评审降级 · " if (engine_status != "ok" or det_warning) else ""
         try:
             gh("POST", f"/repos/{owner}/{repo}/check-runs", token, {
                 "name": "touchstone", "head_sha": head_sha, "status": "completed",
@@ -237,9 +239,12 @@ def review_pr(pr, contract, standards, provider=None):
     contract_findings = contract_check.check_contract_consistency(diff, contract or {}, rule_index)
     stack_findings = stack_rules.check_stack_rules(diff, rule_index)
     changed_files, _ = contract_check.parse_diff(diff)
+    # 确定性核对层若因 diff 解析失败而空转（contract_check 置位），显式带上告警供评审展示（防静默故障）
+    det_warning = contract_check._PARSE_WARNING or ""
     findings, risk = review_provider.map_verdict(
         review_findings + contract_findings + stack_findings, nmap, changed_files=changed_files)
-    return {"findings": findings, "risk": risk, "engine_status": engine_status}
+    return {"findings": findings, "risk": risk, "engine_status": engine_status,
+            "det_warning": det_warning}
 
 
 def main():
@@ -268,6 +273,7 @@ def main():
     _out = review_pr(pr_ctx_review, contract, standards)
     findings, risk = _out["findings"], _out["risk"]
     engine_status = _out.get("engine_status", "ok")
+    det_warning = _out.get("det_warning", "")
 
     # 反馈循环：从历史评论 marker 取状态 → 决策 → 回贴附状态与新 marker。
     # 只信机器人自己发的评论（按发帖人过滤）——否则 author 可自己发伪造 marker 洗掉抗博弈闸。
@@ -313,7 +319,7 @@ def main():
 
     post_results(owner, repo, number, head_sha, token, risk, findings, loop_info, cls, diff,
                  injected_types=injected_types, injected_experience_ids=injected_experience_ids,
-                 engine_status=engine_status)
+                 engine_status=engine_status, det_warning=det_warning)
 
     # 可插拔检查 → 对外发【一个】总闸状态（策略全在 .touchstone/checks.yaml）。
     # CI 中由独立 gate job 在(可选)verify 之后聚合并发布，此处置 TOUCHSTONE_SKIP_GATE 跳过自发、

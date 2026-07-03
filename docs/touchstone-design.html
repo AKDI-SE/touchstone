@@ -474,7 +474,8 @@
 <pre><span class="cm"># 主入口：复用 PR-Agent 评审 → 归一 → 裁决映射，不产出"过/不过"（详见 touchstone-on-pr-agent.html）</span>
 <span class="fn">review_pr</span>(pr, contract, standards)
     <span class="cm"># = map_verdict(normalize(fetch(...)) + check_contract_consistency(...) + check_stack_rules(...))</span>
-    <span class="cm"># 返回 → { findings[], risk:RiskAssessment, engine_status }  # engine_status: ok|no_engine|llm_failed</span>
+    <span class="cm"># 返回 → { findings[], risk:RiskAssessment, engine_status, det_warning }</span>
+    <span class="cm">#   det_warning：diff 解析失败时置位 → 确定性契约/栈核对空转会在评审里显式标注（防静默漏检）</span>
 
 <span class="cm"># 评审来源：复用开源 PR-Agent（评审提供器封装其调用，真实端点见 _invoke_endpoint）</span>
 <span class="fn">review_provider.fetch</span>(pr_ctx)            <span class="cm"># → [ReviewItem]（PR-Agent improve/review 输出）</span>
@@ -585,7 +586,7 @@
       <div class="item"><div class="nm">builtin</div><div class="ds">进程内函数。如 <code>touchstone-rules</code>（自带确定性规则，无拦截级才通过）、<code>verify</code>（折入按需深检结果）。</div></div>
       <div class="item"><div class="nm">relay</div><div class="ds">读某个<strong>已有</strong> GitHub check-run 的结论——工具在它自己的 CI 里跑过（单测 / SonarQube / SAST），这里只转达。</div></div>
       <div class="item"><div class="nm">service</div><div class="ds">POST PR 上下文到一个 HTTP 服务拿结果——<strong>未来自建质量服务按此接口挂上来，不改框架</strong>。</div></div>
-      <div class="item"><div class="nm">汇总状态检查 aggregate_gate</div><div class="ds">所有 <code>required</code> 检查都通过才 success；任一必须项非通过 → failure。非必须项只作信息。</div></div>
+      <div class="item"><div class="nm">汇总状态检查 aggregate_gate</div><div class="ds">所有 <code>required</code> 检查都通过才 success；任一必须项非通过 → failure。非必须项只作信息。<strong>防静默故障</strong>：① <code>checks.yaml</code> <em>存在但解析失败</em>（区别于未配置）→ 总闸 <code>failure</code> 并在 summary 报警，不当空策略放行；② gate job 拿不到 <code>touchstone-findings.json</code>（touchstone job 失败/取消）→ 用 head sha 发一个 <code>failure</code> check-run 说明"评审流水线未产出结果"，不静默 no-op。</div></div>
     </div>
 
     <div class="principle"><span class="k">与 GitHub 的最小耦合</span>对外只发<strong>一个</strong>汇总状态检查(默认 <code>touchstone/gate</code>)——由专门的 gate 步骤在 Touchstone 评审与(可选)verify 之后聚合所有启用的检查、统一发布这一个状态。<strong>人点合并</strong>场景：GitHub 分支保护一次性只要求这一个状态即可——挂几个插件、哪几个必须绿、阈值多少，全在 <code>.touchstone/checks.yaml</code> 里演进，不再回去动 GitHub。<strong>自动合并</strong>场景(可选)：Touchstone 自己看汇总状态检查绿不绿决定合不合，<strong>零 GitHub 配置</strong>。</div>
