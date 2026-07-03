@@ -20,7 +20,7 @@ jobs:
           fetch-depth: 0          # detect_revert_shas 需要 base 分支历史
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.x"
+          python-version: "3.13"
       - name: Install deps
         run: pip install -r requirements.txt
       - name: Calibrate (produce calibration.json)
