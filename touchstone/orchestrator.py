@@ -153,14 +153,31 @@ def _engine_banner(engine_status):
     return ""
 
 
+def _clean_review_trace(engine_status, ai_raw_count, added_lines, n_changed):
+    """0 条发现时的溯源（防静默故障）：让人区分"LLM 真审了没问题"与"pr-agent 没真审/被过滤光"。
+    仅在引擎正常（ok）且无降级时输出；降级由 _engine_banner 负责。"""
+    if engine_status != "ok":
+        return ""
+    suspicious = added_lines >= 20 and ai_raw_count == 0   # 改动不小却 0 原始建议
+    head = "🟢 **AI 评审已端到端运行**（PR-Agent + LLM 已调用，非模板空回）。"
+    detail = f"PR-Agent 返回 **{ai_raw_count} 条原始建议**（归一后 0 条进入评审）；确定性契约/栈核对 0 命中。"
+    scope = f"改动：{n_changed} 文件 / 约 {added_lines} 新增行。"
+    tail = ("**改动不小却 0 建议——建议人工扫一眼**（LLM 可能未实质产出）。" if suspicious
+            else "改动规模小，0 建议合理。")
+    return f"{head}　{detail}　{scope}　{tail}"
+
+
 def post_results(owner, repo, number, head_sha, token, risk, findings, loop_info=None,
                  change_class=None, diff=None, injected_types=None, injected_experience_ids=None,
-                 engine_status="ok", det_warning=""):
-    # (1) 摘要评论——总是成功；顶部附【引擎/确定性核对降级说明（若有）】+ 反馈循环状态，底部附隐藏 state marker
+                 engine_status="ok", det_warning="", ai_raw_count=0, added_lines=0, n_changed=0):
+    # (1) 摘要评论——总是成功；顶部附【降级说明 / 0-发现溯源（若有）】+ 反馈循环状态，底部附隐藏 state marker
     body = render_summary(risk, findings)
     banner = _engine_banner(engine_status)
     if det_warning:
         banner = (banner + "\n\n" if banner else "") + f"⚠️ **{det_warning}**"
+    # 引擎正常但 0 发现时，附溯源——让人能区分"LLM 真审了没问题"与"没真审"（防静默故障）
+    if not banner and not findings:
+        banner = _clean_review_trace(engine_status, ai_raw_count, added_lines, n_changed)
     if banner:
         body = banner + "\n\n" + body
     if loop_info:
@@ -230,8 +247,11 @@ def review_pr(pr, contract, standards, provider=None):
     # 评审引擎状态（防静默故障）：ok / no_engine（pr-agent 没装或不可用）/ llm_failed（已跑但 LLM 调用失败）。
     # 降级时仍跑确定性核对，但 engine_status 会写进贴到 PR 的人可见评审，不静默成"0 条发现"。
     engine_status = "ok"
+    ai_raw_count = 0   # pr-agent 原始返回条数（归一/过滤前）——供"0 发现"时溯源，区分真没问题 vs 没真审
     try:
-        review_findings = review_provider.normalize(review_provider.fetch(pr, provider), nmap)
+        raw_items = review_provider.fetch(pr, provider)
+        ai_raw_count = len(raw_items)
+        review_findings = review_provider.normalize(raw_items, nmap)
     except review_provider.ReviewEngineDegraded as e:
         engine_status = e.degraded
         print(f"[review_pr] 评审引擎降级（{e.degraded}）：{e.reason} — 仅跑确定性核对", file=sys.stderr)
@@ -242,13 +262,15 @@ def review_pr(pr, contract, standards, provider=None):
         review_findings = []
     contract_findings = contract_check.check_contract_consistency(diff, contract or {}, rule_index)
     stack_findings = stack_rules.check_stack_rules(diff, rule_index)
-    changed_files, _ = contract_check.parse_diff(diff)
+    changed_files, added = contract_check.parse_diff(diff)
+    added_lines = sum(len(v) for v in added.values())
     # 确定性核对层若因 diff 解析失败而空转（contract_check 置位），显式带上告警供评审展示（防静默故障）
     det_warning = contract_check._PARSE_WARNING or ""
     findings, risk = review_provider.map_verdict(
         review_findings + contract_findings + stack_findings, nmap, changed_files=changed_files)
     return {"findings": findings, "risk": risk, "engine_status": engine_status,
-            "det_warning": det_warning}
+            "det_warning": det_warning, "ai_raw_count": ai_raw_count,
+            "added_lines": added_lines, "changed_files": changed_files}
 
 
 def main():
@@ -278,6 +300,9 @@ def main():
     findings, risk = _out["findings"], _out["risk"]
     engine_status = _out.get("engine_status", "ok")
     det_warning = _out.get("det_warning", "")
+    ai_raw_count = _out.get("ai_raw_count", 0)
+    added_lines = _out.get("added_lines", 0)
+    n_changed = len(_out.get("changed_files") or [])
 
     # 反馈循环：从历史评论 marker 取状态 → 决策 → 回贴附状态与新 marker。
     # 只信机器人自己发的评论（按发帖人过滤）——否则 author 可自己发伪造 marker 洗掉抗博弈闸。
@@ -323,7 +348,8 @@ def main():
 
     post_results(owner, repo, number, head_sha, token, risk, findings, loop_info, cls, diff,
                  injected_types=injected_types, injected_experience_ids=injected_experience_ids,
-                 engine_status=engine_status, det_warning=det_warning)
+                 engine_status=engine_status, det_warning=det_warning,
+                 ai_raw_count=ai_raw_count, added_lines=added_lines, n_changed=n_changed)
 
     # 可插拔检查 → 对外发【一个】总闸状态（策略全在 .touchstone/checks.yaml）。
     # CI 中由独立 gate job 在(可选)verify 之后聚合并发布，此处置 TOUCHSTONE_SKIP_GATE 跳过自发、
