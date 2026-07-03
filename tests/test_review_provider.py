@@ -254,9 +254,22 @@ def test_injection_disabled_switch(monkeypatch):
     monkeypatch.setenv('TOUCHSTONE_EXPERIENCE_ENABLED', 'false')
     assert rp._experience_injection('.') == ''
 
-def test_injection_skipped_in_pr_without_trusted_ref(monkeypatch):
+def test_injection_skipped_in_pr_without_trusted_ref(monkeypatch, tmp_path):
+    """PR 事件且未配受信 ref → 即便经验库真实存在也不注入（非空转验证：防投毒 fail-safe）。"""
+    import importlib, learning_loop
     from touchstone import review_provider as rp
-    monkeypatch.setenv('TOUCHSTONE_EXPERIENCE_ENABLED', 'true')
-    monkeypatch.setenv('GITHUB_EVENT_NAME', 'pull_request')
-    monkeypatch.delenv('TOUCHSTONE_EXPERIENCE_REF', raising=False)
-    assert rp._experience_injection('.') == ''
+    store = tmp_path / "exp.json"
+    store.write_text('{"experiences": [{"id": "e:::T", "finding_type": "T", "kind": "emphasize",'
+                     '"text": "FLAG-T", "status": "active", "updated_at": 1}]}', encoding="utf-8")
+    monkeypatch.setenv("TOUCHSTONE_STORE_PATH", str(store))
+    importlib.reload(learning_loop)
+    try:
+        monkeypatch.setenv("TOUCHSTONE_EXPERIENCE_ENABLED", "true")
+        monkeypatch.delenv("TOUCHSTONE_EXPERIENCE_REF", raising=False)
+        monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
+        assert rp._experience_injection(".") == ""              # PR 无受信 ref：拒注入
+        monkeypatch.setenv("GITHUB_EVENT_NAME", "schedule")
+        assert "FLAG-T" in rp._experience_injection(".")        # 非 PR：正常注入（证明非空转）
+    finally:
+        monkeypatch.delenv("TOUCHSTONE_STORE_PATH", raising=False)
+        importlib.reload(learning_loop)
