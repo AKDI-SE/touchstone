@@ -102,9 +102,12 @@ python -m touchstone.run --repo owner/name --pr 314 --post
 
 - `LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MODEL` —— 你的 OpenAI 兼容端点(如 GLM)。`pr_agent_runner` 会把它们映射成 PR-Agent/LiteLLM 认的键(`OPENAI_API_KEY`/`OPENAI_API_BASE` + `model=openai/<LLM_MODEL>`),无需在 workflow 里重复散落凭据。
 
-**反静默故障**:若 pr-agent 没装好、或 LLM 端点没调通,Touchstone **不会**静默降级成"0 条发现"——它会把降级说明写在贴到 PR 的评审评论顶部、并反映在 check 标题里:
+pr-agent **取 PR** 用 workflow 自带的 `GITHUB_TOKEN`(`${{ secrets.GITHUB_TOKEN }}`),`pr_agent_runner` 会注入 `settings.github.user_token`——**无需额外配置**。其它(GitLab/Bitbucket 等)git provider 未适配,本仓面向 GitHub。
+
+**反静默故障**:若 pr-agent 没装好、取 PR 失败、或 LLM 端点没调通,Touchstone **不会**静默降级成"0 条发现"——它会把降级说明写在贴到 PR 的评审评论顶部、并反映在 check 标题里:
 
 - `⚠️ AI 评审未运行` —— pr-agent 未安装/不可用,本次只含确定性契约与栈规则核对;
+- `⚠️ AI 评审取 PR 失败` —— pr-agent 已启动但取不到该 PR(git provider/凭据/网络),检查 `GITHUB_TOKEN`;
 - `⚠️ AI 评审的 LLM 调用失败` —— pr-agent 已跑但 LLM 未成功响应,请检查 `LLM_*` 配置。
 
 这样人一眼就能看出"这次到底有没有 AI 评审",不会被空评审误导。
