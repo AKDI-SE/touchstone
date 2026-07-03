@@ -286,6 +286,68 @@
 
 <section>
   <div class="wrap">
+    <p class="snum">04B</p>
+    <h2>§3.6 生产化差距清单（诚实标注）</h2>
+    <div class="principle"><span class="k">定位</span>
+    下列差距<strong>只影响评审建议质量</strong>，不影响合入门禁——经验库永远只走 advisory 路径（注入 PR-Agent 的 extra_instructions），坏经验最坏让一条建议偏一点，人忽略即可。与 <code>VERIFY_ENABLED</code> / <code>AUTONOMY_ENABLED</code> 无关（verify 走独立验收测试、autonomy 读总闸状态，都不读经验库）。</div>
+
+    <p class="lede">当前 TF-GRPO 的 ~185 行核心代码是<strong>论文机制的可跑骨架</strong>（rollout → score → distill → inject 三步编排 + 离线测试覆盖 plumbing）。以下是把骨架变成生产系统还差的工程，按影响面排序。</p>
+
+    <table class="tbl">
+      <tr><th>差距</th><th>当前状态</th><th>生产需要</th><th>影响</th></tr>
+
+      <tr><td class="mono" rowspan="3"><strong>1. 奖励质量</strong></td>
+          <td>类型级集合匹配（PRA-X == PRA-X，不区分文件/行/severity）</td>
+          <td>位置级匹配 + 语义近似 + 部分信用（发现对了但 severity 错了）</td>
+          <td>reward 噪声大 → 蒸馏出低质量经验</td></tr>
+      <tr><td>不校验 finding_type 是否在 taxonomy 内</td>
+          <td>LLM 可能产出不存在的 finding_type → 需校验/映射/丢弃</td>
+          <td>幻觉类型污染经验库</td></tr>
+      <tr><td>人审盲区：resolved 但人没真看</td>
+          <td>多信号交叉（resolved + 代码实际改在 finding 位置 + reviewer 分级加权）</td>
+          <td>奖励有偏 → 回路学偏</td></tr>
+
+      <tr><td class="mono" rowspan="3"><strong>2. 蒸馏质量</strong></td>
+          <td>单 PR 的 high reward 直接当经验依据</td>
+          <td>跨多 PR 同类型聚合（区分「运气」vs「能力」）+ 加权投票消解冲突</td>
+          <td>运气被当成规律学进去</td></tr>
+      <tr><td>经验措辞 LLM 自由生成</td>
+          <td>结构化模板（finding_type + 条件 + 动作）+ 模糊/歧义/注入式过滤</td>
+          <td>措辞不准 → 注入后 PR-Agent 误解</td></tr>
+      <tr><td>冲突消解取 updated_at 最新的</td>
+          <td>需基于证据强度（样本数 × 一致性）加权决策，不是「新的覆盖旧的」</td>
+          <td>一条坏经验覆盖一条好经验</td></tr>
+
+      <tr><td class="mono" rowspan="2"><strong>3. 收敛与诊断</strong></td>
+          <td>每轮 cron 全量重跑，无收敛检测</td>
+          <td>某 finding_type 经验已稳定 → 停止蒸馏 + 只处理新 PR（增量）</td>
+          <td>算力浪费 + 已稳定经验被反复改写</td></tr>
+      <tr><td>无效果指标（注入前后采纳率变化）</td>
+          <td>differential metrics（注入前 vs 注入后的采纳率/噪声率趋势）+ 回滚机制</td>
+          <td>无法知道经验是在改善还是在恶化评审</td></tr>
+
+      <tr><td class="mono" rowspan="2"><strong>4. 规模与成本</strong></td>
+          <td>无缓存（同 PR 每轮重 rollout）、无预算管控</td>
+          <td>缓存 + 增量蒸馏（只处理新 PR）+ 成本预算 + 批优化</td>
+          <td>LLM 调用量 = G(4) × PR数 × epoch数，大仓不可承受</td></tr>
+      <tr><td>超参硬编码（G=4, W_NOISE=0.5, W_MISS=0.25）</td>
+          <td>基于真实数据调优（不同仓最优值不同）</td>
+          <td>参数不对 → 效果差但无人知道</td></tr>
+
+      <tr><td class="mono"><strong>5. 真值清洗</strong></td>
+          <td>过滤了 wontfix / self-resolve</td>
+          <td>剔除 LGTM-only 无实质审查的 PR、reviewer 分级加权、坏真值检测</td>
+          <td>坏真值比没有更糟（坑 2 已承认）</td></tr>
+    </table>
+
+    <div class="principle warn"><span class="k">估计</span>把上述差距全部补齐，约需 <strong>1500–2000 行</strong>附加工程代码（当前核心 ~185 行 + 基础设施 ~525 行 = 710 行）。其中奖励质量与收敛诊断各占约 1/3，蒸馏质量与规模管控各约 1/6，真值清洗约 1/12。</div>
+
+    <div class="principle"><span class="k">与论文的关系</span>arXiv 2510.08191 给的是<strong>机制骨架</strong>（策略冻结 + 组内语义优势 + 经验作 token prior），没有覆盖上述任何一个生产化维度。论文的价值是「证明策略优化可以在上下文空间而非参数空间进行」；生产化是工程层的责任，不靠论文。</div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
     <p class="snum">05</p>
     <h2>与现有件的映射 · 落地次序</h2>
     <h3>映射</h3>
