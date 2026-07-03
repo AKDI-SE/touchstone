@@ -127,6 +127,19 @@ def run(pr_url, mode, extra_instructions=None):
         s.github.user_token = gh_tok          # pr-agent 取 PR 需要 GitHub token
     if model_override:
         s.config.model = f"openai/{model_override}"   # LiteLLM：openai 前缀走 OpenAI 兼容端点
+        # pr-agent 的 get_max_tokens 要求模型在内置 MAX_TOKENS 表里，否则报
+        # "Model ... is not defined in MAX_TOKENS ... no custom_model_max_tokens is set"
+        # 直接判"Failed to generate prediction"（glm-5.2 等自定义模型不在表里——这是多日"0 建议"的真根因）。
+        # 必须显式给 custom_model_max_tokens（env TOUCHSTONE_LLM_MAX_TOKENS 可覆盖）。
+        try:
+            s.config.custom_model_max_tokens = int(os.environ.get("TOUCHSTONE_LLM_MAX_TOKENS", "8192"))
+        except (TypeError, ValueError):
+            s.config.custom_model_max_tokens = 8192
+        # 清空 fallback_models：默认 fallback（gpt-5.4-mini 等）发到我们的 base 会返回"模型不存在"，徒增失败噪音。
+        try:
+            s.config.fallback_models = []
+        except Exception:
+            pass
     if extra_instructions:
         s.pr_code_suggestions.extra_instructions = extra_instructions
         s.pr_reviewer.extra_instructions = extra_instructions
