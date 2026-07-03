@@ -110,8 +110,9 @@ def client(token):
         return {"check_runs": all_runs, "total_count": len(all_runs)}
 
     return type("GHClient", (), {
-        "get": get, "post": post, "paginate": paginate,
-        "paginate_check_runs": paginate_check_runs, "_req": _req,
+        "get": staticmethod(get), "post": staticmethod(post),
+        "paginate": staticmethod(paginate), "paginate_check_runs": staticmethod(paginate_check_runs),
+        "_req": staticmethod(_req),
         "base_url": base, "token": token,
     })()
 

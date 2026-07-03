@@ -52,6 +52,10 @@ jobs:
           LLM_BASE_URL: ${{ secrets.LLM_BASE_URL }}
           LLM_API_KEY:  ${{ secrets.LLM_API_KEY }}
           LLM_MODEL:    ${{ secrets.LLM_MODEL }}      # pr_agent_runner 映射成 LiteLLM 的 openai/<model> + OPENAI_API_KEY/BASE
+          # LLM 上下文规格（部署方用 GitHub secret 按模型卡声明；llm_budget 单一来源，不再硬编码魔法数字）：
+          TOUCHSTONE_LLM_CONTEXT_TOKENS: ${{ secrets.TOUCHSTONE_LLM_CONTEXT_TOKENS }}   # 模型上下文窗口（token），如 128000
+          TOUCHSTONE_LLM_OUTPUT_TOKENS:  ${{ secrets.TOUCHSTONE_LLM_OUTPUT_TOKENS }}    # 模型最大输出（token），如 4096
+          TOUCHSTONE_MAX_DIFF_LINES:    ${{ vars.TOUCHSTONE_MAX_DIFF_LINES || '0' }}    # 单 PR 行数上限，超限不调 LLM 直接 block（0=关，建议 500-2000）
           TOUCHSTONE_PRAGENT_CMD: ".pragent-venv/bin/python -m touchstone.pr_agent_runner"
           TOUCHSTONE_INTERACTION_LOG: "pr-agent-interaction.log"   # 完整 LLM 交互日志（artifact，评审评论里贴链接）
           TOUCHSTONE_SKIP_GATE: "true"                 # 不自发总闸：由下方 gate job 在(可选)verify 之后统一发

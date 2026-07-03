@@ -35,7 +35,6 @@ import stack_rules           # §4.1 栈专项确定性规则（machine_checkabl
 # --- 配置 ---------------------------------------------------------------------
 STANDARDS_PATH = os.environ.get("TOUCHSTONE_STANDARDS", ".touchstone/standards.yaml")
 CONTRACT_PATH  = os.environ.get("TOUCHSTONE_CONTRACT",  ".touchstone/pr.yaml")
-DIFF_BUDGET    = 60000   # diff 截断字符预算
 
 # --- GitHub API（stdlib） -----------------------------------------------------
 def gh(method, path, token, data=None, accept="application/vnd.github+json"):
@@ -52,11 +51,11 @@ def load_yaml(path, default=None):
 
 
 def get_pr_diff(owner, repo, number, token):
-    diff = gh("GET", f"/repos/{owner}/{repo}/pulls/{number}", token,
+    """取 PR 全文 diff。不再截断——确定性核对（SEC-001 密钥扫描等）必须覆盖全文，
+    安全保证不随体量打折扣。截断只在【显示/摘要/内联锚定】侧按需施加（见 render_summary/anchor_inline）。"""
+    return gh("GET", f"/repos/{owner}/{repo}/pulls/{number}", token,
               accept="application/vnd.github.v3.diff")
-    if len(diff) > DIFF_BUDGET:
-        diff = diff[:DIFF_BUDGET] + "\n... [diff 已截断]"
-    return diff
+
 
 
 # --- 回贴 ---------------------------------------------------------------------
@@ -75,8 +74,14 @@ def render_summary(risk, findings):
     if not findings:
         lines.append("本次未发现规则范围内的问题。")
     else:
-        lines.append(f"发现 {len(findings)} 条（按置信降序）：")
-        for f in findings:
+        # 封顶列出条数：大 PR 会产大量发现，全列会超 GitHub 评论 65536 字符限。
+        # 确定性核对仍跑全文（截断只在显示侧）；超出的折叠为汇总行。
+        from llm_budget import MAX_FINDINGS_IN_SUMMARY
+        shown = findings[:MAX_FINDINGS_IN_SUMMARY]
+        lines.append(f"发现 {len(findings)} 条（按置信降序，"
+                     + (f"仅列前 {MAX_FINDINGS_IN_SUMMARY} 条）：" if len(findings) > MAX_FINDINGS_IN_SUMMARY
+                        else "全部）："))
+        for f in shown:
             lines.append(
                 f"- `{f['rule_id']}` [{f.get('severity','')}] "
                 f"conf={f['confidence']:.2f} · {f['agent']} · "
@@ -84,6 +89,8 @@ def render_summary(risk, findings):
                 f"  - {f.get('rationale','')}\n"
                 f"  - 建议：{f.get('suggested_fix','')}"
             )
+        if len(findings) > MAX_FINDINGS_IN_SUMMARY:
+            lines.append(f"- ……另有 {len(findings) - MAX_FINDINGS_IN_SUMMARY} 条（确定性核对已覆盖全文，见 check 标题/总闸）。")
     return "\n".join(lines)
 
 
@@ -156,6 +163,10 @@ def _engine_banner(engine_status):
     if engine_status == "no_engine":
         return ("⚠️ **AI 评审未运行**：PR-Agent 未安装或不可用，本次评审**只含确定性契约与栈规则核对**，"
                 "不含 LLM 代码评审。请确认 workflow 安装了 pr-agent（见 README「GitHub 集成」）。")
+    if engine_status == "skipped_large_diff":
+        return ("🚫 **PR 体量超限，AI 评审已跳过**：本 PR 改动行数超过单 PR 上限"
+                "（`TOUCHSTONE_MAX_DIFF_LINES`）。**请拆分为多个 PR，每个聚焦一个变更。**"
+                "一次性提交大量代码增加评审难度与出错风险。确定性核对（密钥扫描等）仍已跑全文。")
     if engine_status == "provider_failed":
         return ("⚠️ **AI 评审取 PR 失败**：PR-Agent 已启动但无法获取该 PR（git provider/凭据/网络），"
                 "本次**只含确定性核对**。请检查 pr-agent 的 GitHub token（`GITHUB_TOKEN`）与 "
@@ -261,30 +272,51 @@ def review_pr(pr, contract, standards, provider=None):
     rules = standards.get("rules", []) if isinstance(standards, dict) else (standards or [])
     rule_index = {r["id"]: r for r in rules}
     diff = pr.get("diff", "")
-    # 评审引擎状态（防静默故障）：ok / no_engine（pr-agent 没装或不可用）/ llm_failed（已跑但 LLM 调用失败）。
-    # 降级时仍跑确定性核对，但 engine_status 会写进贴到 PR 的人可见评审，不静默成"0 条发现"。
-    engine_status = "ok"
-    ai_raw_count = 0   # pr-agent 原始返回条数（归一/过滤前）——供"0 发现"时溯源，区分真没问题 vs 没真审
-    try:
-        raw_items = review_provider.fetch(pr, provider)
-        ai_raw_count = len(raw_items)
-        review_findings = review_provider.normalize(raw_items, nmap)
-    except review_provider.ReviewEngineDegraded as e:
-        engine_status = e.degraded
-        print(f"[review_pr] 评审引擎降级（{e.degraded}）：{e.reason} — 仅跑确定性核对", file=sys.stderr)
-        review_findings = []
-    except RuntimeError as e:
-        engine_status = "no_engine"
-        print(f"[review_pr] PR-Agent 端点未配置或不可用，跳过评审、仅跑确定性核对：{e}", file=sys.stderr)
-        review_findings = []
-    contract_findings = contract_check.check_contract_consistency(diff, contract or {}, rule_index)
-    stack_findings = stack_rules.check_stack_rules(diff, rule_index)
+    # 先解析 diff 拿行数（供体量门禁判断，必须在调 LLM 之前）
     changed_files, added = contract_check.parse_diff(diff)
     added_lines = sum(len(v) for v in added.values())
+
+    # 体量门禁：超过 TOUCHSTONE_MAX_DIFF_LINES 不调 LLM，直接产 SIZE-001 block（让提交者拆分 PR）。
+    # 确定性核对（SEC-001 等）仍照跑全文——安全保证不随体量打折扣。
+    ai_raw_count = 0
+    max_lines = int(os.environ.get("TOUCHSTONE_MAX_DIFF_LINES", "0") or 0)
+    size_findings = []
+    if max_lines > 0 and added_lines > max_lines:
+        engine_status = "skipped_large_diff"
+        size_findings = [{
+            "rule_id": "SIZE-001", "file": "", "line": 0,
+            "category": "contract", "severity": "block_candidate",
+            "confidence": 1.0,
+            "rationale": f"PR 改动约 {added_lines} 行，超过单 PR 上限 {max_lines} 行。",
+            "suggested_fix": "请拆分为多个 PR，每个聚焦一个变更。一次性提交大量代码增加评审难度与出错风险。",
+            "agent": "contract-check",
+        }]
+        review_findings = []
+        print(f"[review_pr] 体量门禁：{added_lines} 行 > {max_lines} 上限 → 跳过 LLM，直接 SIZE-001 block", file=sys.stderr)
+    else:
+        # 评审引擎状态（防静默故障）：ok / no_engine / provider_failed / llm_failed。
+        # 降级时仍跑确定性核对，但 engine_status 会写进贴到 PR 的人可见评审，不静默成"0 条发现"。
+        engine_status = "ok"
+        ai_raw_count = 0   # pr-agent 原始返回条数（归一/过滤前）——供"0 发现"时溯源
+        try:
+            raw_items = review_provider.fetch(pr, provider)
+            ai_raw_count = len(raw_items)
+            review_findings = review_provider.normalize(raw_items, nmap)
+        except review_provider.ReviewEngineDegraded as e:
+            engine_status = e.degraded
+            print(f"[review_pr] 评审引擎降级（{e.degraded}）：{e.reason} — 仅跑确定性核对", file=sys.stderr)
+            review_findings = []
+        except RuntimeError as e:
+            engine_status = "no_engine"
+            print(f"[review_pr] PR-Agent 端点未配置或不可用，跳过评审、仅跑确定性核对：{e}", file=sys.stderr)
+            review_findings = []
+
+    contract_findings = contract_check.check_contract_consistency(diff, contract or {}, rule_index)
+    stack_findings = stack_rules.check_stack_rules(diff, rule_index)
     # 确定性核对层若因 diff 解析失败而空转（contract_check 置位），显式带上告警供评审展示（防静默故障）
     det_warning = contract_check._PARSE_WARNING or ""
     findings, risk = review_provider.map_verdict(
-        review_findings + contract_findings + stack_findings, nmap, changed_files=changed_files)
+        size_findings + review_findings + contract_findings + stack_findings, nmap, changed_files=changed_files)
     return {"findings": findings, "risk": risk, "engine_status": engine_status,
             "det_warning": det_warning, "ai_raw_count": ai_raw_count,
             "added_lines": added_lines, "changed_files": changed_files}
