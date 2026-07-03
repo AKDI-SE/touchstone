@@ -50,10 +50,15 @@ def run(pr_url, mode, extra_instructions=None):
       LLM_BASE_URL → OPENAI_API_BASE
       LLM_MODEL    → get_settings().config.model = "openai/<model>"（LiteLLM provider 前缀，走 OpenAI 兼容端点）
 
+    GitHub 凭据：从 GITHUB_TOKEN（workflow 透传、subprocess 继承）注入 pr-agent 的
+    settings.github.user_token，并显式 git_provider="github"——否则 pr-agent 取不到 PR
+    （GitProviderFactory 报 "Failed to get git provider"），连 LLM 都调不到。
+
     任何引擎层失败都【不抛异常、不非零退出】，而是返回带 `_degraded` 的 dict，由 review_provider
     转成 ReviewEngineDegraded、再由 orchestrator 写进人可见的评审说明（防静默故障）：
-      _degraded="no_engine"  —— pr-agent 未安装 / 导入失败
-      _degraded="llm_failed" —— pr-agent 已运行但 LLM 调用失败（端点/鉴权/超时/解析等）
+      _degraded="no_engine"      —— pr-agent 未安装 / 导入失败
+      _degraded="provider_failed"—— pr-agent 已导入但取 PR/git provider 失败（凭据/网络，pre-LLM）
+      _degraded="llm_failed"     —— PR 已取到、但 LLM 调用失败（端点/鉴权/超时/解析等）
     """
     # 先把 LLM_* 映射成 LiteLLM 认的 env（必须在 import/调用 pr-agent 前注入）
     if os.environ.get("LLM_API_KEY") and not os.environ.get("OPENAI_API_KEY"):
@@ -74,6 +79,10 @@ def run(pr_url, mode, extra_instructions=None):
     s = get_settings()
     s.config.publish_output = False           # 关键：不往 PR 发评论，只取结构化结果
     s.config.publish_output_progress = False
+    s.config.git_provider = "github"          # 显式：headless 运行时避免 provider 自动探测失败
+    gh_tok = os.environ.get("GITHUB_TOKEN") or os.environ.get("GITHUB_USER_TOKEN")
+    if gh_tok:
+        s.github.user_token = gh_tok          # pr-agent 取 PR 需要 GitHub token
     if model_override:
         s.config.model = f"openai/{model_override}"   # LiteLLM：openai 前缀走 OpenAI 兼容端点
     if extra_instructions:
@@ -82,16 +91,24 @@ def run(pr_url, mode, extra_instructions=None):
 
     out = {"code_suggestions": [], "review": {"key_issues_to_review": []}}
     tools = set(mode.split("+"))
+    # 阶段一：构造 provider + 取 PR（pre-LLM）。构造时即拉取 PR diff，失败归 provider_failed。
+    instances = {}
     try:
         if "improve" in tools:
-            cs = PRCodeSuggestions(pr_url)
-            asyncio.run(cs.run())                 # 结果落在 cs.data = {"code_suggestions": [...]}
-            out["code_suggestions"] = (getattr(cs, "data", None) or {}).get("code_suggestions") or []
-
+            instances["cs"] = PRCodeSuggestions(pr_url)
         if "review" in tools:
-            rv = PRReviewer(pr_url)
-            asyncio.run(rv.run())                 # rv.prediction 是原始 YAML 串；自行解析
-            data = load_yaml((rv.prediction or "").strip(),
+            instances["rv"] = PRReviewer(pr_url)
+    except Exception as e:
+        return {"_degraded": "provider_failed",
+                "reason": f"取 PR / git provider 失败（pre-LLM）：{type(e).__name__}: {e}"}
+    # 阶段二：跑工具（LLM 调用）+ 解析。失败归 llm_failed。
+    try:
+        if "cs" in instances:
+            asyncio.run(instances["cs"].run())           # 结果落在 cs.data = {"code_suggestions": [...]}
+            out["code_suggestions"] = (getattr(instances["cs"], "data", None) or {}).get("code_suggestions") or []
+        if "rv" in instances:
+            asyncio.run(instances["rv"].run())           # rv.prediction 是原始 YAML 串；自行解析
+            data = load_yaml((instances["rv"].prediction or "").strip(),
                              keys_fix_yaml=_REVIEW_KEYS_FIX,
                              first_key="review", last_key="security_concerns") or {}
             out["review"]["key_issues_to_review"] = (data.get("review") or {}).get("key_issues_to_review") or []

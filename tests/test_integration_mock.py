@@ -135,12 +135,45 @@ def test_pr_agent_run_llm_failed(monkeypatch):
     assert "401" in out["reason"]
 
 
+def test_pr_agent_run_provider_failed(monkeypatch):
+    # pr-agent 装了，但构造时取 PR/git provider 失败（pre-LLM）→ 上报 provider_failed，与 llm_failed 区分
+    _install_fake_pr_agent(monkeypatch)
+    import pr_agent.tools.pr_code_suggestions as cs_mod
+
+    class NoProviderCS:
+        def __init__(self, url):
+            raise ValueError("Failed to get git provider for " + url)
+    cs_mod.PRCodeSuggestions = NoProviderCS
+    out = R.run("https://github.com/o/r/pull/1", "improve")
+    assert out["_degraded"] == "provider_failed"
+    assert "git provider" in out["reason"]
+
+
+def test_pr_agent_run_maps_github_token(monkeypatch):
+    # GITHUB_TOKEN → pr-agent settings.github.user_token；git_provider 显式 github
+    settings = _install_fake_pr_agent(monkeypatch)
+    monkeypatch.setenv("GITHUB_TOKEN", "ghs_test_token")
+    import pr_agent.tools.pr_code_suggestions as cs_mod
+
+    class CS:
+        def __init__(self, url):
+            self.data = {"code_suggestions": []}
+
+        async def run(self):
+            return None
+    cs_mod.PRCodeSuggestions = CS
+    R.run("https://pr", "improve")
+    assert settings.github.user_token == "ghs_test_token"
+    assert settings.config.git_provider == "github"
+
+
 def _install_fake_pr_agent(monkeypatch):
     algo_utils = types.ModuleType("pr_agent.algo.utils")
     algo_utils.load_yaml = lambda s, **k: {"review": {"key_issues_to_review": [{"x": 1}]}}
     cfg = types.ModuleType("pr_agent.config_loader")
     settings = types.SimpleNamespace(
         config=types.SimpleNamespace(publish_output=True, publish_output_progress=True),
+        github=types.SimpleNamespace(user_token=""),
         pr_code_suggestions=types.SimpleNamespace(extra_instructions=""),
         pr_reviewer=types.SimpleNamespace(extra_instructions=""))
     cfg.get_settings = lambda: settings
