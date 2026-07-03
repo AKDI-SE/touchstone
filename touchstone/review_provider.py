@@ -215,17 +215,23 @@ class PRAgentProvider:
             # 适配器的结构化降级上报（pr-agent 没装 / LLM 调用失败）——转成异常供 orchestrator 显式标注
             if isinstance(data, dict) and data.get("_degraded"):
                 raise ReviewEngineDegraded(data["_degraded"], data.get("reason", ""))
-            # 诊断（防"0 建议但不知真假"的静默故障）：把 pr-agent 原始返回的计数 + stderr 末尾打到
-            # job 日志，让人能区分"LLM 真没建议"与"返回了内容但 parse 没解析出来"。开 TOUCHSTONE_LITELLM_VERBOSE
-            # 时 stderr 含 litellm 的请求轨迹，可直接看 LLM 是否被调用。stderr 不污染 stdout JSON。
+            # 诊断（防"0 建议但不知真假"的静默故障）：把 pr-agent 原始返回的计数 + 完整 stderr 打到
+            # job 日志与交互日志 artifact，让人能区分"LLM 真没建议"与"返回了内容但 parse 没解析出来"，
+            # 并定位 pr-agent 调 LLM 时的真实错误。开 TOUCHSTONE_LITELLM_VERBOSE 时 stderr 含 litellm 请求轨迹。
             try:
                 _cs = len((data.get("code_suggestions") or []))
                 _ki = len(((data.get("review") or {}).get("key_issues_to_review") or []))
-                _err_tail = (proc.stderr or "").strip()[-400:]
+                _err_full = (proc.stderr or "").strip()
                 print(f"[pr-agent] 原始返回：code_suggestions={_cs} key_issues={_ki} "
                       f"(stdout {len(proc.stdout or '')}B, stderr {len(proc.stderr or '')}B)", file=sys.stderr)
-                if _err_tail:
-                    print(f"[pr-agent] stderr 末尾：\n{_err_tail}", file=sys.stderr)
+                if _err_full:
+                    print(f"[pr-agent] stderr 完整：\n{_err_full[-6000:]}", file=sys.stderr)
+                # 把完整 stderr 追加进交互日志 artifact（litellm 轨迹/真实 HTTP 错误）
+                _ixlog = os.environ.get("TOUCHSTONE_INTERACTION_LOG")
+                if _ixlog and _err_full:
+                    with open(_ixlog, "a", encoding="utf-8") as _f:
+                        _f.write("\n\n---- pr-agent 子进程 stderr（litellm 轨迹 / 真实错误）----\n")
+                        _f.write(_err_full)
             except Exception:
                 pass
             return data
