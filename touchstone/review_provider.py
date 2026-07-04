@@ -198,6 +198,11 @@ class PRAgentProvider:
             try:
                 proc = subprocess.run(args, capture_output=True, text=True,
                                       timeout=int(os.environ.get("TOUCHSTONE_PRAGENT_TIMEOUT", "600")))
+            except subprocess.TimeoutExpired as e:
+                raise ReviewEngineDegraded(
+                    "llm_failed",
+                    f"PR-Agent 子进程超时（{e.timeout}s）—— 大 PR 或 LLM 端点慢。"
+                    f"可调 TOUCHSTONE_PRAGENT_TIMEOUT，或拆分 PR。")
             except FileNotFoundError as e:
                 raise ReviewEngineDegraded(
                     "no_engine",
