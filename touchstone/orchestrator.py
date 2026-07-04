@@ -99,8 +99,10 @@ def render_facts(scope_facts, gate_line="", lineage=None):
     if gate_line:
         lines.append(f"- 门禁状态：{gate_line}")
     if lineage and lineage.get("lineage"):
-        hist = "、".join(f"#{e['number']}" for e in lineage.get("lineage", []) if isinstance(e, dict) and "number" in e)
-        lines.append(f"- ⚠️ 同源提示：与已关闭的 {hist} 内容同源，历史已消耗 "
+        entries = [e for e in lineage.get("lineage", []) if isinstance(e, dict) and "number" in e]
+        if entries:
+            hist = "、".join(f"#{e['number']}" for e in entries)
+            lines.append(f"- ⚠️ 同源提示：与已关闭的 {hist} 内容同源"，历史已消耗 "
                      f"{lineage.get('rounds_spent', 0)} 轮、继承未销项 "
                      f"{len(lineage.get('inherited_open_items', []))} 条，剩余轮次 "
                      f"{lineage.get('rounds_left', '?')}（重置需 `rounds-reset` label）")
