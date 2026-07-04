@@ -2,6 +2,14 @@
 
 本文件记录 Touchstone 的发布版本。设计的逐版迭代历史见 `docs/touchstone-design.html` 的变更历史。
 
+## 未发布 — 2026-07-04（工程化加固·第三轮：模块拆分）
+
+两个巨型模块按职责拆分，全部既有引用路径经门面再导出零改动兼容。测试 481 全绿、逐文件独立通过、ruff 清零、覆盖率 90% 不变。
+
+- **learning_loop（723 行）三分**：`experience_store.py`（经验的**状态**：JSON 存取含受信 ref 防投毒、seed/merge、graduate/retire/disable、render_injection）+ `distill.py`（经验怎么**产生**：计数式 + TF-GRPO 语义优势 + 可插拔分发）+ `ground_truth.py`（学习信号从哪**来**：人审裁决重建真值集）；learning_loop.py 保留 CLI/main 编排并再导出全部名字。拆分中理顺一处阈值语义：入池与退役是同一对采纳率判据的镜像，SUPPRESS/EMPHASIZE 单一事实来源归 experience_store，distill 引用；retire 的样本下限独立为 RETIRE_MIN_FIRES（与 DISTILL_MIN_FIRES 同值同理但语义独立）。
+- **verify runner 层拆分**：`verify/runners.py` 承接 PythonRunner/MavenRunner/select_runner 及全部执行/覆盖/变异落地（pytest/coverage/AST 变异/JaCoCo/PIT）；verify_change（861→471 行）只留裁决编排（plan/execute、判过条件、充分性阶梯、diff 改动行解析）。新语言 runner（Go/TS/…）在 runners.py 挂 select_runner 即可——"换语言只需替换 LANG RUNNER"从头注承诺变成正式扩展点。verify 运行方式统一为 `python -m verify.verify_change`（workflow/RUNBOOK/测试同步）。
+- **测试迁移**：monkeypatch 需打在实现所在模块才能影响内部调用——涉及 runner 内部的 patch 目标从 verify_change 迁至 runners（17 处），learning_loop 的 STORE_PATH reload / _gh_get patch 迁至 experience_store / ground_truth（既有 import_hygiene 守卫自动覆盖四个新模块）。
+
 ## 未发布 — 2026-07-04（工程化加固·第二轮）
 
 第一轮的两个"留作后续"项落地（lint 工具链、渲染层拆分），过程中又抓到并根治一类**被双重掩盖的运行期地雷**。测试 478 → **481**，ruff 全绿。

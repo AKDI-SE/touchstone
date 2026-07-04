@@ -348,7 +348,9 @@ def test_injection_skipped_in_pr_without_trusted_ref(monkeypatch, tmp_path):
     store.write_text('{"experiences": [{"id": "e:::T", "finding_type": "T", "kind": "emphasize",'
                      '"text": "FLAG-T", "status": "active", "updated_at": 1}]}', encoding="utf-8")
     monkeypatch.setenv("TOUCHSTONE_STORE_PATH", str(store))
-    importlib.reload(learning_loop)
+    from touchstone import experience_store
+    importlib.reload(experience_store)   # STORE_PATH 在 experience_store 导入期求值
+    importlib.reload(learning_loop)      # 门面再导出随后同步
     try:
         monkeypatch.setenv("TOUCHSTONE_EXPERIENCE_ENABLED", "true")
         monkeypatch.delenv("TOUCHSTONE_EXPERIENCE_REF", raising=False)
@@ -358,4 +360,4 @@ def test_injection_skipped_in_pr_without_trusted_ref(monkeypatch, tmp_path):
         assert "FLAG-T" in rp._experience_injection(".")        # 非 PR：正常注入（证明非空转）
     finally:
         monkeypatch.delenv("TOUCHSTONE_STORE_PATH", raising=False)
-        importlib.reload(learning_loop)
+        importlib.reload(experience_store); importlib.reload(learning_loop)

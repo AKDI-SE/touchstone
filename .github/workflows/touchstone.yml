@@ -112,7 +112,7 @@ jobs:
           VERIFY_MODE: ${{ needs.touchstone.outputs.decision }}
           PR_TITLE: ${{ github.event.pull_request.title }}
           REPO_DIR: "."
-        run: python verify/verify_change.py --phase plan
+        run: python -m verify.verify_change --phase plan
       - uses: actions/upload-artifact@v4
         with:
           name: verify-plan
@@ -145,7 +145,7 @@ jobs:
           HEAD_REF: ${{ github.event.pull_request.head.sha }}
           VERIFY_MODE: ${{ needs.touchstone.outputs.decision }}
           REPO_DIR: "."
-        run: python verify/verify_change.py --phase execute
+        run: python -m verify.verify_change --phase execute
       - name: Upload verify result
         if: always()
         uses: actions/upload-artifact@v4

@@ -3,6 +3,7 @@ import os
 
 import pytest
 from verify import verify_change as V
+from verify import runners as R
 
 
 # ---------------- select_runner / is_refactor ----------------
@@ -391,7 +392,7 @@ def test_changed_file_coverage_no_py_returns_one():
 
 
 def test_changed_file_coverage_subprocess_path(monkeypatch, tmp_path):
-    monkeypatch.setattr(V, "_run_coverage_subprocess",
+    monkeypatch.setattr(R, "_run_coverage_subprocess",
                         lambda wd, args: _FakeCov({"a.py": {1}}, {"a.py": set()}))
     assert V._changed_file_coverage(str(tmp_path), "def test_x(): assert 1", ["a.py"]) == 1.0
 
@@ -399,7 +400,7 @@ def test_changed_file_coverage_subprocess_path(monkeypatch, tmp_path):
 def test_changed_file_coverage_exception_returns_zero(monkeypatch, tmp_path):
     def boom(*a, **k):
         raise RuntimeError("cov failed")
-    monkeypatch.setattr(V, "_run_coverage_subprocess", boom)
+    monkeypatch.setattr(R, "_run_coverage_subprocess", boom)
     assert V._changed_file_coverage(str(tmp_path), "x", ["a.py"]) == 0.0
 
 
@@ -464,54 +465,54 @@ def test_verify_regression_low_coverage_fails(monkeypatch, tmp_path):
 
 # ---------------- Runner 方法（mock 底层 subprocess/helper）----------------
 def test_python_runner_run_suite(monkeypatch):
-    monkeypatch.setattr(V, "_run", lambda cmd, wd, timeout=None: (True, "ok"))
+    monkeypatch.setattr(R, "_run", lambda cmd, wd, timeout=None: (True, "ok"))
     assert V.PythonRunner().run_suite("wd") == (True, "ok")
 
 
 def test_python_runner_mutation_branches(monkeypatch, tmp_path):
     r = V.PythonRunner()
     # 外部变异工具有值 → 直接用
-    monkeypatch.setattr(V, "external_mutation_score", lambda wd, cf: 0.7)
+    monkeypatch.setattr(R, "external_mutation_score", lambda wd, cf: 0.7)
     assert r.mutation(str(tmp_path), ["a.py"], test_code="t") == 0.7
     # 外部返回 None + 有 test_code → _mutation_check
-    monkeypatch.setattr(V, "external_mutation_score", lambda wd, cf: None)
-    monkeypatch.setattr(V, "_mutation_check", lambda wd, tc, cf: 0.4)
+    monkeypatch.setattr(R, "external_mutation_score", lambda wd, cf: None)
+    monkeypatch.setattr(R, "_mutation_check", lambda wd, tc, cf: 0.4)
     assert r.mutation(str(tmp_path), ["a.py"], test_code="t") == 0.4
     # 外部 None + 无 test_code → None
     assert r.mutation(str(tmp_path), ["a.py"]) is None
 
 
 def test_python_runner_run_generated_and_cover(monkeypatch, tmp_path):
-    monkeypatch.setattr(V, "_run_tests", lambda wd, tc: (True, "out"))
+    monkeypatch.setattr(R, "_run_tests", lambda wd, tc: (True, "out"))
     assert V.PythonRunner().run_generated(str(tmp_path), "code") == (True, "out")
-    monkeypatch.setattr(V, "_changed_file_coverage", lambda wd, tc, cf, cl=None: 0.9)
+    monkeypatch.setattr(R, "_changed_file_coverage", lambda wd, tc, cf, cl=None: 0.9)
     assert V.PythonRunner().cover_generated(str(tmp_path), "code", ["a.py"]) == 0.9
 
 
 def test_maven_runner_run_suite_and_mutation(monkeypatch, tmp_path):
-    monkeypatch.setattr(V, "_run", lambda cmd, wd, timeout=None: (True, "ok"))
+    monkeypatch.setattr(R, "_run", lambda cmd, wd, timeout=None: (True, "ok"))
     r = V.MavenRunner()
     assert r.run_suite(str(tmp_path)) == (True, "ok")
     # mutation：mvn 成功 → _pit_score
-    monkeypatch.setattr(V, "_pit_score", lambda wd: 0.55)
+    monkeypatch.setattr(R, "_pit_score", lambda wd: 0.55)
     assert r.mutation(str(tmp_path), ["A.java"]) == 0.55
     # mvn 失败 → None
-    monkeypatch.setattr(V, "_run", lambda cmd, wd, timeout=None: (False, "fail"))
+    monkeypatch.setattr(R, "_run", lambda cmd, wd, timeout=None: (False, "fail"))
     assert r.mutation(str(tmp_path), ["A.java"]) is None
 
 
 def test_maven_runner_changed_coverage(monkeypatch, tmp_path):
-    monkeypatch.setattr(V, "_jacoco_changed_coverage", lambda wd, cf: 0.6)
-    monkeypatch.setattr(V, "_jacoco_changed_line_coverage", lambda wd, cf, cl: 0.8)
+    monkeypatch.setattr(R, "_jacoco_changed_coverage", lambda wd, cf: 0.6)
+    monkeypatch.setattr(R, "_jacoco_changed_line_coverage", lambda wd, cf, cl: 0.8)
     r = V.MavenRunner()
     assert r.changed_coverage(str(tmp_path), ["A.java"]) == 0.6               # 无 changed_lines
     assert r.changed_coverage(str(tmp_path), ["A.java"], {"A.java": {1}}) == 0.8
 
 
 def test_maven_runner_run_generated_and_cover(monkeypatch, tmp_path):
-    monkeypatch.setattr(V, "_place_junit", lambda wd, tc: ("TestX", "p"))
-    monkeypatch.setattr(V, "_run", lambda cmd, wd, timeout=None: (True, "ok"))
-    monkeypatch.setattr(V, "_jacoco_changed_coverage", lambda wd, cf: 0.9)
+    monkeypatch.setattr(R, "_place_junit", lambda wd, tc: ("TestX", "p"))
+    monkeypatch.setattr(R, "_run", lambda cmd, wd, timeout=None: (True, "ok"))
+    monkeypatch.setattr(R, "_jacoco_changed_coverage", lambda wd, cf: 0.9)
     r = V.MavenRunner()
     assert r.run_generated(str(tmp_path), "code") == (True, "ok")
     assert r.cover_generated(str(tmp_path), "code", ["A.java"]) == 0.9
@@ -524,7 +525,7 @@ def test_maven_runner_mvnw_preferred(monkeypatch, tmp_path):
     def fake_run(cmd, wd, timeout=None):
         seen["cmd"] = cmd
         return (True, "ok")
-    monkeypatch.setattr(V, "_run", fake_run)
+    monkeypatch.setattr(R, "_run", fake_run)
     V.MavenRunner().run_suite(str(tmp_path))
     assert seen["cmd"][0] == "./mvnw"
 
@@ -573,7 +574,8 @@ def test_run_tests_pass_and_timeout(monkeypatch, tmp_path):
 
 def test_cli_missing_llm_env_exits_2():
     import subprocess, sys, os
-    r = subprocess.run([sys.executable, "verify/verify_change.py"],
+    # -m 运行（第一轮起全仓标准；verify 内部为包导入，不再支持脚本式路径调用）
+    r = subprocess.run([sys.executable, "-m", "verify.verify_change"],
                        capture_output=True, text=True, env={})
     assert r.returncode == 2 and "LLM" in r.stderr
 
@@ -584,7 +586,7 @@ def test_cli_missing_refs_exits_2(monkeypatch):
            "PATH": os.environ.get("PATH", "")}
     # 去掉 BASE_REF/HEAD_REF
     env.pop("BASE_REF", None); env.pop("HEAD_REF", None)
-    r = subprocess.run([sys.executable, "verify/verify_change.py"],
+    r = subprocess.run([sys.executable, "-m", "verify.verify_change"],
                        capture_output=True, text=True, env=env)
     assert r.returncode == 2 and "BASE_REF" in r.stderr
 
