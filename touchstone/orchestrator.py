@@ -106,7 +106,7 @@ def render_facts(scope_facts, gate_line="", lineage=None):
         lines.append(f"- ⚠️ 同源提示：与已关闭的 {hist} 内容同源，历史已消耗 "
                      f"{lineage.get('rounds_spent', 0)} 轮、继承未销项 "
                      f"{len(lineage.get('inherited_open_items', []))} 条，剩余轮次 "
-                     f"{lineage.get('rounds_left')}（重置需 `rounds-reset` label）")
+                     f"{lineage.get('rounds_left', '?')}（重置需 `rounds-reset` label）")
     return "\n".join(lines)
 
 
@@ -119,11 +119,12 @@ def render_findings(risk, findings):
     head = [
         "**Touchstone · ADVISORY**（不拦截合入，与人工审核并行）",
         "",
-        f"风险等级：**{label}**　建议动作：`{risk['human_action']}`　"
-        f"验证建议：`{risk['verification_decision']}`",
+        f"风险等级：**{label}**　建议动作：`{risk.get('human_action', '—')}`　"
+        f"验证建议：`{risk.get('verification_decision', '—')}`",
     ]
-    if risk["blast_radius"]:
-        head.append("影响面：" + ", ".join(risk["blast_radius"]))
+    _blast = risk.get("blast_radius")
+    if _blast:
+        head.append("影响面：" + ", ".join(_blast))
     body = []
     if not findings:
         body.append("本次未发现规则范围内的问题。")
