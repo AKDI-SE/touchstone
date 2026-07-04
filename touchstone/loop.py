@@ -15,7 +15,7 @@ import json
 from dataclasses import dataclass, field
 from typing import Optional
 
-MAX_ROUNDS = 3
+MAX_ROUNDS = int(__import__("os").environ.get("TOUCHSTONE_MAX_ROUNDS", "9"))
 _OPEN = "<!-- touchstone-loop:"
 _CLOSE = "-->"
 
