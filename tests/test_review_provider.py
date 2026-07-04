@@ -341,7 +341,8 @@ def test_injection_disabled_switch(monkeypatch):
 
 def test_injection_skipped_in_pr_without_trusted_ref(monkeypatch, tmp_path):
     """PR 事件且未配受信 ref → 即便经验库真实存在也不注入（非空转验证：防投毒 fail-safe）。"""
-    import importlib, learning_loop
+    import importlib
+    from touchstone import learning_loop
     from touchstone import review_provider as rp
     store = tmp_path / "exp.json"
     store.write_text('{"experiences": [{"id": "e:::T", "finding_type": "T", "kind": "emphasize",'

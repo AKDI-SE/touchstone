@@ -127,7 +127,7 @@ def render_findings(risk, findings):
     if not findings:
         body.append("本次未发现规则范围内的问题。")
     else:
-        from llm_budget import MAX_FINDINGS_IN_SUMMARY
+        from touchstone.llm_budget import MAX_FINDINGS_IN_SUMMARY
         shown = findings[:MAX_FINDINGS_IN_SUMMARY]
         body.append(f"发现 {len(findings)} 条（按置信降序，"
                     + (f"仅列前 {MAX_FINDINGS_IN_SUMMARY} 条）：" if len(findings) > MAX_FINDINGS_IN_SUMMARY
@@ -519,7 +519,7 @@ def main():
     # 与 review_provider._experience_injection 同源（只读经验库、失败即空）。
     injected_types, injected_experience_ids = [], []
     try:
-        import learning_loop as _ll
+        from touchstone import learning_loop as _ll
         _store = _ll.load_store()
         injected_types = _ll.active_types(_store)
         injected_experience_ids = _ll.active_ids(_store)

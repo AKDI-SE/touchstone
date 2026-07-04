@@ -83,7 +83,7 @@ def loop_step(findings, rule_index, state, max_rounds=MAX_ROUNDS, ci_passed=None
 
     # 清单语义（评审意见 1、3）：收敛与推进以清单销项为准。
     if checklist_pair is not None:
-        import checklist as _cl
+        from touchstone import checklist as _cl
         prev_cl, cur_cl = checklist_pair
         if _cl.all_resolved(cur_cl) and not cur:
             if ci_passed is False:
