@@ -54,6 +54,7 @@ jobs:
           LLM_MODEL:    ${{ secrets.LLM_MODEL }}      # pr_agent_runner 映射成 LiteLLM 的 openai/<model> + OPENAI_API_KEY/BASE
           TOUCHSTONE_PRAGENT_CMD: ".pragent-venv/bin/python -m touchstone.pr_agent_runner"
           TOUCHSTONE_INTERACTION_LOG: "pr-agent-interaction.log"   # 完整 LLM 交互日志（artifact，评审评论里贴链接）
+          TOUCHSTONE_PRAGENT_TIMEOUT: "1200"             # pr-agent 子进程超时（秒），大 PR improve+review 需更久
           TOUCHSTONE_SKIP_GATE: "true"                 # 不自发总闸：由下方 gate job 在(可选)verify 之后统一发
           # 经验库路径：必须用 learning_loop 认的 env 名 TOUCHSTONE_EXPERIENCE（不是 STORE_PATH），
           # 否则评审侧 load_store() 读不到 learn.yml 维护的 data/experience_store.json。
