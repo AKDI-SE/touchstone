@@ -150,8 +150,8 @@ jobs:
 | `LLM_BASE_URL` | ✅ | LLM 的 OpenAI 兼容端点 | `https://open.bigmodel.cn/api/coding/paas/v4` |
 | `LLM_API_KEY` | ✅ | LLM 端点的 API key | `your-key-here` |
 | `LLM_MODEL` | ✅ | 评审用的模型名 | `glm-5.2` |
-| `TOUCHSTONE_LLM_CONTEXT_TOKENS` | 推荐 | 模型上下文窗口（token），用于精确预算 | `128000` |
-| `TOUCHSTONE_LLM_OUTPUT_TOKENS` | 推荐 | 模型最大输出（token） | `4096` |
+| `TOUCHSTONE_LLM_CONTEXT_TOKENS` | 推荐 | 模型上下文窗口（token）。2000 行 diff 约需 64K（含 prompt 开销 + 输出预留）；GLM-5.2 支持 128K | `131072` |
+| `TOUCHSTONE_LLM_OUTPUT_TOKENS` | 推荐 | 模型最大输出（token）。2000 行 PR 的建议产出上限 ~7.5K，8192 覆盖不截断 | `8192` |
 
 > `GITHUB_TOKEN` 由 GitHub Actions 自动提供，无需手动配。
 
