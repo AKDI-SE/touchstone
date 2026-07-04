@@ -28,7 +28,8 @@ def _extract_interface(work_dir, changed_files):
         if not os.path.exists(path):
             continue
         try:
-            tree = ast.parse(open(path, encoding="utf-8").read())
+            with open(path, encoding="utf-8") as f:
+                tree = ast.parse(f.read())
         except SyntaxError:
             continue
         mod = fp[:-3].replace("/", ".")
@@ -60,12 +61,18 @@ def _run_tests(work_dir, test_code):
 # --- 改动文件覆盖率（简化：文件级；改动行级映射为后续细化）-------------------
 def _run_coverage_subprocess(work_dir, pytest_args):
     """在 work_dir 跑 coverage run + pytest（子进程隔离），返回 coverage.Coverage 对象。
-    用 coverage API 直接读 .coverage 数据文件（替代脆弱的 coverage json -o - stdout 解析）。"""
-    subprocess.run(["python", "-m", "coverage", "run", "--source=."] + pytest_args,
-                   cwd=work_dir, capture_output=True, encoding="utf-8", errors="replace",
-                   timeout=TEST_TIMEOUT)
+    用 coverage API 直接读 .coverage 数据文件（替代脆弱的 coverage json -o - stdout 解析）。
+    清除旧 .coverage 防 stale data（pr-agent 评审意见）；校验子进程退出码。"""
+    cov_file = os.path.join(work_dir, ".coverage")
+    if os.path.exists(cov_file):
+        os.remove(cov_file)          # 清旧数据——防上次 run 的 stale coverage 误导
+    r = subprocess.run(["python", "-m", "coverage", "run", "--source=."] + pytest_args,
+                       cwd=work_dir, capture_output=True, encoding="utf-8", errors="replace",
+                       timeout=TEST_TIMEOUT)
+    if r.returncode != 0:
+        raise RuntimeError(f"coverage run 失败（exit {r.returncode}）：{(r.stderr or '')[-300:]}")
     import coverage
-    cov = coverage.Coverage(data_file=os.path.join(work_dir, ".coverage"))
+    cov = coverage.Coverage(data_file=cov_file)
     cov.load()
     return cov
 
@@ -108,7 +115,9 @@ def _changed_file_coverage(work_dir, test_code, changed_files, changed_lines=Non
     try:
         cov = _run_coverage_subprocess(work_dir, ["-m", "pytest", "-q", "_touchstone_spec_test.py"])
         return _coverage_ratio(cov, py, changed_lines)
-    except Exception:
+    except Exception as e:
+        import sys
+        print(f"[verify] 覆盖率测量失败（返回 0.0）: {type(e).__name__}: {e}", file=sys.stderr)
         return 0.0
     finally:
         if os.path.exists(tf):
