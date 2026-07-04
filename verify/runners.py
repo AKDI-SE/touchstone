@@ -71,25 +71,30 @@ def _run_coverage_subprocess(work_dir, pytest_args):
 
 
 def _coverage_ratio(cov, py_files, changed_lines=None):
-    """从 coverage.Coverage 对象算覆盖率。改动行级（若有）优先，否则文件级。"""
-    data = cov.get_data()
+    """从 coverage.Coverage 对象算覆盖率。改动行级（若有）优先，否则文件级。
+    用 cov.analysis2（Coverage 对象方法）而非 data.missing_lines（CoverageData 没有
+    此方法，会 AttributeError 被 except 吞掉静默返回 0.0——pr-agent 审计发现）。"""
     if changed_lines:
         coverable = covered = 0
         for path, lines in (changed_lines or {}).items():
-            executed = set(data.lines(path) or [])
-            missing = set(data.missing_lines(path) or [])
-            cov_set = (executed | missing) & lines
+            try:
+                _, statements, _, missing, _ = cov.analysis2(path)
+            except (KeyError, Exception):
+                continue
+            executed = set(statements) - set(missing)
+            cov_set = (set(statements) | set(missing)) & lines
             coverable += len(cov_set)
             covered += len(executed & cov_set)
         return (covered / coverable) if coverable else 1.0
     ratios = []
     for f in py_files:
-        executed = data.lines(f)
-        if executed is None:
+        try:
+            _, statements, _, missing, _ = cov.analysis2(f)
+        except (KeyError, Exception):
             continue
-        missing = data.missing_lines(f)
-        total = len(executed or []) + len(missing or [])
-        ratios.append(len(executed or []) / total if total else 0.0)
+        total = len(set(statements) | set(missing))
+        executed = len(set(statements) - set(missing))
+        ratios.append(executed / total if total else 0.0)
     return sum(ratios) / len(ratios) if ratios else 0.0
 
 

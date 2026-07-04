@@ -355,17 +355,23 @@ def test_generate_spec_blind_junit(monkeypatch):
     assert "@Test" in ts.code
 
 
-class _FakeCovData:
-    def __init__(self, lines_map, missing_map):
-        self._l = lines_map; self._m = missing_map
-    def lines(self, path): return self._l.get(path)
-    def missing_lines(self, path): return self._m.get(path)
-
-
 class _FakeCov:
+    """模拟 coverage.Coverage——用 analysis2（statements + missing）替代已废弃的
+    CoverageData.lines/missing_lines（pr-agent 审计发现 missing_lines 不存在）。"""
     def __init__(self, lines_map, missing_map):
-        self._d = _FakeCovData(lines_map, missing_map)
-    def get_data(self): return self._d
+        # lines_map = executed lines, missing_map = not-executed lines
+        # analysis2 返回 (filename, statements, excluded, missing, missing_formatted)
+        self._lines = lines_map
+        self._missing = missing_map
+    def analysis2(self, path):
+        executed = self._lines.get(path) or set()
+        missing = self._missing.get(path) or set()
+        statements = sorted(executed | missing)
+        return (path, statements, [], sorted(missing), "")
+    def get_data(self):
+        class _D:
+            def lines(_, p): return self._lines.get(p)
+        return _D()
 
 
 def test_coverage_ratio_file_level():
