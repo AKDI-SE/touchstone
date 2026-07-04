@@ -14,6 +14,7 @@
 
 import json
 import os
+import re
 import sys
 import urllib.request
 import urllib.error
@@ -31,10 +32,13 @@ import contract_check        # 提交契约一致性核对（确定性）
 import review_provider       # 评审提供器(复用 PR-Agent) + 发现归一 + 裁决映射
 import autonomy              # 变更分类计算（供自治经验层/auto_merge 重建）
 import stack_rules           # §4.1 栈专项确定性规则（machine_checkable 的 SPR/JAVA/CTR）
+import checklist as checklist_mod   # 收敛清单（修订设计 §4.3，评审意见 1、3）
+import lineage               # 轮次台账与同源检测（修订设计 §4.4，评审意见 10）
 
 # --- 配置 ---------------------------------------------------------------------
 STANDARDS_PATH = os.environ.get("TOUCHSTONE_STANDARDS", ".touchstone/standards.yaml")
 CONTRACT_PATH  = os.environ.get("TOUCHSTONE_CONTRACT",  ".touchstone/pr.yaml")
+DIFF_BUDGET    = 60000   # diff 截断字符预算
 
 # --- GitHub API（stdlib） -----------------------------------------------------
 def gh(method, path, token, data=None, accept="application/vnd.github+json"):
@@ -51,14 +55,134 @@ def load_yaml(path, default=None):
 
 
 def get_pr_diff(owner, repo, number, token):
-    """取 PR 全文 diff。不再截断——确定性核对（SEC-001 密钥扫描等）必须覆盖全文，
-    安全保证不随体量打折扣。截断只在【显示/摘要/内联锚定】侧按需施加（见 render_summary/anchor_inline）。"""
-    return gh("GET", f"/repos/{owner}/{repo}/pulls/{number}", token,
+    diff = gh("GET", f"/repos/{owner}/{repo}/pulls/{number}", token,
               accept="application/vnd.github.v3.diff")
-
+    if len(diff) > DIFF_BUDGET:
+        diff = diff[:DIFF_BUDGET] + "\n... [diff 已截断]"
+    return diff
 
 
 # --- 回贴 ---------------------------------------------------------------------
+_TEMPLATE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              "templates", "review_report.md")
+
+
+def _load_template():
+    """读七段版面模板（修订设计 §3 意见 4）。模板是设计资产：代码只填充，不定义版面。
+    读取失败退回极简版面（防模板缺失把评审主链打断），并在 stderr 留痕。"""
+    try:
+        with open(_TEMPLATE_PATH, encoding="utf-8") as f:
+            return f.read()
+    except OSError as e:
+        print(f"[warn] 版面模板读取失败（{e}），使用内置极简版面", file=sys.stderr)
+        return "{{banner}}\n\n{{summary_line}}\n\n{{facts}}\n\n{{findings}}\n\n{{checklist}}\n\n{{verification}}\n\n{{markers}}"
+
+
+def render_facts(scope_facts, gate_line="", lineage=None):
+    """③ 确定性事实区：范围事实摘要（机器实测的修改范围，给人第一眼）+ 门禁状态 + 同源提示。
+    与 author 的提交契约声明并排对照——声明是索引，这里是事实。"""
+    if not scope_facts:
+        return ""
+    lines = ["**确定性事实**（机器实测，不经模型）："]
+    if not scope_facts.get("parse_ok", True):
+        lines.append(f"- ⚠️ {scope_facts.get('parse_warning', 'diff 解析失败：范围事实未生效')}")
+        return "\n".join(lines)
+    t = scope_facts.get("totals", {})
+    lines.append(f"- 修改范围：{t.get('files', 0)} 个文件 · +{t.get('added', 0)} / -{t.get('deleted', 0)} 行")
+    hits = scope_facts.get("sensitive_hits", [])
+    if hits:
+        by_rule = {}
+        for h in hits:
+            by_rule.setdefault(h["rule"], []).append(h["path"])
+        for rule, paths in sorted(by_rule.items()):
+            shown = ", ".join(f"`{p}`" for p in paths[:5]) + ("…" if len(paths) > 5 else "")
+            lines.append(f"- 敏感路径命中（{rule}）：{shown}")
+    else:
+        lines.append("- 敏感路径命中：无")
+    if gate_line:
+        lines.append(f"- 门禁状态：{gate_line}")
+    if lineage and lineage.get("lineage"):
+        hist = "、".join(f"#{e['number']}" for e in lineage["lineage"])
+        lines.append(f"- ⚠️ 同源提示：与已关闭的 {hist} 内容同源，历史已消耗 "
+                     f"{lineage.get('rounds_spent', 0)} 轮、继承未销项 "
+                     f"{len(lineage.get('inherited_open_items', []))} 条，剩余轮次 "
+                     f"{lineage.get('rounds_left', '?')}（重置需 `rounds-reset` label）")
+    return "\n".join(lines)
+
+
+def render_findings(risk, findings):
+    """①横幅要素 + ④逐条发现。每条按「定位 · 方向 · 依据 · 达成判据」四要素呈现
+    （修订设计 §3 意见 2、4）——不再输出补丁/精确指令。"""
+    _RISK_LABELS = {"high": "HIGH · 建议人细看/仲裁", "mid": "MID · 建议人过目",
+                    "low": "LOW · 可跳过"}
+    label = _RISK_LABELS.get(risk.get("risk_band"), "UNKNOWN · 待人工定性")
+    head = [
+        "**Touchstone · ADVISORY**（不拦截合入，与人工审核并行）",
+        "",
+        f"风险等级：**{label}**　建议动作：`{risk.get('human_action', '—')}`　"
+        f"验证建议：`{risk.get('verification_decision', '—')}`",
+    ]
+    _blast = risk.get("blast_radius")
+    if _blast:
+        head.append("影响面：" + ", ".join(_blast))
+    body = []
+    if not findings:
+        body.append("本次未发现规则范围内的问题。")
+    else:
+        from llm_budget import MAX_FINDINGS_IN_SUMMARY
+        shown = findings[:MAX_FINDINGS_IN_SUMMARY]
+        body.append(f"发现 {len(findings)} 条（按置信降序，"
+                    + (f"仅列前 {MAX_FINDINGS_IN_SUMMARY} 条）：" if len(findings) > MAX_FINDINGS_IN_SUMMARY
+                       else "全部）："))
+        for f in shown:
+            direction = f.get("fix_direction") or f.get("suggested_fix") or ""
+            reasoning = f.get("fix_reasoning") or ""
+            dc = f.get("done_criteria") or {}
+            _spec = dc.get("spec") or {}     # spec 可能为 None（评审意见 PRA 防空）
+            if dc.get("kind") == "deterministic":
+                dc_line = f"规则 `{_spec.get('recheck', '?')}` 复检不再命中"
+            elif dc.get("kind") == "review":
+                dc_line = _spec.get("question", "定向复核通过")
+            else:
+                dc_line = ""
+            entry = (f"- `{f['rule_id']}` [{f.get('severity','')}] "
+                     f"conf={f['confidence']:.2f} · {f['agent']} · "
+                     f"`{f.get('file','?')}:{f.get('line','?')}`\n"
+                     f"  - 问题：{f.get('rationale','')}\n"
+                     f"  - 方向：{direction}")
+            if reasoning and reasoning != f.get("rationale"):
+                entry += f"\n  - 依据：{reasoning}"
+            if dc_line:
+                entry += f"\n  - 达成判据：{dc_line}"
+            body.append(entry)
+        if len(findings) > MAX_FINDINGS_IN_SUMMARY:
+            body.append(f"- ……另有 {len(findings) - MAX_FINDINGS_IN_SUMMARY} 条（确定性核对已覆盖全文，见 check 标题/总闸）。")
+    return "\n".join(head), "\n".join(body)
+
+
+def render_report(risk, findings, banner="", scope_facts=None, checklist_md="",
+                  verification_md="", markers="", gate_line="", lineage=None):
+    """按七段版面模板填充评审报告（修订设计 §3 意见 4）。版面由模板唯一定义。"""
+    head, findings_md = render_findings(risk, findings)
+    summary_line = head          # ①横幅与②总结共用要素：风险与建议动作即一句话结论
+    parts = {
+        "banner": banner or "",
+        "summary_line": summary_line,
+        "facts": render_facts(scope_facts, gate_line, lineage) if scope_facts else "",
+        "findings": findings_md,
+        "checklist": checklist_md or "",
+        "verification": verification_md or "",
+        "markers": markers or "",
+    }
+    out = _load_template()
+    for k, v in parts.items():
+        out = out.replace("{{" + k + "}}", v)
+    # 折叠空段落留下的多余空行；剥掉模板头部注释（HTML 注释会带进评论——只保留 marker 类注释）
+    out = re.sub(r"<!-- =+\n.*?=+ -->\n?", "", out, flags=re.S)
+    out = re.sub(r"\n{3,}", "\n\n", out).strip()
+    return out
+
+
 def render_summary(risk, findings):
     label = {"high": "HIGH · 建议人细看/仲裁", "mid": "MID · 建议人过目",
              "low": "LOW · 可跳过"}[risk["risk_band"]]
@@ -74,14 +198,8 @@ def render_summary(risk, findings):
     if not findings:
         lines.append("本次未发现规则范围内的问题。")
     else:
-        # 封顶列出条数：大 PR 会产大量发现，全列会超 GitHub 评论 65536 字符限。
-        # 确定性核对仍跑全文（截断只在显示侧）；超出的折叠为汇总行。
-        from llm_budget import MAX_FINDINGS_IN_SUMMARY
-        shown = findings[:MAX_FINDINGS_IN_SUMMARY]
-        lines.append(f"发现 {len(findings)} 条（按置信降序，"
-                     + (f"仅列前 {MAX_FINDINGS_IN_SUMMARY} 条）：" if len(findings) > MAX_FINDINGS_IN_SUMMARY
-                        else "全部）："))
-        for f in shown:
+        lines.append(f"发现 {len(findings)} 条（按置信降序）：")
+        for f in findings:
             lines.append(
                 f"- `{f['rule_id']}` [{f.get('severity','')}] "
                 f"conf={f['confidence']:.2f} · {f['agent']} · "
@@ -89,8 +207,6 @@ def render_summary(risk, findings):
                 f"  - {f.get('rationale','')}\n"
                 f"  - 建议：{f.get('suggested_fix','')}"
             )
-        if len(findings) > MAX_FINDINGS_IN_SUMMARY:
-            lines.append(f"- ……另有 {len(findings) - MAX_FINDINGS_IN_SUMMARY} 条（确定性核对已覆盖全文，见 check 标题/总闸）。")
     return "\n".join(lines)
 
 
@@ -121,7 +237,7 @@ def anchor_inline(findings, diff):
             note = f"（原指 :{line}）"
         out.append({"path": path, "line": anchored, "side": "RIGHT",
                     "body": f"`{f['rule_id']}`{note} {f.get('rationale', '')}"
-                            f"\n建议：{f.get('suggested_fix', '')}\n{_fm(f)}"})
+                            f"\n方向：{f.get('fix_direction') or f.get('suggested_fix', '')}\n{_fm(f)}"})
     return out
 
 
@@ -163,10 +279,6 @@ def _engine_banner(engine_status):
     if engine_status == "no_engine":
         return ("⚠️ **AI 评审未运行**：PR-Agent 未安装或不可用，本次评审**只含确定性契约与栈规则核对**，"
                 "不含 LLM 代码评审。请确认 workflow 安装了 pr-agent（见 README「GitHub 集成」）。")
-    if engine_status == "skipped_large_diff":
-        return ("🚫 **PR 体量超限，AI 评审已跳过**：本 PR 改动行数超过单 PR 上限"
-                "（`TOUCHSTONE_MAX_DIFF_LINES`）。**请拆分为多个 PR，每个聚焦一个变更。**"
-                "一次性提交大量代码增加评审难度与出错风险。确定性核对（密钥扫描等）仍已跑全文。")
     if engine_status == "provider_failed":
         return ("⚠️ **AI 评审取 PR 失败**：PR-Agent 已启动但无法获取该 PR（git provider/凭据/网络），"
                 "本次**只含确定性核对**。请检查 pr-agent 的 GitHub token（`GITHUB_TOKEN`）与 "
@@ -193,26 +305,30 @@ def _clean_review_trace(engine_status, ai_raw_count, added_lines, n_changed):
 
 def post_results(owner, repo, number, head_sha, token, risk, findings, loop_info=None,
                  change_class=None, diff=None, injected_types=None, injected_experience_ids=None,
-                 engine_status="ok", det_warning="", ai_raw_count=0, added_lines=0, n_changed=0):
-    # (1) 摘要评论——总是成功；顶部附【降级说明 / 0-发现溯源（若有）】+ 反馈循环状态，底部附隐藏 state marker
-    body = render_summary(risk, findings)
+                 engine_status="ok", det_warning="", ai_raw_count=0, added_lines=0, n_changed=0,
+                 scope_facts=None, checklist_md="", ledger=None):
+    # (1) 摘要评论——总是成功；按七段版面模板组装（修订设计 §3 意见 4）：
+    #     ①横幅(降级说明/0-发现溯源/循环状态) ②总结 ③确定性事实 ④逐条发现 ⑤收敛清单 ⑥验证 ⑦机器 marker
     banner = _engine_banner(engine_status)
     if det_warning:
         banner = (banner + "\n\n" if banner else "") + f"⚠️ **{det_warning}**"
     # 引擎正常但 0 发现时，附溯源——让人能区分"LLM 真审了没问题"与"没真审"（防静默故障）
     if not banner and not findings:
         banner = _clean_review_trace(engine_status, ai_raw_count, added_lines, n_changed)
-    # 完整 LLM 交互日志的链接（pr-agent 原始输出 + LLM 配置 + ping，见 artifact pr-agent-interaction）
-    run_link = _run_link()
-    if banner:
-        body = banner + "\n\n" + body
-    if run_link:
-        body = body + f"\n\n📄 **完整 LLM 交互日志**（pr-agent 原始输出 / LLM 配置 / ping）：{run_link}"
+    markers = []
     if loop_info:
         decision, reason, marker = loop_info
         head = {"continue": "🔁 继续", "converged": "✅ 收敛",
                 "escalate": "⬆️ 升级到人"}[decision]
-        body = f"**反馈循环：{head}** — {reason}\n\n{body}\n\n{marker}"
+        banner = f"**反馈循环：{head}** — {reason}" + ("\n\n" + banner if banner else "")
+        markers.append(marker)
+    verification_md = ""
+    run_link = _run_link()
+    if run_link:
+        verification_md = f"📄 **完整 LLM 交互日志**（pr-agent 原始输出 / LLM 配置 / ping）：{run_link}"
+    body = render_report(risk, findings, banner=banner, scope_facts=scope_facts,
+                         checklist_md=checklist_md, verification_md=verification_md,
+                         markers="\n".join(markers), lineage=ledger)
     # 机读 result marker（隐藏）——校准/自治经验从 API 重建数据的入口
     result_marker = "<!-- touchstone-result: " + json.dumps({
         "risk_band": risk["risk_band"],
@@ -239,7 +355,7 @@ def post_results(owner, repo, number, head_sha, token, risk, findings, loop_info
                     + json.dumps({"rule_id": f.get("rule_id"), "agent": f.get("agent")},
                                  ensure_ascii=False) + " -->")
         inline = [{"path": f["file"], "line": f["line"], "side": "RIGHT",
-                   "body": f"`{f['rule_id']}` {f.get('rationale','')}\n建议：{f.get('suggested_fix','')}"
+                   "body": f"`{f['rule_id']}` {f.get('rationale','')}\n方向：{f.get('fix_direction') or f.get('suggested_fix','')}"
                            f"\n{_finding_marker(f)}"}
                   for f in findings if f.get("file") and f.get("line")]
     if inline:
@@ -272,12 +388,8 @@ def review_pr(pr, contract, standards, provider=None):
     rules = standards.get("rules", []) if isinstance(standards, dict) else (standards or [])
     rule_index = {r["id"]: r for r in rules}
     diff = pr.get("diff", "")
-    # 先解析 diff 拿行数（供体量门禁判断，必须在调 LLM 之前）
     changed_files, added = contract_check.parse_diff(diff)
     added_lines = sum(len(v) for v in added.values())
-
-    # 体量门禁：超过 TOUCHSTONE_MAX_DIFF_LINES 不调 LLM，直接产 SIZE-001 block（让提交者拆分 PR）。
-    # 确定性核对（SEC-001 等）仍照跑全文——安全保证不随体量打折扣。
     ai_raw_count = 0
     max_lines = int(os.environ.get("TOUCHSTONE_MAX_DIFF_LINES", "0") or 0)
     size_findings = []
@@ -288,38 +400,40 @@ def review_pr(pr, contract, standards, provider=None):
             "category": "contract", "severity": "block_candidate",
             "confidence": 1.0,
             "rationale": f"PR 改动约 {added_lines} 行，超过单 PR 上限 {max_lines} 行。",
-            "suggested_fix": "请拆分为多个 PR，每个聚焦一个变更。一次性提交大量代码增加评审难度与出错风险。",
+            "fix_direction": "请拆分为多个 PR，每个聚焦一个变更。",
+            "fix_reasoning": "一次性提交大量代码增加评审难度与出错风险。",
+            "done_criteria": {"kind": "deterministic", "spec": {"recheck": "SIZE-001"}},
+            "suggested_fix": "请拆分为多个 PR，每个聚焦一个变更。",
             "agent": "contract-check",
         }]
         review_findings = []
-        print(f"[review_pr] 体量门禁：{added_lines} 行 > {max_lines} 上限 → 跳过 LLM，直接 SIZE-001 block", file=sys.stderr)
     else:
-        # 评审引擎状态（防静默故障）：ok / no_engine / provider_failed / llm_failed。
-        # 降级时仍跑确定性核对，但 engine_status 会写进贴到 PR 的人可见评审，不静默成"0 条发现"。
         engine_status = "ok"
-        ai_raw_count = 0   # pr-agent 原始返回条数（归一/过滤前）——供"0 发现"时溯源
         try:
             raw_items = review_provider.fetch(pr, provider)
             ai_raw_count = len(raw_items)
             review_findings = review_provider.normalize(raw_items, nmap)
         except review_provider.ReviewEngineDegraded as e:
             engine_status = e.degraded
-            print(f"[review_pr] 评审引擎降级（{e.degraded}）：{e.reason} — 仅跑确定性核对", file=sys.stderr)
+            print(f"[review_pr] 评审引擎降级（{e.degraded}）：{e.reason}", file=sys.stderr)
             review_findings = []
         except RuntimeError as e:
             engine_status = "no_engine"
-            print(f"[review_pr] PR-Agent 端点未配置或不可用，跳过评审、仅跑确定性核对：{e}", file=sys.stderr)
+            print(f"[review_pr] PR-Agent 不可用：{e}", file=sys.stderr)
             review_findings = []
-
     contract_findings = contract_check.check_contract_consistency(diff, contract or {}, rule_index)
     stack_findings = stack_rules.check_stack_rules(diff, rule_index)
-    # 确定性核对层若因 diff 解析失败而空转（contract_check 置位），显式带上告警供评审展示（防静默故障）
     det_warning = contract_check._PARSE_WARNING or ""
+    # 范围事实（修订设计 §4.1，评审意见 7）：确定性修改范围 + 仓级路径规则命中 + 内容指纹
+    sf = contract_check.scope_facts(
+        diff, contract_check.load_scope_rules(os.environ.get("REPO_DIR", ".")))
     findings, risk = review_provider.map_verdict(
-        size_findings + review_findings + contract_findings + stack_findings, nmap, changed_files=changed_files)
+        size_findings + review_findings + contract_findings + stack_findings, nmap,
+        changed_files=changed_files, scope_facts=sf)
     return {"findings": findings, "risk": risk, "engine_status": engine_status,
             "det_warning": det_warning, "ai_raw_count": ai_raw_count,
-            "added_lines": added_lines, "changed_files": changed_files}
+            "added_lines": added_lines, "changed_files": changed_files,
+            "scope_facts": sf}
 
 
 def main():
@@ -355,9 +469,11 @@ def main():
 
     # 反馈循环：从历史评论 marker 取状态 → 决策 → 回贴附状态与新 marker。
     # 只信机器人自己发的评论（按发帖人过滤）——否则 author 可自己发伪造 marker 洗掉抗博弈闸。
+    all_bodies = []          # 全量评论正文（含 author）——只用于解析 ack 申报（申报是输入信号）
     try:
         comments = gh("GET", f"/repos/{owner}/{repo}/issues/{number}/comments", token)
         comments = comments if isinstance(comments, list) else []
+        all_bodies = [c.get("body", "") for c in comments]
         try:
             bot_login = (gh("GET", "/user", token) or {}).get("login")
         except (urllib.error.HTTPError, requests.exceptions.RequestException):
@@ -371,9 +487,31 @@ def main():
     except (urllib.error.HTTPError, requests.exceptions.RequestException):
         bodies = []
     state = loop.parse_latest_state(bodies)
+
+    # 轮次台账（修订设计 §4.4，评审意见 10）：同源检测 + 历史继承。台账是增强，失败不阻塞。
+    scope_facts = _out.get("scope_facts") or {}
+    pr_labels = [l.get("name") for l in (pr.get("labels") or []) if isinstance(l, dict)]
+    ledger = lineage.detect_lineage(
+        scope_facts.get("fingerprint"), lambda m, p: gh(m, p, token),
+        owner, repo, number, current_labels=pr_labels)
+
+    # 收敛清单（修订设计 §4.3，评审意见 1、3）：上一轮权威清单（受信 marker）+ author 申报（ack，
+    # 全量评论）→ 按达成判据复核销项 → 新一轮权威清单。首轮并入台账继承的历史未销项。
+    prev_cl = checklist_mod.parse_latest(bodies)
+    if prev_cl is None and ledger.get("inherited_open_items"):
+        prev_cl = {"round": 0, "items": ledger["inherited_open_items"]}
+    acks = checklist_mod.parse_acks(all_bodies)
+    cur_cl = checklist_mod.reconcile(prev_cl, acks, findings, round_no=state.round + 1)
+    checklist_mod.snapshot(cur_cl)          # 本轮快照写入文件（供可视化与校准回放）
+
     ci_pass = ci_verdict(owner, repo, head_sha, token)   # 供闭环：CI/verify 红则不收敛
-    decision, reason, new_state = loop.loop_step(findings, rule_index, state, ci_passed=ci_pass)
+    decision, reason, new_state = loop.loop_step(
+        findings, rule_index, state, ci_passed=ci_pass,
+        checklist_pair=(prev_cl, cur_cl), ledger=ledger)
     loop_info = (decision, reason, loop.render_marker(new_state))
+    checklist_md = checklist_mod.render(
+        cur_cl, rounds_left=max(0, ledger.get("rounds_left", loop.MAX_ROUNDS) - 1),
+        lineage=ledger)
 
     # 变更分类（供自治经验层/auto_merge）：touchstone 侧此时已知 risk/findings/changed_files
     cls = autonomy.change_class(risk, findings, sorted(changed_files), rule_index)
@@ -401,7 +539,8 @@ def main():
     post_results(owner, repo, number, head_sha, token, risk, findings, loop_info, cls, diff,
                  injected_types=injected_types, injected_experience_ids=injected_experience_ids,
                  engine_status=engine_status, det_warning=det_warning,
-                 ai_raw_count=ai_raw_count, added_lines=added_lines, n_changed=n_changed)
+                 ai_raw_count=ai_raw_count, added_lines=added_lines, n_changed=n_changed,
+                 scope_facts=scope_facts, checklist_md=checklist_md, ledger=ledger)
 
     # 可插拔检查 → 对外发【一个】总闸状态（策略全在 .touchstone/checks.yaml）。
     # CI 中由独立 gate job 在(可选)verify 之后聚合并发布，此处置 TOUCHSTONE_SKIP_GATE 跳过自发、

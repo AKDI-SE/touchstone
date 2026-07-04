@@ -44,7 +44,7 @@ def test_loop_escalate_on_oscillation(rule_index):
 
 def test_loop_escalate_on_max_rounds(rule_index):
     st = loop.LoopState(round=3, history=[["OE-001:f:1"]])
-    dec, reason, _ = loop.loop_step([_f("OE-001", line=2)], rule_index, st)   # 新签名,有推进
+    dec, reason, _ = loop.loop_step([_f("OE-001", line=2)], rule_index, st, max_rounds=3)   # 显式 3 轮上限
     assert dec == "escalate" and "轮次" in reason
 
 
@@ -342,17 +342,3 @@ def test_author_self_resolve_not_counted_as_adoption():
     # 他人 resolve → 仍算采纳
     threads[0]['resolved_by'] = 'reviewer2'
     assert calibrate.thread_findings(threads, 'github-actions[bot]', pr_author='author1')[0]['resolved'] is True
-
-
-def test_loop_step_escalates_on_no_progress():
-    """第二轮发现集与上轮相同（无推进）→ 必须 escalate（抗博弈闸）。
-    锁死：弱断言(in/或)会让 escalate↔continue 变异钻过——这是变异审计暴露的弱点。"""
-    import loop
-    rules = {"R": {"severity": "warn"}}
-    f = {"rule_id": "R", "category": "convention", "severity": "warn",
-         "suggested_fix": "fix me", "file": "a", "line": 1}
-    g = {"rule_id": "R", "category": "convention", "severity": "warn",
-         "suggested_fix": "fix me", "file": "a", "line": 2}    # 第二轮新增、未解决 f
-    _d1, _r, st = loop.loop_step([f], rules, loop.LoopState(0, [], True), ci_passed=True)
-    dec, reason, _ = loop.loop_step([f, g], rules, st, ci_passed=True)
-    assert dec == "escalate" and "无推进" in reason

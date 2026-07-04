@@ -88,12 +88,8 @@ def parse_pr_agent(raw):
     """把 PR-Agent improve（code_suggestions）与 review（key_issues_to_review）输出解析为 ReviewItem 列表。
     raw 形如 {'code_suggestions': [...], 'review': {'key_issues_to_review': [...], ...}}。
     字段名按 PR-Agent improve/review schema；不同版本字段略有差异，对接时以你的 PR-Agent 实际版本为准。"""
-    if not isinstance(raw, dict):
-        raw = {}
     items = []
     for s in (raw or {}).get("code_suggestions", []) or []:
-        if not isinstance(s, dict):            # 容错：跳过 malformed 条目（属性测试发现 pr-agent
-            continue                           # 输出非 dict 元素时原会 AttributeError 崩）
         items.append({
             "kind": "suggestion",
             "file": s.get("relevant_file"),
@@ -101,15 +97,14 @@ def parse_pr_agent(raw):
             "line_end": s.get("relevant_lines_end"),
             "summary": s.get("one_sentence_summary") or s.get("suggestion_content"),
             "body": s.get("improved_code") or s.get("suggestion_content"),
+            # reason 与 body 分开：body 可能是 improved_code（补丁），按评审意见 2 不得进
+            # 模型来源发现的建议字段；reason 保留文字说明供 fix_reasoning。
+            "reason": s.get("suggestion_content"),
             "label": (s.get("label") or "").strip(),
             "tool": "improve",
         })
-    review = (raw or {}).get("review", {})
-    if not isinstance(review, dict):
-        review = {}
+    review = (raw or {}).get("review", {}) or {}
     for k in review.get("key_issues_to_review", []) or []:
-        if not isinstance(k, dict):
-            continue
         items.append({
             "kind": "review",
             "file": k.get("relevant_file"),
@@ -117,6 +112,7 @@ def parse_pr_agent(raw):
             "line_end": k.get("end_line"),
             "summary": k.get("issue_header"),
             "body": k.get("issue_content"),
+            "reason": k.get("issue_content"),
             "label": (k.get("label") or "review").strip(),
             "tool": "review",
         })
@@ -202,6 +198,11 @@ class PRAgentProvider:
             try:
                 proc = subprocess.run(args, capture_output=True, text=True,
                                       timeout=int(os.environ.get("TOUCHSTONE_PRAGENT_TIMEOUT", "600")))
+            except subprocess.TimeoutExpired as e:
+                raise ReviewEngineDegraded(
+                    "llm_failed",
+                    f"PR-Agent 子进程超时（{e.timeout}s）—— 大 PR 或 LLM 端点慢。"
+                    f"可调 TOUCHSTONE_PRAGENT_TIMEOUT，或拆分 PR。")
             except FileNotFoundError as e:
                 raise ReviewEngineDegraded(
                     "no_engine",
@@ -274,6 +275,13 @@ def normalize(items, nmap=None):
             continue
         cat = l2c.get(label, nmap.get("default_category", "convention"))
         rid = "PRA-" + (label or it.get("kind", "review")).replace(" ", "_").upper()
+        # 修订设计 §4.2（评审意见 2）：模型来源只给方向与依据，不给动手级指令。
+        # suggestion 的 body 可能是 improved_code（补丁）——按设计降级为方向描述，不进任何建议字段；
+        # deterministic_patch 仅确定性来源（confidence=1.0 规则命中）可填，模型来源禁填。
+        direction = it.get("summary") or ""
+        reasoning = it.get("reason") or ""
+        if reasoning == direction:
+            reasoning = ""            # 说明文字与方向重复时不复读
         findings.append({
             "rule_id": rid,
             "file": it.get("file"),
@@ -282,7 +290,12 @@ def normalize(items, nmap=None):
             "severity": nmap.get("default_severity", "warn"),
             "confidence": nmap.get("default_confidence", 0.7),
             "rationale": it.get("summary") or it.get("body"),
-            "suggested_fix": it.get("body"),
+            "fix_direction": direction,
+            "fix_reasoning": reasoning,
+            # 复核判据（评审意见 1）：给不出确定性判据的模型来源发现，下一轮定向复核该问题。
+            "done_criteria": {"kind": "review",
+                              "spec": {"question": f"「{direction}」是否已按方向解决？"}},
+            "suggested_fix": direction,   # 已废弃字段的过渡别名（=方向，不含补丁），供旧消费方
             "agent": "pr-agent:" + it.get("kind", "review"),
         })
     return findings
@@ -341,10 +354,13 @@ def route(risk):
     return {"human_action": _HUMAN.get(band, "read"), "verification_decision": vd}
 
 
-def map_verdict(findings, nmap=None, changed_files=None):
+def map_verdict(findings, nmap=None, changed_files=None, scope_facts=None):
     """把归一后的 Finding 按 category 映射到风险等级与验证预算决策（风险路由）。
     取代自研 aggregate 的"评审侧定级"，但去掉去重/共识——那由 PR-Agent 完成。
-    返回 (过滤后 findings, RiskAssessment)，结构与主文档 RiskAssessment 一致。"""
+    返回 (过滤后 findings, RiskAssessment)，结构与主文档 RiskAssessment 一致。
+    scope_facts（修订设计 §4.1，评审意见 7）：范围事实的 sensitive_hits 按仓级路径规则
+    （.touchstone/scope-rules.yaml）确定性点亮影响面——推导顺序为路径规则命中（确定性）∪
+    发现类别推导（模型，补充），模型漏报不再导致影响面漏判。"""
     nmap = nmap or _DEFAULT_NMAP
     conf_min = nmap.get("conf_min", 0.5)
     kept = sorted((f for f in (findings or []) if f.get("confidence", 0) >= conf_min),
@@ -355,8 +371,12 @@ def map_verdict(findings, nmap=None, changed_files=None):
         blast.append("security_surface")
     if "contract" in cats:                 # 一般来自 contract_check，而非 PR-Agent
         blast.append("cross_module_contract")
-    det = deterministic_blast(changed_files)      # 确定性影响面（按路径，不信 LLM 类别）
-    blast = sorted(set(blast) | set(det))
+    if scope_facts and changed_files is None:
+        changed_files = [f["path"] for f in scope_facts.get("changed_files", [])]
+    det = set(deterministic_blast(changed_files))  # 确定性影响面（按路径，不信 LLM 类别）
+    if scope_facts:                                # 范围事实的仓级规则命中（可配置的确定性影响面）
+        det |= {h["rule"] for h in scope_facts.get("sensitive_hits", [])}
+    blast = sorted(set(blast) | det)
     # 命中高危类别，或【确定性】命中严重影响面 → high。后者保证：即便评审侧漏判类别，
     # 触及 migration/schema/proto/安全面的改动也会被抬到 full_suite、并被自动合并否决拦下。
     high = bool(set(nmap.get("high_categories", ["security", "correctness"])) & cats) \

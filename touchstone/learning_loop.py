@@ -539,15 +539,7 @@ def build_ground_truth(owner, repo, token, *, window=GT_WINDOW, bot_login=None,
             try:
                 diff = _gh_get(f"/repos/{owner}/{repo}/pulls/{n}", token,
                                accept="application/vnd.github.v3.diff")
-                # token 预算（喂 TF-GRPO 上下文）：声明了 context 按 token 截；否则回退字符预算兜底
-                try:
-                    from llm_budget import llm_diff_token_budget, truncate_to_tokens
-                    _tb = llm_diff_token_budget()
-                    if _tb > 0:
-                        diff = truncate_to_tokens(diff, _tb)
-                except Exception:
-                    pass
-                if len(diff) > diff_budget and "... [diff truncated]" not in diff:
+                if len(diff) > diff_budget:
                     diff = diff[:diff_budget] + "\n... [diff truncated]"
             except Exception:
                 diff = ""

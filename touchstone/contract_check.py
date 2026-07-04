@@ -31,7 +31,8 @@ def parse_diff(diff_text):
     files, added = set(), {}
     try:
         patch = PatchSet(diff_text or "")
-    except UnidiffParseError as e:
+    except Exception as e:      # 含 UnidiffParseError；unidiff 对部分畸形输入会抛库内
+        # UnboundLocalError 等非契约异常——同样按解析失败处理，防评审主链被打断。
         _PARSE_WARNING = f"diff 解析失败（{e}）：确定性契约/栈核对未生效，本次仅含 AI 评审（若有）"
         return files, added
     _PARSE_WARNING = None
@@ -59,7 +60,14 @@ def _finding(rule_id, file, line, category, rationale, fix, rule_index,
         "rule_id": rule_id, "file": file, "line": line, "category": category,
         "severity": sev,
         "confidence": confidence,        # 确定性核对默认 1.0；纯启发式可下调
-        "rationale": rationale, "suggested_fix": fix, "agent": "contract-check",
+        "rationale": rationale, "agent": "contract-check",
+        # 修订设计 §4.2（评审意见 1、2）：方向+依据+达成判据。
+        # 确定性来源的 fix 文本本就是方向性描述；依据即 rationale 指回的规则事实。
+        "fix_direction": fix,
+        "fix_reasoning": rationale,
+        # 确定性判据：规则复检——下一轮该 rule_id 不再命中即销项（机器可复核）。
+        "done_criteria": {"kind": "deterministic", "spec": {"recheck": rule_id}},
+        "suggested_fix": fix,            # 已废弃字段的过渡别名（=fix_direction，不含补丁），供旧消费方
     }
 
 
@@ -203,3 +211,102 @@ def check_contract_consistency(diff_text, contract, rule_index):
             + check_reuse(added, contract.get("reused_components"), rule_index)
             + check_untested_code(files, rule_index)
             + check_secrets(added, rule_index))
+
+
+# ============================================================================
+# 范围事实 ScopeFacts（修订设计 §4.1，评审意见 7）
+# ----------------------------------------------------------------------------
+# 由确定性工具直接从 diff 计算出的修改范围事实：不依赖任何声明、不经过任何模型。
+# 是继「硬门禁结果」「经验知识库」之后的第三个客观锚：
+#   - changed_files / totals → 报告确定性事实区的修改范围概览（给人第一眼）
+#   - sensitive_hits         → 按 .touchstone/scope-rules.yaml 路径规则点亮影响面（不信 LLM 类别）
+#   - fingerprint            → 内容指纹，供轮次台账（lineage）同源比对（评审意见 10）
+# 解析失败沿用 _PARSE_WARNING 防静默故障约定：parse_ok=False 时下游必须显式标注。
+# ============================================================================
+
+import hashlib
+
+# 内置路径规则缺省值：与 review_provider._DET_BLAST_PATTERNS 语义对齐（正则）。
+# 仓库可用 .touchstone/scope-rules.yaml 覆盖/扩展（human_curated，与 acceptance.yaml 同级待遇）。
+_DEFAULT_SCOPE_RULES = {
+    "cross_module_contract": [
+        r"(^|/)migrations?/", r"\.sql$", r"\.proto$", r"\.graphql$", r"\.avsc$", r"\.thrift$",
+        r"(^|/)schema[./]", r"schema\.\w+$", r"openapi", r"swagger",
+    ],
+    "security_surface": [
+        r"(^|/)(auth|oauth|iam|security|crypto|secrets?|credentials?)([/_.]|$)",
+        r"(password|keystore|private[_-]?key)",
+    ],
+}
+
+
+def load_scope_rules(repo_dir="."):
+    """读 .touchstone/scope-rules.yaml（factor -> [正则] 映射；缺省用内置默认）。
+    用户配置按 factor 整体替换（避免与默认合并产生歧义），未提及的 factor 保留默认。"""
+    import yaml
+    path = os.path.join(repo_dir, ".touchstone", "scope-rules.yaml")
+    rules = {k: list(v) for k, v in _DEFAULT_SCOPE_RULES.items()}
+    try:
+        data = yaml.safe_load(open(path, encoding="utf-8")) or {}
+        for factor, pats in (data.get("factors") or {}).items():
+            if isinstance(pats, list) and pats:
+                rules[str(factor)] = [str(p) for p in pats]
+    except (OSError, yaml.YAMLError):
+        pass
+    return rules
+
+
+def _fileset_hash(paths):
+    return hashlib.sha256("\n".join(sorted(paths)).encode("utf-8")).hexdigest()[:16]
+
+
+def scope_facts(diff_text, scope_rules=None):
+    """纯规则产出范围事实（ScopeFacts，修订设计 §4.1）。不调用任何模型。
+
+    返回 dict：
+      changed_files[]  每项 {path, added, deleted, hunks:[[start, added, deleted],…]}
+      sensitive_hits[] 每项 {path, rule}：命中哪条路径规则（factor 名）
+      totals           {files, added, deleted}
+      fingerprint      {fileset:[…], shape:{path:[added,deleted]}, fileset_hash}
+                       fileset/shape 保留原始值供台账做相似度比对（哈希无法比对部分相似）
+      parse_ok / parse_warning  防静默故障：解析失败时下游必须显式标注「确定性核对未生效」
+    """
+    global _PARSE_WARNING
+    rules = scope_rules or _DEFAULT_SCOPE_RULES
+    out = {"changed_files": [], "sensitive_hits": [], "totals": {"files": 0, "added": 0, "deleted": 0},
+           "fingerprint": {"fileset": [], "shape": {}, "fileset_hash": ""},
+           "parse_ok": True, "parse_warning": ""}
+    try:
+        patch = PatchSet(diff_text or "")
+    except Exception as e:      # 含 UnidiffParseError；unidiff 对部分畸形输入会抛库内
+        # UnboundLocalError 等非契约异常——同样按解析失败处理（防静默故障约定不变）。
+        out["parse_ok"] = False
+        out["parse_warning"] = f"diff 解析失败（{e}）：范围事实未生效"
+        return out
+    # 按 path 聚合：unidiff 会把 `diff --git` 头解析成一个零 hunk 的幻影条目，
+    # 与随后的 ---/+++ 条目同路径——不聚合会把同一文件计成两条。
+    by_path = {}
+    for pf in patch:
+        entry = by_path.setdefault(pf.path, {"path": pf.path, "added": 0, "deleted": 0, "hunks": []})
+        for hunk in pf:
+            h_add = sum(1 for l in hunk if l.is_added)
+            h_del = sum(1 for l in hunk if l.is_removed)
+            entry["added"] += h_add
+            entry["deleted"] += h_del
+            entry["hunks"].append([hunk.target_start or hunk.source_start or 0, h_add, h_del])
+    for entry in by_path.values():
+        out["changed_files"].append(entry)
+        out["totals"]["added"] += entry["added"]
+        out["totals"]["deleted"] += entry["deleted"]
+        low = entry["path"].lower()
+        for factor, pats in rules.items():
+            if any(re.search(p, low) for p in pats):
+                out["sensitive_hits"].append({"path": entry["path"], "rule": factor})
+    out["totals"]["files"] = len(out["changed_files"])
+    fileset = sorted(f["path"] for f in out["changed_files"])
+    out["fingerprint"] = {
+        "fileset": fileset,
+        "shape": {f["path"]: [f["added"], f["deleted"]] for f in out["changed_files"]},
+        "fileset_hash": _fileset_hash(fileset),
+    }
+    return out
