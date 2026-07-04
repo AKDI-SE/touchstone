@@ -44,7 +44,7 @@ def test_loop_escalate_on_oscillation(rule_index):
 
 def test_loop_escalate_on_max_rounds(rule_index):
     st = loop.LoopState(round=3, history=[["OE-001:f:1"]])
-    dec, reason, _ = loop.loop_step([_f("OE-001", line=2)], rule_index, st)   # 新签名,有推进
+    dec, reason, _ = loop.loop_step([_f("OE-001", line=2)], rule_index, st, max_rounds=3)   # 显式 3 轮上限
     assert dec == "escalate" and "轮次" in reason
 
 
