@@ -88,7 +88,38 @@ python -m touchstone.run --repo owner/name --pr 314 --post
 
 ## GitHub 集成
 
-五条工作流:
+### 快速部署到你的仓库（5 分钟）
+
+1. **Fork 或复制本仓** 到你的 GitHub 组织/账号。
+
+2. **配置 Secrets**（Settings → Secrets and variables → Actions → New repository secret）:
+
+   | Secret 名 | 必填 | 说明 | 示例 |
+   |---|---|---|---|
+   | `LLM_BASE_URL` | ✅ | LLM 的 OpenAI 兼容端点 | `https://open.bigmodel.cn/api/coding/paas/v4` |
+   | `LLM_API_KEY` | ✅ | LLM 端点的 API key | `your-key-here` |
+   | `LLM_MODEL` | ✅ | 评审用的模型名 | `glm-5.2` |
+   | `TOUCHSTONE_LLM_CONTEXT_TOKENS` | 推荐 | 模型上下文窗口（token），用于精确预算 | `128000` |
+   | `TOUCHSTONE_LLM_OUTPUT_TOKENS` | 推荐 | 模型最大输出（token） | `4096` |
+
+   > `GITHUB_TOKEN` 由 GitHub Actions 自动提供，无需手动配。
+
+3. **配置 Variables**（Settings → Secrets and variables → Actions → Variables tab）:
+
+   | Variable 名 | 默认 | 说明 |
+   |---|---|---|
+   | `TOUCHSTONE_MAX_DIFF_LINES` | `0`（关） | 单 PR 行数上限，超限不调 LLM 直接 block 并提示拆分。建议 `500`–`2000` |
+
+4. **分支保护**（Settings → Branches → Branch protection rules）:
+   - 把 `touchstone/gate` 设为 **Required status check**。
+   - 这样总闸是合入的硬前提——确定性检查不过就拦。
+
+5. **验证**：开一个测试 PR，应看到：
+   - PR 评论里出现 **Touchstone · ADVISORY** 评审（含 AI 意见 + 确定性事实）。
+   - check `touchstone/gate` 为 success（无 block 级发现时）。
+   - 若 LLM 未配通，评论顶部会出现 `⚠️ AI 评审...` 横幅（不静默）。
+
+### 五条工作流
 
 - `touchstone.yml` —— PR 触发:评审 + 高风险时的 verify → 回贴 + 汇总成总闸。
 - `calibrate.yml` —— 定时:从已合 PR 重建"与人审吻合度 / 噪声"报告。
@@ -96,23 +127,20 @@ python -m touchstone.run --repo owner/name --pr 314 --post
 - `learn.yml` —— 定时:离线学习回路(计数式蒸馏 + TF-GRPO),产出经验库并经 PR 合入。
 - `seed.yml` —— 手动/定时:从手写种子案例初始化或补充经验库。
 
-### 让 AI 评审真正跑起来（PR-Agent + LLM）
+### AI 评审引擎（PR-Agent + LLM）
 
-评审引擎是开源的 **PR-Agent**(Apache-2.0,pip 包),装在**独立 venv**、不进本仓依赖,经子进程适配器 `pr_agent_runner.py` 调用。`touchstone.yml` 已含一步把 pr-agent 装进 `.pragent-venv`,并用 `TOUCHSTONE_PRAGENT_CMD` 指过去。要让 LLM 评审生效,在仓库 **Settings → Secrets** 配三个:
+评审引擎是开源的 **PR-Agent**(Apache-2.0,pip 包),装在**独立 venv**、不进本仓依赖,经子进程适配器 `pr_agent_runner.py` 调用。`touchstone.yml` 已含一步把 pr-agent 装进 `.pragent-venv`,并用 `TOUCHSTONE_PRAGENT_CMD` 指过去。要让 LLM 评审生效,配好上面的 `LLM_*` secrets 即可。
 
-- `LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MODEL` —— 你的 OpenAI 兼容端点(如 GLM)。`pr_agent_runner` 会把它们映射成 PR-Agent/LiteLLM 认的键(`OPENAI_API_KEY`/`OPENAI_API_BASE` + `model=openai/<LLM_MODEL>`),无需在 workflow 里重复散落凭据。
-
-pr-agent **取 PR** 用 workflow 自带的 `GITHUB_TOKEN`(`${{ secrets.GITHUB_TOKEN }}`),`pr_agent_runner` 会注入 `settings.github.user_token`——**无需额外配置**。其它(GitLab/Bitbucket 等)git provider 未适配,本仓面向 GitHub。
+pr-agent **取 PR** 用 workflow 自带的 `GITHUB_TOKEN`——**无需额外配置**。其它(GitLab/Bitbucket 等)git provider 未适配,本仓面向 GitHub。
 
 **反静默故障**:若 pr-agent 没装好、取 PR 失败、或 LLM 端点没调通,Touchstone **不会**静默降级成"0 条发现"——它会把降级说明写在贴到 PR 的评审评论顶部、并反映在 check 标题里:
 
 - `⚠️ AI 评审未运行` —— pr-agent 未安装/不可用,本次只含确定性契约与栈规则核对;
 - `⚠️ AI 评审取 PR 失败` —— pr-agent 已启动但取不到该 PR(git provider/凭据/网络),检查 `GITHUB_TOKEN`;
-- `⚠️ AI 评审的 LLM 调用失败` —— pr-agent 已跑但 LLM 未成功响应,请检查 `LLM_*` 配置。
+- `⚠️ AI 评审的 LLM 调用失败` —— pr-agent 已跑但 LLM 未成功响应,请检查 `LLM_*` 配置;
+- `🚫 PR 体量超限` —— 超 `TOUCHSTONE_MAX_DIFF_LINES`,不调 LLM、直接 block 提示拆分。
 
 这样人一眼就能看出"这次到底有没有 AI 评审",不会被空评审误导。
-
-分支保护设为 **Require `touchstone/gate`**,即可让这道总闸成为合入的硬前提。仓库需放开工作流的写权限以便回贴评论/check。
 
 ## 仓库结构
 
