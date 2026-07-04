@@ -163,7 +163,7 @@ def _experience_injection(repo_dir):
               file=_sys.stderr)
         return ""
     try:
-        import learning_loop
+        from touchstone import learning_loop
         return learning_loop.render_injection(learning_loop.load_store()) or ""
     except Exception:
         return ""
