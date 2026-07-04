@@ -2,6 +2,21 @@
 
 本文件记录 Touchstone 的发布版本。设计的逐版迭代历史见 `docs/touchstone-design.html` 的变更历史。
 
+## 未发布 — 2026-07-04
+
+2026-06-25 技术方案评审已采纳意见（1–7、10）的落地实现（意见 8、9、11 明确不采纳）。修订设计与数据结构-流程锚定矩阵见 `docs/touchstone-design-revision.html`。
+
+- **范围事实 ScopeFacts（意见 7）**：`contract_check.scope_facts()`——确定性修改范围（每文件增删/hunk 结构）+ 仓级路径规则命中（新增 `.touchstone/scope-rules.yaml`，human_curated）+ 内容指纹。`map_verdict` 接收 scope_facts：影响面推导 = 路径规则命中（确定性）∪ 类别推导（模型补充），敏感路径命中但模型零发现时影响面照样点亮；评审报告新增「确定性事实区」呈现机器实测修改范围。
+- **Finding 方向化（意见 1、2）**：模型来源只给 `fix_direction`（方向）+ `fix_reasoning`（依据），PR-Agent 的 improved_code 补丁在归一时降级、不再进任何建议字段；`deterministic_patch` 通道仅确定性来源保留。每条发现附 `done_criteria` 达成判据（deterministic=规则复检 / review=定向复核问题）。`loop.author_actionable` 门槛改为「有 fix_direction」（suggested_fix 作过渡别名仍受理）。
+- **收敛清单（意见 3）**：新模块 `touchstone/checklist.py`——逐项销项清单（open/done/waived/split 状态机），置顶评论 task list（人可读）+ 隐藏 JSON marker（权威状态，沿用 trusted_bodies 防篡改）双载体，每轮快照写入 `checklist-round-N.json`。author 经 ```touchstone-ack``` 代码块申报；申报是输入信号，评审方按达成判据复核后才销项（done 需复检不再命中，waived 需理由，split 需链接）。`loop_step` 清单语义：收敛=清单全部销项且无新增可自改发现；无推进=销项率连续为零且无 waived/split 申报（覆盖假修）。
+- **轮次台账（意见 10）**：新模块 `touchstone/lineage.py`——记账主体从 PR 号改为内容指纹（文件集 Jaccard≥0.8 且 hunk 结构相似≥0.6 双阈值）。同源的「关旧开新」继承历史轮次消耗与未销项清单（从关闭 PR 的机器人评论重建，不新增存储；已合入的关闭不入台账），余额为零直接升级人工；`rounds-reset` label 人工授权重置。author 伪造历史 marker 不被采信（[bot] 过滤）。
+- **版面模板（意见 4）**：评审报告七段版面抽出为 `touchstone/templates/review_report.md`（一等设计资产，代码只填充不定义版面）：①声明与风险横幅 ②总结 ③确定性事实 ④逐条发现（定位·方向·依据·达成判据）⑤收敛清单 ⑥验证结果 ⑦机器 marker。
+- **加固**：`parse_diff`/`scope_facts` 对 unidiff 在畸形输入上抛出的库内异常（UnboundLocalError 等）按解析失败处理并显式标注（防静默故障约定不变，此前会打断评审主链）。
+- **主设计文档回灌**：修订内容合并入 `docs/touchstone-design.html` 正文——§2.1 四个新概念、§3.2 Finding 字段改造、新增 §3.9 ScopeFacts / §3.10 ConvergenceChecklist / §3.11 RoundLedger / **§3.12 数据结构-流程锚定矩阵**（含内生控制变量单列，新增结构须同步矩阵行）、§4.8 反馈质量与收敛机制接口 + 七段版面定义、§5 一致性校验补记已解决冲突与有意接受的遗留项、§7 变更历史「阶段八」。
+- **全流程可视化** `docs/touchstone-visualization.html`（自包含离线，无外部依赖）：8 节点可交互流程图 + 两轮切换，每节点展示真实中间状态（ScopeFacts / 归一前后 Finding / RiskAssessment / RoundLedger / 两轮清单 / loop marker / 七段报告实际正文 / ack 申报与解析）+ 内生控制变量当次取值。数据由真实模块逐环节执行采集（PR-Agent 输出与关闭 PR 检索为注入桩），页面自带验收标准声明。
+- **真实数据回放发现并修复一处缺陷**：台账继承的种子清单（round=0）曾使同源新 PR 的第 1 轮被误判「无推进」直接升级（author 尚未获得修改机会）——`checklist.no_progress` 增加第 0 轮闸 + 回归测试。这正是意见 6「用真实数据核对中间状态」的预期收益。
+- 测试 444 → **469**（+25：`tests/test_revision_items.py` 覆盖范围事实/字段改造/清单状态机与复核/台账同源与伪造防御/版面七段/种子清单回归），全绿、离线。
+
 ## 未发布 — 2026-07-03
 
 v0.2.1 之后的积累：基准仓收敛到 **AKDI-SE/touchstone** main（PR #16 合入），并补齐文档与代码的一致性。
