@@ -113,8 +113,9 @@ def render_facts(scope_facts, gate_line="", lineage=None):
 def render_findings(risk, findings):
     """①横幅要素 + ④逐条发现。每条按「定位 · 方向 · 依据 · 达成判据」四要素呈现
     （修订设计 §3 意见 2、4）——不再输出补丁/精确指令。"""
-    label = {"high": "HIGH · 建议人细看/仲裁", "mid": "MID · 建议人过目",
-             "low": "LOW · 可跳过"}[risk["risk_band"]]
+    _RISK_LABELS = {"high": "HIGH · 建议人细看/仲裁", "mid": "MID · 建议人过目",
+                    "low": "LOW · 可跳过"}
+    label = _RISK_LABELS.get(risk.get("risk_band"), "UNKNOWN · 待人工定性")
     head = [
         "**Touchstone · ADVISORY**（不拦截合入，与人工审核并行）",
         "",
@@ -136,10 +137,11 @@ def render_findings(risk, findings):
             direction = f.get("fix_direction") or f.get("suggested_fix") or ""
             reasoning = f.get("fix_reasoning") or ""
             dc = f.get("done_criteria") or {}
+            _spec = dc.get("spec") or {}     # spec 可能为 None（评审意见 PRA 防空）
             if dc.get("kind") == "deterministic":
-                dc_line = f"规则 `{dc.get('spec', {}).get('recheck', '?')}` 复检不再命中"
+                dc_line = f"规则 `{_spec.get('recheck', '?')}` 复检不再命中"
             elif dc.get("kind") == "review":
-                dc_line = dc.get("spec", {}).get("question", "定向复核通过")
+                dc_line = _spec.get("question", "定向复核通过")
             else:
                 dc_line = ""
             entry = (f"- `{f['rule_id']}` [{f.get('severity','')}] "

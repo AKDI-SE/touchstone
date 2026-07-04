@@ -59,8 +59,9 @@ def from_findings(findings, round_no=1):
             "sig": s,
             "direction": f.get("fix_direction") or f.get("suggested_fix") or "",
             "reasoning": f.get("fix_reasoning") or "",
-            "done_criteria": f.get("done_criteria")
-                             or {"kind": "review", "spec": {"question": "该问题是否已解决？"}},
+            "done_criteria": (lambda dc: dc if isinstance(dc, dict) and dc.get("kind") in ("deterministic", "review")
+                             else {"kind": "review", "spec": {"question": "该问题是否已解决？"}})(
+                                 f.get("done_criteria")),
             "status": "open",
             "note": "",
         })
