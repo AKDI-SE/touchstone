@@ -90,7 +90,7 @@ python -m touchstone.run --repo owner/name --pr 314 --post
 
 ### 快速部署到你的仓库（5 分钟）
 
-1. **Fork 或复制本仓** 到你的 GitHub 组织/账号。
+1. **Clone 本仓**（或把 `touchstone/`、`verify/`、`.touchstone/`、`.github/workflows/` 复制到你的仓库）。
 
 2. **配置 Secrets**（Settings → Secrets and variables → Actions → New repository secret）:
 
