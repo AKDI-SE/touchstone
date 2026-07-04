@@ -1,0 +1,405 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Touchstone · 评审意见落实修订设计（意见 1–7、10）</title>
+<style>
+:root{
+  --ink:#1c2330; --sub:#5a6478; --line:#dfe4ec; --bg:#f6f8fb; --card:#ffffff;
+  --accent:#1f5fbf; --accent-soft:#e8f0fc; --warn:#b4540a; --warn-soft:#fdf1e4;
+  --ok:#1d7a4f; --ok-soft:#e6f4ec; --code-bg:#f0f3f8; --mono:"SFMono-Regular",Consolas,"Liberation Mono",Menlo,monospace;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.75 -apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;}
+.wrap{max-width:1080px;margin:0 auto;padding:36px 28px 80px;}
+h1{font-size:26px;line-height:1.4;margin:0 0 6px;}
+h2{font-size:20px;margin:44px 0 12px;padding-bottom:8px;border-bottom:2px solid var(--line);}
+h3{font-size:16.5px;margin:28px 0 10px;color:var(--ink);}
+h4{font-size:15px;margin:20px 0 8px;}
+p{margin:8px 0;}
+.meta{color:var(--sub);font-size:13.5px;margin-bottom:22px;}
+.meta code{background:var(--code-bg);padding:1px 6px;border-radius:4px;font-family:var(--mono);font-size:12.5px;}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:18px 22px;margin:14px 0;}
+.tag{display:inline-block;font-size:12px;padding:1px 9px;border-radius:10px;margin-right:6px;vertical-align:1px;}
+.tag.gap{background:var(--warn-soft);color:var(--warn);}
+.tag.done{background:var(--ok-soft);color:var(--ok);}
+.tag.mod{background:var(--accent-soft);color:var(--accent);}
+table{border-collapse:collapse;width:100%;margin:12px 0;font-size:13.5px;background:var(--card);}
+th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top;line-height:1.6;}
+th{background:#eef2f8;font-weight:600;white-space:nowrap;}
+code,pre{font-family:var(--mono);}
+code{background:var(--code-bg);padding:1px 5px;border-radius:4px;font-size:12.8px;}
+pre{background:var(--code-bg);border:1px solid var(--line);border-radius:8px;padding:12px 14px;overflow-x:auto;font-size:12.8px;line-height:1.65;}
+pre code{background:none;padding:0;}
+.note{border-left:4px solid var(--accent);background:var(--accent-soft);padding:10px 14px;border-radius:0 8px 8px 0;margin:12px 0;font-size:14px;}
+.risk{border-left:4px solid var(--warn);background:var(--warn-soft);padding:10px 14px;border-radius:0 8px 8px 0;margin:12px 0;font-size:14px;}
+figure{margin:18px 0;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px;}
+figcaption{color:var(--sub);font-size:13px;margin-top:8px;text-align:center;}
+svg text{font-family:-apple-system,"Segoe UI","PingFang SC",sans-serif;}
+.small{color:var(--sub);font-size:13px;}
+ul{margin:6px 0;padding-left:22px;}
+li{margin:4px 0;}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Touchstone · 评审意见落实修订设计</h1>
+<div class="meta">
+覆盖已采纳的评审意见 <b>1、2、3、4、5、6、7、10</b>（意见 8、9、11 明确不采纳，不在本修订范围）。<br>
+状态锚点：仓库 <code>AKDI-SE/touchstone</code> @ <code>c34f9f7</code>（main，2026-07 初），主设计文档 <code>docs/touchstone-design.html</code> 现行版。本文是对主文档与代码的修订方案，评审通过后合入主文档并按落地清单实施。
+</div>
+
+<h2>1. 修订目的</h2>
+<p>本次修订属于<b>对已有设计的增强与纠偏</b>，不改变系统定位（advisory-only，建议不拦截合入，准入只由确定性质量门禁产生），不推翻已有的评审主链（复用 PR-Agent）、验证子系统与学习回路。八条意见按性质归为四组：</p>
+<table>
+<tr><th>组</th><th>意见</th><th>一句话目标</th><th>现状差距</th></tr>
+<tr><td>反馈质量</td><td>1、2</td><td>每条反馈给出「改到什么状态算过关」与「往哪个方向改、为什么」，不给动手级指令</td><td><span class="tag gap">缺位/冲突</span>Finding 无达成判据；<code>suggested_fix</code> 现定义为「可直接 apply 的补丁或精确指令」，与意见 2 直接冲突，且 <code>loop.author_actionable</code> 依赖该字段</td></tr>
+<tr><td>收敛机制</td><td>3、10</td><td>双 agent 交互围绕一份可勾选的清单逐项销项；轮次记账跟内容走，重开 PR 刷不出新轮次</td><td><span class="tag gap">缺位</span>循环状态是隐藏 marker 里的发现签名集，无逐项销项载体；轮次以 PR 号记账，关旧开新即清零</td></tr>
+<tr><td>文档工程</td><td>4、5</td><td>评审报告版面模板抽为一等设计资产；每个数据结构在设计图上有明确锚点</td><td><span class="tag gap">散落</span>版面内联在 <code>orchestrator.render_summary</code>；主文档 §2 视图与 §3 结构之间无对应关系</td></tr>
+<tr><td>确定性事实与验收</td><td>7、6</td><td>修改范围由确定性工具产出为一等结构；全流程中间状态做成带真实数据的可视化页面用于验收</td><td><span class="tag mod">半落地</span><code>contract_check</code> 已有 unidiff 确定性核对（SCOPE/TEST/DUP-001），但产物内部消化未成结构，<code>blast_radius</code> 仍由模型来源的发现类别推导；可视化交付物不在仓库</td></tr>
+</table>
+
+<h2>2. 修订逻辑与概念空间</h2>
+<p>本次修订引入四个新概念，它们互相咬合、共同回答「反馈怎么写、循环怎么收、账怎么记、事实从哪来」四个问题：</p>
+
+<div class="card">
+<p><b>范围事实（ScopeFacts）</b> —— 由确定性工具直接从 diff 计算出的修改范围事实：改了哪些文件、每个文件增删多少、是否命中契约/安全敏感路径。它不依赖任何声明、不经过任何模型，是继「硬门禁结果」「经验知识库」之后的<b>第三个客观锚</b>。契约一致性核对从「模型比对声明与 diff」升级为「声明集合与范围事实集合做确定性求差」。（落实意见 7）</p>
+<p><b>达成判据（done criteria）</b> —— 每条评审发现附带的、可核验的「改到什么状态算过关」描述。优先给确定性判据（对应规则复检通过、指定路径不再命中、指定测试通过），给不出确定性判据时给模型复核判据（附复核问题）。有了它，author 知道终点在哪，销项有依据。（落实意见 1）</p>
+<p><b>收敛清单（ConvergenceChecklist）</b> —— 一份写入文件并同步为置顶 PR 评论的逐项销项清单。评审方每条发现即一条清单项（含改进方向、依据、达成判据）；author 改完逐项勾选或写明不改理由；评审方按达成判据复核销项。<b>清单销项率取代「无新发现」成为收敛指标</b>。（落实意见 3，并为意见 1 的判据提供载体）</p>
+<p><b>轮次台账（RoundLedger）</b> —— 轮次记账主体从 PR 号改为<b>内容指纹</b>（由范围事实派生）。新 PR 与近期已关闭 PR 内容同源时，继承其轮次余额与未销项清单，重提刷不出新额度；人可用 label 显式授权重置。（落实意见 10）</p>
+</div>
+
+<p>四个概念的依赖关系：范围事实是地基（意见 7），向上支撑指纹（意见 10）与契约核对；达成判据（意见 1）写在清单项里，清单（意见 3）是循环收敛的账本；报告版面模板（意见 4）规定这些内容在评审报告中的固定位置；锚定矩阵与可视化（意见 5、6）保证以上全部结构在图上、在页面上都能被逐项核对。</p>
+
+<figure>
+<svg viewBox="0 0 1040 620" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="修订后的 PR 流程与数据结构锚定图">
+  <defs>
+    <marker id="arr" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto"><path d="M0,0 L8,4.5 L0,9 z" fill="#5a6478"/></marker>
+    <marker id="arrB" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto"><path d="M0,0 L8,4.5 L0,9 z" fill="#1f5fbf"/></marker>
+  </defs>
+  <style>
+    .box{fill:#ffffff;stroke:#c9d2e0;stroke-width:1.2;rx:8;}
+    .new{fill:#e8f0fc;stroke:#1f5fbf;stroke-width:1.4;}
+    .mod{fill:#fdf1e4;stroke:#b4540a;stroke-width:1.4;}
+    .t{font-size:13px;fill:#1c2330;font-weight:600;}
+    .s{font-size:11px;fill:#5a6478;}
+    .d{font-size:10.5px;fill:#1f5fbf;font-family:monospace;}
+    .flow{stroke:#5a6478;stroke-width:1.4;fill:none;marker-end:url(#arr);}
+    .flowB{stroke:#1f5fbf;stroke-width:1.4;fill:none;marker-end:url(#arrB);stroke-dasharray:5 4;}
+    .lg{font-size:11px;fill:#5a6478;}
+  </style>
+
+  <!-- Row 1 -->
+  <rect class="box new" x="20" y="30" width="180" height="88" rx="8"/>
+  <text class="t" x="32" y="52">① 同源检测</text>
+  <text class="s" x="32" y="70">比对近期关闭 PR 指纹</text>
+  <text class="s" x="32" y="86">命中→继承轮次与清单</text>
+  <text class="d" x="32" y="104">RoundLedger · lineage</text>
+
+  <rect class="box new" x="240" y="30" width="190" height="88" rx="8"/>
+  <text class="t" x="252" y="52">② 确定性核对</text>
+  <text class="s" x="252" y="70">diff 解析＋路径规则</text>
+  <text class="s" x="252" y="86">契约声明与事实求差</text>
+  <text class="d" x="252" y="104">ScopeFacts · contract_check</text>
+
+  <rect class="box" x="470" y="30" width="180" height="88" rx="8"/>
+  <text class="t" x="482" y="52">③ AI 评审</text>
+  <text class="s" x="482" y="70">复用 PR-Agent</text>
+  <text class="s" x="482" y="86">发现归一 normalize</text>
+  <text class="d" x="482" y="104">Finding · review_provider</text>
+
+  <rect class="box" x="690" y="30" width="180" height="88" rx="8"/>
+  <text class="t" x="702" y="52">④ 风险分流</text>
+  <text class="s" x="702" y="70">影响面：路径规则优先</text>
+  <text class="s" x="702" y="86">类别推导作补充</text>
+  <text class="d" x="702" y="104">RiskAssessment · map_verdict</text>
+
+  <line class="flow" x1="200" y1="74" x2="238" y2="74"/>
+  <line class="flow" x1="430" y1="74" x2="468" y2="74"/>
+  <line class="flow" x1="650" y1="74" x2="688" y2="74"/>
+
+  <!-- Row 2 -->
+  <rect class="box mod" x="240" y="190" width="410" height="96" rx="8"/>
+  <text class="t" x="252" y="212">⑤ 评审报告发布（固定七段版面）</text>
+  <text class="s" x="252" y="230">横幅 / 总结 / 确定性事实区 / 逐条发现(方向·依据·达成判据)</text>
+  <text class="s" x="252" y="246">/ 收敛清单 / 验证结果 / 机器状态 marker</text>
+  <text class="d" x="252" y="266">templates/review_report.md · orchestrator</text>
+
+  <rect class="box new" x="690" y="190" width="180" height="96" rx="8"/>
+  <text class="t" x="702" y="212">收敛清单</text>
+  <text class="s" x="702" y="230">置顶评论＋写入文件</text>
+  <text class="s" x="702" y="246">逐项：open/done/</text>
+  <text class="s" x="702" y="262">waived/split</text>
+  <text class="d" x="702" y="280">ConvergenceChecklist</text>
+
+  <line class="flow" x1="780" y1="118" x2="780" y2="188"/>
+  <line class="flow" x1="445" y1="118" x2="445" y2="188"/>
+  <line class="flowB" x1="688" y1="238" x2="652" y2="238"/>
+
+  <!-- Row 3: loop -->
+  <rect class="box" x="240" y="340" width="190" height="88" rx="8"/>
+  <text class="t" x="252" y="362">⑥ author 自改</text>
+  <text class="s" x="252" y="380">按方向自行决定改法</text>
+  <text class="s" x="252" y="396">勾选清单/写明不改理由</text>
+  <text class="d" x="252" y="414">fix_direction 驱动</text>
+
+  <rect class="box mod" x="470" y="340" width="180" height="88" rx="8"/>
+  <text class="t" x="482" y="362">⑦ 复核销项</text>
+  <text class="s" x="482" y="380">按达成判据核销</text>
+  <text class="s" x="482" y="396">收敛=清单销项完毕</text>
+  <text class="d" x="482" y="414">loop_step · LoopState</text>
+
+  <rect class="box" x="690" y="340" width="180" height="88" rx="8"/>
+  <text class="t" x="702" y="362">⑧ 人工决策</text>
+  <text class="s" x="702" y="380">升级/合入按钮</text>
+  <text class="s" x="702" y="396">rounds-reset 授权</text>
+  <text class="d" x="702" y="414">human_action</text>
+
+  <line class="flow" x1="345" y1="286" x2="345" y2="338"/>
+  <line class="flow" x1="430" y1="384" x2="468" y2="384"/>
+  <line class="flow" x1="650" y1="384" x2="688" y2="384"/>
+  <path class="flowB" d="M470,410 C400,470 560,470 555,430"/>
+  <text class="lg" x="470" y="470">未销项 → 下一轮（轮次余额从台账扣减）</text>
+
+  <!-- control variables strip -->
+  <rect x="20" y="510" width="1000" height="86" rx="8" fill="#eef2f8" stroke="#c9d2e0"/>
+  <text class="t" x="34" y="534">内生控制变量（单独锚定，见 §6 矩阵）</text>
+  <text class="s" x="34" y="556">MAX_ROUNDS（循环上限，⑦） · conf_min（发现置信过滤，③→④） · _SEVERE_BLAST（验证档升级判据，④）</text>
+  <text class="s" x="34" y="574">MAX_FINDINGS_IN_SUMMARY（显示截断，⑤） · 指纹相似阈值（①，新增） · rounds-reset label（⑧，新增）</text>
+
+  <!-- legend -->
+  <rect x="20" y="150" width="14" height="14" class="box new"/><text class="lg" x="40" y="162">本次新增</text>
+  <rect x="110" y="150" width="14" height="14" class="box mod"/><text class="lg" x="130" y="162">本次修改</text>
+  <rect x="200" y="150" width="14" height="14" class="box"/><text class="lg" x="220" y="162">既有环节</text>
+</svg>
+<figcaption>修订后的 PR 流程。每个节点标注其使用的数据结构与代码路径；虚线为清单/台账的状态回流。</figcaption>
+</figure>
+
+<h2>3. 逐条意见的设计修改</h2>
+
+<h3>意见 1 · 反馈必须给出可核验的达成判据</h3>
+<div class="card">
+<p><b>现状：</b>Finding 只有 rationale（问题依据），无「改到什么状态算过关」；<code>loop_step</code> 的收敛定义是「无更多可自改发现」，是隐式终点，author 无法预判评审方下一轮是否满意。已有的 <code>.touchstone/acceptance.yaml</code>（human_curated）是 <b>PR 级</b>验收规格，用于驱动验证子系统，不解决<b>发现级</b>的销项判据问题——两者层次不同，命名与用途保持区分。</p>
+<p><b>修改：</b>Finding 新增 <code>done_criteria</code> 字段，第一轮评审即必须产出。判据分两档，确定性优先：</p>
+<ul>
+<li><b>确定性判据</b>（评审方可机器复核）：对应规则复检通过（如 <code>SEC-001</code> 不再命中）、指定路径的 diff 不再包含某模式、声明与范围事实求差为空、指定测试存在且通过。</li>
+<li><b>复核判据</b>（给不出确定性判据时）：一句可回答的复核问题（如「新增的回滚路径是否覆盖了跨模块调用失败的分支？」），下一轮由评审模型针对该问题定向复核，而不是重新全量评审。</li>
+</ul>
+<p><b>收敛定义随之修改：</b><code>converged</code> = 收敛清单全部销项（done 或 waived）<b>且</b>本轮无新增发现。判据写在清单项里，销项即核销判据，防止「author 声称改好、评审方凭感觉再挑」的发散，也防止双方协商降级。</p>
+</div>
+
+<h3>意见 2 · 给方向与依据，不给动手级指令</h3>
+<div class="card">
+<p><b>现状冲突点：</b>主文档 §3.2 将 <code>suggested_fix</code> 定义为「可直接 apply 的补丁或精确指令」，且 <code>loop.author_actionable</code> 以「有 suggested_fix」为进入自改循环的门槛。评审方上下文不完整（看不到原始需求与关键架构文档），补丁级建议命中率低且剥夺 author 结合自身上下文决策的空间。</p>
+<p><b>修改：</b>按<b>来源</b>拆分建议字段——确定性来源与模型来源待遇不同：</p>
+<ul>
+<li><code>fix_direction</code>（必填）：改进方向的一句话描述，不含具体代码改法。例：「考虑将配置解析独立封装」而非「把 42–58 行剪切到 config.py」。</li>
+<li><code>fix_reasoning</code>（必填）：提出该方向的原因与目的，让 author 知道建议在优化什么。例：「配置模块可独立封装、独立测试，降低本 PR 的评审面」。</li>
+<li><code>deterministic_patch</code>（可选，仅确定性来源）：<code>contract_check</code>／<code>stack_rules</code> 等 confidence=1.0 的规则命中（如硬编码密钥所在行删除）允许给出精确修复——规则命中没有上下文歧义，不受意见 2 约束。<b>模型来源的发现禁止填写此字段</b>；PR-Agent 输出中的 suggestion 代码块在 normalize 阶段降级为方向描述。</li>
+</ul>
+<p><code>author_actionable</code> 的门槛从「有 suggested_fix」改为「有 fix_direction」；原 <code>suggested_fix</code> 字段废弃，报告版面第④段的每条发现按「定位 · 方向 · 依据 · 达成判据」四要素呈现。</p>
+</div>
+
+<h3>意见 3 · 双 agent 交互改为围绕落地清单逐项销项</h3>
+<div class="card">
+<p><b>现状：</b>循环状态存于 PR 评论隐藏 marker（发现签名集 <code>history</code>），只能做集合比较判震荡，没有逐项销项载体；人和 author 都看不到「哪几条闭环了、哪几条为什么不改」。</p>
+<p><b>修改：</b>引入收敛清单，双载体同步：</p>
+<ul>
+<li><b>置顶评论（人机共读）：</b>机器人维护单条置顶评论，正文用 GitHub task list（<code>- [ ]</code>）呈现每条清单项（方向＋依据＋达成判据），评论尾部带隐藏 JSON marker 作机器可读的权威状态。task list 的勾选只是<b>输入信号</b>，权威状态以评审方按达成判据复核后写入 marker 的为准——沿用现有 <code>trusted_bodies</code> 只信机器人评论的防篡改机制。</li>
+<li><b>写入文件（离线审计）：</b>每轮清单快照写入 run artifact（<code>checklist-round-N.json</code>），供意见 6 的可视化页面与校准回放使用。</li>
+</ul>
+<p><b>条目状态机：</b><code>open → done</code>（author 勾选＋评审方按判据复核通过）／<code>→ waived</code>（author 写明不改理由，需人核准）／<code>→ split</code>（拆出独立 PR/issue，附链接）。非法转移（如无复核直接 done）一律回退 open 并记入报告。</p>
+<p><b>震荡与无推进检测升级：</b>从「签名集重复」改为「清单状态无推进」（连续两轮销项率为零且无 waived/split 申请），语义更准，也覆盖了「author 只发布评论不实际修改」的假修情形。</p>
+</div>
+
+<h3>意见 4 · 评审报告版面模板抽为一等设计资产</h3>
+<div class="card">
+<p><b>现状：</b>版面内联在 <code>orchestrator.render_summary</code>（约 §回贴段 60–95 行），设计文档里找不到版面定义，评审设计时无法挑战「什么内容出现在哪一块」。</p>
+<p><b>修改：</b>版面固定为<b>七段</b>，抽出为 <code>touchstone/templates/review_report.md</code>（带占位符的版面文件），代码只做填充；版面文件全文纳入主设计文档新章节「评审报告版面模板」，随文档一起评审、随变更历史演进：</p>
+<table>
+<tr><th>段</th><th>内容</th><th>读者</th></tr>
+<tr><td>① 声明与风险横幅</td><td>ADVISORY 声明＋风险等级＋建议动作＋验证档</td><td>人（第一眼）</td></tr>
+<tr><td>② 一句话总结</td><td>本 PR 在做什么、评审方总体判断</td><td>人</td></tr>
+<tr><td>③ 确定性事实区</td><td>范围事实摘要（文件数/增删行/敏感路径命中）＋门禁状态＋同源提示（如有）</td><td>人＋机</td></tr>
+<tr><td>④ 逐条发现</td><td>定位 · 方向 · 依据 · 达成判据（按置信降序，显示截断）</td><td>人＋author agent</td></tr>
+<tr><td>⑤ 收敛清单</td><td>task list＋销项率＋轮次余额</td><td>人＋author agent</td></tr>
+<tr><td>⑥ 验证结果</td><td>验证子系统输出（如触发）</td><td>人</td></tr>
+<tr><td>⑦ 机器状态</td><td>隐藏 JSON marker（LoopState＋清单权威状态＋台账引用）</td><td>机</td></tr>
+</table>
+</div>
+
+<h3>意见 5 · 数据结构与设计图严格对应</h3>
+<div class="card">
+<p><b>现状：</b>主文档 §2 五个视图与 §3 八个结构之间无对应关系；内生控制变量（<code>MAX_ROUNDS</code>、<code>conf_min</code>、<code>_SEVERE_BLAST</code> 等）散在代码常量里，图上无锚点，读者只能猜测某个参数是写进评审回复还是后台控制变量。</p>
+<p><b>修改：</b>主文档新增「数据结构-流程锚定矩阵」章节（本文 §6 给出全量矩阵，直接搬入）；§2.4 视图二的每个流程节点补注「使用的结构（读/写）＋代码路径」；内生控制变量单列一节，逐个标注它控制哪个环节、默认值、修改途径。此后新增任何结构或控制变量，矩阵行与图上锚点必须同步提交，作为文档合入的检查项。</p>
+</div>
+
+<h3>意见 6 · 全流程中间状态可视化（带真实数据）</h3>
+<div class="card">
+<p><b>现状：</b>可视化交付物不在仓库。设计逻辑、路径与中间状态无法用真实数据逐项核对，难以发现「看似正确、实则不符」的实现。</p>
+<p><b>修改：</b>新增交付物 <code>docs/touchstone-visualization.html</code>——自包含离线 HTML＋内联 SVG＋原生 JS，无外部依赖。以一个真实 PR 案例（建议用自证运行产生的真实数据，如 PR #31–#34 系列）贯穿全流程，每个节点可展开查看该节点的<b>真实中间值</b>：范围事实 JSON、逐条 Finding、清单各轮状态快照、LoopState marker 原文、RiskAssessment、校准记录；内生控制变量集中一栏展示当次取值。</p>
+<p><b>验收标准（写进文档）：</b>流程图上任一环节的中间值在页面上不可见，即判定该处设计或实现存在缺陷——可视化不是演示品，是验收工具。数据来源即意见 3 的 <code>checklist-round-N.json</code> 与既有 run artifact，页面加载本地 JSON，不需网络。</p>
+</div>
+
+<h3>意见 7 · 修改范围由确定性工具产出为一等结构</h3>
+<div class="card">
+<p><b>现状（半落地）：</b><code>contract_check.parse_diff</code> 已用 unidiff 做确定性解析，SCOPE-001/TEST-001/DUP-001 三项核对已是 confidence=1.0 的规则实现——意见 7 的「用确定性工具核对声明」这一半已成立。缺口在：① 解析产物内部消化，未成一等结构，报告里没有给人看的「修改范围概览」；② <code>map_verdict</code> 的 <code>blast_radius</code> 由发现类别（模型来源）推导，安全/契约敏感路径的命中判断依赖模型报出来，而非路径规则直接算出来。</p>
+<p><b>修改：</b></p>
+<ul>
+<li>新增一等结构 <code>ScopeFacts</code>（定义见 §4.1），由 <code>contract_check.scope_facts(diff)</code> 纯规则产出。</li>
+<li>新增仓级路径规则文件 <code>.touchstone/scope-rules.yaml</code>：声明契约目录、安全敏感路径、签名相关路径的 glob 列表（human_curated，与 acceptance.yaml 同级待遇）。</li>
+<li><code>blast_radius</code> 的推导顺序改为：<b>路径规则命中（确定性）∪ 发现类别推导（模型，补充）</b>。改动只碰到敏感路径但模型没报任何发现时，影响面照样点亮——消除「模型漏报导致影响面漏判」的路径。</li>
+<li>报告版面第③段呈现范围事实摘要，人第一眼即可看到本 PR 的机器实测修改范围，与 author 的 SubmissionContract 声明并排对照。</li>
+<li><code>ScopeFacts.fingerprint</code> 作为意见 10 指纹的输入（见下）。</li>
+</ul>
+</div>
+
+<h3>意见 10 · 轮次台账：同内容重提刷不出新轮次</h3>
+<div class="card">
+<p><b>现状：</b>轮次以 PR 号记账（LoopState 从该 PR 自己的评论 marker 派生），关旧 PR、原样开新 PR 即重置轮次并让评审方失去历史记忆——这是会上确认的可钻漏洞。</p>
+<p><b>修改：</b></p>
+<ul>
+<li><b>指纹：</b><code>fingerprint = (文件集哈希, 每文件 hunk 结构摘要)</code>，由 ScopeFacts 派生。同源判定：文件集 Jaccard ≥ 0.8 <b>且</b> hunk 结构相似度 ≥ 阈值（两者均为控制变量，进锚定矩阵）。不用全文哈希——改一个空格即可绕过。</li>
+<li><b>不新增存储：</b>台账不建库。PR 打开时（preflight 阶段）经 API 检索近 30 天已关闭 PR，按文件集初筛，再对候选取 diff 算指纹比对；命中即从该关闭 PR 的置顶评论（清单＋marker）<b>重建</b>台账——与现有「状态存于评论 marker」的机制同构，无额外一致性负担。</li>
+<li><b>命中处理是记录＋提示，不是拦截：</b>继承轮次余额与未销项清单，报告横幅明示「与已关闭的 #N 同源，历史已消耗 X 轮、Y 条未销项，本 PR 剩余轮次 Z」；余额为零直接升级人工。正当的关旧开新（rebase 损坏、换分支）不受阻，只是历史欠账原样跟随。</li>
+<li><b>人工重置口：</b>PR 打上 <code>rounds-reset</code> label（需仓库写权限）即显式授权重置台账——例外权归人，与系统「人是最终决策者」的定位一致。</li>
+<li><b>行为信号入学习回路：</b>「轮次耗尽→关闭→同源重提」作为提交方行为层面的负样本素材记入学习回路，它比单条代码问题更能说明提交方在回避收敛。</li>
+</ul>
+</div>
+
+<h2>4. 核心数据结构（新增与修改）</h2>
+
+<h3>4.1 ScopeFacts · 范围事实 <span class="tag done">新增</span></h3>
+<table>
+<tr><th>成员</th><th>含义与用途</th></tr>
+<tr><td><code>changed_files[]</code></td><td>每项 {path, added, deleted, hunks[]}：变更文件路径、增删行数、hunk 结构摘要（起止行＋规模）。给人看修改范围概览，给指纹提供原料</td></tr>
+<tr><td><code>sensitive_hits[]</code></td><td>每项 {path, rule}：命中 <code>.touchstone/scope-rules.yaml</code> 中哪条路径规则（contract/security/signing）。直接点亮 blast_radius，不经模型</td></tr>
+<tr><td><code>totals</code></td><td>{files, added, deleted}：整体规模。供体量门禁与显示摘要使用</td></tr>
+<tr><td><code>fingerprint</code></td><td>{fileset_hash, hunk_shape}：内容指纹。供意见 10 的同源比对使用</td></tr>
+<tr><td><code>parse_ok / parse_warning</code></td><td>解析是否成功与失败原因。沿用现有防静默故障约定：解析失败必须显式标注「确定性核对未生效」，不得让空结果被读成「干净」</td></tr>
+</table>
+
+<h3>4.2 Finding · 评审发现 <span class="tag mod">修改</span></h3>
+<table>
+<tr><th>成员</th><th>变化</th><th>含义与用途</th></tr>
+<tr><td><code>fix_direction</code></td><td>新增·必填</td><td>改进方向的一句话描述，不含具体改法。author 进入自改循环的门槛字段（取代原 suggested_fix 的门槛作用）</td></tr>
+<tr><td><code>fix_reasoning</code></td><td>新增·必填</td><td>提出该方向的原因与目的。让 author 结合自身上下文判断怎么改，也让人理解建议的出发点</td></tr>
+<tr><td><code>done_criteria</code></td><td>新增·必填</td><td>达成判据：{kind: deterministic|review, spec}。deterministic 给规则/路径/测试复检规格；review 给一句定向复核问题。销项复核的依据</td></tr>
+<tr><td><code>deterministic_patch</code></td><td>新增·可选</td><td>仅 confidence=1.0 的确定性规则来源可填的精确修复。模型来源禁填；normalize 阶段将 PR-Agent 的 suggestion 块降级为方向描述</td></tr>
+<tr><td><code>suggested_fix</code></td><td><b>废弃</b></td><td>原「可直接 apply 的补丁或精确指令」定义与意见 2 冲突，删除</td></tr>
+<tr><td colspan="3" class="small">其余成员（file/line_range、category、severity/confidence、rationale、consumable_by）不变。</td></tr>
+</table>
+
+<h3>4.3 ConvergenceChecklist · 收敛清单 <span class="tag done">新增</span></h3>
+<table>
+<tr><th>成员</th><th>含义与用途</th></tr>
+<tr><td><code>items[]</code></td><td>每项 {finding_ref, direction, done_criteria, status, note}：清单项。finding_ref 指回发现签名；status ∈ open/done/waived/split；note 存 waived 理由或 split 链接</td></tr>
+<tr><td><code>round / resolved_rate</code></td><td>当前轮次与销项率。销项率是收敛指标，连续两轮为零且无 waived/split 申请即判无推进</td></tr>
+<tr><td><code>authority</code></td><td>权威状态来源标记：勾选是输入信号，评审方按 done_criteria 复核后写入 marker 的状态才是权威。防 author 直接勾选虚报销项</td></tr>
+<tr><td><code>artifact_path</code></td><td>本轮快照写入文件的路径（checklist-round-N.json）。供可视化与校准回放</td></tr>
+</table>
+
+<h3>4.4 RoundLedger · 轮次台账 <span class="tag done">新增</span></h3>
+<table>
+<tr><th>成员</th><th>含义与用途</th></tr>
+<tr><td><code>fingerprint</code></td><td>本 PR 的内容指纹（来自 ScopeFacts）。记账主键</td></tr>
+<tr><td><code>lineage[]</code></td><td>同源链：匹配到的历史 PR 编号及各自消耗的轮次。报告横幅据此明示历史</td></tr>
+<tr><td><code>rounds_spent / rounds_left</code></td><td>累计已耗轮次与剩余额度（MAX_ROUNDS − 累计）。余额为零直接升级人工</td></tr>
+<tr><td><code>inherited_open_items[]</code></td><td>从同源关闭 PR 继承的未销项清单项。自动搬入新 PR 的收敛清单，历史欠账不清零</td></tr>
+<tr><td><code>reset_by</code></td><td>rounds-reset label 的授权人（如有）。重置是人工显式动作，留审计痕迹</td></tr>
+</table>
+
+<h2>5. 接口定义（新增与修改）</h2>
+<pre><code># contract_check.py —— 新增
+def scope_facts(diff_text, scope_rules) -> ScopeFacts
+#   纯规则产出范围事实：unidiff 解析 + scope-rules.yaml 路径匹配 + 指纹计算。
+#   解析失败沿用 _PARSE_WARNING 约定，parse_ok=False 时下游必须显式标注。
+
+# review_provider.py —— 修改
+def map_verdict(findings, nmap, scope_facts) -> (findings, RiskAssessment)
+#   blast_radius = scope_facts.sensitive_hits 的规则命中（确定性）∪ 发现类别推导（补充）。
+
+# loop.py —— 修改
+def author_actionable(findings, rule_index)
+#   门槛从「有 suggested_fix」改为「有 fix_direction」；正确性类仍不入自改循环。
+def loop_step(checklist, state, ledger, max_rounds, ci_passed) -> (decision, reason, state)
+#   converged = 清单全部销项(done|waived) 且 本轮无新增发现 且 CI 非红；
+#   轮次上限按 ledger.rounds_left 计，不按本 PR 自身轮次计；
+#   无推进 = 连续两轮销项率为零且无 waived/split 申请。
+
+# checklist.py —— 新增模块
+def render(checklist) -> str            # 生成置顶评论正文（task list + 隐藏 marker）
+def reconcile(checklist, events) -> ConvergenceChecklist
+#   吸收 author 勾选与说明（输入信号），按 done_criteria 复核后落为权威状态；
+#   deterministic 判据机器复核，review 判据发定向复核问题给评审模型。
+
+# lineage.py —— 新增模块（落地时从 preflight 拆出：preflight 保持「真跑前自检」单一职责）
+def detect_lineage(scope_fp, api, owner, repo, current_number, ...) -> RoundLedger
+#   检索近 30 天关闭 PR → 文件集初筛 → 指纹比对 → 命中则从其置顶评论重建台账；
+#   PR 带 rounds-reset label 时返回全新台账并记录授权人。
+
+# orchestrator.py —— 修改
+#   报告渲染改为填充 templates/review_report.md 七段版面；
+#   维护收敛清单置顶评论；每轮清单快照写入 run artifact。</code></pre>
+
+<h2>6. 数据结构-流程锚定矩阵（意见 5 落实，含既有结构）</h2>
+<table>
+<tr><th>结构 / 控制变量</th><th>流程锚点（图上节点）</th><th>写方</th><th>读方</th><th>代码路径</th></tr>
+<tr><td>SubmissionContract</td><td>PR 提交（入口）</td><td>author agent</td><td>②确定性核对、③AI 评审</td><td>orchestrator · load_yaml</td></tr>
+<tr><td><b>ScopeFacts</b></td><td>②确定性核对</td><td>contract_check.scope_facts</td><td>④分流、⑤报告③段、①指纹</td><td>contract_check.py</td></tr>
+<tr><td>Finding（修订版）</td><td>③AI 评审 → ④分流</td><td>review_provider.normalize / contract_check</td><td>⑤报告④段、清单生成</td><td>review_provider.py</td></tr>
+<tr><td>RiskAssessment</td><td>④风险分流</td><td>map_verdict / route</td><td>⑤报告①段、autonomy、calibrate</td><td>review_provider.py</td></tr>
+<tr><td><b>ConvergenceChecklist</b></td><td>⑤报告⑤段 ↔ ⑥⑦循环</td><td>checklist.reconcile</td><td>loop_step、可视化、calibrate</td><td>checklist.py（新）</td></tr>
+<tr><td>LoopState</td><td>⑦复核销项</td><td>loop_step</td><td>下一轮 loop_step</td><td>loop.py · 评论 marker</td></tr>
+<tr><td><b>RoundLedger</b></td><td>①同源检测 → ⑦轮次扣减</td><td>lineage.detect_lineage</td><td>loop_step、⑤报告③段横幅</td><td>preflight.py</td></tr>
+<tr><td>VerificationResult</td><td>⑥验证（高风险触发）</td><td>verify_change</td><td>⑤报告⑥段、人工决策</td><td>verify/verify_change.py</td></tr>
+<tr><td>CalibrationRecord</td><td>合入后（影子校准）</td><td>calibrate</td><td>学习回路</td><td>calibrate.py</td></tr>
+<tr><td>MAX_ROUNDS</td><td>⑦（经①台账全局化）</td><td colspan="2">控制变量 · 默认 3</td><td>loop.py:18</td></tr>
+<tr><td>conf_min</td><td>③→④ 置信过滤</td><td colspan="2">控制变量 · 默认 0.5</td><td>review_provider.py:48</td></tr>
+<tr><td>_SEVERE_BLAST</td><td>④ 验证档升级判据</td><td colspan="2">控制变量 · {cross_module_contract, security_surface}</td><td>review_provider.py:296</td></tr>
+<tr><td>MAX_FINDINGS_IN_SUMMARY</td><td>⑤ 显示截断（核对不截断）</td><td colspan="2">控制变量</td><td>llm_budget.py</td></tr>
+<tr><td><b>指纹相似阈值</b></td><td>① 同源判定</td><td colspan="2">控制变量 · Jaccard 0.8 ＋ hunk 相似阈值（新增）</td><td>lineage.py（新）</td></tr>
+<tr><td><b>rounds-reset label</b></td><td>⑧ 人工重置授权</td><td colspan="2">控制变量 · 人工显式动作（新增）</td><td>lineage.py（新）</td></tr>
+</table>
+
+<h2>7. 落地清单</h2>
+<table>
+<tr><th>#</th><th>动作</th><th>对象</th><th>覆盖意见</th></tr>
+<tr><td>1</td><td>主文档 §2.1 增补四个新概念；§2.4 视图二各节点补注结构与代码路径；新增「锚定矩阵」「版面模板」两章；§3 增 3.9–3.11、修 3.2；§4 按本文 §5 修订；变更历史记录</td><td>docs/touchstone-design.html</td><td>1–5、7、10</td></tr>
+<tr><td>2</td><td>新增 <code>scope_facts()</code> 与 <code>.touchstone/scope-rules.yaml</code>；<code>map_verdict</code> 接入确定性影响面</td><td>contract_check.py · review_provider.py</td><td>7</td></tr>
+<tr><td>3</td><td>Finding 字段改造与 normalize 降级逻辑（suggestion 块→方向描述）</td><td>review_provider.py</td><td>2</td></tr>
+<tr><td>4</td><td>新模块 checklist.py；loop_step 收敛/无推进判据改造</td><td>checklist.py · loop.py</td><td>1、3</td></tr>
+<tr><td>5</td><td>同源检测与台账重建；rounds-reset 授权</td><td>lineage.py（新模块）</td><td>10</td></tr>
+<tr><td>6</td><td>版面抽出为 templates/review_report.md；orchestrator 改为填充式渲染＋清单评论维护＋轮次快照写入 artifact</td><td>orchestrator.py · templates/</td><td>3、4</td></tr>
+<tr><td>7</td><td>新交付物：全流程可视化页面（真实案例数据、自包含离线）</td><td>docs/touchstone-visualization.html</td><td>5、6</td></tr>
+<tr><td>8</td><td>测试补齐：scope_facts 解析长尾、清单状态机非法转移、指纹同源判定正反例、台账重建、余额为零升级</td><td>tests/</td><td>全部</td></tr>
+</table>
+
+<h2>8. 一致性校验</h2>
+<p><b>已发现并在本文中解决的冲突：</b></p>
+<ul>
+<li>意见 2 与自改循环的依赖冲突：<code>author_actionable</code> 原以 suggested_fix 为门槛，废弃该字段会使循环空转——已将门槛改为 fix_direction，循环语义不变，确定性来源保留 deterministic_patch 作精确修复通道。</li>
+<li>「达成判据」与既有 <code>acceptance.yaml</code> 的概念区分：前者是发现级销项判据（评审方产出），后者是 PR 级验收规格（人核准、驱动验证子系统）。两者层次不同、命名不混用，主文档 §3.1 的表述随之补注。</li>
+<li>意见 10 的存储方案与既有「状态存于评论 marker」机制同构：台账从关闭 PR 的置顶评论重建，不引入新存储，也不产生双源一致性问题；防篡改沿用 trusted_bodies 过滤。</li>
+</ul>
+<p><b>有意接受的遗留项：</b></p>
+<ul>
+<li>指纹对「刻意打散文件结构的同内容重提」有绕过空间（大幅改名＋重排 hunk）。接受理由：绕过成本已显著高于收益，且此类行为本身会被行为信号记录；完全防御需语义级比对，代价与定位不符。</li>
+<li>review 类达成判据的复核仍依赖模型，存在与被复核对象同源的相关性盲点。接受理由：与主文档 §2.2 问题三的既有结论一致——独立性主要来源仍是确定性门禁与验证子系统，复核判据只求把「凭感觉再挑」收敛为「定向回答一个问题」。</li>
+<li>意见 8（动态测试分层采样）、意见 9（评分分栏）、意见 11（提交前冒烟门禁）本次明确不采纳，相关接缝（route 的验证档、可插拔检查）保持现状，不做预留性改动。</li>
+</ul>
+<p><b>逐维检查结论：</b>概念一致性——四个新概念全文单一命名，与既有概念无同义异名；状态完备性——清单状态机四态齐备、非法转移有回退策略，台账在「无历史命中／命中／人工重置」三输入下行为均有定义；接口完备性——§3 各修改点在 §5 均有对应接口；层次一致性——范围事实归确定性层、方向与判据归评审层、销项复核归循环层、重置权归人，未越层。</p>
+
+<h2>9. 变更历史</h2>
+<table>
+<tr><th>日期</th><th>变更内容</th><th>原因</th></tr>
+<tr><td>2026-07-04</td><td>初版：评审意见 1–7、10 的落实修订设计（意见 8、9、11 不采纳）</td><td>2026-06-25 技术方案评审会遗留意见处理</td></tr>
+<tr><td>2026-07-04</td><td>落地清单第 1、7 项完成：修订内容已回灌主文档正文（§2.1/§2.4/§3.2/§3.9–3.12/§4.8/§5/§7）；可视化交付物 touchstone-visualization.html 上线（真实模块产出数据，两轮回放）。回放发现并修复缺陷：台账继承种子清单致第 1 轮误判无推进（checklist.no_progress 第 0 轮闸）</td><td>落地收尾；意见 6 验收标准的首次实际运用</td></tr>
+<tr><td>2026-07-04</td><td>落地修订：同源检测落在新模块 lineage.py（原写 preflight.py）——preflight 保持「真跑前自检」单一职责；author 申报协议确定为评论内 touchstone-ack 代码块；补记 unidiff 对畸形输入抛库内异常的加固</td><td>代码落地（意见 2、3、7、10 及主链接线）完成后的文档一致性回写</td></tr>
+</table>
+
+</div>
+</body>
+</html>

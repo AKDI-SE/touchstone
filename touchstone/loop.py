@@ -35,31 +35,75 @@ def _sig(f):
 
 
 def author_actionable(findings, rule_index):
-    """可由 author 自改的发现：非正确性类 且 有 suggested_fix。
+    """可由 author 自改的发现：非正确性类 且 有 fix_direction（改进方向）。
     正确性判定双路：① 在册规则的 class==correctness；② 发现自带 category 落在正确性集合
-    （覆盖 PR-Agent 源的 PRA-* 发现——其 rule_id 不在 standards rule_index，单靠 ① 会漏网）。"""
+    （覆盖 PR-Agent 源的 PRA-* 发现——其 rule_id 不在 standards rule_index，单靠 ① 会漏网）。
+    修订设计 §5（评审意见 2）：门槛从「有 suggested_fix（补丁/精确指令）」改为「有 fix_direction
+    （方向）」——author 按方向结合自身上下文自行决定改法；suggested_fix 作过渡别名仍受理。"""
     out = []
     for f in findings:
         if rule_index.get(f.get("rule_id"), {}).get("class") == "correctness":
             continue                                   # 在册正确性规则
         if f.get("category") in _CORRECTNESS_CATEGORIES:
             continue                                   # PR-Agent 源 correctness（PRA-* 等）
-        if not (f.get("suggested_fix") or "").strip():
+        if not (f.get("fix_direction") or f.get("suggested_fix") or "").strip():
             continue
         out.append(f)
     return out
 
 
-def loop_step(findings, rule_index, state, max_rounds=MAX_ROUNDS, ci_passed=None):
+def loop_step(findings, rule_index, state, max_rounds=MAX_ROUNDS, ci_passed=None,
+              checklist_pair=None, ledger=None):
     """返回 (decision, reason, new_state)。decision ∈ converged|continue|escalate。
     ci_passed：当前轮 CI/verify 判定（True 绿 / False 红 / None 未知）。
     发现清零但 CI 红时不收敛——发 continue 让 author 接着修构建/测试（仍受轮次上限约束）。
-    安全性不依赖此项：converged 与否都不放行，自动合并另有独立的质量门禁（总闸）闸。"""
+    安全性不依赖此项：converged 与否都不放行，自动合并另有独立的质量门禁（总闸）闸。
+
+    修订设计 §5（评审意见 1、3、10）的可选增强（不传则行为与原版完全一致）：
+      checklist_pair=(prev, cur)：收敛清单前后两轮。收敛定义升级为「清单全部销项（done|waived|split）
+        且无可自改发现」；无推进判定升级为「清单销项无推进」（覆盖只发布评论不实际修改的假修）。
+      ledger：轮次台账（RoundLedger）。轮次预算按 ledger['rounds_left'] 计——同内容重提
+        继承历史消耗，刷不出新额度；余额 ≤0 直接升级人工。"""
+    # 台账预算（评审意见 10）：同源重提继承历史轮次，本函数只看剩余额度。
+    if ledger is not None:
+        budget_left = int(ledger.get("rounds_left", max_rounds))
+        if budget_left <= 0:
+            nr0 = state.round + 1
+            return ("escalate",
+                    f"轮次台账余额为零（同源历史已耗 {ledger.get('rounds_spent', 0)} 轮）→ 交人；"
+                    "如属正当重提需重置额度，请打 rounds-reset label",
+                    LoopState(nr0, state.history, ci_passed))
+        max_rounds = min(max_rounds, state.round + budget_left)
+
     acts = author_actionable(findings, rule_index)
     cur = sorted({_sig(f) for f in acts})
     prev_sets = [set(h) for h in state.history]
     nr = state.round + 1
     hist = (state.history + [cur])[-(max_rounds + 1):]   # 限长,避免 marker 膨胀
+
+    # 清单语义（评审意见 1、3）：收敛与推进以清单销项为准。
+    if checklist_pair is not None:
+        import checklist as _cl
+        prev_cl, cur_cl = checklist_pair
+        if _cl.all_resolved(cur_cl) and not cur:
+            if ci_passed is False:
+                if nr >= max_rounds:
+                    return ("escalate", f"清单已销项但 CI/verify 持续为红，轮次耗尽（≥ {max_rounds}）→ 交人",
+                            LoopState(nr, hist, ci_passed))
+                return ("continue", "收敛清单已全部销项，但 CI/verify 为红：请修复构建/测试失败后再 push",
+                        LoopState(nr, hist, ci_passed))
+            return ("converged", "收敛清单全部销项且无新增可自改发现（正确性另由 verify 把关）",
+                    LoopState(nr, hist, ci_passed))
+        if _cl.no_progress(prev_cl, cur_cl):
+            return ("escalate", "无推进：清单销项率连续未提升且无 waived/split 申报（含假修）",
+                    LoopState(nr, hist, ci_passed))
+        if nr >= max_rounds:
+            open_n = sum(1 for i in cur_cl.get("items", []) if i["status"] == "open")
+            return ("escalate", f"轮次耗尽（≥ {max_rounds}）仍有 {open_n} 条未销项 → 交人",
+                    LoopState(nr, hist, ci_passed))
+        return ("continue",
+                f"第 {nr} 轮，清单销项率 {int(cur_cl.get('resolved_rate', 0) * 100)}%，待 author 逐项申报",
+                LoopState(nr, hist, ci_passed))
 
     # 收敛：无可自改发现。但若【已知 CI/verify 为红】则不算改完——提示 author 接着修。
     if not cur:

@@ -1,0 +1,27 @@
+# ============================================================================
+# .touchstone/scope-rules.yaml —— 范围事实的仓级路径规则（修订设计 §4.1，评审意见 7）
+# ----------------------------------------------------------------------------
+# 声明哪些路径属于敏感面（契约 / 安全 / 签名）。ScopeFacts 按此确定性点亮影响面
+# （blast_radius），不依赖模型报出类别——模型漏报不再导致影响面漏判。
+# human_curated：与 acceptance.yaml 同级待遇，改动本文件应经人评审。
+# 语法：factor -> [Python 正则]，对小写化后的文件路径做 re.search 匹配。
+# 未在此声明的 factor 使用内置默认（见 contract_check._DEFAULT_SCOPE_RULES）；
+# 在此声明的 factor 整体替换默认（避免合并歧义）。
+# ============================================================================
+factors:
+  cross_module_contract:
+    - '(^|/)migrations?/'
+    - '\.sql$'
+    - '\.proto$'
+    - '\.graphql$'
+    - '(^|/)schema[./]'
+    - 'openapi'
+    - 'swagger'
+    # 本仓的跨模块契约面：评审报告版面模板与检查/标准配置本身
+    - '(^|/)templates/review_report\.md$'
+    - '(^|/)\.touchstone/(standards|checks|scope-rules)\.yaml$'
+  security_surface:
+    - '(^|/)(auth|oauth|iam|security|crypto|secrets?|credentials?)([/_.]|$)'
+    - '(password|keystore|private[_-]?key)'
+    # 本仓的安全敏感面：防伪造/防投毒相关模块
+    - '(^|/)touchstone/(loop|lineage|checklist)\.py$'
