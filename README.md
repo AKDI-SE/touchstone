@@ -88,36 +88,51 @@ python -m touchstone.run --repo owner/name --pr 314 --post
 
 ## GitHub 集成
 
-### 快速部署到你的仓库（5 分钟）
+### 快速部署到你的仓库（3 分钟）
 
-1. **Clone 本仓**（或把 `touchstone/`、`verify/`、`.touchstone/`、`.github/workflows/` 复制到你的仓库）。
+不需要 fork 或 clone Touchstone 代码——直接在你的仓库里创建一个 workflow，引用 Touchstone 的可复用 workflow 即可（就像 `uses: actions/checkout@v4` 一样）。
 
-2. **配置 Secrets**（Settings → Secrets and variables → Actions → New repository secret）:
+**Step 1**：在你的仓库创建 `.github/workflows/touchstone.yml`：
 
-   | Secret 名 | 必填 | 说明 | 示例 |
-   |---|---|---|---|
-   | `LLM_BASE_URL` | ✅ | LLM 的 OpenAI 兼容端点 | `https://open.bigmodel.cn/api/coding/paas/v4` |
-   | `LLM_API_KEY` | ✅ | LLM 端点的 API key | `your-key-here` |
-   | `LLM_MODEL` | ✅ | 评审用的模型名 | `glm-5.2` |
-   | `TOUCHSTONE_LLM_CONTEXT_TOKENS` | 推荐 | 模型上下文窗口（token），用于精确预算 | `128000` |
-   | `TOUCHSTONE_LLM_OUTPUT_TOKENS` | 推荐 | 模型最大输出（token） | `4096` |
+```yaml
+name: Touchstone Review
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
 
-   > `GITHUB_TOKEN` 由 GitHub Actions 自动提供，无需手动配。
+jobs:
+  touchstone:
+    uses: AKDI-SE/touchstone/.github/workflows/touchstone.yml@v1
+    secrets: inherit
+```
 
-3. **配置 Variables**（Settings → Secrets and variables → Actions → Variables tab）:
+就这样——你的仓库不需要任何 Touchstone 代码。版本由 `@v1` tag 锁定。
 
-   | Variable 名 | 默认 | 说明 |
-   |---|---|---|
-   | `TOUCHSTONE_MAX_DIFF_LINES` | `0`（关） | 单 PR 行数上限，超限不调 LLM 直接 block 并提示拆分。建议 `500`–`2000` |
+**Step 2**：配置 Secrets（Settings → Secrets and variables → Actions → New repository secret）:
 
-4. **分支保护**（Settings → Branches → Branch protection rules）:
-   - 把 `touchstone/gate` 设为 **Required status check**。
-   - 这样总闸是合入的硬前提——确定性检查不过就拦。
+| Secret 名 | 必填 | 说明 | 示例 |
+|---|---|---|---|
+| `LLM_BASE_URL` | ✅ | LLM 的 OpenAI 兼容端点 | `https://open.bigmodel.cn/api/coding/paas/v4` |
+| `LLM_API_KEY` | ✅ | LLM 端点的 API key | `your-key-here` |
+| `LLM_MODEL` | ✅ | 评审用的模型名 | `glm-5.2` |
+| `TOUCHSTONE_LLM_CONTEXT_TOKENS` | 推荐 | 模型上下文窗口（token），用于精确预算 | `128000` |
+| `TOUCHSTONE_LLM_OUTPUT_TOKENS` | 推荐 | 模型最大输出（token） | `4096` |
 
-5. **验证**：开一个测试 PR，应看到：
-   - PR 评论里出现 **Touchstone · ADVISORY** 评审（含 AI 意见 + 确定性事实）。
-   - check `touchstone/gate` 为 success（无 block 级发现时）。
-   - 若 LLM 未配通，评论顶部会出现 `⚠️ AI 评审...` 横幅（不静默）。
+> `GITHUB_TOKEN` 由 GitHub Actions 自动提供，无需手动配。
+
+**Step 3**：配置 Variables（Settings → Secrets and variables → Actions → Variables tab）:
+
+| Variable 名 | 默认 | 说明 |
+|---|---|---|
+| `TOUCHSTONE_MAX_DIFF_LINES` | `0`（关） | 单 PR 行数上限，超限不调 LLM 直接 block 并提示拆分。建议 `500`–`2000` |
+
+**Step 4**：分支保护（Settings → Branches → Branch protection rules）:
+- 把 `touchstone/gate` 设为 **Required status check**——确定性检查不过就拦。
+
+**Step 5**：验证——开一个测试 PR，应看到：
+- PR 评论里出现 **Touchstone · ADVISORY** 评审（含 AI 意见 + 确定性事实）。
+- check `touchstone/gate` 为 success（无 block 级发现时）。
+- 若 LLM 未配通，评论顶部会出现 `⚠️ AI 评审...` 横幅（不静默）。
 
 ### 五条工作流
 
