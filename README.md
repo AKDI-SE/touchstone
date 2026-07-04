@@ -90,7 +90,7 @@ python -m touchstone.run --repo owner/name --pr 314 --post
 
 ### 快速部署到你的仓库（3 分钟）
 
-不需要 fork 或 clone Touchstone 代码——直接在你的仓库里创建一个 workflow，引用 Touchstone 的可复用 workflow 即可（就像 `uses: actions/checkout@v4` 一样）。
+不需要 fork 或 clone Touchstone 代码——在你的仓库创建一个 workflow，checkout Touchstone 的 release 版本、装依赖、跑 `orchestrator.py` 即可。
 
 **Step 1**：在你的仓库创建 `.github/workflows/touchstone.yml`：
 
@@ -100,13 +100,48 @@ on:
   pull_request_target:
     types: [opened, synchronize, reopened]
 
+permissions:
+  contents: read
+  pull-requests: write
+  checks: write
+
 jobs:
   touchstone:
-    uses: AKDI-SE/touchstone/.github/workflows/touchstone.yml@v1
-    secrets: inherit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.ref }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install -r requirements.txt
+      - name: Set up PR-Agent
+        run: |
+          python -m venv .pragent-venv
+          .pragent-venv/bin/pip install -U pip
+          .pragent-venv/bin/pip install pr-agent
+      - name: Checkout Touchstone
+        uses: actions/checkout@v4
+        with:
+          repository: AKDI-SE/touchstone
+          ref: v1                      # 锁定版本
+          path: .touchstone-src
+      - name: Run review
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LLM_BASE_URL: ${{ secrets.LLM_BASE_URL }}
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          LLM_MODEL: ${{ secrets.LLM_MODEL }}
+          TOUCHSTONE_PRAGENT_CMD: ".pragent-venv/bin/python -m touchstone.pr_agent_runner"
+          TOUCHSTONE_SKIP_GATE: "true"
+        run: |
+          pip install -r .touchstone-src/requirements.txt
+          cd .touchstone-src && python touchstone/orchestrator.py
 ```
 
-就这样——你的仓库不需要任何 Touchstone 代码。版本由 `@v1` tag 锁定。
+你的仓库不需要任何 Touchstone 代码——版本由 `ref: v1` 锁定。
 
 **Step 2**：配置 Secrets（Settings → Secrets and variables → Actions → New repository secret）:
 
