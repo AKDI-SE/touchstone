@@ -14,7 +14,7 @@ JAVA-LOG-001）。
 import re
 import fnmatch
 
-import contract_check
+from touchstone import contract_check
 
 
 # ---- applies_to / 栈判定 ------------------------------------------------------

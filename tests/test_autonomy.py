@@ -1,6 +1,6 @@
 """自动放行达标路径（可选，默认关）：判据各闸 + 经验层。纯函数,离线。
 准入只看总闸(gate=='success')；质量门禁/可信绿规则已下沉到 verify 插件(见 test_checks)。"""
-import autonomy as A
+from touchstone import autonomy as A
 
 
 # ---------------- 变更分类 ----------------
@@ -224,7 +224,7 @@ def test_graduate_from_calibration_and_decision_inputs():
 # ============ 第七道闸·基线新鲜度（merge skew 防护）回归 ============
 def test_base_fresh_gate_blocks_stale_base():
     """基线过期（base_fresh=False）→ 即便其余闸全绿也拒绝自动放行；None（未评估）保持兼容不拦。"""
-    import autonomy as A
+    from touchstone import autonomy as A
     kw = dict(risk={"risk_band": "low"}, findings=[], loop_decision="converged",
               gate="success", autonomy_state={}, graduated_classes={"low|code"},
               cls="low|code", enabled=True, shadow=False)
@@ -235,7 +235,7 @@ def test_base_fresh_gate_blocks_stale_base():
 
 
 def test_is_base_fresh_pure_compare():
-    import autonomy as A
+    from touchstone import autonomy as A
     assert A.is_base_fresh({"base": {"sha": "abc"}}, "abc") is True
     assert A.is_base_fresh({"base": {"sha": "abc"}}, "def") is False       # main 已前进 → 过期
     assert A.is_base_fresh({}, "abc") is False                             # 数据缺失 → 不算新鲜
@@ -243,7 +243,7 @@ def test_is_base_fresh_pure_compare():
 
 def test_enqueue_auto_merge_uses_graphql_queue(monkeypatch):
     """queue 模式：GraphQL 取 node id → enablePullRequestAutoMerge，排队/批测交给平台。"""
-    import autonomy as A
+    from touchstone import autonomy as A
     calls = []
     def fake(url, headers, payload):
         calls.append(payload["query"][:30])
@@ -256,31 +256,22 @@ def test_enqueue_auto_merge_uses_graphql_queue(monkeypatch):
     assert len(calls) == 2 and "mutation" in calls[1]
 
 
-# ---------------- 网络函数（mock urllib）----------------
-import json as _json
-
-
-class _UR:
-    """urlopen 返回的 context manager，read() 给 JSON。"""
-    def __init__(self, data): self._d = data
-    def __enter__(self): return self
-    def __exit__(self, *a): return False
-    def read(self): return _json.dumps(self._d).encode()
-
-
-def _mock_urlopen(monkeypatch, seq):
+# ---------------- 网络函数（mock ghclient.request，与实现同口径）----------------
+def _mock_gh_request(monkeypatch, seq):
+    """按调用顺序返回 seq 中的响应；元素为 Exception 则抛出（模拟网络/HTTP 错误）。"""
     it = iter(seq)
-    def fake(req, timeout=None):
+    def fake(method, url, token, data=None, accept="application/vnd.github+json",
+             session=None, timeout=60):
         v = next(it)
         if isinstance(v, Exception):
             raise v
-        return _UR(v)
-    monkeypatch.setattr("autonomy.urllib.request.urlopen", fake)
+        return v
+    monkeypatch.setattr(A.ghclient, "request", fake)
 
 
 def test_check_base_fresh_fresh(monkeypatch):
     # PR base sha == base 分支 head sha → 新鲜
-    _mock_urlopen(monkeypatch, [
+    _mock_gh_request(monkeypatch, [
         {"base": {"ref": "main", "sha": "abc"}, "head": {"sha": "abc"}},
         {"sha": "abc"},
     ])
@@ -289,17 +280,17 @@ def test_check_base_fresh_fresh(monkeypatch):
 
 def test_check_base_fresh_stale_triggers_update(monkeypatch, capsys):
     # base sha != base head → 过期，update_if_behind 调 update-branch → 返回 False
-    _mock_urlopen(monkeypatch, [
+    _mock_gh_request(monkeypatch, [
         {"base": {"ref": "main", "sha": "old"}, "head": {"sha": "new"}},
         {"sha": "newest"},
-        _UR({"ok": True}),                          # update-branch 响应（context manager）
+        {"ok": True},                               # update-branch 响应
     ])
     assert A.check_base_fresh("o/r", 7, "tok") is False
     assert "update-branch" in capsys.readouterr().err
 
 
 def test_check_base_fresh_stale_no_update(monkeypatch):
-    _mock_urlopen(monkeypatch, [
+    _mock_gh_request(monkeypatch, [
         {"base": {"ref": "main", "sha": "old"}, "head": {"sha": "new"}},
         {"sha": "new"},
     ])
@@ -307,17 +298,17 @@ def test_check_base_fresh_stale_no_update(monkeypatch):
 
 
 def test_check_base_fresh_api_error_returns_none(monkeypatch):
-    import urllib.error
-    _mock_urlopen(monkeypatch, [urllib.error.URLError("boom")])
+    import requests
+    _mock_gh_request(monkeypatch, [requests.exceptions.ConnectionError("boom")])
     assert A.check_base_fresh("o/r", 7, "tok") is None
 
 
 def test_check_base_fresh_update_branch_failure_still_false(monkeypatch, capsys):
-    import urllib.error
-    _mock_urlopen(monkeypatch, [
+    import requests
+    _mock_gh_request(monkeypatch, [
         {"base": {"ref": "main", "sha": "old"}, "head": {"sha": "new"}},
         {"sha": "new"},
-        urllib.error.HTTPError("u", 500, "x", {}, None),   # update-branch 失败
+        requests.exceptions.HTTPError("500"),        # update-branch 失败
     ])
     assert A.check_base_fresh("o/r", 7, "tok") is False
     assert "update-branch 失败" in capsys.readouterr().err
@@ -326,7 +317,7 @@ def test_check_base_fresh_update_branch_failure_still_false(monkeypatch, capsys)
 def test_enqueue_auto_merge_success(monkeypatch):
     calls = []
     resps = [{"data": {"repository": {"pullRequest": {"id": "NODE_ID"}}}}, {}]
-    def fake_post(url, headers, payload):
+    def fake_post(url, token, payload):
         calls.append(payload)
         return resps.pop(0)                          # 第一次=query(node id)，第二次=mutation
     monkeypatch.setattr(A, "_gql_post", fake_post)

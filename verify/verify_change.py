@@ -651,39 +651,81 @@ def resolve_acceptance_spec(contract, repo_dir):
     return (contract or {}).get("acceptance_criteria"), "author_proposed"
 
 
-def verify_change(repo_dir, contract, changed_files, base_ref, head_ref,
-                  mode, llm_cfg, pr_title="") -> VerificationResult:
-    """mode: cheap_only | targeted_tests | full_suite | regression_only（由风险分流给出）。
-    runner 按仓库特征自选；Java(不支持独立验收测试)与纯重构 PR 走 regression_only。"""
+# --- 两阶段拆分（凭据隔离，设计 §6.6）------------------------------------------
+# 威胁模型：verify 要在 worktree 里【执行】PR 代码（pytest 收集期即可任意执行），
+# 执行环境里的任何 secret 都视同被 PR 作者可读。因此把 verify 拆成两个阶段：
+#   plan    —— 需要 LLM 凭据；只【读】代码（extract_interface 是 open+正则/AST，
+#              不 import、不执行），产出可序列化的 plan（含生成的验收测试）。
+#   execute —— 真正执行 PR 代码（run_generated/run_suite/覆盖/变异）；只消费 plan，
+#              不需要任何凭据。CI 里对应两个 job：gen 持密不执行，exec 执行不持密。
+# verify_change() 保持原签名 = plan + execute 的就地组合（可信环境的单进程用法）。
+
+def plan_verification(repo_dir, contract, changed_files, base_ref, head_ref,
+                      mode, llm_cfg, pr_title="") -> dict:
+    """产出执行计划（JSON 可序列化）。本函数【绝不执行】PR 代码——只读接口、调 LLM 生成测试。
+    route: cheap_only | unsupported | regression | spec_blind"""
     if mode == "cheap_only":
-        return VerificationResult(passed=True, mode=mode, adequacy=AdequacyResult(),
-                                 evidence="cheap_only：仅廉价信号，未生成验收测试")
+        return {"schema": 1, "mode": mode, "route": "cheap_only"}
 
     runner = select_runner(repo_dir, changed_files)
     if runner is None:
+        return {"schema": 1, "mode": mode, "route": "unsupported"}
+    # 纯重构（无新行为，独立验收测试无意义）或语言不支持独立验收测试 → 回归模式
+    if mode == "regression_only" or is_refactor(contract, pr_title) or not runner.supports_spec_blind:
+        return {"schema": 1, "mode": mode, "route": "regression", "regression_mode": mode}
+
+    # 独立验收测试路径：读 head 接口（worktree 只 checkout 文件，不跑钩子不执行代码）
+    head_dir = _worktree(repo_dir, head_ref)
+    try:
+        interface = runner.extract_interface(head_dir, changed_files)
+    finally:
+        _rm_worktree(repo_dir, head_dir)
+    framework = "junit5" if getattr(runner, "lang", "") == "maven" else "pytest"
+    # 验收规格来源治理：人核准优先；author 自报的只作建议、不足以认证可信绿
+    criteria, spec_source = resolve_acceptance_spec(contract, repo_dir)
+    if not criteria:
+        return {"schema": 1, "mode": mode, "route": "regression",
+                "regression_mode": "regression_only",
+                "evidence_prefix": "无验收规格（人核准与 author 均无）→ 退回回归；"
+                                   "高风险正确性认证需人写/核准的 .touchstone/acceptance.yaml。\n"}
+    ts = generate_spec_blind_tests(criteria, interface, llm_cfg, framework)
+    return {"schema": 1, "mode": mode, "route": "spec_blind",
+            "spec_source": spec_source, "framework": framework,
+            "tests": {"code": ts.code, "source": ts.source, "author_model": ts.author_model}}
+
+
+def execute_verification(repo_dir, plan, changed_files, base_ref, head_ref) -> VerificationResult:
+    """按 plan 执行验证。本函数【不需要凭据】——只跑测试/覆盖/变异并汇总判决。"""
+    mode = plan.get("mode", "targeted_tests")
+    route = plan.get("route")
+    if route == "cheap_only":
+        return VerificationResult(passed=True, mode=mode, adequacy=AdequacyResult(),
+                                 evidence="cheap_only：仅廉价信号，未生成验收测试")
+    if route == "unsupported":
         return VerificationResult(
             passed=None, mode="unsupported",
             evidence="verify 参考实现仅支持 Python(pytest)/Java(Maven)；本仓改动语言不在此列——"
                      "请跑自有套件或在 select_runner 接入自有 runner。")
-    # 纯重构（无新行为，独立验收测试无意义）或语言不支持独立验收测试 → 回归模式
-    if mode == "regression_only" or is_refactor(contract, pr_title) or not runner.supports_spec_blind:
-        return _verify_regression(repo_dir, runner, changed_files, base_ref, head_ref, mode)
 
-    # 否则：独立验收测试路径（Python→pytest / Java→JUnit5，语言无关）
+    runner = select_runner(repo_dir, changed_files)
+    if runner is None:                      # plan/execute 间仓库状态漂移的兜底
+        return VerificationResult(passed=None, mode="unsupported",
+                                 evidence="execute 阶段未能选出 runner（与 plan 阶段不一致）")
+    if route == "regression":
+        res = _verify_regression(repo_dir, runner, changed_files, base_ref, head_ref,
+                                 plan.get("regression_mode", mode))
+        if plan.get("evidence_prefix"):
+            res.evidence = plan["evidence_prefix"] + res.evidence
+        return res
+
+    # route == spec_blind：用 plan 里预生成的验收测试执行
+    t = plan.get("tests") or {}
+    ts = AcceptanceTestSet(code=t.get("code", ""), source=t.get("source", "spec_blind"),
+                           author_model=t.get("author_model", ""))
+    spec_source = plan.get("spec_source")
     head_dir = _worktree(repo_dir, head_ref)
     base_dir = _worktree(repo_dir, base_ref)
     try:
-        interface = runner.extract_interface(head_dir, changed_files)
-        framework = "junit5" if getattr(runner, "lang", "") == "maven" else "pytest"
-        # 验收规格来源治理：人核准优先；author 自报的只作建议、不足以认证可信绿
-        criteria, spec_source = resolve_acceptance_spec(contract, repo_dir)
-        if not criteria:
-            res = _verify_regression(repo_dir, runner, changed_files, base_ref, head_ref,
-                                     "regression_only")
-            res.evidence = ("无验收规格（人核准与 author 均无）→ 退回回归；"
-                            "高风险正确性认证需人写/核准的 .touchstone/acceptance.yaml。\n" + res.evidence)
-            return res
-        ts = generate_spec_blind_tests(criteria, interface, llm_cfg, framework)
         # 改后跑：既是哨兵的一半，也同时是正确性判决
         head_pass, head_out = runner.run_generated(head_dir, ts.code)
         changed = _changed_lines(repo_dir, base_ref, head_ref)
@@ -698,6 +740,17 @@ def verify_change(repo_dir, contract, changed_files, base_ref, head_ref,
     finally:
         _rm_worktree(repo_dir, base_dir)
         _rm_worktree(repo_dir, head_dir)
+
+
+def verify_change(repo_dir, contract, changed_files, base_ref, head_ref,
+                  mode, llm_cfg, pr_title="") -> VerificationResult:
+    """mode: cheap_only | targeted_tests | full_suite | regression_only（由风险分流给出）。
+    runner 按仓库特征自选；Java(不支持独立验收测试)与纯重构 PR 走 regression_only。
+    单进程用法（可信环境）= plan + execute 就地组合；CI 凭据隔离场景请分别调
+    `--phase plan`（持密 job）与 `--phase execute`（无密 job）。"""
+    plan = plan_verification(repo_dir, contract, changed_files, base_ref, head_ref,
+                             mode, llm_cfg, pr_title)
+    return execute_verification(repo_dir, plan, changed_files, base_ref, head_ref)
 
 
 def _verify_regression(repo_dir, runner, changed_files, base_ref, head_ref, mode):
@@ -728,16 +781,29 @@ def _verify_regression(repo_dir, runner, changed_files, base_ref, head_ref, mode
 
 
 # --- CLI（供 Phase 1 工作流在高风险 PR 上调用）-------------------------------
+PLAN_PATH = "acceptance-tests.json"     # plan 阶段产物（gen job → artifact → exec job）
+
+
 if __name__ == "__main__":
+    import argparse
     import sys
     import yaml
-    base_url = os.environ.get("LLM_BASE_URL")
-    api_key = os.environ.get("LLM_API_KEY")
-    model = os.environ.get("LLM_TEST_MODEL") or os.environ.get("LLM_MODEL")
-    if not (base_url and api_key and model):
-        print("缺少 LLM_BASE_URL/LLM_API_KEY/LLM_(TEST_)MODEL（配置错误，非代码不过）", file=sys.stderr)
-        sys.exit(2)                                           # exit 2=配置错（exit 1=verify 不过）
-    print(f"[verify] base_url={base_url} model={model}")
+    ap = argparse.ArgumentParser(description="verify_change：独立验收测试 + 充分性阶梯")
+    ap.add_argument("--phase", choices=["plan", "execute", "all"], default="all",
+                    help="plan=生成计划（需 LLM 凭据，不执行 PR 代码）；"
+                         "execute=按计划执行（执行 PR 代码，不需要任何凭据）；"
+                         "all=单进程连跑（仅限可信环境）")
+    phase = ap.parse_args().phase
+
+    if phase in ("plan", "all"):
+        # 只有 plan 阶段需要 LLM 凭据（execute 阶段的环境应当一个 secret 都没有）
+        base_url = os.environ.get("LLM_BASE_URL")
+        api_key = os.environ.get("LLM_API_KEY")
+        model = os.environ.get("LLM_TEST_MODEL") or os.environ.get("LLM_MODEL")
+        if not (base_url and api_key and model):
+            print("缺少 LLM_BASE_URL/LLM_API_KEY/LLM_(TEST_)MODEL（配置错误，非代码不过）", file=sys.stderr)
+            sys.exit(2)                                       # exit 2=配置错（exit 1=verify 不过）
+
     repo = os.environ.get("REPO_DIR", ".")
     base_ref = os.environ.get("BASE_REF")
     head_ref = os.environ.get("HEAD_REF")
@@ -745,14 +811,30 @@ if __name__ == "__main__":
         print("缺少 BASE_REF/HEAD_REF（配置错误）", file=sys.stderr)
         sys.exit(2)
     mode = os.environ.get("VERIFY_MODE", "targeted_tests")
-    contract = yaml.safe_load(open(os.environ.get("TOUCHSTONE_CONTRACT",
-                              ".touchstone/pr.yaml"), encoding="utf-8")) or {}
     changed = subprocess.run(["git", "-C", repo, "diff", "--name-only",
                              f"{base_ref}..{head_ref}"],
                             capture_output=True, encoding="utf-8", errors="replace").stdout.split()
-    res = verify_change(repo, contract, changed, base_ref, head_ref, mode,
-                        {"base_url": base_url, "api_key": api_key, "model": model},
-                        os.environ.get("PR_TITLE", ""))
+
+    if phase in ("plan", "all"):
+        print(f"[verify:plan] base_url={base_url} model={model}")
+        contract = yaml.safe_load(open(os.environ.get("TOUCHSTONE_CONTRACT",
+                                  ".touchstone/pr.yaml"), encoding="utf-8")) or {}
+        plan = plan_verification(repo, contract, changed, base_ref, head_ref, mode,
+                                 {"base_url": base_url, "api_key": api_key, "model": model},
+                                 os.environ.get("PR_TITLE", ""))
+        with open(PLAN_PATH, "w", encoding="utf-8") as f:
+            json.dump(plan, f, ensure_ascii=False, indent=2)
+        print(f"[verify:plan] route={plan.get('route')} → {PLAN_PATH}")
+        if phase == "plan":
+            sys.exit(0)
+    else:
+        try:
+            plan = json.load(open(PLAN_PATH, encoding="utf-8"))
+        except (OSError, ValueError) as e:
+            print(f"读取 {PLAN_PATH} 失败（plan 阶段产物缺失/损坏）: {e}", file=sys.stderr)
+            sys.exit(2)
+
+    res = execute_verification(repo, plan, changed, base_ref, head_ref)
 
     adq = res.adequacy
     summary = {"passed": res.passed, "mode": res.mode,

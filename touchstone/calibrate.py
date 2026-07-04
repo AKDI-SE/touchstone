@@ -17,7 +17,7 @@ import os
 import re
 import sys
 
-import ghclient            # GitHub HTTP 客户端(requests + 退避)
+from touchstone import ghclient            # GitHub HTTP 客户端(requests + 退避)
 import requests
 
 WINDOW = int(os.environ.get("CALIBRATE_WINDOW", "50"))   # 取最近 N 个已关闭 PR

@@ -13,9 +13,9 @@ sys.path.insert(0, ROOT)            # 使 `from touchstone import ...` 可解析
 sys.path.insert(0, os.path.join(ROOT, "touchstone"))
 sys.path.insert(0, os.path.join(ROOT, "verify"))
 
-import ghclient as G          # noqa: E402
-import preflight as P         # noqa: E402
-import pr_agent_runner as R   # noqa: E402
+from touchstone import ghclient as G          # noqa: E402
+from touchstone import preflight as P         # noqa: E402
+from touchstone import pr_agent_runner as R   # noqa: E402
 
 
 # ============================ ghclient ============================
@@ -347,9 +347,9 @@ def test_run_main_missing_token(monkeypatch, tmp_path):
 
 
 # ============================ orchestrator ============================
-import orchestrator as ORC          # noqa: E402
-import review_provider as RP        # noqa: E402
-import govern as GOV                # noqa: E402
+from touchstone import orchestrator as ORC          # noqa: E402
+from touchstone import review_provider as RP        # noqa: E402
+from touchstone import govern as GOV                # noqa: E402
 
 _RISK = {"risk_band": "low", "human_action": "skip",
          "verification_decision": "cheap_only", "blast_radius": []}
@@ -478,7 +478,7 @@ def test_main_gate_path(monkeypatch, tmp_path):
 
 def test_main_post_results_fail_swallowed(monkeypatch, tmp_path):
     # 摘要评论/内联/check-run POST 失败 → 走 warn/info 分支，main 不崩
-    import urllib.error, requests
+    import requests
     def fgh(method, path, token, data=None, accept="application/vnd.github+json"):
         if accept.endswith("diff"):
             return "--- a/x.py\n+++ b/x.py\n@@ -0,0 +1,1 @@\n+x\n"
@@ -486,7 +486,7 @@ def test_main_post_results_fail_swallowed(monkeypatch, tmp_path):
             return []
         if "check-runs" in path and method == "GET":
             return {"check_runs": []}
-        raise urllib.error.HTTPError(path, 403, "forbidden", {}, None)
+        raise requests.exceptions.HTTPError(f"403 forbidden: {path}")
     _setup_main(monkeypatch, tmp_path, fgh)
     monkeypatch.setenv("TOUCHSTONE_SKIP_GATE", "1")
     ORC.main()                       # 各 POST 失败被吞，落盘仍完成
@@ -507,8 +507,8 @@ def test_govern_main(monkeypatch, tmp_path):
 
 
 # ============================ calibrate ============================
-import calibrate as CAL            # noqa: E402
-import autonomy as AUT             # noqa: E402
+from touchstone import calibrate as CAL            # noqa: E402
+from touchstone import autonomy as AUT             # noqa: E402
 
 _FINDING_MARKER = '<!-- touchstone-finding: {"rule_id": "R", "agent": "pr-agent:review"} -->'
 _RESULT_MARKER = ("<!-- touchstone-result: " +
@@ -608,10 +608,10 @@ class _UR:
 def test_autonomy_execute_auto_merge(monkeypatch):
     seen = []
 
-    def fake_urlopen(req, timeout=30):
-        seen.append(req.get_full_url())
-        return _UR({"merged": True})
-    monkeypatch.setattr(AUT.urllib.request, "urlopen", fake_urlopen)
+    def fake_req(method, url, token, data=None, **kw):
+        seen.append(url)
+        return {"merged": True}
+    monkeypatch.setattr(AUT.ghclient, "request", fake_req)
     res = AUT.execute_auto_merge("o/r", 5, "sha", "tok")
     assert res == {"merged": True} and any("/merge" in u for u in seen)
 
@@ -621,10 +621,11 @@ def test_execute_auto_merge_posts_marker_comment(monkeypatch):
     （calibrate 据此重建自动放行归因；marker 丢了 → 熔断数据全错）。"""
     posts = []
 
-    def fake_urlopen(req, timeout=30):
-        posts.append((req.get_full_url(), req.data.decode() if req.data else ""))
-        return _UR({"merged": True})
-    monkeypatch.setattr(AUT.urllib.request, "urlopen", fake_urlopen)
+    def fake_req(method, url, token, data=None, **kw):
+        import json as _j
+        posts.append((url, _j.dumps(data or {}, ensure_ascii=False)))
+        return {"merged": True}
+    monkeypatch.setattr(AUT.ghclient, "request", fake_req)
     AUT.execute_auto_merge("o/r", 5, "sha", "tok")
     comment_posts = [(u, b) for u, b in posts if "/issues/5/comments" in u]
     assert comment_posts, "未发 auto_handled marker 评论"
@@ -632,7 +633,7 @@ def test_execute_auto_merge_posts_marker_comment(monkeypatch):
 
 
 # ============================ verify_change（mock LLM/runner，不碰子进程）========
-import verify_change as V          # noqa: E402
+from verify import verify_change as V          # noqa: E402
 
 
 def test_verify_extract_code_and_interface(tmp_path):
@@ -685,10 +686,10 @@ def test_verify_regression_path_with_fake_runner(monkeypatch, tmp_path):
 
 # ---------------- pr_agent_runner 健壮性：glm-5.2 修复不能静默回退 ----------------
 def test_custom_max_tokens_bad_env_falls_back(monkeypatch):
-    # TOUCHSTONE_LLM_MAX_TOKENS 非整数 → 回退 8192，不崩（崩了 glm-5.2 的 0-建议 bug 复发）
+    # TOUCHSTONE_LLM_OUTPUT_TOKENS 非整数 → 回退默认 4096，不崩
     settings = _install_fake_pr_agent(monkeypatch)
     _stub_llm(monkeypatch)
-    monkeypatch.setenv("TOUCHSTONE_LLM_MAX_TOKENS", "not-a-number")
+    monkeypatch.setenv("TOUCHSTONE_LLM_OUTPUT_TOKENS", "not-a-number")
     import pr_agent.tools.pr_code_suggestions as cs_mod
 
     class CS:
@@ -698,7 +699,7 @@ def test_custom_max_tokens_bad_env_falls_back(monkeypatch):
             return None
     cs_mod.PRCodeSuggestions = CS
     R.run("https://pr", "improve")
-    assert settings.config.custom_model_max_tokens == 8192   # 回退值，非 None、非崩溃
+    assert settings.config.custom_model_max_tokens == 4096   # 回退默认，非 None、非崩溃
 
 
 def test_custom_max_tokens_and_fallback_actually_set(monkeypatch):
@@ -706,7 +707,7 @@ def test_custom_max_tokens_and_fallback_actually_set(monkeypatch):
     # 这两项正是 glm-5.2 出真实意见的根因修复——若静默失败会回到"0 建议"。
     settings = _install_fake_pr_agent(monkeypatch)
     _stub_llm(monkeypatch)
-    monkeypatch.setenv("TOUCHSTONE_LLM_MAX_TOKENS", "4096")
+    monkeypatch.setenv("TOUCHSTONE_LLM_OUTPUT_TOKENS", "3333")
     import pr_agent.tools.pr_code_suggestions as cs_mod
 
     class CS:
@@ -716,7 +717,7 @@ def test_custom_max_tokens_and_fallback_actually_set(monkeypatch):
             return None
     cs_mod.PRCodeSuggestions = CS
     R.run("https://pr", "improve+review")
-    assert settings.config.custom_model_max_tokens == 4096
+    assert settings.config.custom_model_max_tokens == 3333
     assert settings.config.fallback_models == []             # 清空，不再试不存在的 gpt-5.4-mini
     assert settings.config.model == "openai/m"               # provider 前缀就位
     assert settings.config.git_provider == "github"

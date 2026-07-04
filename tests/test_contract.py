@@ -1,8 +1,8 @@
 """确定性契约核对 + 回贴渲染（orchestrator.anchor_inline）。
 评审由 PR-Agent 承担（见 test_review_provider.py）；本文件只覆盖
 PR-Agent 不做的确定性部分：契约一致性、无 manifest 的 diff 检查、内联锚定。"""
-import orchestrator
-import contract_check as cc
+from touchstone import orchestrator
+from touchstone import contract_check as cc
 from helpers import build_diff
 
 

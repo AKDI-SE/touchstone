@@ -4,8 +4,8 @@ import json
 import os
 import re
 
-import contract_check
-import loop
+from touchstone import contract_check
+from touchstone import loop
 
 
 def _rule_index():
@@ -66,7 +66,7 @@ def test_sec001_skips_test_fixtures():
 def test_experience_suppress_cannot_remove_deterministic_block():
     """即便经验库有一条 suppress 安全类型的 active 经验，SEC-001 等确定性 block_candidate
     发现仍照样产出（经验只调建议、绝不进/绕门禁）。"""
-    import orchestrator as orc
+    from touchstone import orchestrator as orc
     import yaml
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     standards = yaml.safe_load(open(os.path.join(root, ".touchstone", "standards.yaml"), encoding="utf-8"))
@@ -83,7 +83,7 @@ def test_experience_suppress_cannot_remove_deterministic_block():
 # ---------------- marker 完整性：对抗内容不得破坏机读 marker ----------------
 def test_result_marker_remains_parseable_with_quotes_in_content(monkeypatch):
     """finding rationale 含引号/特殊字符 → result marker 仍是合法 JSON（json.dumps 转义）。"""
-    import orchestrator as orc
+    from touchstone import orchestrator as orc
     posted = {}
     monkeypatch.setattr(orc, "gh",
                         lambda m, p, t, data=None, **k: posted.update(body=data["body"])

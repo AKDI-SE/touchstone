@@ -1,0 +1,32 @@
+# .github/workflows/ci.yml
+# Touchstone 自己的测试套件 —— 此前 5 个 workflow 没有一个跑 pytest，
+# 一个以"测试是否真的通过"作准入哲学的门禁系统，自身核心必须先过自己的门。
+# 覆盖率门槛在 pyproject.toml [tool.coverage.report] fail_under 统一维护（对自己生效，
+# 与 verify 对被检仓库的 COV_MIN 同款精神）。
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:            # 普通 pull_request 事件：无 secrets，跑不可信代码安全
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.13"]   # 下限（pyproject requires-python）+ 生产钉的版本
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install
+        run: pip install -e .[dev]
+      - name: Test with coverage floor
+        run: |
+          coverage run -m pytest tests/ -q
+          coverage report

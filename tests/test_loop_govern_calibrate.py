@@ -1,7 +1,7 @@
 """反馈循环 + 治理(固化/熔断) + 校准聚合。"""
-import calibrate
-import govern
-import loop
+from touchstone import calibrate
+from touchstone import govern
+from touchstone import loop
 
 
 # ---------------- loop ----------------
@@ -212,7 +212,7 @@ def test_promote_prefers_finding_adoption_rate(rule_index):
 
 
 # ---------------- ③ ghclient：requests + urllib3.Retry 退避配置（串行）----------------
-import ghclient
+from touchstone import ghclient
 
 
 def test_ghclient_session_retry_config():
@@ -256,7 +256,7 @@ def test_loop_marker_roundtrips_last_verdict():
 
 # ---------------- ci_verdict：读 check-runs，排除自身、未完成=未知 ----------------
 def test_ci_verdict_excludes_self_and_detects_failure(monkeypatch):
-    import orchestrator as C
+    from touchstone import orchestrator as C
     monkeypatch.setattr(C, "gh", lambda m, p, t: {"check_runs": [
         {"name": "touchstone", "status": "completed", "conclusion": "neutral"},
         {"name": "build", "status": "completed", "conclusion": "success"},
@@ -265,14 +265,14 @@ def test_ci_verdict_excludes_self_and_detects_failure(monkeypatch):
 
 
 def test_ci_verdict_all_green(monkeypatch):
-    import orchestrator as C
+    from touchstone import orchestrator as C
     monkeypatch.setattr(C, "gh", lambda m, p, t: {"check_runs": [
         {"name": "build", "status": "completed", "conclusion": "success"}]})
     assert C.ci_verdict("o", "r", "sha", "t") is True
 
 
 def test_ci_verdict_in_progress_is_unknown(monkeypatch):
-    import orchestrator as C
+    from touchstone import orchestrator as C
     monkeypatch.setattr(C, "gh", lambda m, p, t: {"check_runs": [
         {"name": "build", "status": "in_progress", "conclusion": None}]})
     assert C.ci_verdict("o", "r", "sha", "t") is None
@@ -311,7 +311,7 @@ def test_aggregate_cr_none_when_no_human_state():
 # ============ loop marker 只信机器人发帖（防伪造）回归 ============
 def test_trusted_bodies_filters_forged_marker():
     """author 自己发的伪造 marker 必须被丢弃——否则可洗掉震荡/无推进等抗博弈闸。"""
-    import loop
+    from touchstone import loop
     bot = loop.render_marker(loop.LoopState(2, [["A"], ["A"]], None))
     forged = loop.render_marker(loop.LoopState(2, [], None))       # 同轮次+空 history（洗闸）
     comments = [{"user": {"login": "github-actions[bot]"}, "body": bot},

@@ -59,7 +59,7 @@ Touchstone **不自己实现通用代码评审**——那部分复用成熟的 P
 
 ```bash
 # 1. 依赖
-pip install -r requirements.txt
+pip install -e .            # 打包安装（依赖清单见 pyproject.toml）
 
 # 2. 起步自检(配置 / 端点 / 权限)
 python -m touchstone.preflight
@@ -116,7 +116,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-      - run: pip install -r requirements.txt
+      - run: pip install -e .
       - name: Set up PR-Agent
         run: |
           python -m venv .pragent-venv
@@ -137,8 +137,8 @@ jobs:
           TOUCHSTONE_PRAGENT_CMD: ".pragent-venv/bin/python -m touchstone.pr_agent_runner"
           TOUCHSTONE_SKIP_GATE: "true"
         run: |
-          pip install -r .touchstone-src/requirements.txt
-          cd .touchstone-src && python touchstone/orchestrator.py
+          pip install -e .touchstone-src
+          cd .touchstone-src && python -m touchstone.orchestrator
 ```
 
 你的仓库不需要任何 Touchstone 代码——版本由 `ref: v1` 锁定。

@@ -2,6 +2,18 @@
 
 本文件记录 Touchstone 的发布版本。设计的逐版迭代历史见 `docs/touchstone-design.html` 的变更历史。
 
+## 未发布 — 2026-07-04（工程化加固）
+
+外部代码评审驱动的一轮工程卫生与安全边界修复。测试 109 → **478**，覆盖率 52% → **90%**（verify 0% → 81%）。
+
+- **测试资产找回（P0）**：恢复 4ac2aaf 误删的 17 个测试文件（test_verify/test_learning_loop/test_autonomy/test_review_provider/test_checks/test_ghclient/属性测试等）——「命门」verify_change 与「差异化核心」learning_loop 此前处于零测试状态。恢复的属性测试当即抓到一个真回归并已修复：`parse_pr_agent` 对非 dict 输入崩溃（历史提交 9febc2e 声称加过的 isinstance 守卫实际不在代码里，现补齐顶层与条目两级形状守卫）。
+- **verify 凭据隔离（P0，设计 §6.6 落地）**：`verify_change` 拆分为 `plan_verification`（持 LLM 凭据，只读接口 + 生成验收测试，**绝不执行 PR 代码**）与 `execute_verification`（真正执行 PR 代码，**不需要任何凭据**）；CLI 增加 `--phase plan|execute|all`，plan 产物 `acceptance-tests.json` 经 artifact 传递。workflow 的 verify job 相应拆为 verify_plan（持密不执行）/ verify_execute（执行零 secret）两个 job——恶意 PR 在执行环境中再无凭据可窃取。原单进程用法（`--phase all`）保留给可信环境，行为不变。新增 `tests/test_verify_phases.py` 固化三条不变式（plan 不执行代码 / plan 落盘回读与单进程判决等价 / execute 不接触凭据）。
+- **自测 CI（P0）**：新增 `.github/workflows/ci.yml`——此前 5 个 workflow 没有一个跑本仓自己的 pytest。普通 pull_request 事件（无 secrets）+ Python 3.10/3.13 矩阵 + 覆盖率门槛（pyproject `fail_under = 85`，门槛对自己生效）。
+- **打包与导入（P1）**：新增 `pyproject.toml`（`pip install -e .` 可装，`touchstone` CLI 入口）；`verify/` 包化；移除全部模块内 `sys.path.insert` hack，包内 sibling 导入统一为 `from touchstone import x`；运行方式统一为 `python -m touchstone.<module>`（workflow/README/RUNBOOK 已同步），`requirements.txt` 降级为指向 pyproject 的薄引用。
+- **仓库卫生（P1）**：移除入库的构建产物——`mutants/`（mutmut 变异快照，约占仓库三分之一体量，其中还残留着已删测试的陈旧副本）与 `.coverage`；`.gitignore` 补全（coverage/pytest/hypothesis/mutants/egg-info/venv/运行产物）。
+- **ghclient「唯一入口」承诺兑现（P1）**：`autonomy` 的 5 处裸 urllib 调用（check_base_fresh / update-branch / GraphQL 入队 / merge 执行 / marker 评论）全部迁至 ghclient——自动合并链路此前无任何重试与 Retry-After 处理；orchestrator 清理 urllib 残留 except 与死导入。
+- **可排障性（P2）**：learning_loop 三处静默吞异常（LLM 调用回退 / 评审线程解析 / diff 取数）补 stderr 留痕；`gitcode_check` 的 `GITCODE_DIFF_CMD` 执行去 `shell=True`（改 shlex.split，管道需求需显式 `bash -c` 包裹，让 shell 语义成为明示选择）。
+
 ## 未发布 — 2026-07-04
 
 2026-06-25 技术方案评审已采纳意见（1–7、10）的落地实现（意见 8、9、11 明确不采纳）。修订设计与数据结构-流程锚定矩阵见 `docs/touchstone-design-revision.html`。

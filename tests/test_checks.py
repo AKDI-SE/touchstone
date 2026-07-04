@@ -2,8 +2,8 @@
 import copy
 import os
 
-import checks
-import stack_rules
+from touchstone import checks
+from touchstone import stack_rules
 from helpers import build_diff
 
 # 仅 touchstone-rules 一个必填内置检查（避开 relay/网络）

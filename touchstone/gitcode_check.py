@@ -18,15 +18,15 @@ gitcode_check.py  ——  GitCode 上的确定性门禁（无需 GitHub API / LL
   TOUCHSTONE_CONTRACT  契约文件路径（默认 .touchstone/pr.yaml）
 """
 import os
+import shlex
 import subprocess
 import sys
 
 # 确保能 import 同目录的 touchstone 模块
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import yaml
-import contract_check
-import stack_rules
+from touchstone import contract_check
+from touchstone import stack_rules
 
 
 def load_yaml(path, default=None):
@@ -96,8 +96,11 @@ def main():
     if diff_text is None:
         diff_cmd = os.environ.get("GITCODE_DIFF_CMD")
         if diff_cmd:
+            # 不走 shell（自家 SEC 规则同款精神：不给注入面）。需要管道时请显式写
+            # GITCODE_DIFF_CMD='bash -c "git diff ... | filter"'，让 shell 语义成为明示选择。
             try:
-                result = subprocess.run(diff_cmd, shell=True, capture_output=True, text=True, timeout=30)
+                result = subprocess.run(shlex.split(diff_cmd), capture_output=True,
+                                        text=True, timeout=30)
                 diff_text = result.stdout
             except (subprocess.TimeoutExpired, OSError) as e:
                 print(f"[gitcode_check] 自定义 diff 命令失败: {e}", file=sys.stderr)

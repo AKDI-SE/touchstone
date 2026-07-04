@@ -2,7 +2,7 @@
 import os
 import sys
 
-import gitcode_check as gc
+from touchstone import gitcode_check as gc
 
 
 # ---------------- load_yaml ----------------

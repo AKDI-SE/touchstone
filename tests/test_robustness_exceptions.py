@@ -4,7 +4,7 @@ import os
 
 
 # ---------------- verify_change：变异/外部命令/diff 解析的失败降级 ----------------
-import verify_change as V
+from verify import verify_change as V
 
 
 def test_ast_mutants_syntax_error_returns_empty():
@@ -57,23 +57,23 @@ def test_resolve_acceptance_spec_bad_yaml(tmp_path, monkeypatch):
 
 # ---------------- learning_loop：JSON 抽取失败降级 ----------------
 def test_extract_json_malformed_in_fence_returns_default():
-    import learning_loop as L
+    from touchstone import learning_loop as L
     # fence 内是非法 JSON → 内层 JSONDecodeError 被吞、继续 → 最终 default
     assert L._extract_json("```json\n{not valid}\n```", "DEF") == "DEF"
 
 
 # ---------------- orchestrator：CI check-runs 取数失败 → None（未知，不误判）----------------
 def test_ci_verdict_http_error_returns_none(monkeypatch):
-    import orchestrator as orc
-    import urllib.error
+    from touchstone import orchestrator as orc
+    import requests
     monkeypatch.setattr(orc, "gh",
-                        lambda *a, **k: (_ for _ in ()).throw(urllib.error.HTTPError("u", 403, "x", {}, None)))
+                        lambda *a, **k: (_ for _ in ()).throw(requests.exceptions.HTTPError("403")))
     assert orc.ci_verdict("o", "r", "sha", "t") is None     # 评不了 → None，不强制 fail
 
 
 # ---------------- review_provider：诊断日志/临时文件清理不崩 ----------------
 def test_invoke_endpoint_logs_raw_count_and_cleans(monkeypatch, tmp_path):
-    import review_provider as RP
+    from touchstone import review_provider as RP
     import json
     monkeypatch.setattr(RP, "_experience_injection", lambda d: "be strict")   # 触发临时文件路径
     created = {}
@@ -89,7 +89,7 @@ def test_invoke_endpoint_logs_raw_count_and_cleans(monkeypatch, tmp_path):
 
 # ---------------- ghclient：非预期响应体不崩 ----------------
 def test_request_non_json_body_returns_empty(monkeypatch):
-    import ghclient
+    from touchstone import ghclient
     class _R:
         status_code = 200
         text = "<<<not json>>>"

@@ -3,7 +3,7 @@ import os
 
 import yaml
 
-import gen_best_practices as G
+from touchstone import gen_best_practices as G
 
 _STD = os.path.join(os.path.dirname(G.__file__), "..", ".touchstone", "standards.yaml")
 _STANDARDS = yaml.safe_load(open(_STD, encoding="utf-8"))
