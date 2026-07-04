@@ -206,7 +206,8 @@ def distill_semantic_advantage(pr, group, llm, repo="", stack=""):
     rewards = group["rewards"]
     if len(rewards) < 2 or len({round(r, 6) for r in rewards}) < 2:
         return []                                  # 退化组：组内奖励无差异，对比无意义（I4）
-    ranked = sorted(zip(group["outputs"], rewards), key=lambda x: -x[1])
+    # strict=True：outputs 与 rewards 同长是 rollout 构造不变式，违反应显式暴露而非静默截断
+    ranked = sorted(zip(group["outputs"], rewards, strict=True), key=lambda x: -x[1])
     payload = {"pr_id": pr.get("pr_id"),
                "reviews_by_reward": [{"reward": round(rw, 2), "review": rv} for rv, rw in ranked]}
     sys_p = ("Compare the higher-reward reviews against the lower-reward ones for this PR and "

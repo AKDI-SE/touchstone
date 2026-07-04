@@ -323,7 +323,6 @@ def test_external_mutation_cmd_used_when_set(monkeypatch, tmp_path):
 
 
 # ---------------- 纯函数补测 ----------------
-from verify import verify_change as V
 
 
 def test_extract_code_with_and_without_fence():

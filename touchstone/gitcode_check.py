@@ -160,7 +160,7 @@ def main():
     infos = [f for f in all_findings if f.get("severity") == "info"]
 
     print("=" * 60)
-    print(f" 总闸 (touchstone/gate)")
+    print(" 总闸 (touchstone/gate)")
     print(f"   🚫 阻断级: {len(blocks)} 条")
     print(f"   ⚠️  警告级: {len(warns)} 条")
     print(f"   ℹ️  信息级: {len(infos)} 条")

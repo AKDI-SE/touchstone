@@ -538,7 +538,8 @@ def test_epochs_rerender_experience():
 
 def test_store_path_prefers_new_env(monkeypatch, tmp_path):
     """TOUCHSTONE_STORE_PATH 优先于旧名 TOUCHSTONE_EXPERIENCE。"""
-    import importlib, learning_loop
+    import importlib
+    from touchstone import learning_loop
     f = tmp_path / 's.json'; f.write_text('{"experiences": [{"id": "x", "status": "active", "finding_type": "T"}]}')
     monkeypatch.setenv('TOUCHSTONE_STORE_PATH', str(f))
     importlib.reload(learning_loop)
@@ -550,7 +551,8 @@ def test_store_path_prefers_new_env(monkeypatch, tmp_path):
 
 # ---------------- 边角分支补测 ----------------
 def test_read_store_text_from_ref(monkeypatch, tmp_path):
-    import subprocess, learning_loop as L
+    import subprocess
+    from touchstone import learning_loop as L
     monkeypatch.setenv("TOUCHSTONE_EXPERIENCE_REF", "origin/main")
     class _R:
         returncode = 0
@@ -560,7 +562,8 @@ def test_read_store_text_from_ref(monkeypatch, tmp_path):
 
 
 def test_read_store_text_ref_failure_returns_none(monkeypatch):
-    import subprocess, learning_loop as L
+    import subprocess
+    from touchstone import learning_loop as L
     monkeypatch.setenv("TOUCHSTONE_EXPERIENCE_REF", "origin/main")
     class _R:
         returncode = 1
@@ -615,7 +618,8 @@ def test_seed_experience_updates_existing():
 
 
 def test_seed_experience_bad_kind_raises():
-    import learning_loop as L, pytest
+    import pytest
+    from touchstone import learning_loop as L
     with pytest.raises(ValueError):
         L.seed_experience({"experiences": []}, "PRA-X", "wat", "x")
 

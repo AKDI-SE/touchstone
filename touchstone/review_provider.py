@@ -163,7 +163,7 @@ def _experience_injection(repo_dir):
               file=_sys.stderr)
         return ""
     try:
-        import learning_loop
+        from touchstone import learning_loop
         return learning_loop.render_injection(learning_loop.load_store()) or ""
     except Exception:
         return ""
@@ -211,12 +211,12 @@ class PRAgentProvider:
                 raise ReviewEngineDegraded(
                     "llm_failed",
                     f"PR-Agent 子进程超时（{e.timeout}s）—— 大 PR 或 LLM 端点慢。"
-                    f"可调 TOUCHSTONE_PRAGENT_TIMEOUT，或拆分 PR。")
+                    f"可调 TOUCHSTONE_PRAGENT_TIMEOUT，或拆分 PR。") from e
             except FileNotFoundError as e:
                 raise ReviewEngineDegraded(
                     "no_engine",
                     f"找不到 PR-Agent 适配命令 {cmd!r}：请 `pip install pr-agent` 并确保 "
-                    f"touchstone.pr_agent_runner 可运行，或用 TOUCHSTONE_PRAGENT_CMD 指定。原始：{e}")
+                    f"touchstone.pr_agent_runner 可运行，或用 TOUCHSTONE_PRAGENT_CMD 指定。原始：{e}") from e
             if proc.returncode != 0:
                 # 适配器本应总退出 0 并用 _degraded 上报；走到这里说明它自身崩了（venv 缺失/bug）
                 raise ReviewEngineDegraded(
@@ -229,7 +229,7 @@ class PRAgentProvider:
                 raise ReviewEngineDegraded(
                     "no_engine",
                     f"PR-Agent 适配输出非合法 JSON：{e}；stdout 末尾：\n"
-                    f"{(proc.stdout or '').strip()[-300:]}")
+                    f"{(proc.stdout or '').strip()[-300:]}") from e
             # 适配器的结构化降级上报（pr-agent 没装 / LLM 调用失败）——转成异常供 orchestrator 显式标注
             if isinstance(data, dict) and data.get("_degraded"):
                 raise ReviewEngineDegraded(data["_degraded"], data.get("reason", ""))

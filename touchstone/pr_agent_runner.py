@@ -132,7 +132,7 @@ def run(pr_url, mode, extra_instructions=None):
         # 直接判"Failed to generate prediction"（glm-5.2 等自定义模型不在表里——这是多日"0 建议"的真根因）。
         # 取自 llm_budget（部署方用 secret TOUCHSTONE_LLM_OUTPUT_TOKENS 按模型卡声明，不再硬编码）。
         try:
-            from llm_budget import output_tokens
+            from touchstone.llm_budget import output_tokens
             s.config.custom_model_max_tokens = output_tokens()
         except Exception:
             s.config.custom_model_max_tokens = 4096
@@ -170,7 +170,7 @@ def run(pr_url, mode, extra_instructions=None):
     try:
         _ping_llm(_base, _key, model_override)
         _ix("LLM 预检 ping: 成功（端点可达、凭据有效）")
-        print(f"[pr-agent] LLM 预检 ping 成功（端点可达、凭据有效）", file=sys.stderr)
+        print("[pr-agent] LLM 预检 ping 成功（端点可达、凭据有效）", file=sys.stderr)
     except Exception as e:
         _ix(f"LLM 预检 ping: 失败 → llm_failed ({type(e).__name__}: {e})")
         return {"_degraded": "llm_failed",

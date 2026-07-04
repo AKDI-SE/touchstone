@@ -331,7 +331,8 @@ def test_trusted_bodies_filters_forged_marker():
 
 def test_author_self_resolve_not_counted_as_adoption():
     """作者自己 resolve 自己 PR 的 bot 发现线程 → 不算采纳（防伪造正例毒化学习奖励）。"""
-    import calibrate, json
+    import json
+    from touchstone import calibrate
     body = '<!-- touchstone-finding: ' + json.dumps({'rule_id': 'PRA-X', 'agent': 'pr-agent:review'}) + ' -->'
     threads = [{'isResolved': True, 'resolved_by': 'author1',
                 'comments': [{'author': 'github-actions[bot]', 'body': body}]}]

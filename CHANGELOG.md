@@ -2,6 +2,15 @@
 
 本文件记录 Touchstone 的发布版本。设计的逐版迭代历史见 `docs/touchstone-design.html` 的变更历史。
 
+## 未发布 — 2026-07-04（工程化加固·第二轮）
+
+第一轮的两个"留作后续"项落地（lint 工具链、渲染层拆分），过程中又抓到并根治一类**被双重掩盖的运行期地雷**。测试 478 → **481**，ruff 全绿。
+
+- **函数内平铺导入地雷（5 处）**：第一轮的包化改造只覆盖了顶层导入，函数体内还残留 5 处 sibling 平铺导入（orchestrator/loop/pr_agent_runner/review_provider 各 1-2 处）——移除 sys.path hack 后这些分支一执行必然 ModuleNotFoundError。它们此前不炸的原因有两层掩盖：①相关分支缺测试覆盖；②`test_integration_mock.py` 把 `touchstone/` 子目录插进了 sys.path，使全量测试里平铺名恰好可解析（单跑其他文件才炸）。本轮全部改为包导入、清除 path 污染，并新增 `tests/test_import_hygiene.py` 三条结构性守卫：静态扫描禁止 sibling 平铺导入（函数内也逃不掉）、禁止测试污染 sys.path、render 再导出兼容性。全部测试文件现可**逐个独立通过**（消除顺序依赖）。
+- **渲染层拆分**：`_load_template`/`render_facts`/`render_findings`/`render_report`/`render_summary` 从 orchestrator（592 行）拆至新模块 `touchstone/render.py`；orchestrator 保留再导出，既有 `orchestrator.render_*` 引用路径与测试零改动兼容。上述地雷之一（render_findings 内的 `from llm_budget import`）随拆分根治为顶层包导入。
+- **verify 执行环境的 token 落盘缺口（第一轮遗留的过度承诺，自查修复）**：verify_plan/verify_execute 未写 job 级 permissions，继承了 workflow 级 `checks: write`；且 actions/checkout 默认 `persist-credentials: true` 会把 GITHUB_TOKEN 写进 `.git/config`——verify_execute 里执行的 PR 代码读 `.git/config` 即可拿到足以**伪造 touchstone/gate 总闸**的 token（该缺口在拆分前的单 verify job 就存在，"GITHUB_TOKEN 已去掉"只去了 env 未去凭据落盘）。现两 job 权限降为 `contents: read` + checkout `persist-credentials: false`："执行环境零凭据"承诺至此才真正成立。
+- **ruff 工具链（克制配置）**：pyproject 增加 `[tool.ruff]`——只选真缺陷规则（F/E7/E9/B/PLE），显式豁免 E701/E702/E731（单行紧凑写法是本仓刻意风格，不做格式化重排以免噪音淹没语义变更）。首跑 31 处命中，修复其中真缺陷：3 处死导入（含 orchestrator 拆分后彻底不用的 `re`）、3 处 `raise ... from e` 补异常因果链（排障时可见原始异常）、1 处 `zip(strict=True)` 把 rollout 同长不变式显式化、2 处无占位 f-string、测试侧重复导入/死变量各 1。CI 新增 lint job。
+
 ## 未发布 — 2026-07-04（工程化加固）
 
 外部代码评审驱动的一轮工程卫生与安全边界修复。测试 109 → **478**，覆盖率 52% → **90%**（verify 0% → 81%）。
