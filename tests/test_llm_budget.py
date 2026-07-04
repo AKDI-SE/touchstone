@@ -91,7 +91,7 @@ def test_render_summary_caps_findings_to_avoid_comment_overflow():
     findings = [{"rule_id": f"R{i}", "agent": "a", "severity": "warn", "confidence": 0.5,
                  "file": "a.py", "line": i, "rationale": "x", "suggested_fix": "y"}
                 for i in range(500)]
-    body = orc.render_summary(risk, findings)
+    _head, body = orc.render_findings(risk, findings)
     assert "另有" in body and "仅列前" in body
     assert len(body) < 65536                        # 评论体不超限
     assert body.count("`R") <= LB.MAX_FINDINGS_IN_SUMMARY + 1   # 列出的不超过封顶
