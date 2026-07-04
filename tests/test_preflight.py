@@ -1,4 +1,4 @@
-import preflight
+from touchstone import preflight
 
 
 def _rows_to_map(rows):

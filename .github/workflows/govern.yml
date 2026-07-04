@@ -22,17 +22,17 @@ jobs:
         with:
           python-version: "3.13"
       - name: Install deps
-        run: pip install -r requirements.txt
+        run: pip install -e .
       - name: Calibrate (produce calibration.json)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CALIBRATE_WINDOW: "50"
-        run: python touchstone/calibrate.py
+        run: python -m touchstone.calibrate
       - name: Govern (promotion proposal + circuit breaker)
         env:
           BASE_REF: ${{ github.event.repository.default_branch }}
           REPO_DIR: "."
-        run: python touchstone/govern.py
+        run: python -m touchstone.govern
         # 不用 continue-on-error：熔断触发 sys.exit(2) 应在 Actions UI 可见（安全信号）。
         # 下方 upload 步骤的 if: always() 确保产物仍上传。
       - name: Publish graduated change-classes (经验层)

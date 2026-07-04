@@ -2,10 +2,10 @@
 （review_pr / route / record_calibration）的离线测试。全部不触网、不起子进程。"""
 import copy
 
-import orchestrator
-import review_provider as rp
-import calibrate
-import stack_rules
+from touchstone import orchestrator
+from touchstone import review_provider as rp
+from touchstone import calibrate
+from touchstone import stack_rules
 from helpers import build_diff
 
 

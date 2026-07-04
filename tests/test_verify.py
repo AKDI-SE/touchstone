@@ -2,7 +2,7 @@
 import os
 
 import pytest
-import verify_change as V
+from verify import verify_change as V
 
 
 # ---------------- select_runner / is_refactor ----------------
@@ -309,13 +309,13 @@ def test_parse_changed_lines_and_coverage_ratio():
 
 # ============ 外部变异工具接缝（mutmut/cosmic-ray/PIT）回归 ============
 def test_parse_mutation_output_takes_last_number():
-    import verify_change as V
+    from verify import verify_change as V
     assert V._parse_mutation_output("killed 10/12\nscore: 83%") == 0.83
     assert V._parse_mutation_output("mutation score 0.6") == 0.6
     assert V._parse_mutation_output("no numbers here") is None
 
 def test_external_mutation_cmd_used_when_set(monkeypatch, tmp_path):
-    import verify_change as V
+    from verify import verify_change as V
     monkeypatch.setenv("TOUCHSTONE_MUTATION_CMD", "echo killed 3/4 = 75%")
     assert V.external_mutation_score(str(tmp_path), ["a.py"]) == 0.75
     monkeypatch.delenv("TOUCHSTONE_MUTATION_CMD")
@@ -323,7 +323,7 @@ def test_external_mutation_cmd_used_when_set(monkeypatch, tmp_path):
 
 
 # ---------------- 纯函数补测 ----------------
-import verify_change as V
+from verify import verify_change as V
 
 
 def test_extract_code_with_and_without_fence():

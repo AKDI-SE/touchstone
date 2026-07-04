@@ -14,7 +14,8 @@
 import json
 import os
 import sys
-import urllib.request
+
+from touchstone import ghclient   # GitHub HTTP 统一入口（连接池+退避）
 
 
 def _envbool(k):
@@ -130,15 +131,12 @@ def check_base_fresh(repo, pr_number, token, api_url=None, update_if_behind=True
     update-branch API 把最新 base 合进 PR 分支（触发 CI 重跑），本轮返回 False 等下轮再判。
     任一 API 失败 → 返回 None（未评估，不据此拦；对应闸的 fail-open 仅限『评不了』，评出过期必拦）。"""
     api = (api_url or os.environ.get("GITHUB_API_URL", "https://api.github.com")).rstrip("/")
-    hdr = {"Authorization": "Bearer " + token, "Accept": "application/vnd.github+json"}
-    def _get(path):
-        req = urllib.request.Request(api + path, headers=hdr)
-        with urllib.request.urlopen(req, timeout=30) as r:
-            return json.loads(r.read().decode("utf-8"))
+    # 经 ghclient（连接池 + urllib3.Retry 退避 + Retry-After）——自动合并链路最需要健壮性，
+    # 此前手写 urllib 无任何重试，恰是"ghclient 唯一入口"承诺的最后一块缺口。
     try:
-        prd = _get(f"/repos/{repo}/pulls/{pr_number}")
+        prd = ghclient.request("GET", api + f"/repos/{repo}/pulls/{pr_number}", token)
         base_ref = ((prd.get("base") or {}).get("ref")) or "main"
-        head = _get(f"/repos/{repo}/commits/{base_ref}").get("sha")
+        head = ghclient.request("GET", api + f"/repos/{repo}/commits/{base_ref}", token).get("sha")
     except Exception as e:
         print(f"[autonomy] 基线新鲜度评估失败（不据此拦）: {e}", file=sys.stderr)
         return None
@@ -146,11 +144,8 @@ def check_base_fresh(repo, pr_number, token, api_url=None, update_if_behind=True
         return True
     if update_if_behind:
         try:
-            req = urllib.request.Request(
-                api + f"/repos/{repo}/pulls/{pr_number}/update-branch",
-                data=b"{}", method="PUT",
-                headers={**hdr, "Content-Type": "application/json"})
-            urllib.request.urlopen(req, timeout=30)
+            ghclient.request("PUT", api + f"/repos/{repo}/pulls/{pr_number}/update-branch",
+                             token, data={})
             print("[autonomy] 基线过期：已请求 update-branch，等 CI 重绿后下轮再判", file=sys.stderr)
         except Exception as e:
             print(f"[autonomy] update-branch 失败（仍拒放行）: {e}", file=sys.stderr)
@@ -158,11 +153,8 @@ def check_base_fresh(repo, pr_number, token, api_url=None, update_if_behind=True
 
 
 # --- 合并入队（merge queue / auto-merge 原生通道）------------------------------
-def _gql_post(url, headers, payload):
-    req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"),
-                                 method="POST", headers=headers)
-    with urllib.request.urlopen(req, timeout=30) as r:
-        return json.loads(r.read().decode("utf-8"))
+def _gql_post(url, token, payload):
+    return ghclient.request("POST", url, token, data=payload)
 
 
 def enqueue_auto_merge(repo, pr_number, token, api_url=None, merge_method="SQUASH"):
@@ -171,10 +163,9 @@ def enqueue_auto_merge(repo, pr_number, token, api_url=None, merge_method="SQUAS
     平台承担，不自建 bors。先查 PR node id，再发 mutation。"""
     api = (api_url or os.environ.get("GITHUB_API_URL", "https://api.github.com")).rstrip("/")
     gql = api[:-3] + "graphql" if api.endswith("/v3") else api + "/graphql"
-    hdr = {"Authorization": "Bearer " + token, "Content-Type": "application/json"}
     owner, name = repo.split("/", 1)
     def _post(payload):
-        return _gql_post(gql, hdr, payload)
+        return _gql_post(gql, token, payload)
     q = _post({"query": "query($o:String!,$n:String!,$p:Int!){repository(owner:$o,name:$n)"
                         "{pullRequest(number:$p){id}}}",
                "variables": {"o": owner, "n": name, "p": int(pr_number)}})
@@ -194,14 +185,9 @@ def enqueue_auto_merge(repo, pr_number, token, api_url=None, merge_method="SQUAS
 # --- 执行（merge API 集成点；打 auto_handled marker 供校准归因）----------------
 def execute_auto_merge(repo, pr_number, sha, token, api_url=None, merge_method="squash"):
     api = (api_url or os.environ.get("GITHUB_API_URL", "https://api.github.com")).rstrip("/")
-    hdr = {"Authorization": "Bearer " + token, "Accept": "application/vnd.github+json",
-           "Content-Type": "application/json"}
 
     def _req(method, path, payload):
-        req = urllib.request.Request(api + path, data=json.dumps(payload).encode("utf-8"),
-                                     method=method, headers=hdr)
-        with urllib.request.urlopen(req, timeout=30) as r:
-            return json.loads(r.read().decode("utf-8"))
+        return ghclient.request(method, api + path, token, data=payload)
 
     merged = _req("PUT", f"/repos/{repo}/pulls/{pr_number}/merge",
                   {"sha": sha, "merge_method": merge_method})

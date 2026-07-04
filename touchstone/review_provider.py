@@ -87,9 +87,15 @@ def load_nmap(repo_dir="."):
 def parse_pr_agent(raw):
     """把 PR-Agent improve（code_suggestions）与 review（key_issues_to_review）输出解析为 ReviewItem 列表。
     raw 形如 {'code_suggestions': [...], 'review': {'key_issues_to_review': [...], ...}}。
-    字段名按 PR-Agent improve/review schema；不同版本字段略有差异，对接时以你的 PR-Agent 实际版本为准。"""
+    字段名按 PR-Agent improve/review schema；不同版本字段略有差异，对接时以你的 PR-Agent 实际版本为准。
+    防御：raw 来自子进程 JSON，形状不可信——顶层非 dict、条目非 dict 一律跳过而非抛异常
+    （属性测试 test_parse_pr_agent_never_raises 的不变式：任意输入不崩）。"""
     items = []
-    for s in (raw or {}).get("code_suggestions", []) or []:
+    if not isinstance(raw, dict):
+        return items
+    for s in raw.get("code_suggestions", []) or []:
+        if not isinstance(s, dict):
+            continue
         items.append({
             "kind": "suggestion",
             "file": s.get("relevant_file"),
@@ -103,8 +109,11 @@ def parse_pr_agent(raw):
             "label": (s.get("label") or "").strip(),
             "tool": "improve",
         })
-    review = (raw or {}).get("review", {}) or {}
+    review = raw.get("review", {})
+    review = review if isinstance(review, dict) else {}
     for k in review.get("key_issues_to_review", []) or []:
+        if not isinstance(k, dict):
+            continue
         items.append({
             "kind": "review",
             "file": k.get("relevant_file"),

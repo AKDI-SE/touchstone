@@ -1,0 +1,57 @@
+# ============================================================================
+# pyproject.toml —— Touchstone 打包与工具配置（单一事实来源）
+# ----------------------------------------------------------------------------
+# 安装：pip install -e .            （开发；含 CLI 入口）
+#       pip install -e .[dev]       （开发 + 测试工具链）
+# 运行：python -m touchstone.orchestrator  /  python -m verify.verify_change
+#       ——不再支持 `python touchstone/orchestrator.py` 脚本式调用
+#         （包内已移除 sys.path hack，模块间为包绝对导入）。
+# ============================================================================
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "touchstone-gate"
+version = "0.9.0"
+description = "给 AI 时代的代码合入装一把试金石：PR 评审归一 + 确定性门禁 + 独立验证 + 渐进自治"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+dependencies = [
+    # 原则：优先成熟开源实现；手写仅限本系统独有领域逻辑或硬运行时约束。
+    "pyyaml>=6.0",
+    "requests>=2.31",   # GitHub REST/GraphQL（连接池 + urllib3.Retry 退避，见 ghclient）
+    "unidiff>=0.7",     # unified diff 解析（替代手写状态机）
+    "openai>=1.30",     # LLM 调用（OpenAI 兼容；支持自定义 base_url）
+]
+
+[project.optional-dependencies]
+# verify_change（命门）参考实现的执行侧依赖
+verify = ["pytest>=7.0", "coverage>=7.0"]
+dev = [
+    "pytest>=7.0",
+    "coverage>=7.0",
+    "hypothesis>=6.0",  # 属性测试（tests/test_property.py）
+    "mutmut>=2.0",      # 变异测试（setup.cfg [mutmut]；产物 mutants/ 不入库）
+]
+
+[project.scripts]
+touchstone = "touchstone.run:main"
+
+[tool.setuptools]
+packages = ["touchstone", "verify"]
+
+[tool.setuptools.package-data]
+touchstone = ["templates/*.md"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["touchstone", "verify"]
+
+[tool.coverage.report]
+# 门槛对自己生效（verify 对被检仓库的 COV_MIN=0.6 同款精神）；CI 里 fail_under 生效
+fail_under = 85
+show_missing = false

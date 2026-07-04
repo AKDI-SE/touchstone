@@ -40,14 +40,14 @@ jobs:
           python-version: "3.13"
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: pip install -e .
 
       # 先校准：从最近已关闭 PR 重建人审裁决，产出 calibration.json（计数式蒸馏的奖励 + 退役信号）
       - name: Calibrate (produce calibration.json)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CALIBRATE_WINDOW: "50"
-        run: python touchstone/calibrate.py
+        run: python -m touchstone.calibrate
 
       - name: Run learning loop
         id: learn

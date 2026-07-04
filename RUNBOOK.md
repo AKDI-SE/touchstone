@@ -6,7 +6,7 @@
 
 ## 0. 前置
 ```bash
-pip install -r requirements.txt          # pyyaml / pytest / coverage
+pip install -e .[dev]                    # 打包安装 + 测试工具链（依赖见 pyproject.toml）
 python -m pytest tests/ -q               # 应全绿（离线，无需网络/LLM）
 ```
 环境变量（touchstone 本身不再需要 LLM_*：评审复用 PR-Agent，端点配置见 .touchstone/pr-agent.yaml）：

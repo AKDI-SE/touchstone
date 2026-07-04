@@ -1,11 +1,26 @@
-# touchstone 运行产物（并行校准工件，不入库）
+# touchstone 运行产物（不入库）
 touchstone-findings.json
+verify-result.json
+acceptance-tests.json
+pr-agent-interaction.log
+
+# 测试/覆盖率/变异产物（本地生成,不入库）
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+.hypothesis/
+mutants/
 
 # Python
 __pycache__/
 *.py[cod]
+*.egg-info/
+build/
+dist/
 .venv/
 venv/
+.pragent-venv/
 
 # 杂项
 *.log

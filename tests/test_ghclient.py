@@ -1,7 +1,7 @@
 """ghclient.py 的离线测试：mock session.request，覆盖 request/paginate/client/retry。"""
 import json as _json
 
-import ghclient
+from touchstone import ghclient
 
 
 class _Resp:
@@ -128,7 +128,7 @@ def test_client_base_url_env(monkeypatch):
 
 # ---------------- session 单例 ----------------
 def test_session_singleton(monkeypatch):
-    import ghclient as g
+    from touchstone import ghclient as g
     g._SESSION = None
     s1 = g._session()
     s2 = g._session()

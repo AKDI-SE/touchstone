@@ -1,6 +1,6 @@
 # .github/workflows/touchstone.yml
 # Touchstone —— 默认顾问式评审 + 可插拔质量门禁（对外只发一个总闸）。
-# 链路：touchstone(评审+风险，不拦截) → (按需) verify → gate(聚合并发布那一个总闸) → (可选) auto_merge。
+# 链路：touchstone(评审+风险，不拦截) → (按需) verify_plan(持密不执行)→verify_execute(执行零凭据) → gate(聚合并发布那一个总闸) → (可选) auto_merge。
 # verify 与 auto_merge 都是可选、默认关的进阶路径。
 name: Touchstone
 
@@ -34,7 +34,7 @@ jobs:
           # 钉 3.13：pr-agent 的原生依赖（tiktoken 经 PyO3 0.22.6）暂不支持 3.14，会源码编译失败。
           python-version: "3.13"
       - name: Install deps
-        run: pip install -r requirements.txt
+        run: pip install -e .
         # 自托管 runner 若经代理访问公网：按需设置/清理 *_PROXY；可选用私有/就近 PyPI 镜像加速 pip install
       - name: Set up PR-Agent (independent venv)
         # PR-Agent 是评审引擎（Apache-2.0 pip 包），按"不进本仓依赖"原则装在独立 venv。
@@ -61,7 +61,7 @@ jobs:
           TOUCHSTONE_EXPERIENCE: "data/experience_store.json"
           TOUCHSTONE_EXPERIENCE_ENABLED: "true"
           TOUCHSTONE_EXPERIENCE_REF: "origin/${{ github.event.pull_request.base.ref || github.event.repository.default_branch }}"  # 从受信 base ref 读经验库（防 PR 篡改工作树投毒）         # 评审路径注入开关（review_provider._experience_injection 认）
-        run: python touchstone/orchestrator.py
+        run: python -m touchstone.orchestrator
       - name: Upload LLM interaction log
         if: always()
         uses: actions/upload-artifact@v4
@@ -78,15 +78,44 @@ jobs:
           if-no-files-found: ignore
 
   # ---- 可选深检：verify（默认关；vars.VERIFY_ENABLED=='true' 且风险分流判为需验证时才跑）----
-  # ⚠ 安全风险（详见 docs/touchstone-design.html §6.6）：
-  #   verify 在 worktree 里执行 PR 代码（pytest/mvn），pull_request_target 持密上下文
-  #   → PR 代码可读 env 里的 LLM 凭据。VERIFY_ENABLED 开启前必须实施 §6.6 的隔离方案之一
-  #   （Environments 隔离 / 拆 pull_request 事件 / self-hosted runner 容器）。
-  #   当前缓解：GITHUB_TOKEN 已去掉（verify 不需要它）；但 LLM 凭据仍在 env（verify 需要）。
+  # 凭据隔离（设计 §6.6 的落地）：verify 拆成两个 job——
+  #   verify_plan    持有 LLM 凭据，但【绝不执行】PR 代码（只读接口 + LLM 生成验收测试，
+  #                  见 verify_change.plan_verification 的不变式），产出 acceptance-tests.json。
+  #   verify_execute 真正在 worktree 里执行 PR 代码（pytest/mvn 收集期即可任意执行），
+  #                  env 里【一个 secret 都没有】——PR 代码无凭据可窃取。
   # 结果写 verify-result.json，由 gate job 经 verify 插件折进总闸。
-  verify:
+  verify_plan:
     needs: touchstone
     if: ${{ vars.VERIFY_ENABLED == 'true' && (needs.touchstone.outputs.decision == 'targeted_tests' || needs.touchstone.outputs.decision == 'full_suite') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.ref }}
+          fetch-depth: 0           # plan 需读 head 接口（只读 worktree，不执行）
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install deps
+        run: pip install -e .
+      - name: plan（持密；不执行 PR 代码）
+        env:
+          LLM_BASE_URL: ${{ secrets.LLM_BASE_URL }}
+          LLM_API_KEY:  ${{ secrets.LLM_API_KEY }}
+          LLM_TEST_MODEL: ${{ secrets.LLM_TEST_MODEL }}
+          BASE_REF: ${{ github.event.pull_request.base.sha }}
+          HEAD_REF: ${{ github.event.pull_request.head.sha }}
+          VERIFY_MODE: ${{ needs.touchstone.outputs.decision }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          REPO_DIR: "."
+        run: python verify/verify_change.py --phase plan
+      - uses: actions/upload-artifact@v4
+        with:
+          name: verify-plan
+          path: acceptance-tests.json
+
+  verify_execute:
+    needs: [touchstone, verify_plan]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -97,20 +126,17 @@ jobs:
         with:
           python-version: "3.13"
       - name: Install deps
-        run: pip install -r requirements.txt
-      - name: verify_change
+        run: pip install -e .
+      - uses: actions/download-artifact@v4
+        with:
+          name: verify-plan
+      - name: execute（执行 PR 代码；env 零 secret）
         env:
-          # P1-b: 去掉 GITHUB_TOKEN——verify 不发 GitHub API（只写 artifact），不需要它。
-          # PR 代码可读 env → 去掉一个可被窃取的 secret。
-          LLM_BASE_URL: ${{ secrets.LLM_BASE_URL }}
-          LLM_API_KEY:  ${{ secrets.LLM_API_KEY }}
-          LLM_TEST_MODEL: ${{ secrets.LLM_TEST_MODEL }}
           BASE_REF: ${{ github.event.pull_request.base.sha }}
           HEAD_REF: ${{ github.event.pull_request.head.sha }}
           VERIFY_MODE: ${{ needs.touchstone.outputs.decision }}
-          PR_TITLE: ${{ github.event.pull_request.title }}
           REPO_DIR: "."
-        run: python verify/verify_change.py
+        run: python verify/verify_change.py --phase execute
       - name: Upload verify result
         if: always()
         uses: actions/upload-artifact@v4
@@ -120,9 +146,9 @@ jobs:
           if-no-files-found: ignore
 
   # ---- 质量门禁：聚合 touchstone 规则 + 转达检查 +（若跑过）verify → 对外发【一个】总闸 ----
-  # needs verify 但用 !cancelled() 兜底：verify 被跳过（默认）时本 job 仍运行，verify 插件记中性、不挡。
+  # needs verify_execute 但用 !cancelled() 兜底：verify 链被跳过（默认）时本 job 仍运行，verify 插件记中性、不挡。
   gate:
-    needs: [touchstone, verify]
+    needs: [touchstone, verify_execute]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     permissions:
@@ -136,7 +162,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-      - run: pip install -r requirements.txt
+      - run: pip install -e .
       - name: Download touchstone (+ verify if ran) outputs
         uses: actions/download-artifact@v4
         with:
@@ -148,7 +174,7 @@ jobs:
           GITHUB_REPOSITORY: ${{ github.repository }}
           TOUCHSTONE_HEAD_SHA: ${{ github.event.pull_request.head.sha }}   # findings 缺失时据它发"未产出结果"failure check
           REPO_DIR: "."
-        run: python touchstone/checks.py    # 发总闸并把含 verify 的结论写回 touchstone-findings.json
+        run: python -m touchstone.checks    # 发总闸并把含 verify 的结论写回 touchstone-findings.json
       - name: Re-upload findings with final gate (供 auto_merge 读含 verify 的总闸)
         if: always()
         uses: actions/upload-artifact@v4
@@ -172,7 +198,7 @@ jobs:
           ref: ${{ github.event.pull_request.base.ref }}
       - uses: actions/setup-python@v5
         with: { python-version: "3.13" }
-      - run: pip install -r requirements.txt
+      - run: pip install -e .
       - name: Download touchstone findings (final, gate-updated)
         uses: actions/download-artifact@v4
         with:

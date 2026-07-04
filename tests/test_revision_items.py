@@ -11,12 +11,12 @@
 """
 import json
 
-import checklist as cl
-import contract_check as cc
-import lineage
-import loop
-import orchestrator
-import review_provider as rp
+from touchstone import checklist as cl
+from touchstone import contract_check as cc
+from touchstone import lineage
+from touchstone import loop
+from touchstone import orchestrator
+from touchstone import review_provider as rp
 from helpers import build_diff
 
 

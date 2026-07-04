@@ -27,11 +27,6 @@ import re
 import sys
 import time
 
-# 同目录模块（calibrate/ghclient）兼容 -m touchstone.learning_loop 与脚本两种运行方式
-_HERE = os.path.dirname(os.path.abspath(__file__))
-if _HERE not in sys.path:
-    sys.path.insert(0, _HERE)
-
 # --- 阈值（保守：宁可慢些演进，不轻易注入/退役）---------------------------------
 DISTILL_MIN_FIRES   = 8      # 命中样本下限，才考虑蒸馏成候选经验
 SUPPRESS_ADOPT_MAX  = 0.20   # 采纳率低于此 → "别挑"（suppress）候选
@@ -179,7 +174,9 @@ def _llm_json(llm, messages, default):
     """调用注入的 llm(messages)->str 并抽 JSON；任何失败都回退 default（鲁棒，离线可注入假 llm）。"""
     try:
         return _extract_json(llm(messages), default)
-    except Exception:
+    except Exception as e:
+        # 回退 default 是刻意设计（离线可注入假 llm），但静默会让"LLM 全程没调通"不可见——留痕
+        print(f"[learning_loop] LLM 调用失败，回退默认值: {e}", file=sys.stderr)
         return default
 
 
@@ -474,7 +471,7 @@ def active_ids(store):
 #   作为好坏信号一并记录。复用 calibrate 的 marker 解析与 GraphQL 线程采纳口径，不另建库。
 def _gh_get(path, token, accept="application/vnd.github+json"):
     """GitHub REST GET（经 ghclient 连接池 + 退避）。accept 以 'diff' 结尾返回文本。"""
-    import ghclient
+    from touchstone import ghclient
     base = os.environ.get("GITHUB_API_URL", "https://api.github.com")
     return ghclient.request("GET", base + path, token, accept=accept)
 
@@ -512,7 +509,7 @@ def build_ground_truth(owner, repo, token, *, window=GT_WINDOW, bot_login=None,
     人采纳来自该发现的评审线程被 resolved（GraphQL isResolved）；
     PR 级好坏来自人审 state(APPROVED/CHANGES_REQUESTED) + 是否合入。
     返回 [make_gt_entry ...]。任一 PR 取数失败仅跳过该 PR，不中断整体。"""
-    import calibrate as C
+    from touchstone import calibrate as C
     bot_login = bot_login or os.environ.get("TOUCHSTONE_BOT_LOGIN", "github-actions[bot]")
     prs = _gh_get(f"/repos/{owner}/{repo}/pulls?state=closed&sort=updated&direction=desc"
                   f"&per_page={window}", token) or []
@@ -531,7 +528,9 @@ def build_ground_truth(owner, repo, token, *, window=GT_WINDOW, bot_login=None,
                 threads = C.parse_review_threads(
                     C.gql(C._GQL_THREADS, {"owner": owner, "repo": repo, "num": n}, token))
                 fa = C.thread_findings(threads, bot_login)
-            except Exception:
+            except Exception as e:
+                print(f"[learning_loop] PR#{n} 评审线程解析失败（按无采纳记录处理）: {e}",
+                      file=sys.stderr)
                 fa = []
             resolved_types = {f.get("rule_id") for f in fa if f.get("resolved")}
             reviews = _gh_get(f"/repos/{owner}/{repo}/pulls/{n}/reviews?per_page=100", token) or []
@@ -541,7 +540,8 @@ def build_ground_truth(owner, repo, token, *, window=GT_WINDOW, bot_login=None,
                                accept="application/vnd.github.v3.diff")
                 if len(diff) > diff_budget:
                     diff = diff[:diff_budget] + "\n... [diff truncated]"
-            except Exception:
+            except Exception as e:
+                print(f"[learning_loop] PR#{n} diff 获取失败（以空 diff 继续）: {e}", file=sys.stderr)
                 diff = ""
             files = [f.get("filename") for f in
                      (_gh_get(f"/repos/{owner}/{repo}/pulls/{n}/files?per_page=100", token) or [])]

@@ -20,7 +20,7 @@ import sys
 import requests
 import yaml
 
-import ghclient
+from touchstone import ghclient
 
 DEFAULT_GATE = "touchstone/gate"
 _RELAY_OK = {"success", "neutral", "skipped"}

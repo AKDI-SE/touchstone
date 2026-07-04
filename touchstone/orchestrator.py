@@ -16,24 +16,20 @@ import json
 import os
 import re
 import sys
-import urllib.request
-import urllib.error
 
 import requests
 
 import yaml
 
-# 同目录模块：兼容"脚本运行(python touchstone/orchestrator.py)"与"包导入(touchstone.orchestrator)"
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import ghclient             # GitHub HTTP 客户端(requests)
-import checks                # 可插拔检查框架 + 总闸
-import loop                  # 反馈循环控制器
-import contract_check        # 提交契约一致性核对（确定性）
-import review_provider       # 评审提供器(复用 PR-Agent) + 发现归一 + 裁决映射
-import autonomy              # 变更分类计算（供自治经验层/auto_merge 重建）
-import stack_rules           # §4.1 栈专项确定性规则（machine_checkable 的 SPR/JAVA/CTR）
-import checklist as checklist_mod   # 收敛清单（修订设计 §4.3，评审意见 1、3）
-import lineage               # 轮次台账与同源检测（修订设计 §4.4，评审意见 10）
+from touchstone import ghclient             # GitHub HTTP 客户端(requests)
+from touchstone import checks                # 可插拔检查框架 + 总闸
+from touchstone import loop                  # 反馈循环控制器
+from touchstone import contract_check        # 提交契约一致性核对（确定性）
+from touchstone import review_provider       # 评审提供器(复用 PR-Agent) + 发现归一 + 裁决映射
+from touchstone import autonomy              # 变更分类计算（供自治经验层/auto_merge 重建）
+from touchstone import stack_rules           # §4.1 栈专项确定性规则（machine_checkable 的 SPR/JAVA/CTR）
+from touchstone import checklist as checklist_mod   # 收敛清单（修订设计 §4.3，评审意见 1、3）
+from touchstone import lineage               # 轮次台账与同源检测（修订设计 §4.4，评审意见 10）
 
 # --- 配置 ---------------------------------------------------------------------
 STANDARDS_PATH = os.environ.get("TOUCHSTONE_STANDARDS", ".touchstone/standards.yaml")
@@ -249,7 +245,7 @@ def ci_verdict(owner, repo, head_sha, token):
     返回 True=全绿/中性、False=有失败、None=仍有未完成或无数据（未知不强制 author 继续）。"""
     try:
         data = gh("GET", f"/repos/{owner}/{repo}/commits/{head_sha}/check-runs", token)
-    except (urllib.error.HTTPError, requests.exceptions.RequestException):
+    except requests.exceptions.RequestException:
         return None
     runs = [r for r in (data.get("check_runs") or [])
             if not str(r.get("name", "")).startswith("touchstone")]
@@ -345,7 +341,7 @@ def post_results(owner, repo, number, head_sha, token, risk, findings, loop_info
     body = body + "\n\n" + result_marker
     try:
         gh("POST", f"/repos/{owner}/{repo}/issues/{number}/comments", token, {"body": body})
-    except (urllib.error.HTTPError, requests.exceptions.RequestException) as e:
+    except requests.exceptions.RequestException as e:
         print(f"[warn] 摘要评论失败: {e}", file=sys.stderr)
     # (2) 尽力内联评论（event=COMMENT，绝不 REQUEST_CHANGES）
     #     锚定到 diff 可评论行（删除行/超界行就近锚或降级）；每条附自识别隐藏标记
@@ -364,7 +360,7 @@ def post_results(owner, repo, number, head_sha, token, risk, findings, loop_info
         try:
             gh("POST", f"/repos/{owner}/{repo}/pulls/{number}/reviews", token,
                {"event": "COMMENT", "comments": inline})
-        except (urllib.error.HTTPError, requests.exceptions.RequestException) as e:
+        except requests.exceptions.RequestException as e:
             print(f"[info] 内联评论降级(行不在 diff 内属正常): {e}", file=sys.stderr)
     # (3) 中性 check run（advisory，永不 failure）
     if head_sha:
@@ -376,7 +372,7 @@ def post_results(owner, repo, number, head_sha, token, risk, findings, loop_info
                 "output": {"title": f"{flag}风险等级 {risk['risk_band']} · {len(findings)} 条发现",
                            "summary": body[:600]},
             })
-        except (urllib.error.HTTPError, requests.exceptions.RequestException) as e:
+        except requests.exceptions.RequestException as e:
             print(f"[info] check run 跳过: {e}", file=sys.stderr)
 
 
@@ -478,7 +474,7 @@ def main():
         all_bodies = [c.get("body", "") for c in comments]
         try:
             bot_login = (gh("GET", "/user", token) or {}).get("login")
-        except (urllib.error.HTTPError, requests.exceptions.RequestException):
+        except requests.exceptions.RequestException:
             bot_login = None
         if not bot_login:
             # GET /user 未返回身份（默认 GITHUB_TOKEN 常见）——不降级：trusted_bodies 改按
@@ -486,7 +482,7 @@ def main():
             print("[info] GET /user 未返回身份：loop marker 改按 [bot] 后缀过滤（防伪造仍生效）",
                   file=sys.stderr)
         bodies = loop.trusted_bodies(comments, bot_login)
-    except (urllib.error.HTTPError, requests.exceptions.RequestException):
+    except requests.exceptions.RequestException:
         bodies = []
     state = loop.parse_latest_state(bodies)
 
@@ -558,7 +554,7 @@ def main():
             pr_ctx = {"owner": owner, "repo": repo, "sha": head_sha, "token": token,
                       "files": sorted(changed_files), "contract_findings": det_findings}
             gate, _ = checks.post_gate(pr_ctx, chk_cfg, checks.run_checks(chk_cfg, pr_ctx))
-        except (urllib.error.HTTPError, requests.exceptions.RequestException) as e:
+        except requests.exceptions.RequestException as e:
             print(f"[info] 总闸跳过: {e}", file=sys.stderr)
 
     # 升级到人：打标签（best-effort）
@@ -566,7 +562,7 @@ def main():
         try:
             gh("POST", f"/repos/{owner}/{repo}/issues/{number}/labels", token,
                {"labels": ["touchstone:needs-human"]})
-        except (urllib.error.HTTPError, requests.exceptions.RequestException):
+        except requests.exceptions.RequestException:
             pass
 
     # 校准 + 自治决策入口：落盘供下游 join / auto_merge 组装

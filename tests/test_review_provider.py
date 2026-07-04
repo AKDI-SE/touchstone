@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-import review_provider as RP
+from touchstone import review_provider as RP
 
 
 # 一份贴近 PR-Agent improve+review 输出的样例
@@ -279,7 +279,7 @@ def test_run_link_from_actions_env(monkeypatch):
 
 def test_runner_imports_without_pr_agent():
     # 适配器模块本身可被导入、不在导入期触碰 pr-agent（pr-agent 只在 run() 内 import）
-    import pr_agent_runner as R
+    from touchstone import pr_agent_runner as R
     assert R._read(None) is None
     assert callable(R.run) and callable(R.main)
 

@@ -5,7 +5,7 @@ import os
 
 
 # ---------------- checks ----------------
-import checks
+from touchstone import checks
 
 
 def test_run_relay_not_completed(monkeypatch):
@@ -63,7 +63,7 @@ def test_checks_main_post_failure_swallowed(monkeypatch, tmp_path):
 
 
 # ---------------- pr_agent_runner ----------------
-import pr_agent_runner as R
+from touchstone import pr_agent_runner as R
 
 
 def test_ping_llm_success(monkeypatch):
@@ -89,7 +89,7 @@ def test_write_interaction_log_failure(monkeypatch, capsys):
 
 
 # ---------------- preflight ----------------
-import preflight as P
+from touchstone import preflight as P
 
 
 def test_preflight_ping_failure(monkeypatch):
@@ -129,7 +129,7 @@ def sys_mod(name):
 
 
 # ---------------- review_provider ----------------
-import review_provider as RP
+from touchstone import review_provider as RP
 
 
 def test_load_nmap_bad_yaml(tmp_path):
@@ -160,7 +160,7 @@ def test_experience_injection_exception(monkeypatch):
 
 
 # ---------------- stack_rules ----------------
-import stack_rules as SR
+from touchstone import stack_rules as SR
 
 
 def test_stack_rules_unknown_applies_to_skipped():
@@ -171,23 +171,13 @@ def test_stack_rules_unknown_applies_to_skipped():
 
 
 # ---------------- loop ----------------
-import loop
+from touchstone import loop
 import pytest
 
 
-def test_loop_step_escalate_on_no_progress():
-    # 同轮次、空 history、无推进 → escalate
-    rules = {"R": {"severity": "warn"}}
-    # 构造一个可自改发现（非 correctness、有 suggested_fix）
-    f = {"rule_id": "R", "category": "convention", "severity": "warn",
-         "suggested_fix": "fix me", "file": "a", "line": 1}
-    dec, reason, st = loop.loop_step([f], rules, loop.LoopState(1, [], True), ci_passed=True)
-    # 第一轮有发现 → continue（非 escalate）
-    assert dec in ("continue", "escalate")
-
 
 # ---------------- govern ----------------
-import govern
+from touchstone import govern
 
 
 def test_govern_detect_revert_shas_git_failures(monkeypatch):
@@ -215,7 +205,7 @@ def test_govern_build_merge_records_marks_reverted():
 
 
 # ---------------- calibrate ----------------
-import calibrate
+from touchstone import calibrate
 
 
 def test_calibrate_aggregate_empty():

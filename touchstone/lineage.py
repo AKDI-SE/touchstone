@@ -20,8 +20,8 @@
 import datetime
 import sys
 
-import loop
-import checklist as _checklist
+from touchstone import loop
+from touchstone import checklist as _checklist
 
 JACCARD_MIN = 0.8        # 文件集 Jaccard 相似阈值
 SHAPE_MIN = 0.6          # hunk 结构（每文件增删行数）相似阈值

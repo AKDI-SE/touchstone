@@ -2,7 +2,7 @@
 全离线、纯函数；TF-GRPO 的 rollout/语义优势内省以注入的假 llm 离线覆盖，真实 A/B 跑批在你的环境做。"""
 import json
 import os
-import learning_loop as L
+from touchstone import learning_loop as L
 
 
 def _agg(by_rule):
@@ -389,7 +389,7 @@ def test_make_gt_entry_splits_adopted_and_ignored():
 
 def test_build_ground_truth_from_human_verdicts(tmp_path, monkeypatch):
     """离线模拟 GitHub 重建：PR#1 有 touchstone marker + 线程采纳信号；PR#2 无 marker → 跳过。"""
-    import calibrate as C
+    from touchstone import calibrate as C
     marker = ("<!-- touchstone-result: " + json.dumps(
         {"findings": [{"rule_id": "PRA-POSSIBLE_BUG"}, {"rule_id": "PRA-TYPO"}]}) + " -->")
     threads_payload = {"data": {"repository": {"pullRequest": {"reviewThreads": {"nodes": [
@@ -487,7 +487,7 @@ def test_main_cli_ground_truth_min_skips_tfgrpo(tmp_path, monkeypatch):
 
 def test_active_ids_for_experience_provenance():
     """active_ids 给出 active 经验的 id 列表——供 marker 的 injected_experience_ids 做单条归因。"""
-    import learning_loop as L
+    from touchstone import learning_loop as L
     store = {"experiences": [
         {"id": "emphasize:::PRA-SECURITY", "finding_type": "PRA-SECURITY", "status": "active"},
         {"id": "suppress:::PRA-TYPO", "finding_type": "PRA-TYPO", "status": "candidate"},
@@ -570,18 +570,18 @@ def test_read_store_text_ref_failure_returns_none(monkeypatch):
 
 
 def test_extract_json_none_and_no_json():
-    import learning_loop as L
+    from touchstone import learning_loop as L
     assert L._extract_json(None, "DEF") == "DEF"
     assert L._extract_json("no json here", "DEF") == "DEF"
 
 
 def test_llm_json_exception_returns_default():
-    import learning_loop as L
+    from touchstone import learning_loop as L
     assert L._llm_json(lambda m: (_ for _ in ()).throw(RuntimeError("x")), [], "DEF") == "DEF"
 
 
 def test_flagship_llm_success(monkeypatch):
-    import learning_loop as L
+    from touchstone import learning_loop as L
     monkeypatch.setenv("LLM_BASE_URL", "http://b")
     monkeypatch.setenv("LLM_API_KEY", "k")
     monkeypatch.setenv("TOUCHSTONE_FLAGSHIP_MODEL", "m")
@@ -606,7 +606,7 @@ def test_flagship_llm_success(monkeypatch):
 
 
 def test_seed_experience_updates_existing():
-    import learning_loop as L
+    from touchstone import learning_loop as L
     store = {"experiences": [L.seed_experience({"experiences": []}, "PRA-X", "emphasize", "first")]}
     # 同 id 再 seed → 更新 text
     updated = L.seed_experience(store, "PRA-X", "emphasize", "second")
@@ -621,7 +621,7 @@ def test_seed_experience_bad_kind_raises():
 
 
 def test_graduate_skips_no_ab_and_low_samples():
-    import learning_loop as L
+    from touchstone import learning_loop as L
     store = {"experiences": [
         {"id": "e:::T1", "finding_type": "T1", "status": "candidate", "evidence": {}, "updated_at": 1},
         {"id": "e:::T2", "finding_type": "T2", "status": "candidate", "evidence": {}, "updated_at": 1},
@@ -632,14 +632,14 @@ def test_graduate_skips_no_ab_and_low_samples():
 
 
 def test_gh_get_uses_ghclient(monkeypatch):
-    import ghclient, learning_loop as L
+    from touchstone import ghclient, learning_loop as L
     monkeypatch.setattr(ghclient, "request",
                         lambda method, url, token, accept=None: {"ok": 1})
     assert L._gh_get("/repos/x", "tok") == {"ok": 1}
 
 
 def test_build_ground_truth_skips_failed_pr(monkeypatch, tmp_path):
-    import learning_loop as L
+    from touchstone import learning_loop as L
     # _gh_get 对 pulls 返回数据、对其它失败 → 该 PR 跳过，不中断
     seq = [{"number": 1, "title": "t", "merged_at": "x", "base": {"ref": "main"}}]
     monkeypatch.setattr(L, "_gh_get", lambda path, token, accept=None: (
