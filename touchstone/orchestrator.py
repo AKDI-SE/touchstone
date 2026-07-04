@@ -54,7 +54,10 @@ def load_yaml(path, default=None):
 
 
 def get_pr_diff(owner, repo, number, token):
-    """取 PR 全文 diff——确定性核对（SEC-001 等）必须覆盖全文，安全保证不随体量打折扣。"""
+    """取 PR 全文 diff——确定性核对（SEC-001 等）必须覆盖全文，安全保证不随体量打折扣。
+    LLM 侧的上下文限制由 pr-agent 自己管理（它取全文 PR + 用 custom_model_max_tokens 做
+    max_tokens）；touchstone 的确定性核对（密钥扫描/契约/栈规则）是纯正则/AST，不进 LLM，
+    不受 diff 体量影响。超大体量 PR 建议配 TOUCHSTONE_MAX_DIFF_LINES 体量门禁拆分。"""
     return gh("GET", f"/repos/{owner}/{repo}/pulls/{number}", token,
               accept="application/vnd.github.v3.diff")
 
