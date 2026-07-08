@@ -2,6 +2,13 @@
 
 本文件记录 Touchstone 的发布版本。设计的逐版迭代历史见 `docs/touchstone-design.html` 的变更历史。
 
+## 未发布 — 2026-07-04（工程化加固·第四轮：工具链收尾）
+
+- **mypy 渐进接入**：pyproject 增加 `[tool.mypy]`（默认宽松：ignore_missing_imports，暂不开 check_untyped_defs——首测其在本仓 dict 密集风格下产生 71 处推断噪音，等核心结构补 TypedDict 后逐模块收紧）。默认模式抓到 4 处真问题并修复，其中 1 处是**类型契约与语义不符**：`VerificationResult.passed` 声明 `bool` 但语义上 None=无法判定（unsupported/漂移兜底），修正为 `Optional[bool]` 并注明三值语义。CI lint job 增加 mypy 步骤。
+- **mutmut 扩围并修通**：变异测试范围从 contract_check 一个文件扩至全部确定性裁决模块（+stack_rules/loop/checklist——红线契约的裁决代码，变异测试对其价值最高）。同时修通此前"mutmut 3.x 与本仓测试集成需单独配置"的遗留：setup.cfg 改多行列表语法 + `also_copy` 带上沙箱缺的 `.touchstone/` 规则文件与完整包目录。已实测端到端可跑（4 模块共 1798 个变异体）；全量跑一遍并建立击杀率基线留作团队任务。
+- **verify_change CLI 函数化 + 补测**：`__main__` 裸块（100+ 行零覆盖）重构为可测的 `main(argv)`（learning_loop 同款模式，退出码 0/1/2 语义不变）；新增 `tests/test_cli_paths.py`（plan 落盘/execute 读回/产物缺失退 2/verify 不过退 1/GitHub 回贴、autonomy --graduate 与 no-op 路径）。verify_change 覆盖率 73%→95%，总覆盖率 90%→**92%**，CI 门槛 85→**88**。
+- **杂项**：`push-to-github.sh`（一次性引导脚本）挪至 `scripts/`；测试 481→**488**。
+
 ## 未发布 — 2026-07-04（工程化加固·第三轮：模块拆分）
 
 两个巨型模块按职责拆分，全部既有引用路径经门面再导出零改动兼容。测试 481 全绿、逐文件独立通过、ruff 清零、覆盖率 90% 不变。

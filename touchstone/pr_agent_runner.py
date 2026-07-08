@@ -52,7 +52,7 @@ def _ping_llm(base, key, model):
 
 # 本次 run() 的交互轨迹（关键节点日志），main() 据此 + 返回结果写完整交互日志（artifact）。
 # 单进程单线程，模块级即可。
-_IX = []
+_IX: list = []
 
 
 def _ix(msg):

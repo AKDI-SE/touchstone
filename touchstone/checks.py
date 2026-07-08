@@ -24,7 +24,7 @@ from touchstone import ghclient
 
 DEFAULT_GATE = "touchstone/gate"
 _RELAY_OK = {"success", "neutral", "skipped"}
-_BUILTINS = {}        # name -> fn(pr_ctx, cfg) -> (passed: bool|None, summary: str)
+_BUILTINS: dict = {}  # name -> fn(pr_ctx, cfg) -> (passed: bool|None, summary: str)
 
 
 def builtin(name):

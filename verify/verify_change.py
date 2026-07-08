@@ -63,7 +63,7 @@ class AdequacyResult:
 
 @dataclass
 class VerificationResult:
-    passed: bool
+    passed: Optional[bool]         # None = 无法判定（unsupported/漂移兜底），语义上三值
     mode: str
     head_tests_pass: Optional[bool] = None      # 改后 PASS = 正确性判决
     adequacy: Optional[AdequacyResult] = None
@@ -364,7 +364,9 @@ def _verify_regression(repo_dir, runner, changed_files, base_ref, head_ref, mode
 PLAN_PATH = "acceptance-tests.json"     # plan 阶段产物（gen job → artifact → exec job）
 
 
-if __name__ == "__main__":
+def main(argv=None):
+    """CLI 入口（可测：learning_loop.main 同款模式）。返回进程退出码：
+    0=通过/plan 完成；1=verify 不过；2=配置错/plan 产物缺失。"""
     import argparse
     import sys
     import yaml
@@ -373,7 +375,7 @@ if __name__ == "__main__":
                     help="plan=生成计划（需 LLM 凭据，不执行 PR 代码）；"
                          "execute=按计划执行（执行 PR 代码，不需要任何凭据）；"
                          "all=单进程连跑（仅限可信环境）")
-    phase = ap.parse_args().phase
+    phase = ap.parse_args(argv).phase
 
     if phase in ("plan", "all"):
         # 只有 plan 阶段需要 LLM 凭据（execute 阶段的环境应当一个 secret 都没有）
@@ -382,14 +384,14 @@ if __name__ == "__main__":
         model = os.environ.get("LLM_TEST_MODEL") or os.environ.get("LLM_MODEL")
         if not (base_url and api_key and model):
             print("缺少 LLM_BASE_URL/LLM_API_KEY/LLM_(TEST_)MODEL（配置错误，非代码不过）", file=sys.stderr)
-            sys.exit(2)                                       # exit 2=配置错（exit 1=verify 不过）
+            return 2                                       # exit 2=配置错（exit 1=verify 不过）
 
     repo = os.environ.get("REPO_DIR", ".")
     base_ref = os.environ.get("BASE_REF")
     head_ref = os.environ.get("HEAD_REF")
     if not (base_ref and head_ref):
         print("缺少 BASE_REF/HEAD_REF（配置错误）", file=sys.stderr)
-        sys.exit(2)
+        return 2
     mode = os.environ.get("VERIFY_MODE", "targeted_tests")
     changed = subprocess.run(["git", "-C", repo, "diff", "--name-only",
                              f"{base_ref}..{head_ref}"],
@@ -406,13 +408,13 @@ if __name__ == "__main__":
             json.dump(plan, f, ensure_ascii=False, indent=2)
         print(f"[verify:plan] route={plan.get('route')} → {PLAN_PATH}")
         if phase == "plan":
-            sys.exit(0)
+            return 0
     else:
         try:
             plan = json.load(open(PLAN_PATH, encoding="utf-8"))
         except (OSError, ValueError) as e:
             print(f"读取 {PLAN_PATH} 失败（plan 阶段产物缺失/损坏）: {e}", file=sys.stderr)
-            sys.exit(2)
+            return 2
 
     res = execute_verification(repo, plan, changed, base_ref, head_ref)
 
@@ -468,4 +470,9 @@ if __name__ == "__main__":
         except urllib.error.HTTPError as e:
             print(f"[warn] 回贴失败: {e}", file=sys.stderr)
 
-    sys.exit(0 if res.passed else 1)
+    return 0 if res.passed else 1
+
+
+if __name__ == "__main__":
+    import sys
+    sys.exit(main())
