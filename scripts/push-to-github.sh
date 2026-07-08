@@ -10,10 +10,11 @@
 #       - 经典 token：勾 “repo”
 #       - 细粒度 token：Administration=Read&Write + Contents=Read&Write
 #     放进环境变量 GITHUB_TOKEN，或用 --token 传，或运行时按提示输入。
-#   • 华为内网访问 github.com（公网）需走代理：加 --huawei 即可。
+#   • 华为内网访问 github.com（公网）需走代理：设 HUAWEI_PROXY 环境变量（代理凭据，
+#     不入库）后加 --huawei。
 #
 # 用法：
-#   GITHUB_TOKEN=ghp_xxx  ./push-to-github.sh touchstone --private --huawei
+#   HUAWEI_PROXY='http://user:pass@proxy.huawei.com:8080' GITHUB_TOKEN=ghp_xxx  ./push-to-github.sh touchstone --private --huawei
 #   ./push-to-github.sh touchstone --public --org my-team --desc "试金石"
 #   ./push-to-github.sh touchstone --dry-run            # 只打印步骤，不真执行
 # ============================================================================
@@ -29,7 +30,7 @@ PROXY="${HTTPS_PROXY:-${https_proxy:-}}"
 USE_GH=0
 DRYRUN=0
 REPO=""
-HUAWEI_PROXY='http://z00:Zjf%3B@proxy.huawei.com:8080'   # 华为内网公网出口代理（见 huawei-internal-network）
+HUAWEI_PROXY="${HUAWEI_PROXY:-}"   # 华为内网公网出口代理（凭据经环境变量传入，不入库；见 huawei-internal-network）
 
 usage() {
   sed -n '2,/^set -euo/p' "$0" | grep '^#' | sed 's/^# \{0,1\}//'
@@ -45,7 +46,7 @@ while [ $# -gt 0 ]; do
     --desc)    DESC="${2:?--desc 需要值}"; shift ;;
     --token)   TOKEN="${2:?--token 需要值}"; shift ;;
     --proxy)   PROXY="${2:?--proxy 需要值}"; shift ;;
-    --huawei)  PROXY="$HUAWEI_PROXY" ;;
+    --huawei)  PROXY="${HUAWEI_PROXY:?--huawei 需环境变量 HUAWEI_PROXY（代理凭据不入库，见脚本头说明）}" ;;
     --host)    HOST="${2:?--host 需要值}"; shift ;;
     --api)     API="${2:?--api 需要值}"; shift ;;
     --gh)      USE_GH=1 ;;
