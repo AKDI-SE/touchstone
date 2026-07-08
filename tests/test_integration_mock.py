@@ -9,9 +9,9 @@ import pytest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
-sys.path.insert(0, ROOT)            # 使 `from touchstone import ...` 可解析
-sys.path.insert(0, os.path.join(ROOT, "touchstone"))
-sys.path.insert(0, os.path.join(ROOT, "verify"))
+sys.path.insert(0, ROOT)            # 使 `from touchstone import ...` 可解析（仅仓库根；
+# 不再把 touchstone/、verify/ 子目录也插进 path——那会让"函数内平铺导入"这类地雷
+# 在全量测试里被静默掩盖、单跑文件才炸，见 CHANGELOG 工程化加固第二轮）
 
 from touchstone import ghclient as G          # noqa: E402
 from touchstone import preflight as P         # noqa: E402

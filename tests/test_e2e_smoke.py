@@ -12,7 +12,7 @@ import subprocess
 import yaml
 
 from touchstone import autonomy
-from touchstone import orchestrator  # noqa: F401  （触发同目录 sys.path 加固，使下面裸 import 可解析）
+from touchstone import orchestrator
 from touchstone import contract_check
 from touchstone import loop
 from touchstone import review_provider

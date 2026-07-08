@@ -82,17 +82,21 @@ jobs:
   #   verify_plan    持有 LLM 凭据，但【绝不执行】PR 代码（只读接口 + LLM 生成验收测试，
   #                  见 verify_change.plan_verification 的不变式），产出 acceptance-tests.json。
   #   verify_execute 真正在 worktree 里执行 PR 代码（pytest/mvn 收集期即可任意执行），
-  #                  env 里【一个 secret 都没有】——PR 代码无凭据可窃取。
+  #                  env 零 secret + persist-credentials:false（.git/config 也无 token）+
+  #                  job 权限降为 contents:read——PR 代码既无凭据可窃、拿到 token 也伪造不了总闸。
   # 结果写 verify-result.json，由 gate job 经 verify 插件折进总闸。
   verify_plan:
     needs: touchstone
     if: ${{ vars.VERIFY_ENABLED == 'true' && (needs.touchstone.outputs.decision == 'targeted_tests' || needs.touchstone.outputs.decision == 'full_suite') }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read             # 覆盖 workflow 级继承——本 job 不需要 checks/pr 写权
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.base.ref }}
           fetch-depth: 0           # plan 需读 head 接口（只读 worktree，不执行）
+          persist-credentials: false   # 不把 token 写进 .git/config
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
@@ -108,7 +112,7 @@ jobs:
           VERIFY_MODE: ${{ needs.touchstone.outputs.decision }}
           PR_TITLE: ${{ github.event.pull_request.title }}
           REPO_DIR: "."
-        run: python verify/verify_change.py --phase plan
+        run: python -m verify.verify_change --phase plan
       - uses: actions/upload-artifact@v4
         with:
           name: verify-plan
@@ -117,11 +121,16 @@ jobs:
   verify_execute:
     needs: [touchstone, verify_plan]
     runs-on: ubuntu-latest
+    permissions:
+      contents: read             # 最小权限：继承 workflow 级的 checks:write 会让 PR 代码
+                                 # 拿 .git/config 里的 token 伪造 touchstone/gate（绕闸链）
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.base.ref }}
           fetch-depth: 0           # worktree 需要 base/head 两个 commit
+          persist-credentials: false   # 关键：本 job 执行 PR 代码——env 零 secret 之外，
+                                       # 还必须保证 .git/config 里也没有 token 可窃
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
@@ -136,7 +145,7 @@ jobs:
           HEAD_REF: ${{ github.event.pull_request.head.sha }}
           VERIFY_MODE: ${{ needs.touchstone.outputs.decision }}
           REPO_DIR: "."
-        run: python verify/verify_change.py --phase execute
+        run: python -m verify.verify_change --phase execute
       - name: Upload verify result
         if: always()
         uses: actions/upload-artifact@v4

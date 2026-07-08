@@ -15,7 +15,6 @@ import os
 import re
 
 from unidiff import PatchSet
-from unidiff.errors import UnidiffParseError
 
 
 _PARSE_WARNING = None   # 最近一次 parse_diff 的告警：diff 解析失败时置位，orchestrator 读取后写进评审（防静默故障）。

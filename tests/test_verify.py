@@ -3,6 +3,7 @@ import os
 
 import pytest
 from verify import verify_change as V
+from verify import runners as R
 
 
 # ---------------- select_runner / is_refactor ----------------
@@ -323,7 +324,6 @@ def test_external_mutation_cmd_used_when_set(monkeypatch, tmp_path):
 
 
 # ---------------- 纯函数补测 ----------------
-from verify import verify_change as V
 
 
 def test_extract_code_with_and_without_fence():
@@ -355,17 +355,23 @@ def test_generate_spec_blind_junit(monkeypatch):
     assert "@Test" in ts.code
 
 
-class _FakeCovData:
-    def __init__(self, lines_map, missing_map):
-        self._l = lines_map; self._m = missing_map
-    def lines(self, path): return self._l.get(path)
-    def missing_lines(self, path): return self._m.get(path)
-
-
 class _FakeCov:
+    """模拟 coverage.Coverage——用 analysis2（statements + missing）替代已废弃的
+    CoverageData.lines/missing_lines（pr-agent 审计发现 missing_lines 不存在）。"""
     def __init__(self, lines_map, missing_map):
-        self._d = _FakeCovData(lines_map, missing_map)
-    def get_data(self): return self._d
+        # lines_map = executed lines, missing_map = not-executed lines
+        # analysis2 返回 (filename, statements, excluded, missing, missing_formatted)
+        self._lines = lines_map
+        self._missing = missing_map
+    def analysis2(self, path):
+        executed = self._lines.get(path) or set()
+        missing = self._missing.get(path) or set()
+        statements = sorted(executed | missing)
+        return (path, statements, [], sorted(missing), "")
+    def get_data(self):
+        class _D:
+            def lines(_, p): return self._lines.get(p)
+        return _D()
 
 
 def test_coverage_ratio_file_level():
@@ -387,12 +393,24 @@ def test_coverage_ratio_line_level_none_coverable():
     assert V._coverage_ratio(cov, ["a.py"], {"a.py": {99}}) == 1.0  # 无可覆盖行 → 1.0
 
 
+def test_coverage_ratio_line_level_list_input():
+    # changed_lines 值为 list 时不应 set&list 抛 TypeError 静默失败（pr-agent 第3轮 :91 回归保护）
+    cov = _FakeCov({"a.py": {1, 2}}, {"a.py": set()})
+    assert V._coverage_ratio(cov, ["a.py"], {"a.py": [1, 2]}) == 1.0
+
+
+def test_coverage_json_line_ratio_list_input():
+    # 同一缺陷类：_coverage_json_line_ratio 的 & lines 也须容忍 list 输入
+    cov = {"files": {"x.py": {"executed_lines": [11, 12], "missing_lines": [22]}}}
+    assert abs(V._coverage_json_line_ratio(cov, {"x.py": [11, 12, 22]}) - 2 / 3) < 1e-9
+
+
 def test_changed_file_coverage_no_py_returns_one():
     assert V._changed_file_coverage(".", "code", ["a.js"]) == 1.0
 
 
 def test_changed_file_coverage_subprocess_path(monkeypatch, tmp_path):
-    monkeypatch.setattr(V, "_run_coverage_subprocess",
+    monkeypatch.setattr(R, "_run_coverage_subprocess",
                         lambda wd, args: _FakeCov({"a.py": {1}}, {"a.py": set()}))
     assert V._changed_file_coverage(str(tmp_path), "def test_x(): assert 1", ["a.py"]) == 1.0
 
@@ -400,8 +418,34 @@ def test_changed_file_coverage_subprocess_path(monkeypatch, tmp_path):
 def test_changed_file_coverage_exception_returns_zero(monkeypatch, tmp_path):
     def boom(*a, **k):
         raise RuntimeError("cov failed")
-    monkeypatch.setattr(V, "_run_coverage_subprocess", boom)
+    monkeypatch.setattr(R, "_run_coverage_subprocess", boom)
     assert V._changed_file_coverage(str(tmp_path), "x", ["a.py"]) == 0.0
+
+
+def test_run_coverage_subprocess_loads_on_test_failure(monkeypatch, tmp_path):
+    # pytest 测试失败（退出码 1）时 coverage 仍写出 .coverage——不应因退出码非零丢采集
+    # （pr-agent 第3轮 :72 回归保护）
+    def fake_run(*a, **k):
+        (tmp_path / ".coverage").write_text("")   # 模拟 coverage 落盘（即便测试失败）
+        return R.subprocess.CompletedProcess(a[0], 1)
+
+    class _Cov:
+        def __init__(self, data_file=None):
+            pass
+        def load(self):
+            pass
+
+    monkeypatch.setattr(R.subprocess, "run", fake_run)
+    monkeypatch.setattr("coverage.Coverage", _Cov)
+    assert R._run_coverage_subprocess(str(tmp_path), ["-m", "pytest", "-q", "x.py"]) is not None
+
+
+def test_run_coverage_subprocess_raises_when_no_data(monkeypatch, tmp_path):
+    # 起跑前已清空 .coverage；跑完仍无数据产出（coverage 崩溃/超时未落盘）→ raise，绝不加载 stale
+    monkeypatch.setattr(R.subprocess, "run",
+                        lambda *a, **k: R.subprocess.CompletedProcess(a[0], 1))
+    with pytest.raises(RuntimeError, match="未产出数据"):
+        R._run_coverage_subprocess(str(tmp_path), ["-m", "pytest", "-q", "x.py"])
 
 
 def test_mutation_sites_finds_binary_ops():
@@ -465,54 +509,54 @@ def test_verify_regression_low_coverage_fails(monkeypatch, tmp_path):
 
 # ---------------- Runner 方法（mock 底层 subprocess/helper）----------------
 def test_python_runner_run_suite(monkeypatch):
-    monkeypatch.setattr(V, "_run", lambda cmd, wd, timeout=None: (True, "ok"))
+    monkeypatch.setattr(R, "_run", lambda cmd, wd, timeout=None: (True, "ok"))
     assert V.PythonRunner().run_suite("wd") == (True, "ok")
 
 
 def test_python_runner_mutation_branches(monkeypatch, tmp_path):
     r = V.PythonRunner()
     # 外部变异工具有值 → 直接用
-    monkeypatch.setattr(V, "external_mutation_score", lambda wd, cf: 0.7)
+    monkeypatch.setattr(R, "external_mutation_score", lambda wd, cf: 0.7)
     assert r.mutation(str(tmp_path), ["a.py"], test_code="t") == 0.7
     # 外部返回 None + 有 test_code → _mutation_check
-    monkeypatch.setattr(V, "external_mutation_score", lambda wd, cf: None)
-    monkeypatch.setattr(V, "_mutation_check", lambda wd, tc, cf: 0.4)
+    monkeypatch.setattr(R, "external_mutation_score", lambda wd, cf: None)
+    monkeypatch.setattr(R, "_mutation_check", lambda wd, tc, cf: 0.4)
     assert r.mutation(str(tmp_path), ["a.py"], test_code="t") == 0.4
     # 外部 None + 无 test_code → None
     assert r.mutation(str(tmp_path), ["a.py"]) is None
 
 
 def test_python_runner_run_generated_and_cover(monkeypatch, tmp_path):
-    monkeypatch.setattr(V, "_run_tests", lambda wd, tc: (True, "out"))
+    monkeypatch.setattr(R, "_run_tests", lambda wd, tc: (True, "out"))
     assert V.PythonRunner().run_generated(str(tmp_path), "code") == (True, "out")
-    monkeypatch.setattr(V, "_changed_file_coverage", lambda wd, tc, cf, cl=None: 0.9)
+    monkeypatch.setattr(R, "_changed_file_coverage", lambda wd, tc, cf, cl=None: 0.9)
     assert V.PythonRunner().cover_generated(str(tmp_path), "code", ["a.py"]) == 0.9
 
 
 def test_maven_runner_run_suite_and_mutation(monkeypatch, tmp_path):
-    monkeypatch.setattr(V, "_run", lambda cmd, wd, timeout=None: (True, "ok"))
+    monkeypatch.setattr(R, "_run", lambda cmd, wd, timeout=None: (True, "ok"))
     r = V.MavenRunner()
     assert r.run_suite(str(tmp_path)) == (True, "ok")
     # mutation：mvn 成功 → _pit_score
-    monkeypatch.setattr(V, "_pit_score", lambda wd: 0.55)
+    monkeypatch.setattr(R, "_pit_score", lambda wd: 0.55)
     assert r.mutation(str(tmp_path), ["A.java"]) == 0.55
     # mvn 失败 → None
-    monkeypatch.setattr(V, "_run", lambda cmd, wd, timeout=None: (False, "fail"))
+    monkeypatch.setattr(R, "_run", lambda cmd, wd, timeout=None: (False, "fail"))
     assert r.mutation(str(tmp_path), ["A.java"]) is None
 
 
 def test_maven_runner_changed_coverage(monkeypatch, tmp_path):
-    monkeypatch.setattr(V, "_jacoco_changed_coverage", lambda wd, cf: 0.6)
-    monkeypatch.setattr(V, "_jacoco_changed_line_coverage", lambda wd, cf, cl: 0.8)
+    monkeypatch.setattr(R, "_jacoco_changed_coverage", lambda wd, cf: 0.6)
+    monkeypatch.setattr(R, "_jacoco_changed_line_coverage", lambda wd, cf, cl: 0.8)
     r = V.MavenRunner()
     assert r.changed_coverage(str(tmp_path), ["A.java"]) == 0.6               # 无 changed_lines
     assert r.changed_coverage(str(tmp_path), ["A.java"], {"A.java": {1}}) == 0.8
 
 
 def test_maven_runner_run_generated_and_cover(monkeypatch, tmp_path):
-    monkeypatch.setattr(V, "_place_junit", lambda wd, tc: ("TestX", "p"))
-    monkeypatch.setattr(V, "_run", lambda cmd, wd, timeout=None: (True, "ok"))
-    monkeypatch.setattr(V, "_jacoco_changed_coverage", lambda wd, cf: 0.9)
+    monkeypatch.setattr(R, "_place_junit", lambda wd, tc: ("TestX", "p"))
+    monkeypatch.setattr(R, "_run", lambda cmd, wd, timeout=None: (True, "ok"))
+    monkeypatch.setattr(R, "_jacoco_changed_coverage", lambda wd, cf: 0.9)
     r = V.MavenRunner()
     assert r.run_generated(str(tmp_path), "code") == (True, "ok")
     assert r.cover_generated(str(tmp_path), "code", ["A.java"]) == 0.9
@@ -525,7 +569,7 @@ def test_maven_runner_mvnw_preferred(monkeypatch, tmp_path):
     def fake_run(cmd, wd, timeout=None):
         seen["cmd"] = cmd
         return (True, "ok")
-    monkeypatch.setattr(V, "_run", fake_run)
+    monkeypatch.setattr(R, "_run", fake_run)
     V.MavenRunner().run_suite(str(tmp_path))
     assert seen["cmd"][0] == "./mvnw"
 
@@ -574,7 +618,8 @@ def test_run_tests_pass_and_timeout(monkeypatch, tmp_path):
 
 def test_cli_missing_llm_env_exits_2():
     import subprocess, sys, os
-    r = subprocess.run([sys.executable, "verify/verify_change.py"],
+    # -m 运行（第一轮起全仓标准；verify 内部为包导入，不再支持脚本式路径调用）
+    r = subprocess.run([sys.executable, "-m", "verify.verify_change"],
                        capture_output=True, text=True, env={})
     assert r.returncode == 2 and "LLM" in r.stderr
 
@@ -585,7 +630,7 @@ def test_cli_missing_refs_exits_2(monkeypatch):
            "PATH": os.environ.get("PATH", "")}
     # 去掉 BASE_REF/HEAD_REF
     env.pop("BASE_REF", None); env.pop("HEAD_REF", None)
-    r = subprocess.run([sys.executable, "verify/verify_change.py"],
+    r = subprocess.run([sys.executable, "-m", "verify.verify_change"],
                        capture_output=True, text=True, env=env)
     assert r.returncode == 2 and "BASE_REF" in r.stderr
 

@@ -170,7 +170,7 @@ def run(pr_url, mode, extra_instructions=None):
     try:
         _ping_llm(_base, _key, model_override)
         _ix("LLM 预检 ping: 成功（端点可达、凭据有效）")
-        print(f"[pr-agent] LLM 预检 ping 成功（端点可达、凭据有效）", file=sys.stderr)
+        print("[pr-agent] LLM 预检 ping 成功（端点可达、凭据有效）", file=sys.stderr)
     except Exception as e:
         _ix(f"LLM 预检 ping: 失败 → llm_failed ({type(e).__name__}: {e})")
         return {"_degraded": "llm_failed",

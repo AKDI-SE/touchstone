@@ -49,7 +49,7 @@ python -m touchstone.run --repo OWNER/NAME --pr 123 --post
 CI 里由 `touchstone.yml` 的 verify job 触发；本地手动：
 ```bash
 export GITHUB_EVENT_PATH=...              # PR 事件 JSON（含 pull_request.number/head.sha）
-python verify/verify_change.py            # 异模型独立验收测试 + 充分性阶梯（改动行覆盖/哨兵/变异）
+python -m verify.verify_change             # 异模型独立验收测试 + 充分性阶梯（改动行覆盖/哨兵/变异）
 ```
 Java 仓需 `mvn` 可用（JaCoCo 出改动行覆盖、PIT 出变异）；Python 用 coverage.py + 内置变异。
 

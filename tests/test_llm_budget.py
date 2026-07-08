@@ -100,7 +100,7 @@ def test_render_summary_caps_findings_to_avoid_comment_overflow():
 # ---------------- 体量门禁（SIZE-001）----------------
 def test_size_gate_blocks_large_diff(monkeypatch):
     """超过 TOUCHSTONE_MAX_DIFF_LINES → 不调 LLM，直接产 SIZE-001 block_candidate。"""
-    import orchestrator as orc, review_provider as rp
+    from touchstone import orchestrator as orc, review_provider as rp
     monkeypatch.setenv("TOUCHSTONE_MAX_DIFF_LINES", "5")        # 只许 5 行
     # 10 行新增 → 超限
     diff = "".join(f"diff --git a/f{i}.py b/f{i}.py\n--- a/f{i}.py\n+++ b/f{i}.py\n@@ -0,0 +1 @@\n+x{i}\n"

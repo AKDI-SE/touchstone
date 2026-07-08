@@ -15,15 +15,15 @@
 用法：
   python examples/seed_experiences.py          # 写入经验库（路径见 TOUCHSTONE_EXPERIENCE）
   # 或在代码里：
-  import learning_loop as L
+  from touchstone import learning_loop as L
   store = L.load_store(); apply_seeds(store); L.save_store(store)
 安全类记得同时设：export TOUCHSTONE_PROTECTED_TYPES=PRA-SEC-AUTHZ,PRA-SEC-SQLI,PRA-SEC-SECRET-LOG
 """
 import os
 import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "touchstone"))
-import learning_loop as L  # noqa: E402
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from touchstone import learning_loop as L  # noqa: E402
 
 # (finding_type, 动作, 规则原文, stack) —— 前 8 条 emphasize（多盯紧），后 2 条 suppress（别烦人）
 SEEDS = [

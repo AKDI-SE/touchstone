@@ -12,7 +12,6 @@
 确定性核对（SEC-001 密钥扫描等）跑【全文 diff】——安全保证不随体量打折扣。LLM 的实际上下文
 由 pr-agent 自己管理（它取全文 PR + 用 output_tokens() 做 max_tokens）。"""
 import os
-import re
 
 _ENC = None
 def _enc():

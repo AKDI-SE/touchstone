@@ -2,6 +2,23 @@
 
 本文件记录 Touchstone 的发布版本。设计的逐版迭代历史见 `docs/touchstone-design.html` 的变更历史。
 
+## 未发布 — 2026-07-04（工程化加固·第三轮：模块拆分）
+
+两个巨型模块按职责拆分，全部既有引用路径经门面再导出零改动兼容。测试 481 全绿、逐文件独立通过、ruff 清零、覆盖率 90% 不变。
+
+- **learning_loop（723 行）三分**：`experience_store.py`（经验的**状态**：JSON 存取含受信 ref 防投毒、seed/merge、graduate/retire/disable、render_injection）+ `distill.py`（经验怎么**产生**：计数式 + TF-GRPO 语义优势 + 可插拔分发）+ `ground_truth.py`（学习信号从哪**来**：人审裁决重建真值集）；learning_loop.py 保留 CLI/main 编排并再导出全部名字。拆分中理顺一处阈值语义：入池与退役是同一对采纳率判据的镜像，SUPPRESS/EMPHASIZE 单一事实来源归 experience_store，distill 引用；retire 的样本下限独立为 RETIRE_MIN_FIRES（与 DISTILL_MIN_FIRES 同值同理但语义独立）。
+- **verify runner 层拆分**：`verify/runners.py` 承接 PythonRunner/MavenRunner/select_runner 及全部执行/覆盖/变异落地（pytest/coverage/AST 变异/JaCoCo/PIT）；verify_change（861→471 行）只留裁决编排（plan/execute、判过条件、充分性阶梯、diff 改动行解析）。新语言 runner（Go/TS/…）在 runners.py 挂 select_runner 即可——"换语言只需替换 LANG RUNNER"从头注承诺变成正式扩展点。verify 运行方式统一为 `python -m verify.verify_change`（workflow/RUNBOOK/测试同步）。
+- **测试迁移**：monkeypatch 需打在实现所在模块才能影响内部调用——涉及 runner 内部的 patch 目标从 verify_change 迁至 runners（17 处），learning_loop 的 STORE_PATH reload / _gh_get patch 迁至 experience_store / ground_truth（既有 import_hygiene 守卫自动覆盖四个新模块）。
+
+## 未发布 — 2026-07-04（工程化加固·第二轮）
+
+第一轮的两个"留作后续"项落地（lint 工具链、渲染层拆分），过程中又抓到并根治一类**被双重掩盖的运行期地雷**。测试 478 → **481**，ruff 全绿。
+
+- **函数内平铺导入地雷（5 处）**：第一轮的包化改造只覆盖了顶层导入，函数体内还残留 5 处 sibling 平铺导入（orchestrator/loop/pr_agent_runner/review_provider 各 1-2 处）——移除 sys.path hack 后这些分支一执行必然 ModuleNotFoundError。它们此前不炸的原因有两层掩盖：①相关分支缺测试覆盖；②`test_integration_mock.py` 把 `touchstone/` 子目录插进了 sys.path，使全量测试里平铺名恰好可解析（单跑其他文件才炸）。本轮全部改为包导入、清除 path 污染，并新增 `tests/test_import_hygiene.py` 三条结构性守卫：静态扫描禁止 sibling 平铺导入（函数内也逃不掉）、禁止测试污染 sys.path、render 再导出兼容性。全部测试文件现可**逐个独立通过**（消除顺序依赖）。
+- **渲染层拆分**：`_load_template`/`render_facts`/`render_findings`/`render_report`/`render_summary` 从 orchestrator（592 行）拆至新模块 `touchstone/render.py`；orchestrator 保留再导出，既有 `orchestrator.render_*` 引用路径与测试零改动兼容。上述地雷之一（render_findings 内的 `from llm_budget import`）随拆分根治为顶层包导入。
+- **verify 执行环境的 token 落盘缺口（第一轮遗留的过度承诺，自查修复）**：verify_plan/verify_execute 未写 job 级 permissions，继承了 workflow 级 `checks: write`；且 actions/checkout 默认 `persist-credentials: true` 会把 GITHUB_TOKEN 写进 `.git/config`——verify_execute 里执行的 PR 代码读 `.git/config` 即可拿到足以**伪造 touchstone/gate 总闸**的 token（该缺口在拆分前的单 verify job 就存在，"GITHUB_TOKEN 已去掉"只去了 env 未去凭据落盘）。现两 job 权限降为 `contents: read` + checkout `persist-credentials: false`："执行环境零凭据"承诺至此才真正成立。
+- **ruff 工具链（克制配置）**：pyproject 增加 `[tool.ruff]`——只选真缺陷规则（F/E7/E9/B/PLE），显式豁免 E701/E702/E731（单行紧凑写法是本仓刻意风格，不做格式化重排以免噪音淹没语义变更）。首跑 31 处命中，修复其中真缺陷：3 处死导入（含 orchestrator 拆分后彻底不用的 `re`）、3 处 `raise ... from e` 补异常因果链（排障时可见原始异常）、1 处 `zip(strict=True)` 把 rollout 同长不变式显式化、2 处无占位 f-string、测试侧重复导入/死变量各 1。CI 新增 lint job。
+
 ## 未发布 — 2026-07-04（工程化加固）
 
 外部代码评审驱动的一轮工程卫生与安全边界修复。测试 109 → **478**，覆盖率 52% → **90%**（verify 0% → 81%）。

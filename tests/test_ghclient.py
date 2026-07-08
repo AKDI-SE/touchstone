@@ -80,7 +80,7 @@ def test_request_raises_on_http_error(monkeypatch):
 # ---------------- paginate ----------------
 def test_paginate_multi_page(monkeypatch):
     pages = [_Resp(200, [{"i": i} for i in range(100)]), _Resp(200, [{"i": 99}])]
-    s = _mock_session(monkeypatch, pages)
+    _mock_session(monkeypatch, pages)
     out = ghclient.paginate("https://x/p", "t", max_pages=5)
     assert len(out) == 101                       # 100 + 1（第二页 <per_page → 停）
 

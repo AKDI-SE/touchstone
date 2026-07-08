@@ -3,6 +3,7 @@
 import json
 import os
 from touchstone import learning_loop as L
+from touchstone import ground_truth as GT
 
 
 def _agg(by_rule):
@@ -414,7 +415,7 @@ def test_build_ground_truth_from_human_verdicts(tmp_path, monkeypatch):
         if path.endswith("/pulls/1") and accept.endswith("diff"):
             return "diff --git a.py"
         return []
-    monkeypatch.setattr(L, "_gh_get", fake_gh)
+    monkeypatch.setattr(GT, "_gh_get", fake_gh)
     monkeypatch.setattr(C, "gql", lambda q, v, t: threads_payload if v["num"] == 1 else {"data": {}})
 
     gt = L.build_ground_truth("o", "r", "tok")
@@ -538,19 +539,23 @@ def test_epochs_rerender_experience():
 
 def test_store_path_prefers_new_env(monkeypatch, tmp_path):
     """TOUCHSTONE_STORE_PATH 优先于旧名 TOUCHSTONE_EXPERIENCE。"""
-    import importlib, learning_loop
+    import importlib
+    from touchstone import experience_store, learning_loop
     f = tmp_path / 's.json'; f.write_text('{"experiences": [{"id": "x", "status": "active", "finding_type": "T"}]}')
     monkeypatch.setenv('TOUCHSTONE_STORE_PATH', str(f))
-    importlib.reload(learning_loop)
+    # STORE_PATH 的 env 求值在 experience_store 导入期——reload 它（learning_loop 门面随后同步）
+    importlib.reload(experience_store)
     try:
-        assert learning_loop.load_store()['experiences'][0]['id'] == 'x'
+        assert experience_store.load_store()['experiences'][0]['id'] == 'x'
     finally:
-        monkeypatch.delenv('TOUCHSTONE_STORE_PATH', raising=False); importlib.reload(learning_loop)
+        monkeypatch.delenv('TOUCHSTONE_STORE_PATH', raising=False)
+        importlib.reload(experience_store); importlib.reload(learning_loop)
 
 
 # ---------------- 边角分支补测 ----------------
 def test_read_store_text_from_ref(monkeypatch, tmp_path):
-    import subprocess, learning_loop as L
+    import subprocess
+    from touchstone import learning_loop as L
     monkeypatch.setenv("TOUCHSTONE_EXPERIENCE_REF", "origin/main")
     class _R:
         returncode = 0
@@ -560,7 +565,8 @@ def test_read_store_text_from_ref(monkeypatch, tmp_path):
 
 
 def test_read_store_text_ref_failure_returns_none(monkeypatch):
-    import subprocess, learning_loop as L
+    import subprocess
+    from touchstone import learning_loop as L
     monkeypatch.setenv("TOUCHSTONE_EXPERIENCE_REF", "origin/main")
     class _R:
         returncode = 1
@@ -615,7 +621,8 @@ def test_seed_experience_updates_existing():
 
 
 def test_seed_experience_bad_kind_raises():
-    import learning_loop as L, pytest
+    import pytest
+    from touchstone import learning_loop as L
     with pytest.raises(ValueError):
         L.seed_experience({"experiences": []}, "PRA-X", "wat", "x")
 
@@ -642,7 +649,7 @@ def test_build_ground_truth_skips_failed_pr(monkeypatch, tmp_path):
     from touchstone import learning_loop as L
     # _gh_get 对 pulls 返回数据、对其它失败 → 该 PR 跳过，不中断
     seq = [{"number": 1, "title": "t", "merged_at": "x", "base": {"ref": "main"}}]
-    monkeypatch.setattr(L, "_gh_get", lambda path, token, accept=None: (
+    monkeypatch.setattr(GT, "_gh_get", lambda path, token, accept=None: (
         seq if "pulls?state" in path else ({"files": []} if "/files" in path else None)))
     out = L.build_ground_truth("o", "r", "tok", window=5)
     assert isinstance(out, list)

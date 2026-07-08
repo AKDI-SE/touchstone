@@ -55,3 +55,27 @@ source = ["touchstone", "verify"]
 # 门槛对自己生效（verify 对被检仓库的 COV_MIN=0.6 同款精神）；CI 里 fail_under 生效
 fail_under = 85
 show_missing = false
+
+[tool.ruff]
+# 克制原则：只抓真缺陷（pyflakes/语法/裸 except/可变默认参），不做风格重排——
+# 存量代码的注释版式是决策日志资产，不让格式化噪音淹没语义变更。
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = [
+    "F",        # pyflakes：未定义名/未用导入/未用变量/重复参数——全是真缺陷
+    "E7",       # 比较与语法陷阱（== None、is 字面量等）
+    "E9",       # 语法/缩进错误（本仓历史上真踩过：全角逗号 SyntaxError 进过 main）
+    "B",        # bugbear：可变默认参、except 元组漏括号、无用表达式等
+    "PLE",      # pylint error 级
+]
+ignore = [
+    "E741",     # 允许短变量名（数学/迭代惯用）
+    "E701", "E702", "E731",  # 单行紧凑写法是本仓刻意风格（决策日志式注释同款克制原则）
+    "B008",     # 允许函数调用作默认参（本仓无此模式的滥用面）
+]
+
+[tool.ruff.lint.per-file-ignores]
+# 测试允许未用导入（importorskip 探测）与断言技巧
+"tests/*" = ["F401", "B011", "B017"]
