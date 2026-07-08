@@ -10,7 +10,11 @@
 
 注意：touchstone 侧的 diff 截断只用于【显示/摘要/内联锚定】（受 GitHub 评论 65536 字符限），
 确定性核对（SEC-001 密钥扫描等）跑【全文 diff】——安全保证不随体量打折扣。LLM 的实际上下文
-由 pr-agent 自己管理（它取全文 PR + 用 output_tokens() 做 max_tokens）。"""
+由 pr-agent 自己管理：pr_agent_runner 把 context_tokens() 填进 pr-agent 的
+custom_model_max_tokens（pr-agent 的 get_max_tokens 用它作内部 diff 裁剪预算的输入侧窗口上限；
+pr-agent 0.37 的 chat_completion 实际不向 API 传 max_tokens，由端点默认输出）。故
+custom_model_max_tokens 对应【上下文窗口】context_tokens，不是【输出】output_tokens——
+曾因 docstring 反向描述，把 output_tokens(4096) 当窗口用，导致改动 diff 被裁空、LLM 0 建议。"""
 import os
 
 _ENC = None
@@ -34,7 +38,8 @@ def context_tokens():
 
 
 def output_tokens():
-    """模型最大输出（token）。pr-agent 的 custom_model_max_tokens 用它。"""
+    """模型最大输出（token）。注意：pr-agent 的 custom_model_max_tokens【不】用它——
+    那是输入侧上下文窗口预算，用 context_tokens()。本值供 touchstone 自身摘要/截断参考。"""
     try:
         v = int(os.environ.get("TOUCHSTONE_LLM_OUTPUT_TOKENS", "4096") or 4096)
         return v if v > 0 else 4096

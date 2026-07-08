@@ -685,11 +685,14 @@ def test_verify_regression_path_with_fake_runner(monkeypatch, tmp_path):
 
 
 # ---------------- pr_agent_runner 健壮性：glm-5.2 修复不能静默回退 ----------------
-def test_custom_max_tokens_bad_env_falls_back(monkeypatch):
-    # TOUCHSTONE_LLM_OUTPUT_TOKENS 非整数 → 回退默认 4096，不崩
+def test_custom_max_tokens_uses_context_window_not_output(monkeypatch):
+    # 【输入侧预算，非输出】custom_model_max_tokens 必须取 context_tokens（上下文窗口），
+    # 不是 output_tokens。设 CONTEXT_TOKENS=200000、OUTPUT_TOKENS=4096 → 应取 200000。
+    # 锁死此语义：若误用 output_tokens，会拿 4096 当窗口→diff 裁空→LLM 0 建议（PR #44 真根因）。
     settings = _install_fake_pr_agent(monkeypatch)
     _stub_llm(monkeypatch)
-    monkeypatch.setenv("TOUCHSTONE_LLM_OUTPUT_TOKENS", "not-a-number")
+    monkeypatch.setenv("TOUCHSTONE_LLM_CONTEXT_TOKENS", "200000")
+    monkeypatch.setenv("TOUCHSTONE_LLM_OUTPUT_TOKENS", "4096")
     import pr_agent.tools.pr_code_suggestions as cs_mod
 
     class CS:
@@ -699,15 +702,33 @@ def test_custom_max_tokens_bad_env_falls_back(monkeypatch):
             return None
     cs_mod.PRCodeSuggestions = CS
     R.run("https://pr", "improve")
-    assert settings.config.custom_model_max_tokens == 4096   # 回退默认，非 None、非崩溃
+    assert settings.config.custom_model_max_tokens == 200000   # 取上下文窗口，不是输出 4096
+
+
+def test_custom_max_tokens_context_unset_falls_back_to_128k(monkeypatch):
+    # CONTEXT_TOKENS 未声明（0）→ 回退 128000（现代模型典型窗口），绝不回退 4096。
+    # 4096 当窗口 = 改动 diff 被裁空。此回退值是"宁可让 LLM 看全 diff"的安全默认。
+    settings = _install_fake_pr_agent(monkeypatch)
+    _stub_llm(monkeypatch)
+    monkeypatch.delenv("TOUCHSTONE_LLM_CONTEXT_TOKENS", raising=False)
+    import pr_agent.tools.pr_code_suggestions as cs_mod
+
+    class CS:
+        def __init__(self, url):
+            self.data = {"code_suggestions": []}
+        async def run(self):
+            return None
+    cs_mod.PRCodeSuggestions = CS
+    R.run("https://pr", "improve")
+    assert settings.config.custom_model_max_tokens == 128000   # 回退 128k，不是 4096
 
 
 def test_custom_max_tokens_and_fallback_actually_set(monkeypatch):
-    # 锁死：run 后 custom_model_max_tokens 已设、fallback_models 已清空。
+    # 锁死：run 后 custom_model_max_tokens 已设（取 context_tokens）、fallback_models 已清空。
     # 这两项正是 glm-5.2 出真实意见的根因修复——若静默失败会回到"0 建议"。
     settings = _install_fake_pr_agent(monkeypatch)
     _stub_llm(monkeypatch)
-    monkeypatch.setenv("TOUCHSTONE_LLM_OUTPUT_TOKENS", "3333")
+    monkeypatch.setenv("TOUCHSTONE_LLM_CONTEXT_TOKENS", "3333")
     import pr_agent.tools.pr_code_suggestions as cs_mod
 
     class CS:
