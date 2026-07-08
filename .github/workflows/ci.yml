@@ -25,6 +25,10 @@ jobs:
         run: |
           pip install ruff
           ruff check touchstone/ verify/ tests/ examples/
+      - name: mypy（渐进：默认宽松模式，配置见 pyproject [tool.mypy]）
+        run: |
+          pip install -e . mypy types-PyYAML types-requests
+          python -m mypy touchstone/ verify/
 
   test:
     runs-on: ubuntu-latest

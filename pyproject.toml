@@ -34,6 +34,8 @@ dev = [
     "coverage>=7.0",
     "hypothesis>=6.0",  # 属性测试（tests/test_property.py）
     "mutmut>=2.0",      # 变异测试（setup.cfg [mutmut]；产物 mutants/ 不入库）
+    "mypy>=1.8",        # 类型检查（渐进：全局宽松，见 [tool.mypy]）
+    "types-PyYAML", "types-requests",
 ]
 
 [project.scripts]
@@ -53,7 +55,7 @@ source = ["touchstone", "verify"]
 
 [tool.coverage.report]
 # 门槛对自己生效（verify 对被检仓库的 COV_MIN=0.6 同款精神）；CI 里 fail_under 生效
-fail_under = 85
+fail_under = 88
 show_missing = false
 
 [tool.ruff]
@@ -79,3 +81,14 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 # 测试允许未用导入（importorskip 探测）与断言技巧
 "tests/*" = ["F401", "B011", "B017"]
+
+[tool.mypy]
+# 渐进策略：全局宽松只抓真类型错误，不要求存量代码补注解；
+# 新模块随写随注解，成熟一个在 [[tool.mypy.overrides]] 里收紧一个。
+python_version = "3.10"
+ignore_missing_imports = true    # pr-agent/unidiff 等无 stub 的三方
+# check_untyped_defs：暂不开——本仓 dict 密集风格下推断噪音过大（首测 71 处几乎全是
+# report/store 字典的 union 推断），开它等于强制全量注解冲刺。等核心结构补上 TypedDict
+# 后再逐模块收紧。
+warn_unused_ignores = true
+files = ["touchstone", "verify"]
