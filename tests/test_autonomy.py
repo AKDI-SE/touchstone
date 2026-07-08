@@ -338,3 +338,33 @@ def test_enqueue_auto_merge_mutation_error_raises(monkeypatch):
     import pytest
     with pytest.raises(RuntimeError, match="入队失败"):
         A.enqueue_auto_merge("o/r", 7, "tok")
+
+
+# ---------------- review_reliable 闸：引擎不可信时不自动放行 ----------------
+def test_decide_blocks_when_review_unreliable():
+    # 各闸本全过，但本轮 LLM 评审不可信（引擎降级/可疑空收敛）-> 不自动放行，回落人
+    d = A.decide_auto_merge(**_ok_inputs(), enabled=True, shadow=False, review_reliable=False)
+    assert d["merge"] is False and "review_reliable" in d["failed"]
+
+
+def test_decide_review_reliable_true_does_not_block():
+    # review_reliable=True 不入 failed（默认值，保旧行为）
+    d = A.decide_auto_merge(**_ok_inputs(), enabled=True, shadow=False, review_reliable=True)
+    assert d["merge"] is True and "review_reliable" not in d["failed"]
+
+
+def test_build_decision_inputs_reads_review_reliable():
+    co = {"risk": {"risk_band": "low"}, "findings": [], "loop_decision": "converged",
+          "gate": "success", "change_class": "low|code|none|none",
+          "review_reliable": False, "engine_status": "ok", "ai_raw_count": 0, "added_lines": 25}
+    d = A.build_decision_inputs(co, {"tripped": False}, ["low|code|none|none"])
+    assert d["review_reliable"] is False
+
+
+def test_build_decision_inputs_recomputes_when_field_absent():
+    # 旧产物无 review_reliable 字段 -> 从 engine_status/ai_raw_count/added_lines 重算（向后兼容）
+    co = {"risk": {"risk_band": "low"}, "findings": [], "loop_decision": "converged",
+          "gate": "success", "change_class": "low|code|none|none",
+          "engine_status": "llm_failed", "ai_raw_count": 0, "added_lines": 5}
+    d = A.build_decision_inputs(co, {"tripped": False}, [])
+    assert d["review_reliable"] is False  # llm_failed -> 不可靠

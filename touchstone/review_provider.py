@@ -62,6 +62,32 @@ class ReviewEngineDegraded(RuntimeError):
         self.reason = reason
 
 
+# 可疑空收敛阈值（改动新增行 >= 此值 且 LLM 0 原始建议 -> 评审不可信）。
+# 与 orchestrator._clean_review_trace 的 suspicious 判据同源；经 env 可调（如超大 PR 调参）。
+_SUSPICIOUS_EMPTY_LINES = int(os.environ.get("TOUCHSTONE_SUSPICIOUS_EMPTY_LINES", "20") or 20)
+
+
+def review_reliable(engine_status, ai_raw_count, added_lines):
+    """本轮 LLM 评审是否可作为 checklist 销项 / loop 收敛 / autonomy 自动放行的可靠证据。
+
+    不可靠（返回 False）的两种情形--都意味着"本轮 0 建议不代表代码没问题"：
+      1. 引擎降级：engine_status != "ok"（no_engine/provider_failed/llm_failed/skipped_large_diff）。
+         pr-agent 没真跑或 LLM 调用失败 -> 0 建议是缺审，非审完无问题。
+      2. 可疑空收敛：added_lines >= SUSPICIOUS_EMPTY_LINES 且 ai_raw_count == 0。
+         引擎虽 ok 但改动不小却 0 原始建议--如 pr-agent 把 diff 裁空（PR #44 真根因：
+         custom_model_max_tokens 语义用反致 4096 当窗口裁空 diff）。pr-agent 正常返回、
+         engine_status="ok"，唯有此判据能抓住。
+
+    返回 False 时：checklist 不予"复检未再命中"自动销项、loop 不收敛、autonomy 不自动放行
+    --回落到人（ADVISORY 不拦人工合入）。是 PR #45 引擎根因修复之上的 defense-in-depth：
+    引擎再坏或超大 PR 超 pr-agent token 预算被裁空时，不再假收敛放行未评审代码。"""
+    if engine_status != "ok":
+        return False
+    if added_lines >= _SUSPICIOUS_EMPTY_LINES and ai_raw_count == 0:
+        return False
+    return True
+
+
 def load_nmap(repo_dir="."):
     """读 .touchstone/pr-agent.yaml 的 normalization 段（缺省用内置默认）。env TOUCHSTONE_PRAGENT 可覆盖路径。"""
     path = os.environ.get("TOUCHSTONE_PRAGENT", os.path.join(repo_dir, ".touchstone", "pr-agent.yaml"))

@@ -361,3 +361,25 @@ def test_injection_skipped_in_pr_without_trusted_ref(monkeypatch, tmp_path):
     finally:
         monkeypatch.delenv("TOUCHSTONE_STORE_PATH", raising=False)
         importlib.reload(experience_store); importlib.reload(learning_loop)
+
+
+# ---------------- review_reliable：引擎健康度判据 ----------------
+def test_review_reliable_ok_with_suggestions():
+    assert RP.review_reliable("ok", ai_raw_count=3, added_lines=500) is True
+
+
+def test_review_reliable_ok_small_diff_zero_suggestions():
+    # 改动小（<阈值）且 0 建议 -> 合理，可靠
+    assert RP.review_reliable("ok", ai_raw_count=0, added_lines=5) is True
+
+
+def test_review_reliable_suspicious_empty_large_diff_zero_suggestions():
+    # 改动不小（>=阈值）却 0 原始建议 -> 可疑空收敛（PR #44 真根因：diff 被裁空）-> 不可靠
+    assert RP.review_reliable("ok", ai_raw_count=0, added_lines=25) is False
+    assert RP.review_reliable("ok", ai_raw_count=0, added_lines=20) is False  # 边界
+
+
+def test_review_reliable_engine_degraded():
+    # 引擎降级各态 -> 不可靠（0 建议是缺审，非审完无问题）
+    for st in ("no_engine", "provider_failed", "llm_failed", "skipped_large_diff"):
+        assert RP.review_reliable(st, ai_raw_count=0, added_lines=5) is False

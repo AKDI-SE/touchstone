@@ -16,6 +16,7 @@ import os
 import sys
 
 from touchstone import ghclient   # GitHub HTTP 统一入口（连接池+退避）
+from touchstone import review_provider  # review_reliable（引擎健康度判据）
 
 
 def _envbool(k):
@@ -87,7 +88,7 @@ def graduate_classes(experience, min_samples=None, max_bad_rate=None):
 # --- 自动放行判据（可选路径，默认关）------------------------------------------
 def decide_auto_merge(risk, findings, loop_decision, gate,
                       autonomy_state, graduated_classes, cls,
-                      enabled=None, shadow=None, base_fresh=None):
+                      enabled=None, shadow=None, base_fresh=None, review_reliable=True):
     enabled = AUTONOMY_ENABLED if enabled is None else enabled
     shadow = AUTONOMY_SHADOW if shadow is None else shadow
     # 阻断否决（不再是委员会）：high 风险档或任一幸存 block_candidate 发现 → 否决（能拦、不能批）
@@ -104,6 +105,9 @@ def decide_auto_merge(risk, findings, loop_decision, gate,
         # 直接合可能引入语义冲突（两个 PR 各自绿、合在一起坏）。base_fresh=False（已确认
         # 基线过期）→ 拒绝放行、先带上最新 main 重跑；None（未评估，如纯离线决策/测试）→ 不拦。
         "base_fresh": base_fresh is not False,
+        # 引擎健康度：本轮 LLM 评审不可信（引擎降级/可疑空收敛）-> 收敛不可信，不自动放行。
+        # 防"diff 被裁空/LLM 随机性"假收敛被当"低风险+收敛"自动合入未评审代码。
+        "review_reliable": review_reliable,
     }
     base = {"checks": checks, "change_class": cls,
             "failed": [k for k, v in checks.items() if not v]}
@@ -201,6 +205,13 @@ def execute_auto_merge(repo, pr_number, sha, token, api_url=None, merge_method="
 # --- Actions 闭环：组装决策输入 / 从历史重建经验与达标类 ----------------------
 def build_decision_inputs(touchstone_out, autonomy_state, graduated_classes):
     """把 touchstone-findings.json（含总闸结论 gate）+ 熔断态 + 达标类 → decide_auto_merge 入参。纯函数。"""
+    reliable = touchstone_out.get("review_reliable")
+    if reliable is None:
+        # 旧产物无 review_reliable 字段 -> 从 engine_status/ai_raw_count/added_lines 重算（向后兼容）
+        reliable = review_provider.review_reliable(
+            touchstone_out.get("engine_status", "ok"),
+            touchstone_out.get("ai_raw_count", 0),
+            touchstone_out.get("added_lines", 0))
     return {
         "risk": touchstone_out.get("risk", {}),
         "findings": touchstone_out.get("findings", []),
@@ -209,6 +220,7 @@ def build_decision_inputs(touchstone_out, autonomy_state, graduated_classes):
         "autonomy_state": autonomy_state,
         "graduated_classes": list(graduated_classes or []),
         "cls": touchstone_out.get("change_class"),
+        "review_reliable": reliable,
     }
 
 
@@ -286,7 +298,8 @@ def main():
         base_fresh = check_base_fresh(repo, pr, os.environ["GITHUB_TOKEN"])
     dec = decide_auto_merge(d.get("risk", {}), d.get("findings", []), d.get("loop_decision"),
                             d.get("gate"), d.get("autonomy_state"),
-                            set(d.get("graduated_classes", [])), cls, base_fresh=base_fresh)
+                            set(d.get("graduated_classes", [])), cls,
+                        base_fresh=base_fresh, review_reliable=d.get("review_reliable", True))
     print(json.dumps(dec, ensure_ascii=False))
     if dec["merge"] and args.execute and repo and pr and sha:
         if os.environ.get("AUTONOMY_MERGE_MODE", "direct") == "queue":

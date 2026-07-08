@@ -53,7 +53,7 @@ def author_actionable(findings, rule_index):
 
 
 def loop_step(findings, rule_index, state, max_rounds=MAX_ROUNDS, ci_passed=None,
-              checklist_pair=None, ledger=None):
+              checklist_pair=None, ledger=None, review_reliable=True):
     """返回 (decision, reason, new_state)。decision ∈ converged|continue|escalate。
     ci_passed：当前轮 CI/verify 判定（True 绿 / False 红 / None 未知）。
     发现清零但 CI 红时不收敛——发 continue 让 author 接着修构建/测试（仍受轮次上限约束）。
@@ -63,7 +63,10 @@ def loop_step(findings, rule_index, state, max_rounds=MAX_ROUNDS, ci_passed=None
       checklist_pair=(prev, cur)：收敛清单前后两轮。收敛定义升级为「清单全部销项（done|waived|split）
         且无可自改发现」；无推进判定升级为「清单销项无推进」（覆盖只发布评论不实际修改的假修）。
       ledger：轮次台账（RoundLedger）。轮次预算按 ledger['rounds_left'] 计——同内容重提
-        继承历史消耗，刷不出新额度；余额 ≤0 直接升级人工。"""
+        继承历史消耗，刷不出新额度；余额 ≤0 直接升级人工。
+      review_reliable：本轮 LLM 评审是否可信（见 review_provider.review_reliable）。False 时
+        即便清单全销项/无可自改发现也不收敛--"0 发现"在 diff 被裁空/LLM 随机性下不可靠，
+        回落 continue 待可靠轮复核。防假收敛放行未评审代码（PR #44 round-1 真根因兜底）。"""
     # 台账预算（评审意见 10）：同源重提继承历史轮次，本函数只看剩余额度。
     if ledger is not None:
         budget_left = int(ledger.get("rounds_left", max_rounds))
@@ -92,6 +95,15 @@ def loop_step(findings, rule_index, state, max_rounds=MAX_ROUNDS, ci_passed=None
                             LoopState(nr, hist, ci_passed))
                 return ("continue", "收敛清单已全部销项，但 CI/verify 为红：请修复构建/测试失败后再 push",
                         LoopState(nr, hist, ci_passed))
+            if not review_reliable:
+                # 本轮 LLM 评审不可信（引擎降级/可疑空收敛）-> "无可自改发现"不可靠（可能 diff
+                # 被裁空/LLM 随机性未报），不予收敛。抓 PR #44 round-1 那类假收敛（首轮 diff 被
+                # 裁空 -> 0 发现 -> 无清单项可 withhold -> 此处兜底）。回落 continue，人仍可合入。
+                if nr >= max_rounds:
+                    return ("escalate", "本轮 LLM 评审不可信且轮次耗尽 -> 交人",
+                            LoopState(nr, hist, ci_passed))
+                return ("continue", "本轮 LLM 评审不可信（引擎降级/可疑空收敛），不予收敛，待可靠轮复核",
+                        LoopState(nr, hist, ci_passed))
             return ("converged", "收敛清单全部销项且无新增可自改发现（正确性另由 verify 把关）",
                     LoopState(nr, hist, ci_passed))
         if _cl.no_progress(prev_cl, cur_cl):
@@ -115,6 +127,11 @@ def loop_step(findings, rule_index, state, max_rounds=MAX_ROUNDS, ci_passed=None
             return ("continue",
                     "委员会发现已清，但 CI/verify 为红：请修复构建/测试失败后再 push",
                     LoopState(nr, hist, ci_passed))
+        if not review_reliable:
+            # 本轮 LLM 评审不可信 -> "无可自改发现"不可靠，不予收敛（同 checklist 路径兜底）。
+            if nr >= max_rounds:
+                return "escalate", "本轮 LLM 评审不可信且轮次耗尽 -> 交人", LoopState(nr, hist, ci_passed)
+            return "continue", "本轮 LLM 评审不可信（引擎降级/可疑空收敛），不予收敛，待可靠轮复核", LoopState(nr, hist, ci_passed)
         return "converged", "无可自改发现（正确性另由 verify 把关）", LoopState(nr, hist, ci_passed)
 
     # 震荡：发现集与历史某轮完全重复（改了又冒出同一组）
