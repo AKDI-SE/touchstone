@@ -177,7 +177,9 @@ def post_results(owner, repo, number, head_sha, token, risk, findings, loop_info
     verification_md = ""
     run_link = _run_link()
     if run_link:
-        verification_md = f"📄 **完整 LLM 交互日志**（pr-agent 原始输出 / LLM 配置 / ping）：{run_link}"
+        # 易读性改版：括号里的实现细节（pr-agent 原始输出 / LLM 配置 / ping）是噪音——
+        # 点开日志自然知道内容；段落升为与③④⑤并列的 H3。
+        verification_md = f"### 验证与日志\n\n📄 完整 LLM 交互日志：{run_link}"
     body = render_report(risk, findings, banner=banner, scope_facts=scope_facts,
                          checklist_md=checklist_md, verification_md=verification_md,
                          markers="\n".join(markers), lineage=ledger)

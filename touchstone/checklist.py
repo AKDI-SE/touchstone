@@ -177,7 +177,9 @@ def render(checklist, rounds_left=None, lineage=None):
     """生成置顶评论正文：task list（人可读）+ 隐藏 JSON marker（权威状态，机器可读）。
     lineage：轮次台账的同源提示（评审意见 10），有则在头部明示历史欠账。"""
     cl = checklist or {"round": 0, "items": [], "resolved_rate": 1.0}
-    lines = [f"### Touchstone · 收敛清单（第 {cl['round']} 轮 · 销项率 "
+    # 版面铁律（易读性改版）：品牌名只在报告 H2 标题出现一次，本段与③④⑥并列用 H3；
+    # 每轮重复的申报方式样板折叠进 <details>，不占屏。
+    lines = [f"### 收敛清单（第 {cl['round']} 轮 · 销项率 "
              f"{int(cl['resolved_rate'] * 100)}%"
              + (f" · 剩余轮次 {rounds_left}" if rounds_left is not None else "") + "）"]
     if lineage and lineage.get("lineage"):
@@ -203,9 +205,13 @@ def render(checklist, rounds_left=None, lineage=None):
         if it["note"]:
             lines.append(f"  - 状态说明：{it['note']}")
     lines.append("")
-    lines.append("申报方式：发评论，内容为 ```touchstone-ack``` 代码块，每行 "
+    lines.append("<details><summary>如何申报销项</summary>")
+    lines.append("")
+    lines.append("发评论，内容为 ```touchstone-ack``` 代码块，每行 "
                  "`<签名>: done|waived: 理由|split: 链接`。勾选/申报是输入信号，"
                  "以评审方按达成判据复核后的本清单为准。")
+    lines.append("")
+    lines.append("</details>")
     lines.append("")
     lines.append(_OPEN + json.dumps(cl, ensure_ascii=False) + _CLOSE)
     return "\n".join(lines)

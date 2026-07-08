@@ -379,3 +379,30 @@ def test_loop_reliable_converges_normally(rule_index):
     dec, _, _ = loop.loop_step([], rule_index, loop.LoopState(),
                                checklist_pair=(prev, resolved), review_reliable=True)
     assert dec == "converged"
+
+
+# ---------------- 易读性改版：排版铁律回归（2026-07-04）----------------
+def test_report_layout_invariants():
+    """铁律：全文唯一 H2；③④⑤⑥ 并列段一律 H3；横幅 blockquote；日志行无实现细节括注。"""
+    from touchstone import render, checklist as cl
+    risk = {"risk_band": "mid", "human_action": "a", "verification_decision": "v",
+            "blast_radius": ["x"]}
+    f = {"rule_id": "R1", "severity": "warn", "confidence": 0.9, "agent": "pr-agent",
+         "file": "a.py", "line": 1, "rationale": "r", "fix_direction": "d",
+         "done_criteria": {"kind": "deterministic", "spec": {"recheck": "R1"}}}
+    sf = {"parse_ok": True, "totals": {"files": 1, "added": 1, "deleted": 0}, "sensitive_hits": []}
+    body = render.render_report(
+        risk, [f], banner="**反馈循环：🔁 继续** — x", scope_facts=sf,
+        checklist_md=cl.render(cl.from_findings([f])),
+        verification_md="### 验证与日志\n\n📄 完整 LLM 交互日志：http://x",
+        markers="<!-- m -->", gate_line="1/1")
+    lines = body.split("\n")
+    h2 = [l for l in lines if l.startswith("## ")]
+    h3 = [l for l in lines if l.startswith("### ")]
+    assert len(h2) == 1 and "Touchstone · ADVISORY" in h2[0]       # 唯一 H2 承载品牌与定位
+    assert {l.split("（")[0] for l in h3} == {"### 确定性事实", "### 评审发现",
+                                              "### 收敛清单", "### 验证与日志"}  # 并列段同级
+    assert any(l.startswith("> ") for l in lines)                   # 横幅 blockquote
+    assert "完整 LLM 交互日志：" in body and "原始输出" not in body   # 日志行无括注
+    assert "<details><summary>如何申报销项</summary>" in body        # 样板折叠
+    assert "| 风险等级 | 建议动作 | 验证建议 | 影响面 |" in body     # 态势表
