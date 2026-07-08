@@ -62,15 +62,21 @@ def _run_tests(work_dir, test_code):
 def _run_coverage_subprocess(work_dir, pytest_args):
     """在 work_dir 跑 coverage run + pytest（子进程隔离），返回 coverage.Coverage 对象。
     用 coverage API 直接读 .coverage 数据文件（替代脆弱的 coverage json -o - stdout 解析）。
-    清除旧 .coverage 防 stale data（pr-agent 评审意见）；校验子进程退出码。"""
+    清除旧 .coverage 防 stale data（pr-agent 第2轮评审意见）；测试失败时 coverage 仍会写出
+    .coverage 数据，故不因 pytest 非零退出码而放弃采集——仅当数据文件未生成（coverage 自身
+    崩溃/采集前 collection 错误/超时未落盘）才报错（pr-agent 第3轮评审意见）。"""
     cov_file = os.path.join(work_dir, ".coverage")
     if os.path.exists(cov_file):
         os.remove(cov_file)          # 清旧数据——防上次 run 的 stale coverage 误导
     r = subprocess.run(["python", "-m", "coverage", "run", "--source=."] + pytest_args,
                        cwd=work_dir, capture_output=True, encoding="utf-8", errors="replace",
                        timeout=TEST_TIMEOUT)
-    if r.returncode != 0:
-        raise RuntimeError(f"coverage run 失败（exit {r.returncode}）：{(r.stderr or '')[-300:]}")
+    # 测试失败（pytest 非零退出）时 coverage 仍会写出 .coverage——这是有效覆盖数据，不应因
+    # 退出码非零而丢弃。仅当数据文件压根没产出（coverage 自身崩溃 / 采集前 collection 错误 /
+    # 超时未及落盘）才判定失败并 raise。配合起跑前的清空，此时无 stale 可加载，亦满足第2轮
+    # "校验子进程、不加载 stale 数据"的要求——校验手段从"退出码==0"改为"数据是否产出"，更精确。
+    if not os.path.exists(cov_file):
+        raise RuntimeError(f"coverage 未产出数据（exit {r.returncode}）：{(r.stderr or '')[-300:]}")
     import coverage
     cov = coverage.Coverage(data_file=cov_file)
     cov.load()
@@ -84,12 +90,15 @@ def _coverage_ratio(cov, py_files, changed_lines=None):
     if changed_lines:
         coverable = covered = 0
         for path, lines in (changed_lines or {}).items():
+            # lines 形参可能是 list（调用方传入）——set & list 会抛 TypeError 被上层 except
+            # 吞掉导致覆盖率计算静默失败（pr-agent 第3轮 :91）。统一 cast 成 set 消除根因。
+            line_set = set(lines) if lines else set()
             try:
                 _, statements, _, missing, _ = cov.analysis2(path)
             except (KeyError, Exception):
                 continue
             executed = set(statements) - set(missing)
-            cov_set = (set(statements) | set(missing)) & lines
+            cov_set = (set(statements) | set(missing)) & line_set
             coverable += len(cov_set)
             covered += len(executed & cov_set)
         return (covered / coverable) if coverable else 1.0
@@ -411,7 +420,8 @@ def _coverage_json_line_ratio(cov_json, changed_lines):
         fd = files.get(path)
         if not fd:
             continue
-        cov_set = (set(fd.get("executed_lines", [])) | set(fd.get("missing_lines", []))) & lines
+        line_set = set(lines) if lines else set()   # 同 _coverage_ratio：防 list 输入致 set&list TypeError
+        cov_set = (set(fd.get("executed_lines", [])) | set(fd.get("missing_lines", []))) & line_set
         coverable += len(cov_set)
         covered += len(set(fd.get("executed_lines", [])) & cov_set)
     return (covered / coverable) if coverable else 1.0

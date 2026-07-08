@@ -393,6 +393,18 @@ def test_coverage_ratio_line_level_none_coverable():
     assert V._coverage_ratio(cov, ["a.py"], {"a.py": {99}}) == 1.0  # 无可覆盖行 → 1.0
 
 
+def test_coverage_ratio_line_level_list_input():
+    # changed_lines 值为 list 时不应 set&list 抛 TypeError 静默失败（pr-agent 第3轮 :91 回归保护）
+    cov = _FakeCov({"a.py": {1, 2}}, {"a.py": set()})
+    assert V._coverage_ratio(cov, ["a.py"], {"a.py": [1, 2]}) == 1.0
+
+
+def test_coverage_json_line_ratio_list_input():
+    # 同一缺陷类：_coverage_json_line_ratio 的 & lines 也须容忍 list 输入
+    cov = {"files": {"x.py": {"executed_lines": [11, 12], "missing_lines": [22]}}}
+    assert abs(V._coverage_json_line_ratio(cov, {"x.py": [11, 12, 22]}) - 2 / 3) < 1e-9
+
+
 def test_changed_file_coverage_no_py_returns_one():
     assert V._changed_file_coverage(".", "code", ["a.js"]) == 1.0
 
@@ -408,6 +420,32 @@ def test_changed_file_coverage_exception_returns_zero(monkeypatch, tmp_path):
         raise RuntimeError("cov failed")
     monkeypatch.setattr(R, "_run_coverage_subprocess", boom)
     assert V._changed_file_coverage(str(tmp_path), "x", ["a.py"]) == 0.0
+
+
+def test_run_coverage_subprocess_loads_on_test_failure(monkeypatch, tmp_path):
+    # pytest 测试失败（退出码 1）时 coverage 仍写出 .coverage——不应因退出码非零丢采集
+    # （pr-agent 第3轮 :72 回归保护）
+    def fake_run(*a, **k):
+        (tmp_path / ".coverage").write_text("")   # 模拟 coverage 落盘（即便测试失败）
+        return R.subprocess.CompletedProcess(a[0], 1)
+
+    class _Cov:
+        def __init__(self, data_file=None):
+            pass
+        def load(self):
+            pass
+
+    monkeypatch.setattr(R.subprocess, "run", fake_run)
+    monkeypatch.setattr("coverage.Coverage", _Cov)
+    assert R._run_coverage_subprocess(str(tmp_path), ["-m", "pytest", "-q", "x.py"]) is not None
+
+
+def test_run_coverage_subprocess_raises_when_no_data(monkeypatch, tmp_path):
+    # 起跑前已清空 .coverage；跑完仍无数据产出（coverage 崩溃/超时未落盘）→ raise，绝不加载 stale
+    monkeypatch.setattr(R.subprocess, "run",
+                        lambda *a, **k: R.subprocess.CompletedProcess(a[0], 1))
+    with pytest.raises(RuntimeError, match="未产出数据"):
+        R._run_coverage_subprocess(str(tmp_path), ["-m", "pytest", "-q", "x.py"])
 
 
 def test_mutation_sites_finds_binary_ops():
