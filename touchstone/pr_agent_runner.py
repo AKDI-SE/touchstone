@@ -127,15 +127,25 @@ def run(pr_url, mode, extra_instructions=None):
         s.github.user_token = gh_tok          # pr-agent 取 PR 需要 GitHub token
     if model_override:
         s.config.model = f"openai/{model_override}"   # LiteLLM：openai 前缀走 OpenAI 兼容端点
-        # pr-agent 的 get_max_tokens 要求模型在内置 MAX_TOKENS 表里，否则报
+        # pr-agent 的 get_max_tokens(model) 要求模型在内置 MAX_TOKENS 表里，否则报
         # "Model ... is not defined in MAX_TOKENS ... no custom_model_max_tokens is set"
-        # 直接判"Failed to generate prediction"（glm-5.2 等自定义模型不在表里——这是多日"0 建议"的真根因）。
-        # 取自 llm_budget（部署方用 secret TOUCHSTONE_LLM_OUTPUT_TOKENS 按模型卡声明，不再硬编码）。
+        # 直接判"Failed to generate prediction"（glm-5.2 等自定义模型不在表里——这是多日"0 建议"的真根因之一）。
+        #
+        # 【输入侧预算，非输出 max_tokens】pr-agent 0.37 的 get_max_tokens() 把此值当作
+        # 【整个上下文窗口】用于内部 diff 裁剪预算（pr_processing.get_pr_diff 的 token 上限），
+        # 而它实际向 LLM API 发起的 chat_completion【并不传 max_tokens】（litellm_ai_handler
+        # 构造的 kwargs 无 max_tokens 字段，仅 extended_thinking 路径才设）——由端点用默认输出上限。
+        # 故此值必须填【模型上下文窗口】(context_tokens)，绝不能填【输出】(output_tokens=默认4096)：
+        # 填 4096 = 告诉 pr-agent"整个窗口只有 4096"→ 改动 diff 被裁成空 → LLM 拿到空 diff → 0 建议。
+        # 这正是 PR #44（及 #42 收敛的运气成分）"LLM 没给意见"的真根因：output_tokens 语义用反。
+        # 部署方用 secret TOUCHSTONE_LLM_CONTEXT_TOKENS 按模型卡声明上下文窗口；未声明时回退
+        # 128000（现代模型典型窗口）而非 4096——宁可让 LLM 看全 diff，不可裁空。
         try:
-            from touchstone.llm_budget import output_tokens
-            s.config.custom_model_max_tokens = output_tokens()
+            from touchstone.llm_budget import context_tokens
+            ctx = context_tokens()
+            s.config.custom_model_max_tokens = ctx if ctx > 0 else 128000
         except Exception:
-            s.config.custom_model_max_tokens = 4096
+            s.config.custom_model_max_tokens = 128000
         # 清空 fallback_models：默认 fallback（gpt-5.4-mini 等）发到我们的 base 会返回"模型不存在"，徒增失败噪音。
         try:
             s.config.fallback_models = []
