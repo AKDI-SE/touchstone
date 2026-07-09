@@ -304,3 +304,78 @@ def test_inherited_seed_checklist_not_judged_no_progress(rule_index):
                                checklist_pair=(seed, r1),
                                ledger={"rounds_spent": 1, "rounds_left": 2})
     assert dec == "continue"
+
+
+# ---------------- review_reliable=False：抑制依赖复检的假销项 ----------------
+def test_reconcile_unreliable_withholds_autoclose():
+    # 仍命中没了（not still_firing）但评审不可信 -> 不自动销项，保持 open
+    prev = cl.from_findings([_finding("R-1")])
+    cur = cl.reconcile(prev, {}, [], review_reliable=False)   # 无申报、本轮未再命中
+    it = cur["items"][0]
+    assert it["status"] == "open" and "不可信" in it["note"]
+
+
+def test_reconcile_reliable_autocloses_normally():
+    # 对照：可靠时 not still_firing -> 自动销项（保旧行为）
+    prev = cl.from_findings([_finding("R-1")])
+    cur = cl.reconcile(prev, {}, [], review_reliable=True)
+    assert cur["items"][0]["status"] == "done" and "复检未再命中" in cur["items"][0]["note"]
+
+
+def test_reconcile_unreliable_withholds_done_ack():
+    # author 申报 done + 本轮未命中，但评审不可信 -> done 不销项，待可靠轮复核
+    prev = cl.from_findings([_finding("R-1")])
+    sig = "R-1:a.py:1"
+    cur = cl.reconcile(prev, {sig: {"verb": "done", "note": ""}}, [], review_reliable=False)
+    it = cur["items"][0]
+    assert it["status"] == "open" and "待可靠轮复核" in it["note"]
+
+
+def test_reconcile_unreliable_still_accepts_waived():
+    # waived 是人判断、不依赖 LLM 复检 -> 评审不可信时仍受理销项
+    prev = cl.from_findings([_finding("R-1")])
+    sig = "R-1:a.py:1"
+    cur = cl.reconcile(prev, {sig: {"verb": "waived", "note": "测试夹具"}}, [],
+                        review_reliable=False)
+    assert cur["items"][0]["status"] == "waived"
+
+
+def test_reconcile_unreliable_still_rejects_done_when_still_firing():
+    # 仍命中 + done 申报 + 不可信 -> 复核未通过（与可靠时一致）
+    prev = cl.from_findings([_finding("R-1")])
+    sig = "R-1:a.py:1"
+    cur = cl.reconcile(prev, {sig: {"verb": "done", "note": ""}}, [_finding("R-1")],
+                        review_reliable=False)
+    assert cur["items"][0]["status"] == "open" and "复核未通过" in cur["items"][0]["note"]
+
+
+# ---------------- review_reliable=False：loop 不在不可信轮收敛 ----------------
+def test_loop_unreliable_no_converge_round1_empty(rule_index):
+    # PR #44 round-1 场景：首轮 diff 被裁空 -> 0 发现 -> 无清单项。可靠时会假收敛，
+    # 不可信时兜底不收敛（回落 continue），人仍可合入。
+    prev = cl.from_findings([])                       # 无历史清单项
+    cur = cl.reconcile(prev, {}, [])                  # 本轮无发现
+    dec, reason, _ = loop.loop_step([], rule_index, loop.LoopState(),
+                                    checklist_pair=(prev, cur), review_reliable=False)
+    assert dec != "converged" and "不可信" in reason
+
+
+def test_loop_unreliable_no_converge_even_all_resolved(rule_index):
+    # 清单全销项（经 waived）+ 无可自改发现，但评审不可信 -> 不收敛
+    prev = cl.from_findings([_finding("R-1")])
+    sig = "R-1:a.py:1"
+    resolved = cl.reconcile(prev, {sig: {"verb": "waived", "note": "人判断"}}, [],
+                            review_reliable=False)    # waived 销项
+    assert cl.all_resolved(resolved)
+    dec, reason, _ = loop.loop_step([], rule_index, loop.LoopState(),
+                                    checklist_pair=(prev, resolved), review_reliable=False)
+    assert dec != "converged" and "不可信" in reason
+
+
+def test_loop_reliable_converges_normally(rule_index):
+    # 对照：可靠时全销项 + 无可自改 -> 收敛（保旧行为）
+    prev = cl.from_findings([_finding("R-1")])
+    resolved = cl.reconcile(prev, {}, [], review_reliable=True)
+    dec, _, _ = loop.loop_step([], rule_index, loop.LoopState(),
+                               checklist_pair=(prev, resolved), review_reliable=True)
+    assert dec == "converged"

@@ -93,7 +93,7 @@ def parse_acks(bodies):
     return acks
 
 
-def reconcile(prev, acks, current_findings, round_no=None):
+def reconcile(prev, acks, current_findings, round_no=None, review_reliable=True):
     """按达成判据复核申报、吸收本轮新增发现，产出新一轮权威清单。
 
     - done：签名在本轮发现中不再出现才受理（deterministic=规则复检通过；review=定向复核未再报）；
@@ -102,6 +102,9 @@ def reconcile(prev, acks, current_findings, round_no=None):
     - split：必须带链接/编号；受理后计入销项。
     - 未申报但本轮发现中已消失的 open 项：同样销为 done（评审方复检即权威，申报缺席不阻塞）。
     - 本轮新增发现：追加为 open 项（清单跨轮累积，历史欠账不清零——供台账继承）。
+    - review_reliable=False（本轮 LLM 评审不可信：引擎降级/可疑空收敛）时抑制依赖复检的销项：
+      "签名本轮未再出现"此时不可靠（可能 diff 被裁空/LLM 随机性，非代码已改）。done 申报与
+      自动销项均不触发，保持 open 待可靠轮复核；waived/split 仍受理（人判断不依赖 LLM）。
     """
     prev = prev or {"round": 0, "items": []}
     acks = acks or {}
@@ -119,6 +122,8 @@ def reconcile(prev, acks, current_findings, round_no=None):
             if verb == "done":
                 if still_firing:
                     it["note"] = "复核未通过：本轮仍命中，保持 open"
+                elif not review_reliable:
+                    it["note"] = "done 申报待可靠轮复核：本轮 LLM 评审不可信（引擎降级/可疑空收敛），暂不销项"
                 else:
                     it["status"], it["note"] = "done", "申报并经复核销项"
             elif verb == "waived":
@@ -131,8 +136,10 @@ def reconcile(prev, acks, current_findings, round_no=None):
                     it["status"], it["note"] = "split", note
                 else:
                     it["note"] = "split 申报未带链接/编号，不受理"
-        elif not still_firing:
+        elif not still_firing and review_reliable:
             it["status"], it["note"] = "done", "复检未再命中，销项"
+        elif not still_firing and not review_reliable:
+            it["note"] = "本轮 LLM 评审不可信（引擎降级/可疑空收敛），不予自动销项，待可靠轮复核"
 
     # 本轮新增发现 → 追加 open 项
     new_cl = from_findings(current_findings)

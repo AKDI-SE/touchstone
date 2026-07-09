@@ -62,6 +62,62 @@ class ReviewEngineDegraded(RuntimeError):
         self.reason = reason
 
 
+# 可疑空收敛阈值（改动新增行 >= 此值 且 LLM 0 原始建议 -> 评审不可信）。
+# 与 orchestrator._clean_review_trace 的 suspicious 判据同源；经 env 可调（如超大 PR 调参）。
+_SUSPICIOUS_EMPTY_LINES = int(os.environ.get("TOUCHSTONE_SUSPICIOUS_EMPTY_LINES", "20") or 20)
+
+
+def review_reliable(engine_status, ai_raw_count, added_lines):
+    """本轮 LLM 评审是否可作为 checklist 销项 / loop 收敛 / autonomy 自动放行的可靠证据。
+
+    不可靠（返回 False）的两种情形--都意味着"本轮 0 建议不代表代码没问题"：
+      1. 引擎降级：engine_status != "ok"（no_engine/provider_failed/llm_failed/skipped_large_diff）。
+         pr-agent 没真跑或 LLM 调用失败 -> 0 建议是缺审，非审完无问题。
+      2. 可疑空收敛：added_lines >= SUSPICIOUS_EMPTY_LINES 且 ai_raw_count == 0。
+         引擎虽 ok 但改动不小却 0 原始建议--如 pr-agent 把 diff 裁空（PR #44 真根因：
+         custom_model_max_tokens 语义用反致 4096 当窗口裁空 diff）。pr-agent 正常返回、
+         engine_status="ok"，唯有此判据能抓住。
+
+    返回 False 时：checklist 不予"复检未再命中"自动销项、loop 不收敛、autonomy 不自动放行
+    --回落到人（ADVISORY 不拦人工合入）。是 PR #45 引擎根因修复之上的 defense-in-depth：
+    引擎再坏或超大 PR 超 pr-agent token 预算被裁空时，不再假收敛放行未评审代码。"""
+    if engine_status != "ok":
+        return False
+    if added_lines >= _SUSPICIOUS_EMPTY_LINES and ai_raw_count == 0:
+        return False
+    return True
+
+
+# pr-agent 把 LLM 预测失败吞成 0 建议时，stderr 留下的可靠信号串。
+# 见 retry_with_fallback_models（algo/pr_processing.py:326）的第一次吞 + run()（pr_code_suggestions.py:188）
+# 的第二次吞：LLM 返回空 content -> 预测解析抛异常 -> WARNING "Failed to generate prediction" ->
+# ERROR "Failed to generate prediction with any model" -> 退出码 0、JSON 无 _degraded、findings 全空。
+_PRED_FAILURE_SIG = "Failed to generate prediction"
+
+
+def prediction_swallowed_failure(data, stderr):
+    """检测 pr-agent 把 LLM 预测失败静默吞成"0 建议成功"的情形（防假收敛的可靠主判据）。
+
+    glm-5.2 间歇性返回空 content（choices 存在但 content 为空串）-> 预测解析抛异常 -> pr-agent
+    retry 吞 + run() 再吞，返回空 data、退出码 0、无 _degraded 字段。此时 _invoke_endpoint 的
+    _degraded 检查（仅查字段）漏过，engine_status 被当 "ok"，0 建议被当"审完无问题"-> 假收敛。
+
+    stderr 里 pr-agent 记的 _PRED_FAILURE_SIG 是可靠信号。但 improve 工具失败而 review 工具成功
+    给了意见时，stderr 仍含此串（improve 失败）、本轮却有 key_issues -> 不算吞没（仍拿到真实评审）。
+    故判据：失败串存在 且 本轮原始建议全空（code_suggestions 与 key_issues 都 0）。返回 True ->
+    _invoke_endpoint 抛 ReviewEngineDegraded("llm_failed")，engine_status=llm_failed，
+    review_reliable 主分支（engine_status!="ok"）触发，不再依赖"大改动+0建议"的启发式近似。
+
+    data：pr-agent 返回的 JSON dict（{"code_suggestions":[...], "review":{"key_issues_to_review":[...]}}）。
+    stderr：适配子进程的完整 stderr。纯函数，便于离线测试。"""
+    if _PRED_FAILURE_SIG not in (stderr or ""):
+        return False
+    cs = data.get("code_suggestions") if isinstance(data, dict) else None
+    ki = ((data.get("review") or {}).get("key_issues_to_review")
+          if isinstance(data, dict) else None)
+    return not cs and not ki
+
+
 def load_nmap(repo_dir="."):
     """读 .touchstone/pr-agent.yaml 的 normalization 段（缺省用内置默认）。env TOUCHSTONE_PRAGENT 可覆盖路径。"""
     path = os.environ.get("TOUCHSTONE_PRAGENT", os.path.join(repo_dir, ".touchstone", "pr-agent.yaml"))
@@ -252,6 +308,17 @@ class PRAgentProvider:
                         _f.write(_err_full)
             except Exception:
                 pass
+            # pr-agent 把 LLM 预测失败（返回空 content -> 解析抛异常）吞成 0 建议的第二道兜底：
+            # 退出码 0、无 _degraded 字段时，_degraded 检查漏过。stderr 的失败串 + 本轮 0 原始建议
+            # 是可靠判据（见 prediction_swallowed_failure）。命中 -> 判 llm_failed 降级，engine_status
+            # 置 llm_failed -> review_reliable 主分支触发，不再依赖"大改动+0建议"启发式近似。
+            # 这正是 PR #44 round-3 / PR #46 "0 建议假收敛"的真根因（glm-5.2 间歇空 content 被吞）。
+            if prediction_swallowed_failure(data, proc.stderr):
+                raise ReviewEngineDegraded(
+                    "llm_failed",
+                    "PR-Agent 把 LLM 预测失败（stderr: Failed to generate prediction）吞成 0 建议"
+                    "（退出码 0、无 _degraded）--0 建议是 LLM 失败而非审完无问题。stderr 末尾：\n"
+                    + (proc.stderr or "").strip()[-600:])
             return data
         finally:
             if tmp:

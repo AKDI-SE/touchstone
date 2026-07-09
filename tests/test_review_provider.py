@@ -361,3 +361,69 @@ def test_injection_skipped_in_pr_without_trusted_ref(monkeypatch, tmp_path):
     finally:
         monkeypatch.delenv("TOUCHSTONE_STORE_PATH", raising=False)
         importlib.reload(experience_store); importlib.reload(learning_loop)
+
+
+# ---------------- review_reliable：引擎健康度判据 ----------------
+def test_review_reliable_ok_with_suggestions():
+    assert RP.review_reliable("ok", ai_raw_count=3, added_lines=500) is True
+
+
+def test_review_reliable_ok_small_diff_zero_suggestions():
+    # 改动小（<阈值）且 0 建议 -> 合理，可靠
+    assert RP.review_reliable("ok", ai_raw_count=0, added_lines=5) is True
+
+
+def test_review_reliable_suspicious_empty_large_diff_zero_suggestions():
+    # 改动不小（>=阈值）却 0 原始建议 -> 可疑空收敛（PR #44 真根因：diff 被裁空）-> 不可靠
+    assert RP.review_reliable("ok", ai_raw_count=0, added_lines=25) is False
+    assert RP.review_reliable("ok", ai_raw_count=0, added_lines=20) is False  # 边界
+
+
+def test_review_reliable_engine_degraded():
+    # 引擎降级各态 -> 不可靠（0 建议是缺审，非审完无问题）
+    for st in ("no_engine", "provider_failed", "llm_failed", "skipped_large_diff"):
+        assert RP.review_reliable(st, ai_raw_count=0, added_lines=5) is False
+
+
+# ---------------- prediction_swallowed_failure：pr-agent 吞掉的 LLM 失败检测 ----------------
+def test_prediction_swallowed_failure_empty_with_sig():
+    # round-3 / #46 真场景：失败串在 stderr + 本轮 0 原始建议 -> 吞没失败
+    data = {"code_suggestions": [], "review": {"key_issues_to_review": []}}
+    stderr = "...WARNING Failed to generate prediction with openai/glm-5.2\nERROR Failed to generate...with any model"
+    assert RP.prediction_swallowed_failure(data, stderr) is True
+
+
+def test_prediction_swallowed_failure_with_real_issues_not_swallowed():
+    # round-2 场景：improve 工具失败（stderr 有串）但 review 成功给了 key_issues -> 不算吞没
+    data = {"code_suggestions": [], "review": {"key_issues_to_review": [{"relevant_file": "x.py"}]}}
+    assert RP.prediction_swallowed_failure(data, "Failed to generate prediction") is False
+
+
+def test_prediction_swallowed_failure_clean_success():
+    # 正常成功：无失败串 -> 不算吞没
+    data = {"code_suggestions": [{"a": 1}], "review": {"key_issues_to_review": []}}
+    assert RP.prediction_swallowed_failure(data, "all good, no errors") is False
+
+
+def test_invoke_endpoint_swallowed_failure_raises_llm_failed(monkeypatch):
+    # pr-agent 退出码 0、无 _degraded、空 findings、stderr 含失败串 -> 抛 ReviewEngineDegraded("llm_failed")
+    # （此前的 _degraded 字段检查漏过这种吞没；本检测是 review_reliable 主判据的来源）
+    monkeypatch.setattr(RP.subprocess, "run", lambda a, **k: _Proc(
+        0, out=json.dumps({"code_suggestions": [], "review": {"key_issues_to_review": []}}),
+        err="...Failed to generate prediction with openai/glm-5.2\nFailed to generate...any model"))
+    monkeypatch.setattr(RP, "_experience_injection", lambda d: "")
+    with pytest.raises(RP.ReviewEngineDegraded) as ei:
+        RP.fetch({"owner": "o", "repo": "r", "number": 3})
+    assert ei.value.degraded == "llm_failed"
+    assert "Failed to generate prediction" in ei.value.reason
+
+
+def test_invoke_endpoint_partial_success_not_degraded(monkeypatch):
+    # improve 工具失败（stderr 有串）但 review 给了 key_issues -> 不降级（仍拿到真实评审）
+    monkeypatch.setattr(RP.subprocess, "run", lambda a, **k: _Proc(
+        0, out=json.dumps({"code_suggestions": [],
+                           "review": {"key_issues_to_review": [{"relevant_file": "x.py"}]}}),
+        err="Failed to generate prediction with openai/glm-5.2"))
+    monkeypatch.setattr(RP, "_experience_injection", lambda d: "")
+    items = RP.fetch({"owner": "o", "repo": "r", "number": 3})
+    assert len(items) == 1                                    # review 的 1 条意见照常返回

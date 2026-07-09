@@ -318,6 +318,9 @@ def main():
     ai_raw_count = _out.get("ai_raw_count", 0)
     added_lines = _out.get("added_lines", 0)
     n_changed = len(_out.get("changed_files") or [])
+    # 本轮 LLM 评审是否可靠（engine_status + 可疑空收敛判据）。不可靠时 checklist 不予自动销项、
+    # loop 不收敛、autonomy 不自动放行--防"diff 被裁空/LLM 随机性"假收敛放行未评审代码。
+    reliable = review_provider.review_reliable(engine_status, ai_raw_count, added_lines)
 
     # 反馈循环：从历史评论 marker 取状态 → 决策 → 回贴附状态与新 marker。
     # 只信机器人自己发的评论（按发帖人过滤）——否则 author 可自己发伪造 marker 洗掉抗博弈闸。
@@ -353,13 +356,14 @@ def main():
     if prev_cl is None and ledger.get("inherited_open_items"):
         prev_cl = {"round": 0, "items": ledger["inherited_open_items"]}
     acks = checklist_mod.parse_acks(all_bodies)
-    cur_cl = checklist_mod.reconcile(prev_cl, acks, findings, round_no=state.round + 1)
+    cur_cl = checklist_mod.reconcile(prev_cl, acks, findings, round_no=state.round + 1,
+                                     review_reliable=reliable)
     checklist_mod.snapshot(cur_cl)          # 本轮快照写入文件（供可视化与校准回放）
 
     ci_pass = ci_verdict(owner, repo, head_sha, token)   # 供闭环：CI/verify 红则不收敛
     decision, reason, new_state = loop.loop_step(
         findings, rule_index, state, ci_passed=ci_pass,
-        checklist_pair=(prev_cl, cur_cl), ledger=ledger)
+        checklist_pair=(prev_cl, cur_cl), ledger=ledger, review_reliable=reliable)
     loop_info = (decision, reason, loop.render_marker(new_state))
     checklist_md = checklist_mod.render(
         cur_cl, rounds_left=max(0, ledger.get("rounds_left", loop.MAX_ROUNDS) - 1),
@@ -424,7 +428,12 @@ def main():
         json.dump({"pr": number, "sha": head_sha, "risk": risk, "findings": findings,
                    "changed_files": sorted(changed_files), "loop_decision": decision,
                    "contract_clean": contract_clean, "change_class": cls,
-                   "gate": gate},
+                   "gate": gate,
+                   # 引擎健康度（供 autonomy 决策）：engine_status/ai_raw_count/added_lines +
+                   # 预算 review_reliable。review_reliable=False 时 autonomy 不自动放行
+                   # （防假收敛放行未评审代码，见 review_provider.review_reliable）。
+                   "engine_status": engine_status, "ai_raw_count": ai_raw_count,
+                   "added_lines": added_lines, "review_reliable": reliable},
                   f, ensure_ascii=False, indent=2)
 
     # 风险分流的 job 输出：供下游 verify job 决定是否触发验证
