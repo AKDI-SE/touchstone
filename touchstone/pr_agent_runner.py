@@ -151,6 +151,14 @@ def run(pr_url, mode, extra_instructions=None):
             s.config.fallback_models = []
         except Exception:
             pass
+    # 单次 LLM 调用超时（pr-agent 默认 ai_timeout=120s，对 glm-5.2 等慢模型不够--实测 glm-5.2
+    # 响应 360s+，120s 必超时，litellm 重试又超时，improve 工具两次全超时 -> 0 suggestions 假象）。
+    # 经 TOUCHSTONE_LLM_CALL_TIMEOUT env 配置（秒），默认 600s（glm-5.2 实测 360-380s，留余量）。
+    # 注意与 TOUCHSTONE_PRAGENT_TIMEOUT（整个子进程超时，需 > N次调用×ai_timeout）区分。
+    try:
+        s.config.ai_timeout = int(os.environ.get("TOUCHSTONE_LLM_CALL_TIMEOUT", "600"))
+    except (ValueError, TypeError):
+        s.config.ai_timeout = 600
     if extra_instructions:
         s.pr_code_suggestions.extra_instructions = extra_instructions
         s.pr_reviewer.extra_instructions = extra_instructions
