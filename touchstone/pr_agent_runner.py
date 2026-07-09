@@ -245,6 +245,7 @@ def run(pr_url, mode, extra_instructions=None):
                     # 旧实现 `or {}` 静默吞成空清单且 stderr 无任何失败串（盲区）。
                     print("[runner] review prediction malformed（review 段缺失或非 dict，原文见交互日志）",
                           file=sys.stderr)
+                    _rv = {}   # sanitize：truthy 非 dict 时下方 .get 会抛 AttributeError 致 runner 崩溃（pr-agent 评审意见）
                 out["review"]["key_issues_to_review"] = (_rv or {}).get("key_issues_to_review") or []
             _ix(f"工具执行完成: code_suggestions={len(out['code_suggestions'])} "
                 f"key_issues={len(out['review']['key_issues_to_review'])}")

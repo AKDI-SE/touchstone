@@ -164,12 +164,19 @@ def render_report(risk, findings, banner="", scope_facts=None, checklist_md="",
     #    评审不可信时 [!CAUTION] 告警置顶【替代】常规横幅的降级/溯源部分（原因已并入
     #    告警，避免同一信息两处重复），循环状态行仍保留在告警之后。
     if not review_reliable:
-        loop_line = ""
-        if banner and banner.startswith("**反馈循环："):
-            loop_line = banner.split("\n")[0]
+        # 不可信时 [!CAUTION] 告警置顶替代降级/溯源部分（原因已并入告警，避免重复）。
+        # 但 banner 可能还载有与可信度无关的内容（det_warning/llm_notes/unverified_claims
+        # 及循环状态行）--这些不能丢，作为 blockquote 追加在告警之后（pr-agent 评审意见：
+        # 不可信时整块 banner 被丢弃会静默丢失重要通知）。
+        kept = []
+        if banner:
+            for ln in banner.split("\n"):
+                if not ln.strip():
+                    continue
+                kept.append(ln)
         banner = render_unreliable_callout(engine_status, ai_raw_count, added_lines)
-        if loop_line:
-            banner += "\n\n> " + loop_line
+        if kept:
+            banner += "\n\n" + "\n".join(("> " + ln if not ln.startswith(">") else ln) for ln in kept)
     elif banner:
         banner = "\n".join(("> " + ln if ln.strip() else ">") for ln in banner.split("\n"))
     parts = {

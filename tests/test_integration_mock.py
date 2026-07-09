@@ -742,3 +742,25 @@ def test_custom_max_tokens_and_fallback_actually_set(monkeypatch):
     assert settings.config.fallback_models == []             # 清空，不再试不存在的 gpt-5.4-mini
     assert settings.config.model == "openai/m"               # provider 前缀就位
     assert settings.config.git_provider == "github"
+
+
+def test_runner_malformed_review_prediction_does_not_crash(monkeypatch):
+    # pr-agent 评审意见：_rv 为 truthy 非 dict（malformed YAML 解析出的 string/list）时，
+    # 旧实现 (_rv or {}).get 在非 dict 上抛 AttributeError 致 runner 崩溃。
+    # 修复：检测到 malformed 后 _rv = {} 重置。本测试锁死不崩 + 返回空 key_issues。
+    _install_fake_pr_agent(monkeypatch)
+    _stub_llm(monkeypatch)
+    import pr_agent.algo.utils as algo_utils
+    import pr_agent.tools.pr_reviewer as rv_mod
+    # load_yaml 返回 review 段是 string（malformed），触发 not isinstance(_rv, dict)
+    algo_utils.load_yaml = lambda s, **k: {"review": "not-a-dict-malformed"}
+
+    class PRReviewer:
+        def __init__(self, url):
+            self.prediction = "review: garbage that parses to non-dict"
+        async def run(self):
+            return None
+    rv_mod.PRReviewer = PRReviewer
+    out = R.run("https://pr", "review")          # 不应抛 AttributeError
+    assert out["review"]["key_issues_to_review"] == []   # malformed -> 空清单，不崩
+    assert "_degraded" not in out                        # 非 _degraded（malformed 是可恢复的）

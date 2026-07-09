@@ -440,3 +440,29 @@ def test_reliable_review_keeps_normal_layout():
             "verification_decision": "cheap_only", "blast_radius": []}
     body = render.render_report(risk, [], review_reliable=True)
     assert "[!CAUTION]" not in body and "`skip`" in body
+
+
+# ---------------- pr-agent 评审意见：不可信时保留非降级 banner 内容 ----------------
+def test_render_unreliable_preserves_non_degradation_banner():
+    # 不可信时 det_warning/unverified_claims/循环状态不应被 CAUTION 告警整块覆盖丢弃
+    risk = {"risk_band": "high", "human_action": "read+arbitrate",
+            "verification_decision": "full_suite", "blast_radius": ["security_surface"]}
+    banner = ("**反馈循环：🔁 继续** - 第 1 轮\n\n"
+              "⚠️ **契约解析告警**\n\n"
+              "🟡 **2 条 waived/split 系 author 自证、机器未验证**")
+    md = orchestrator.render_report(
+        risk, [], banner=banner, review_reliable=False,
+        engine_status="llm_failed", ai_raw_count=0, added_lines=50)
+    assert "[!CAUTION]" in md                       # CAUTION 告警置顶
+    assert "契约解析告警" in md                      # det_warning 保留
+    assert "author 自证" in md                       # unverified_claims 保留
+    assert "反馈循环：🔁 继续" in md                 # 循环状态保留
+
+
+def test_render_unreliable_no_banner_still_has_caution():
+    # 无 banner 时不可信仍输出 CAUTION，不崩
+    risk = {"risk_band": "low", "human_action": "skip",
+            "verification_decision": "cheap_only", "blast_radius": []}
+    md = orchestrator.render_report(risk, [], banner="", review_reliable=False,
+                                    engine_status="llm_failed", ai_raw_count=0, added_lines=50)
+    assert "[!CAUTION]" in md
