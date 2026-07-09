@@ -361,12 +361,10 @@ def test_loop_unreliable_no_converge_round1_empty(rule_index):
 
 
 def test_loop_unreliable_no_converge_even_all_resolved(rule_index):
-    # 清单全销项（经 waived）+ 无可自改发现，但评审不可信 -> 不收敛
+    # 清单经 done 全销项 + 无可自改发现，但评审不可信 -> 不收敛（原意图：不可信兜底）
     prev = cl.from_findings([_finding("R-1")])
-    sig = "R-1:a.py:1"
-    resolved = cl.reconcile(prev, {sig: {"verb": "waived", "note": "人判断"}}, [],
-                            review_reliable=False)    # waived 销项
-    assert cl.all_resolved(resolved)
+    resolved = cl.reconcile(prev, {}, [], review_reliable=True)   # done 自动销项
+    assert cl.all_verified(resolved)
     dec, reason, _ = loop.loop_step([], rule_index, loop.LoopState(),
                                     checklist_pair=(prev, resolved), review_reliable=False)
     assert dec != "converged" and "不可信" in reason

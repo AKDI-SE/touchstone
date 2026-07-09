@@ -88,7 +88,19 @@ def loop_step(findings, rule_index, state, max_rounds=MAX_ROUNDS, ci_passed=None
     if checklist_pair is not None:
         from touchstone import checklist as _cl
         prev_cl, cur_cl = checklist_pair
-        if _cl.all_resolved(cur_cl) and not cur:
+        # 加固：收敛只认机器可验证销项（done）。存在 author 自证的 waived/split 时不收敛，
+        # 回落 continue 并点名待人核准项——防 author 用 "waived: 随便写" 单方闭环触发自动放行。
+        if _cl.all_resolved(cur_cl) and _cl.has_unverified_claims(cur_cl) and not cur:
+            claims = _cl.unverified_claims(cur_cl)
+            if nr >= max_rounds:
+                return ("escalate",
+                        f"清单表面全销项，但有 {len(claims)} 条 author 自证（waived/split）未经人核准，"
+                        f"轮次耗尽 → 交人裁决", LoopState(nr, hist, ci_passed))
+            return ("continue",
+                    f"清单表面全销项，但有 {len(claims)} 条 waived/split 系 author 自证、机器未验证："
+                    f"需人核准这些豁免/拆分后方可收敛（advisory 下人可径直合入）",
+                    LoopState(nr, hist, ci_passed))
+        if _cl.all_verified(cur_cl) and not cur:
             if ci_passed is False:
                 if nr >= max_rounds:
                     return ("escalate", f"清单已销项但 CI/verify 持续为红，轮次耗尽（≥ {max_rounds}）→ 交人",

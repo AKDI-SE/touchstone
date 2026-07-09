@@ -5,6 +5,9 @@
 # 双 agent 交互从「评论里聊天」改为「围绕一份逐项销项的清单收敛」：
 #   - 评审方每条发现即一条清单项（方向 + 依据 + 达成判据）；
 #   - author 改完逐项申报（done / waived:理由 / split:链接）；
+#     ⚠ 销项分级（攻击面加固）：done 经机器复检（签名不再命中）方受理；waived/split 是
+#       author 自证、机器不可核实——受理仅作展示销项与"待人核准"，绝不进 VERIFIED、
+#       不触发收敛与自动放行（否则 author 一句 "waived:随便写" 即可不改代码闭环任意意见）。
 #   - 评审方按达成判据复核后销项——勾选只是输入信号，复核后的状态才是权威（authority）。
 # 收敛指标 = 销项率；「无推进」= 连续两轮销项率为零且无 waived/split 申报。
 #
@@ -37,7 +40,16 @@ _ACK_BLOCK = re.compile(r"```touchstone-ack\s*\n(.*?)```", re.S)
 # 行格式：<sig>: <verb>[: <note>]，sig 本身含冒号（rule:file:line），故从右侧解析动词。
 _ACK_LINE = re.compile(r"^(?P<sig>\S.*?):\s*(?P<verb>done|waived|split)\s*(?::\s*(?P<note>.+))?$")
 
-RESOLVED = {"done", "waived", "split"}
+# 销项分两级——攻击面加固（2026-07-09）：
+#   VERIFIED = 机器可验证的销项：done（签名本轮复检不再命中，touchstone 侧确认，非 author 说了算）。
+#   CLAIMED  = author 自证、机器无法核实的销项：waived（宣称误报/可接受）、split（宣称拆走）。
+#     author 完全掌控 note 内容，真伪不可判——只作"输入信号"，不可单独构成收敛依据，
+#     更不可触发自动放行（否则 author 一句 "waived: 无所谓" 即可闭环任意意见）。
+# RESOLVED 仍是三者之并（供 resolved_rate 展示与 no_progress 判定），但 all_resolved /
+# 收敛 / autonomy 放行改看 VERIFIED，见 all_verified / has_unverified_claims。
+VERIFIED = {"done"}
+CLAIMED = {"waived", "split"}
+RESOLVED = VERIFIED | CLAIMED
 
 
 def sig_of(finding):
@@ -128,12 +140,16 @@ def reconcile(prev, acks, current_findings, round_no=None, review_reliable=True)
                     it["status"], it["note"] = "done", "申报并经复核销项"
             elif verb == "waived":
                 if note:
-                    it["status"], it["note"] = "waived", note
+                    # author 自证：受理为 waived（计入展示销项率），但标记待人核准——
+                    # all_verified/收敛/放行不认它，机器不代人对"这是误报"拍板。
+                    it["status"] = "waived"
+                    it["note"] = f"author 宣称可豁免（待人核准，机器未验证）：{note}"
                 else:
                     it["note"] = "waived 申报未带理由，不受理"
             elif verb == "split":
                 if note:
-                    it["status"], it["note"] = "split", note
+                    it["status"] = "split"
+                    it["note"] = f"author 宣称已拆出（待人核准，机器未验证）：{note}"
                 else:
                     it["note"] = "split 申报未带链接/编号，不受理"
         elif not still_firing and review_reliable:
@@ -152,7 +168,25 @@ def reconcile(prev, acks, current_findings, round_no=None, review_reliable=True)
 
 
 def all_resolved(checklist):
+    """所有项处于任一销项态（done/waived/split）——供展示与向后兼容。
+    注意：不足以判定收敛或放行，那两处必须用 all_verified（waived/split 是 author 自证）。"""
     return all(i["status"] in RESOLVED for i in (checklist or {}).get("items", []))
+
+
+def all_verified(checklist):
+    """所有项均【机器可验证】销项（done）——收敛与自动放行的唯一合法依据。
+    存在 waived/split（author 自证）时返回 False：这些项需人核准，机器不得代人闭环。"""
+    return all(i["status"] in VERIFIED for i in (checklist or {}).get("items", []))
+
+
+def unverified_claims(checklist):
+    """返回 author 自证但未经机器核实的销项项（waived/split）——供收敛门与报告点名。"""
+    return [i for i in (checklist or {}).get("items", [])
+            if i.get("status") in CLAIMED]
+
+
+def has_unverified_claims(checklist):
+    return bool(unverified_claims(checklist))
 
 
 def no_progress(prev, cur):

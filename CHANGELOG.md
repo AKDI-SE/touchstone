@@ -2,6 +2,19 @@
 
 本文件记录 Touchstone 的发布版本。设计的逐版迭代历史见 `docs/touchstone-design.html` 的变更历史。
 
+## 未发布 — 2026-07-09（author 自证销项的欺骗面加固）
+
+威胁建模问题"author 能否通过写 ack 答复、在不修改/假修改下闭环 touchstone 意见列表"——答案是**能**，且直通自动放行。已封堵。
+
+**攻击路径**：收敛清单的 `waived`/`split` 申报只校验"note 非空"、不验真伪，却计入 `RESOLVED` → 拉高 resolved_rate → `all_resolved` → loop `converged` → autonomy `loop_converged` 闸 → 自动放行。author 遂可**不改一行代码**发 `SEC-001:x.yaml:7: waived: 这是测试夹具` 单方闭环任意意见。advisory 下 waived 标了"🟡 待人核准"但仅是视觉提示、无强制；自动放行模式下没有任何闸检查"是否存在未核准的 author 自证"。（对比：`done` 有机器复检兜底——签名本轮仍命中则拒，不受影响。）
+
+**加固（双闸 + 呈现）**：
+- **销项分级**：`VERIFIED = {done}`（touchstone 侧机器确认签名复检不再命中）vs `CLAIMED = {waived, split}`（author 自证、机器不可核实）。`RESOLVED` 仍是三者之并（供 resolved_rate 展示与 no_progress 判定），但新增 `all_verified()` / `has_unverified_claims()` / `unverified_claims()`。
+- **收敛门**：loop 的收敛判据从 `all_resolved` 改为 `all_verified`；存在 CLAIMED 时不给 `converged`，回落 `continue` 并点名待人核准项（advisory 下人仍可径直合入）。
+- **autonomy 独立闸（纵深）**：新增 `no_unverified_claims`——不信任 `loop_decision` 单点（result marker 理论上可被 author 伪造），`unverified_claims` 计数由 touchstone 侧写入 findings.json/result marker，即便 loop_decision 被伪造成 converged 也独立再拦一道。
+- **呈现**：报告横幅点名"N 条 waived/split 系 author 自证、机器未验证"；waived/split 的 note 加"（待人核准，机器未验证）"前缀，note 内容无论塞什么都改不了 status。
+- 6 条对抗测试 + 端到端复现（author waived 不改代码 → loop continue + autonomy 双闸 failed）。526 → **532** 测试全绿。
+
 ## 未发布 — 2026-07-09（LLM 静默故障系统排查：部分降级与截断修复可见化）
 
 对"LLM 出问题但评审意见不体现"做全链路威胁建模（pr-agent 0.37 两工具内部 → runner 出口 → provider 解析 → 判定/呈现），在既有防线（_degraded 结构化上报 / stdout fd 级隔离 / 分层失败签名 / review_reliable 判定+CAUTION 呈现 / 0-发现溯源）之外，识别并封堵三个新盲区，另确认两类残余风险及其缓解：

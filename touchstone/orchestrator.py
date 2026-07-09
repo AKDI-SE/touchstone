@@ -159,7 +159,7 @@ def post_results(owner, repo, number, head_sha, token, risk, findings, loop_info
                  change_class=None, diff=None, injected_types=None, injected_experience_ids=None,
                  engine_status="ok", det_warning="", ai_raw_count=0, added_lines=0, n_changed=0,
                  scope_facts=None, checklist_md="", ledger=None, review_reliable=True,
-                 llm_notes=None):
+                 llm_notes=None, unverified_claims=0):
     # (1) 摘要评论——总是成功；按七段版面模板组装（修订设计 §3 意见 4）：
     #     ①横幅(降级说明/0-发现溯源/循环状态) ②总结 ③确定性事实 ④逐条发现 ⑤收敛清单 ⑥验证 ⑦机器 marker
     # 评审不可信时，降级说明/0-发现溯源统一并入 render 层的 [!CAUTION] 置顶告警
@@ -173,6 +173,11 @@ def post_results(owner, repo, number, head_sha, token, risk, findings, loop_info
         banner = _clean_review_trace(engine_status, ai_raw_count, added_lines, n_changed)
     for note in (llm_notes or []):
         banner = (banner + "\n\n" if banner else "") + note
+    if unverified_claims:
+        # author 自证销项点名——advisory 下提示人核准，autonomy 下已独立拦（no_unverified_claims 闸）
+        banner = (banner + "\n\n" if banner else "") + (
+            f"🟡 **{unverified_claims} 条 waived/split 系 author 自证、机器未验证**："
+            "这些豁免/拆分需人核准，不计入机器可验证收敛，也不触发自动放行。")
     markers = []
     if loop_info:
         decision, reason, marker = loop_info
@@ -201,6 +206,7 @@ def post_results(owner, repo, number, head_sha, token, risk, findings, loop_info
         "injected_experience_ids": injected_experience_ids,   # 本轮注入的经验【id】（单条归因/回退，见数据采集设计 取舍2）
         "findings": [{"rule_id": f.get("rule_id"), "agent": f.get("agent"),
                       "severity": f.get("severity")} for f in findings],
+        "unverified_claims": unverified_claims,
     }, ensure_ascii=False) + " -->"
     body = body + "\n\n" + result_marker
     try:
@@ -384,6 +390,7 @@ def main():
     cur_cl = checklist_mod.reconcile(prev_cl, acks, findings, round_no=state.round + 1,
                                      review_reliable=reliable)
     checklist_mod.snapshot(cur_cl)          # 本轮快照写入文件（供可视化与校准回放）
+    n_unverified = len(checklist_mod.unverified_claims(cur_cl))   # author 自证未核准销项数
 
     ci_pass = ci_verdict(owner, repo, head_sha, token)   # 供闭环：CI/verify 红则不收敛
     decision, reason, new_state = loop.loop_step(
@@ -422,7 +429,8 @@ def main():
                  engine_status=engine_status, det_warning=det_warning,
                  ai_raw_count=ai_raw_count, added_lines=added_lines, n_changed=n_changed,
                  scope_facts=scope_facts, checklist_md=checklist_md, ledger=ledger,
-                 review_reliable=reliable, llm_notes=llm_notes)
+                 review_reliable=reliable, llm_notes=llm_notes,
+                 unverified_claims=n_unverified)
 
     # 可插拔检查 → 对外发【一个】总闸状态（策略全在 .touchstone/checks.yaml）。
     # CI 中由独立 gate job 在(可选)verify 之后聚合并发布，此处置 TOUCHSTONE_SKIP_GATE 跳过自发、
@@ -459,7 +467,10 @@ def main():
                    # 预算 review_reliable。review_reliable=False 时 autonomy 不自动放行
                    # （防假收敛放行未评审代码，见 review_provider.review_reliable）。
                    "engine_status": engine_status, "ai_raw_count": ai_raw_count,
-                   "added_lines": added_lines, "review_reliable": reliable},
+                   "added_lines": added_lines, "review_reliable": reliable,
+                   # author 自证但未经人核准的销项数（waived/split）——autonomy 独立闸据此
+                   # 拒放行（纵深：即便 loop_decision 被伪造，本计数由 touchstone 侧写入）。
+                   "unverified_claims": n_unverified},
                   f, ensure_ascii=False, indent=2)
 
     # 风险分流的 job 输出：供下游 verify job 决定是否触发验证
