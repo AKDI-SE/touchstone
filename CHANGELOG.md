@@ -2,6 +2,17 @@
 
 本文件记录 Touchstone 的发布版本。设计的逐版迭代历史见 `docs/touchstone-design.html` 的变更历史。
 
+## 未发布 — 2026-07-09（LLM 静默故障系统排查：部分降级与截断修复可见化）
+
+对"LLM 出问题但评审意见不体现"做全链路威胁建模（pr-agent 0.37 两工具内部 → runner 出口 → provider 解析 → 判定/呈现），在既有防线（_degraded 结构化上报 / stdout fd 级隔离 / 分层失败签名 / review_reliable 判定+CAUTION 呈现 / 0-发现溯源）之外，识别并封堵三个新盲区，另确认两类残余风险及其缓解：
+
+- **结构性事实（本次排查的钥匙）**：improve 与 review 的 `run()` 都在 pr-agent 顶层全量捕获异常——异常永远穿不透到 runner 的 try，`_degraded: llm_failed` 分支在自然情况下不可能触发。工具级故障只能靠 stderr 外化。据此 runner 新增三个**工具级专属标记**（improve produced no data / review produced empty prediction / review prediction malformed），并入吞没检测签名集合。
+- **S1 部分降级不可见（新堵）**：improve 连挂而 review 正常时，吞没检测按设计放行（评审仍有效）、engine ok、可信——建议侧信号可以缺失数日无人察觉。新增 `partial_tool_failure()` 工具级归因（专属顶层失败串 + 单侧空另一侧有产出），经新开的 invoke_meta 通道透出，报告横幅明示"本轮 improve/review 工具失败,该侧信号缺失"。
+- **S2 review 形变输出（新堵）**：review 段存在但非 dict（截断/答非所问被 try_fix_yaml 修出畸形），旧 runner `or {}` 静默吞成空清单且 stderr 无任何失败串——签名检测与启发式全部漏过。现 runner 显式打标记，进签名集合。
+- **S3 截断修复静默丢条目（新堵，透明化）**：LLM 输出截断（finish_reason=length）或轻度畸形时 try_fix_yaml 能"修好"但可能修丢条目，全程无失败串。现统计 stderr 中 "Initial failure to parse AI prediction" 次数经 meta 透出，报告注记"本轮有 N 次预测经修复解析（条目可能被修复丢弃）"。不改判定，只让人知道。
+- **残余 R1（不可消除，已有缓解）**：LLM 合法返回空建议（格式正确、内容为空判断）与"真审完没问题"不可区分——缓解为 0-发现溯源行 + added_lines 启发式 + 交互日志全量留痕。**残余 R2**：self-reflect 阶段模型劣化把全部建议打成低分被阈值过滤、或端点被换成弱模型仍返回 200——属质量漂移非故障，缓解为校准回路的采纳率监控（TF-GRPO 奖励侧可见）；可选增强是 preflight 加最小提示词回环校验（留待团队决策）。
+- 6 条回归测试；review_pr 返回契约增加 llm_notes 键。521 → **526** 测试全绿。
+
 ## 未发布 — 2026-07-09（检测器盲区：review 工具解析层失败漏检）
 
 对"LLM 反馈为空"根因链做独立代码级复核（pr-agent 0.37 源码 + 本仓提交历史 + prompt token 实测），确认 #45/#46/5c1129c 的诊断大方向成立，并修正一处不精确——它构成现行检测器的真实盲区：

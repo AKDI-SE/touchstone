@@ -158,7 +158,8 @@ def _clean_review_trace(engine_status, ai_raw_count, added_lines, n_changed):
 def post_results(owner, repo, number, head_sha, token, risk, findings, loop_info=None,
                  change_class=None, diff=None, injected_types=None, injected_experience_ids=None,
                  engine_status="ok", det_warning="", ai_raw_count=0, added_lines=0, n_changed=0,
-                 scope_facts=None, checklist_md="", ledger=None, review_reliable=True):
+                 scope_facts=None, checklist_md="", ledger=None, review_reliable=True,
+                 llm_notes=None):
     # (1) 摘要评论——总是成功；按七段版面模板组装（修订设计 §3 意见 4）：
     #     ①横幅(降级说明/0-发现溯源/循环状态) ②总结 ③确定性事实 ④逐条发现 ⑤收敛清单 ⑥验证 ⑦机器 marker
     # 评审不可信时，降级说明/0-发现溯源统一并入 render 层的 [!CAUTION] 置顶告警
@@ -170,6 +171,8 @@ def post_results(owner, repo, number, head_sha, token, risk, findings, loop_info
     if review_reliable and not banner and not findings:
         # 引擎正常且可信的 0 发现：附溯源，让人区分"LLM 真审了没问题"与"没真审"
         banner = _clean_review_trace(engine_status, ai_raw_count, added_lines, n_changed)
+    for note in (llm_notes or []):
+        banner = (banner + "\n\n" if banner else "") + note
     markers = []
     if loop_info:
         decision, reason, marker = loop_info
@@ -250,6 +253,7 @@ def review_pr(pr, contract, standards, provider=None):
     changed_files, added = contract_check.parse_diff(diff)
     added_lines = sum(len(v) for v in added.values())
     ai_raw_count = 0
+    llm_notes = []          # LLM 侧非致命注记（部分降级/截断修复），进报告横幅
     max_lines = int(os.environ.get("TOUCHSTONE_MAX_DIFF_LINES", "0") or 0)
     size_findings = []
     if max_lines > 0 and added_lines > max_lines:
@@ -272,6 +276,19 @@ def review_pr(pr, contract, standards, provider=None):
             raw_items = review_provider.fetch(pr, provider)
             ai_raw_count = len(raw_items)
             review_findings = review_provider.normalize(raw_items, nmap)
+            _meta = review_provider.invoke_meta()
+            # 部分降级/修复解析：整轮仍可信（另一侧有真实产出/条目仍在），不触发降级，
+            # 但必须在报告可见——improve 连挂数日而 review 正常时，建议侧信号长期缺失
+            # 却无人察觉；截断修复则意味着条目可能被静默修丢（本次静默故障排查 S1/S3）。
+            if _meta.get("partial_tool_failure") == "improve":
+                llm_notes.append("⚠️ **本轮 improve 工具失败**：建议侧（code_suggestions）信号缺失，"
+                                 "review 侧发现仍有效——非整轮不可信，真实错误见交互日志。")
+            elif _meta.get("partial_tool_failure") == "review":
+                llm_notes.append("⚠️ **本轮 review 工具失败**：key_issues 侧信号缺失，"
+                                 "improve 侧建议仍有效——非整轮不可信，真实错误见交互日志。")
+            if _meta.get("repaired_parses"):
+                llm_notes.append(f"ℹ️ 本轮有 {_meta['repaired_parses']} 次 LLM 预测经修复解析"
+                                 "（输出截断/畸形的弱信号，条目可能被修复丢弃），原文见交互日志。")
         except review_provider.ReviewEngineDegraded as e:
             engine_status = e.degraded
             print(f"[review_pr] 评审引擎降级（{e.degraded}）：{e.reason}", file=sys.stderr)
@@ -292,7 +309,7 @@ def review_pr(pr, contract, standards, provider=None):
     return {"findings": findings, "risk": risk, "engine_status": engine_status,
             "det_warning": det_warning, "ai_raw_count": ai_raw_count,
             "added_lines": added_lines, "changed_files": changed_files,
-            "scope_facts": sf}
+            "scope_facts": sf, "llm_notes": llm_notes}
 
 
 def main():
@@ -323,6 +340,7 @@ def main():
     engine_status = _out.get("engine_status", "ok")
     det_warning = _out.get("det_warning", "")
     ai_raw_count = _out.get("ai_raw_count", 0)
+    llm_notes = _out.get("llm_notes") or []
     added_lines = _out.get("added_lines", 0)
     n_changed = len(_out.get("changed_files") or [])
     # 本轮 LLM 评审是否可靠（engine_status + 可疑空收敛判据）。不可靠时 checklist 不予自动销项、
@@ -404,7 +422,7 @@ def main():
                  engine_status=engine_status, det_warning=det_warning,
                  ai_raw_count=ai_raw_count, added_lines=added_lines, n_changed=n_changed,
                  scope_facts=scope_facts, checklist_md=checklist_md, ledger=ledger,
-                 review_reliable=reliable)
+                 review_reliable=reliable, llm_notes=llm_notes)
 
     # 可插拔检查 → 对外发【一个】总闸状态（策略全在 .touchstone/checks.yaml）。
     # CI 中由独立 gate job 在(可选)verify 之后聚合并发布，此处置 TOUCHSTONE_SKIP_GATE 跳过自发、

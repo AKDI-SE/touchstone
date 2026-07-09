@@ -106,7 +106,37 @@ _PRED_FAILURE_SIGS = (
     "Failed to parse AI prediction after fallbacks",   # review 解析层：修复兜底后仍无数据
     "Failed to parse review data",                # review 解析层：YAML 无 'review' 键
     "Failed to review PR:",                       # review run() 顶层吞没（如 data=None 的 TypeError）
+    # runner 外化的工具级标记（run() 全吞使子进程异常通道失效，只能靠标记，见 pr_agent_runner）：
+    "[runner] improve produced no data",
+    "[runner] review produced empty prediction",
+    "[runner] review prediction malformed",       # 形变输出：有原文但 review 段缺失/非 dict（旧盲区）
 )
+
+# 工具专属的【顶层】失败串——用于部分降级归因（哪个工具挂了）。与 _PRED_FAILURE_SIGS 的
+# 区别：SIGS 判"整轮是否吞没"（需两侧都空），这里判"单侧失败而另一侧仍有产出"。
+_IMPROVE_FAIL_SIGS = ("Failed to generate code suggestions for PR",
+                      "[runner] improve produced no data")
+_REVIEW_FAIL_SIGS = ("Failed to review PR:", "Failed to parse review data",
+                     "Failed to parse AI prediction after fallbacks",
+                     "[runner] review produced empty prediction",
+                     "[runner] review prediction malformed")
+_REPAIRED_PARSE_SIG = "Initial failure to parse AI prediction"   # 截断/畸形被 try_fix_yaml 修复的弱信号
+
+
+def partial_tool_failure(data, stderr):
+    """部分降级归因：一个工具失败而另一个仍有真实产出。整轮不判不可信
+    （prediction_swallowed_failure 按设计放行——评审仍有效），但必须可见：
+    improve 连挂数日而 review 正常时，建议侧信号长期缺失却无人察觉（本次排查盲区 S1）。
+    返回 "improve" / "review" / None。纯函数，便于离线测试。"""
+    err = stderr or ""
+    cs = (data.get("code_suggestions") if isinstance(data, dict) else None) or []
+    ki = (((data.get("review") or {}).get("key_issues_to_review"))
+          if isinstance(data, dict) else None) or []
+    if not cs and ki and any(sig in err for sig in _IMPROVE_FAIL_SIGS):
+        return "improve"
+    if not ki and cs and any(sig in err for sig in _REVIEW_FAIL_SIGS):
+        return "review"
+    return None
 
 
 def prediction_swallowed_failure(data, stderr):
@@ -331,9 +361,16 @@ class PRAgentProvider:
             if prediction_swallowed_failure(data, proc.stderr):
                 raise ReviewEngineDegraded(
                     "llm_failed",
-                    "PR-Agent 把 LLM 预测失败（stderr: Failed to generate prediction）吞成 0 建议"
+                    "PR-Agent 把 LLM 预测失败（stderr 含分层失败串，见 _PRED_FAILURE_SIGS）吞成 0 建议"
                     "（退出码 0、无 _degraded）--0 建议是 LLM 失败而非审完无问题。stderr 末尾：\n"
                     + (proc.stderr or "").strip()[-600:])
+            # 非致命诊断元信息（部分降级/修复解析计数）——供 orchestrator 在报告中透明化：
+            #   partial：单工具失败但另一侧仍有产出（整轮仍可信，不触发降级，但必须可见）；
+            #   repaired：预测经 try_fix_yaml 修复解析的次数——输出截断（finish_reason=length）
+            #             或轻度畸形的弱信号，条目可能被静默修丢（本次排查盲区 S3）。
+            _LAST_META.update(
+                partial_tool_failure=partial_tool_failure(data, proc.stderr),
+                repaired_parses=(proc.stderr or "").count(_REPAIRED_PARSE_SIG))
             return data
         finally:
             if tmp:
@@ -343,9 +380,21 @@ class PRAgentProvider:
                     pass
 
 
+# 本次 invoke 的诊断元信息（部分降级/修复解析计数）。单次 CLI 进程内串行使用；
+# fetch() 开头重置，_invoke_endpoint 填充，orchestrator 经 invoke_meta() 读取。
+# 离线注入路径（pr_agent_output）不产生 stderr，保持默认值。
+_LAST_META = {"partial_tool_failure": None, "repaired_parses": 0}
+
+
+def invoke_meta():
+    """最近一次 fetch 的诊断元信息（拷贝）。"""
+    return dict(_LAST_META)
+
+
 def fetch(pr_ctx, provider=None):
     """按 provider 取评审观察（默认 pr-agent；目前仅此一种，未知 provider 抛错）。
     orchestrator.review_pr 已直连本函数；REVIEW_PROVIDER 留作未来接入其它评审来源的开关。"""
+    _LAST_META.update(partial_tool_failure=None, repaired_parses=0)
     provider = provider or os.environ.get("REVIEW_PROVIDER", "pr-agent")
     if provider == "pr-agent":
         return PRAgentProvider().fetch(pr_ctx)
