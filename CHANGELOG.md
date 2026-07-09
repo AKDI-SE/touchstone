@@ -2,6 +2,14 @@
 
 本文件记录 Touchstone 的发布版本。设计的逐版迭代历史见 `docs/touchstone-design.html` 的变更历史。
 
+## 未发布 — 2026-07-09（检测器盲区：review 工具解析层失败漏检）
+
+对"LLM 反馈为空"根因链做独立代码级复核（pr-agent 0.37 源码 + 本仓提交历史 + prompt token 实测），确认 #45/#46/5c1129c 的诊断大方向成立，并修正一处不精确——它构成现行检测器的真实盲区：
+
+- **复核结论 A（#45 语义用反）**：成立且证据更硬。b30d6fc 引入 llm_budget 时把 1ff7c67 原本正确的 8192 改成了 `output_tokens()`（默认 4096）——这是一次回归而非初始设计错。定量：pr-agent 的 `custom_model_max_tokens` 语义 = 上下文窗口（内置 MAX_TOKENS 表同义替代，get_pr_diff 以「该值 − 1000~1500 buffer」为 prompt 总预算）；review 工具 prompt 自重 ≈3.6–4.8K tokens，**零 diff 也超 4096−1500=2596 的预算**，任意大小 PR 的 diff 必被裁空（improve 自重 ≈2.3K，余量仅 ~300 token，正常 patch 同样放不下）。裁空是确定性的——解释了故障的普遍性而非偶发性。
+- **复核结论 B（空响应被吞，检测器可靠）**：一半成立。improve 的 YAML 解析在 `_get_prediction` 内、位于 retry 圈内，空 content 的解析失败重抛，stderr 必含 "Failed to generate prediction"——旧检测器覆盖 ✓。**review 的解析在 retry 圈外**（retry 只包取原始文本的 `_prepare_prediction`，解析在其后的 `_prepare_pr_review`）：空 content 走 "Failed to parse AI prediction after fallbacks" / "Failed to parse review data" / run() 顶层 "Failed to review PR:" 路径，**不含**上述签名。旧单签名检测器在"review 空响应 + improve 恰好 0 建议（小 PR 合法情形）"下漏检，engine_status 误判 ok，仅剩 added_lines≥20 启发式兜底——小 PR 兜不住。修复：`_PRED_FAILURE_SIG` 扩展为分层信号集合 `_PRED_FAILURE_SIGS`（4 串，逐层注明来源），判据其余不变（仍需本轮零建议共同成立，improve 单独失败而 review 有产出不误报）。3 条盲区回归测试。
+- **复核结论 C（ai_timeout）**：成立，litellm_ai_handler 确将 `config.ai_timeout` 透传 acompletion。
+
 ## 未发布 — 2026-07-09（不可信评审的呈现层接入）
 
 PR #44/#46 暴露的最后一块拼图：`review_reliable` 信号已接判定层（#46：不销项/不收敛/不放行），但**呈现层缺位**——不可信轮的报告仍只在横幅里低调提示"改动不小却 0 建议——建议人工扫一眼"，态势表照常显示由 0 发现推得的 LOW·可跳过/skip，评审失败反而以最低风险示人。本轮接入：

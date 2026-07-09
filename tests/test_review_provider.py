@@ -427,3 +427,31 @@ def test_invoke_endpoint_partial_success_not_degraded(monkeypatch):
     monkeypatch.setattr(RP, "_experience_injection", lambda d: "")
     items = RP.fetch({"owner": "o", "repo": "r", "number": 3})
     assert len(items) == 1                                    # review 的 1 条意见照常返回
+
+
+# ---------------- 检测器盲区回归（对 pr-agent 0.37 源码核实的分层失败串）----------------
+def test_swallowed_failure_detects_review_parse_layer():
+    """review 工具的空 content 失败发生在 retry 圈外的解析层，stderr 不含
+    'Failed to generate prediction'——旧单签名检测器在此漏检（小 PR 上
+    added_lines 启发式也兜不住）。信号集合必须逐个能触发。"""
+    from touchstone import review_provider as rp
+    empty = {"code_suggestions": [], "review": {"key_issues_to_review": []}}
+    for sig in ("Failed to parse AI prediction after fallbacks",
+                "Failed to parse review data",
+                "Failed to review PR: argument of type 'NoneType' is not iterable",
+                "Failed to generate prediction with openai/glm-5.2"):
+        assert rp.prediction_swallowed_failure(empty, f"WARNING ... {sig} ...") is True, sig
+
+
+def test_swallowed_failure_still_requires_zero_output():
+    """有真实评审产出时，即便 stderr 含失败串（如仅 improve 挂了），不算吞没。"""
+    from touchstone import review_provider as rp
+    data = {"code_suggestions": [], "review": {"key_issues_to_review": [{"issue_header": "x"}]}}
+    assert rp.prediction_swallowed_failure(
+        data, "Failed to parse review data") is False
+
+
+def test_swallowed_failure_clean_stderr_negative():
+    from touchstone import review_provider as rp
+    empty = {"code_suggestions": [], "review": {"key_issues_to_review": []}}
+    assert rp.prediction_swallowed_failure(empty, "all good, 0 suggestions") is False
