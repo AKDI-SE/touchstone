@@ -406,3 +406,39 @@ def test_report_layout_invariants():
     assert "完整 LLM 交互日志：" in body and "原始输出" not in body   # 日志行无括注
     assert "<details><summary>如何申报销项</summary>" in body        # 样板折叠
     assert "| 风险等级 | 建议动作 | 验证建议 | 影响面 |" in body     # 态势表
+
+
+# ---------------- 不可信评审的呈现层接入（PR #44 教训回归）----------------
+def test_unreliable_review_renders_caution_and_distrusts_action():
+    """铁律：review_reliable=False 必须 [!CAUTION] 置顶告警；态势表不采信 skip 类建议；
+    机器 marker 数据不受展示覆盖影响（由调用方原样写入，此处只验展示层不改 risk dict）。"""
+    from touchstone import render
+    risk = {"risk_band": "low", "human_action": "skip",
+            "verification_decision": "cheap_only", "blast_radius": []}
+    sf = {"parse_ok": True, "totals": {"files": 9, "added": 171, "deleted": 13},
+          "sensitive_hits": []}
+    body = render.render_report(risk, [], banner="**反馈循环：🔁 继续** — x",
+                                scope_facts=sf, review_reliable=False,
+                                engine_status="llm_failed", ai_raw_count=0, added_lines=171)
+    assert body.splitlines()[2] == "> [!CAUTION]"            # 置顶（H2 与空行之后第一块）
+    assert "0 发现 ≠ 审过没问题" in body
+    assert "不销项" in body and "不收敛" in body and "不放行" in body
+    assert "`人工评审`" in body and "原建议不采信" in body     # skip 不采信
+    assert "`skip`" not in body                               # 误导性建议动作不出现
+    assert risk["human_action"] == "skip"                     # 只改展示，不改机器数据
+
+
+def test_unreliable_suspicious_empty_names_cause():
+    """engine ok 但可疑空收敛：告警必须写明行数/建议数证据，而非泛泛'可能未实质产出'。"""
+    from touchstone import render
+    text = render.render_unreliable_callout("ok", ai_raw_count=0, added_lines=171)
+    assert "[!CAUTION]" in text and "171" in text and "0 条原始建议" in text
+
+
+def test_reliable_review_keeps_normal_layout():
+    """对照：可信时无 CAUTION，建议动作照常展示。"""
+    from touchstone import render
+    risk = {"risk_band": "low", "human_action": "skip",
+            "verification_decision": "cheap_only", "blast_radius": []}
+    body = render.render_report(risk, [], review_reliable=True)
+    assert "[!CAUTION]" not in body and "`skip`" in body

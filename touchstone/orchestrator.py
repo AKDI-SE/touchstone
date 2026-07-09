@@ -158,14 +158,17 @@ def _clean_review_trace(engine_status, ai_raw_count, added_lines, n_changed):
 def post_results(owner, repo, number, head_sha, token, risk, findings, loop_info=None,
                  change_class=None, diff=None, injected_types=None, injected_experience_ids=None,
                  engine_status="ok", det_warning="", ai_raw_count=0, added_lines=0, n_changed=0,
-                 scope_facts=None, checklist_md="", ledger=None):
+                 scope_facts=None, checklist_md="", ledger=None, review_reliable=True):
     # (1) 摘要评论——总是成功；按七段版面模板组装（修订设计 §3 意见 4）：
     #     ①横幅(降级说明/0-发现溯源/循环状态) ②总结 ③确定性事实 ④逐条发现 ⑤收敛清单 ⑥验证 ⑦机器 marker
-    banner = _engine_banner(engine_status)
+    # 评审不可信时，降级说明/0-发现溯源统一并入 render 层的 [!CAUTION] 置顶告警
+    # （见 render.render_unreliable_callout；判定层的 review_reliable 信号在此接到呈现层）；
+    # 可信时保持原横幅逻辑。det_warning（确定性侧警告）与可信度无关，两种情形都保留。
+    banner = "" if not review_reliable else _engine_banner(engine_status)
     if det_warning:
         banner = (banner + "\n\n" if banner else "") + f"⚠️ **{det_warning}**"
-    # 引擎正常但 0 发现时，附溯源——让人能区分"LLM 真审了没问题"与"没真审"（防静默故障）
-    if not banner and not findings:
+    if review_reliable and not banner and not findings:
+        # 引擎正常且可信的 0 发现：附溯源，让人区分"LLM 真审了没问题"与"没真审"
         banner = _clean_review_trace(engine_status, ai_raw_count, added_lines, n_changed)
     markers = []
     if loop_info:
@@ -182,7 +185,9 @@ def post_results(owner, repo, number, head_sha, token, risk, findings, loop_info
         verification_md = f"### 验证与日志\n\n📄 完整 LLM 交互日志：{run_link}"
     body = render_report(risk, findings, banner=banner, scope_facts=scope_facts,
                          checklist_md=checklist_md, verification_md=verification_md,
-                         markers="\n".join(markers), lineage=ledger)
+                         markers="\n".join(markers), lineage=ledger,
+                         review_reliable=review_reliable, engine_status=engine_status,
+                         ai_raw_count=ai_raw_count, added_lines=added_lines)
     # 机读 result marker（隐藏）——校准/自治经验从 API 重建数据的入口
     result_marker = "<!-- touchstone-result: " + json.dumps({
         "risk_band": risk["risk_band"],
@@ -398,7 +403,8 @@ def main():
                  injected_types=injected_types, injected_experience_ids=injected_experience_ids,
                  engine_status=engine_status, det_warning=det_warning,
                  ai_raw_count=ai_raw_count, added_lines=added_lines, n_changed=n_changed,
-                 scope_facts=scope_facts, checklist_md=checklist_md, ledger=ledger)
+                 scope_facts=scope_facts, checklist_md=checklist_md, ledger=ledger,
+                 review_reliable=reliable)
 
     # 可插拔检查 → 对外发【一个】总闸状态（策略全在 .touchstone/checks.yaml）。
     # CI 中由独立 gate job 在(可选)verify 之后聚合并发布，此处置 TOUCHSTONE_SKIP_GATE 跳过自发、

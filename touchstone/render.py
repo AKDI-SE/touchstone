@@ -31,6 +31,32 @@ def _load_template():
         return "{{banner}}\n\n{{summary_line}}\n\n{{facts}}\n\n{{findings}}\n\n{{checklist}}\n\n{{verification}}\n\n{{markers}}"
 
 
+def render_unreliable_callout(engine_status, ai_raw_count=0, added_lines=0):
+    """本轮评审不可信时的置顶告警——版面铁律：不可信必须以 GitHub 原生 [!CAUTION]
+    红色警示框置于标题正下方，替代（而非并存于）常规溯源/降级横幅。
+    背景（PR #44/#46 实测教训）：旧版只在横幅里给一句加粗的"改动不小却 0 建议——
+    建议人工扫一眼"，而态势表照常显示 LOW·可跳过/skip——评审失败反而呈现最低风险，
+    是主动误导。判定层（销项/收敛/放行）已由 review_reliable 挡住，本函数把同一信号
+    接到呈现层：0 发现 ≠ 审过没问题，必须让人一眼看到。"""
+    _CAUSE = {
+        "no_engine": "PR-Agent 未安装或不可用（引擎没跑）",
+        "provider_failed": "PR-Agent 无法获取该 PR（git provider/凭据/网络）",
+        "llm_failed": "LLM 端点未成功响应（含空响应被 pr-agent 吞没，退出码仍为 0 的情形）",
+        "skipped_large_diff": "diff 超预算被跳过",
+    }
+    cause = _CAUSE.get(engine_status)
+    if cause is None:      # engine ok 但可疑空收敛（唯启发式能抓：diff 被裁空/空响应漏检）
+        cause = (f"引擎状态正常，但改动约 {added_lines} 新增行却 {ai_raw_count} 条原始建议"
+                 "——疑似 diff 被裁空或 LLM 空响应未被检出")
+    return "\n".join([
+        "> [!CAUTION]",
+        "> **本轮 AI 评审不可信 —— 0 发现 ≠ 审过没问题。**",
+        f"> 原因：{cause}。",
+        "> 本轮评审结果不作数：收敛清单不销项、反馈循环不收敛、自治不放行。",
+        "> 请人工评审本 PR，或排除故障后重新触发评审（详见下方「验证与日志」）。",
+    ])
+
+
 def render_facts(scope_facts, gate_line="", lineage=None):
     """③ 确定性事实区：范围事实摘要（机器实测的修改范围，给人第一眼）+ 门禁状态 + 同源提示。
     与 author 的提交契约声明并排对照——声明是索引，这里是事实。
@@ -67,7 +93,7 @@ def render_facts(scope_facts, gate_line="", lineage=None):
     return "\n".join(lines)
 
 
-def render_findings(risk, findings):
+def render_findings(risk, findings, review_reliable=True):
     """②态势表 + ④逐条发现。
     态势表：风险/动作/验证/影响面收进一张表，一眼扫读（此前三要素全角空格挤一行）。
     逐条发现：人最关心的「位置 — 问题」前置；rule_id/severity/置信/来源是审计信息，
@@ -77,11 +103,20 @@ def render_findings(risk, findings):
                     "low": "LOW · 可跳过"}
     label = _RISK_LABELS.get(risk.get("risk_band"), "UNKNOWN · 待人工定性")
     blast = ", ".join(risk.get("blast_radius") or []) or "—"
+    if review_reliable:
+        risk_cell, action_cell, verify_cell = (f"**{label}**",
+                                               f"`{risk.get('human_action', '—')}`",
+                                               f"`{risk.get('verification_decision', '—')}`")
+    else:
+        # 只改【展示】不改机器数据（result marker 里的 risk 原样保留，校准/台账不受影响）。
+        # 不可信轮的 risk 由"0 发现"推得，照常展示 LOW/skip 是主动误导（PR #44 实测）。
+        risk_cell = f"**{label}**<br><sub>仅确定性信号，LLM 评审不可信</sub>"
+        action_cell = "`人工评审`<br><sub>原建议不采信</sub>"
+        verify_cell = f"`{risk.get('verification_decision', '—')}`"
     head = [
         "| 风险等级 | 建议动作 | 验证建议 | 影响面 |",
         "| :-- | :-- | :-- | :-- |",
-        f"| **{label}** | `{risk.get('human_action', '—')}` "
-        f"| `{risk.get('verification_decision', '—')}` | {blast} |",
+        f"| {risk_cell} | {action_cell} | {verify_cell} | {blast} |",
     ]
     body = []
     if not findings:
@@ -120,12 +155,22 @@ def render_findings(risk, findings):
 
 
 def render_report(risk, findings, banner="", scope_facts=None, checklist_md="",
-                  verification_md="", markers="", gate_line="", lineage=None):
+                  verification_md="", markers="", gate_line="", lineage=None,
+                  review_reliable=True, engine_status="ok", ai_raw_count=0, added_lines=0):
     """按七段版面模板填充评审报告（修订设计 §3 意见 4）。版面由模板唯一定义。"""
-    head, findings_md = render_findings(risk, findings)
+    head, findings_md = render_findings(risk, findings, review_reliable=review_reliable)
     summary_line = head          # ② 态势表：风险与建议动作一眼扫读
-    # ① 状态横幅（降级说明/循环状态/0-发现溯源）统一 blockquote——与正文视觉区隔
-    if banner:
+    # ① 状态横幅（降级说明/循环状态/0-发现溯源）统一 blockquote——与正文视觉区隔；
+    #    评审不可信时 [!CAUTION] 告警置顶【替代】常规横幅的降级/溯源部分（原因已并入
+    #    告警，避免同一信息两处重复），循环状态行仍保留在告警之后。
+    if not review_reliable:
+        loop_line = ""
+        if banner and banner.startswith("**反馈循环："):
+            loop_line = banner.split("\n")[0]
+        banner = render_unreliable_callout(engine_status, ai_raw_count, added_lines)
+        if loop_line:
+            banner += "\n\n> " + loop_line
+    elif banner:
         banner = "\n".join(("> " + ln if ln.strip() else ">") for ln in banner.split("\n"))
     parts = {
         "banner": banner or "",
