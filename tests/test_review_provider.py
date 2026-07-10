@@ -427,3 +427,90 @@ def test_invoke_endpoint_partial_success_not_degraded(monkeypatch):
     monkeypatch.setattr(RP, "_experience_injection", lambda d: "")
     items = RP.fetch({"owner": "o", "repo": "r", "number": 3})
     assert len(items) == 1                                    # review 的 1 条意见照常返回
+
+
+# ---------------- 检测器盲区回归（对 pr-agent 0.37 源码核实的分层失败串）----------------
+def test_swallowed_failure_detects_review_parse_layer():
+    """review 工具的空 content 失败发生在 retry 圈外的解析层，stderr 不含
+    'Failed to generate prediction'——旧单签名检测器在此漏检（小 PR 上
+    added_lines 启发式也兜不住）。信号集合必须逐个能触发。"""
+    from touchstone import review_provider as rp
+    empty = {"code_suggestions": [], "review": {"key_issues_to_review": []}}
+    for sig in ("Failed to parse AI prediction after fallbacks",
+                "Failed to parse review data",
+                "Failed to review PR: argument of type 'NoneType' is not iterable",
+                "Failed to generate prediction with openai/glm-5.2"):
+        assert rp.prediction_swallowed_failure(empty, f"WARNING ... {sig} ...") is True, sig
+
+
+def test_swallowed_failure_still_requires_zero_output():
+    """有真实评审产出时，即便 stderr 含失败串（如仅 improve 挂了），不算吞没。"""
+    from touchstone import review_provider as rp
+    data = {"code_suggestions": [], "review": {"key_issues_to_review": [{"issue_header": "x"}]}}
+    assert rp.prediction_swallowed_failure(
+        data, "Failed to parse review data") is False
+
+
+def test_swallowed_failure_clean_stderr_negative():
+    from touchstone import review_provider as rp
+    empty = {"code_suggestions": [], "review": {"key_issues_to_review": []}}
+    assert rp.prediction_swallowed_failure(empty, "all good, 0 suggestions") is False
+
+
+# ---------------- 静默故障系统排查（2026-07-09）：部分降级与截断修复可见化 ----------------
+def test_partial_tool_failure_improve_down_review_up():
+    """S1：improve 挂、review 正常——整轮仍可信（不触发降级），但必须归因可见。"""
+    from touchstone import review_provider as rp
+    data = {"code_suggestions": [],
+            "review": {"key_issues_to_review": [{"issue_header": "x"}]}}
+    assert rp.partial_tool_failure(
+        data, "ERROR Failed to generate code suggestions for PR, error: ...") == "improve"
+    assert rp.partial_tool_failure(
+        data, "[runner] improve produced no data（run() 内部已吞异常）") == "improve"
+
+
+def test_partial_tool_failure_review_down_improve_up():
+    from touchstone import review_provider as rp
+    data = {"code_suggestions": [{"suggestion_content": "x"}],
+            "review": {"key_issues_to_review": []}}
+    assert rp.partial_tool_failure(data, "[runner] review prediction malformed（...）") == "review"
+    assert rp.partial_tool_failure(data, "Failed to review PR: boom") == "review"
+
+
+def test_partial_tool_failure_negative_cases():
+    from touchstone import review_provider as rp
+    both = {"code_suggestions": [{"s": 1}], "review": {"key_issues_to_review": [{"i": 1}]}}
+    none_ = {"code_suggestions": [], "review": {"key_issues_to_review": []}}
+    assert rp.partial_tool_failure(both, "Failed to review PR:") is None   # 两侧都有产出
+    assert rp.partial_tool_failure(none_, "clean") is None                 # 无失败串
+    # 两侧全空 + 失败串 -> 归 swallowed（整轮不可信），不算部分降级
+    assert rp.partial_tool_failure(none_, "Failed to review PR:") is None
+
+
+def test_runner_markers_included_in_swallowed_sigs():
+    """runner 外化的三个工具级标记必须能触发整轮吞没检测（两侧全空时）。"""
+    from touchstone import review_provider as rp
+    empty = {"code_suggestions": [], "review": {"key_issues_to_review": []}}
+    for sig in ("[runner] improve produced no data",
+                "[runner] review produced empty prediction",
+                "[runner] review prediction malformed"):
+        assert rp.prediction_swallowed_failure(empty, sig) is True, sig
+
+
+def test_invoke_meta_repaired_parses_counted(monkeypatch):
+    """S3：截断/畸形被 try_fix_yaml 修复的次数经 meta 通道透出。"""
+    import json as _j
+    import subprocess
+    from touchstone import review_provider as rp
+    out = _j.dumps({"code_suggestions": [{"suggestion_content": "x", "relevant_file": "a.py",
+                                          "language": "python", "existing_code": "",
+                                          "improved_code": "", "one_sentence_summary": "s",
+                                          "label": "possible bug"}],
+                    "review": {"key_issues_to_review": []}})
+    err = ("WARNING Initial failure to parse AI prediction: bad yaml\n"
+           "WARNING Initial failure to parse AI prediction: bad yaml again\n")
+    monkeypatch.setattr(rp.subprocess, "run",
+                        lambda *a, **k: subprocess.CompletedProcess(a[0], 0, stdout=out, stderr=err))
+    items = rp.fetch({"pr_url": "https://github.com/o/r/pull/1"})
+    assert items and rp.invoke_meta()["repaired_parses"] == 2
+    assert rp.invoke_meta()["partial_tool_failure"] is None

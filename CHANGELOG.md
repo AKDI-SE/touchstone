@@ -2,6 +2,56 @@
 
 本文件记录 Touchstone 的发布版本。设计的逐版迭代历史见 `docs/touchstone-design.html` 的变更历史。
 
+## 未发布 — 2026-07-09（author 自证销项的校验缺口加固）
+
+问题分析："author 能否通过写 ack 答复、在不修改/假修改下闭环 touchstone 意见列表"——答案是**能**，且直通自动放行。已修复。
+
+**问题链路**：收敛清单的 `waived`/`split` 申报只校验"note 非空"、不验真伪，却计入 `RESOLVED` → 拉高 resolved_rate → `all_resolved` → loop `converged` → autonomy `loop_converged` 闸 → 自动放行。author 遂可**不改一行代码**发 `SEC-001:x.yaml:7: waived: 这是测试夹具` 单方闭环任意意见。advisory 下 waived 标了"🟡 待人核准"但仅是视觉提示、无强制；自动放行模式下没有任何闸检查"是否存在未核准的 author 自证"。（对比：`done` 有机器复检兜底——签名本轮仍命中则拒，不受影响。）
+
+**加固（双闸 + 呈现）**：
+- **销项分级**：`VERIFIED = {done}`（touchstone 侧机器确认签名复检不再命中）vs `CLAIMED = {waived, split}`（author 自证、机器不可核实）。`RESOLVED` 仍是三者之并（供 resolved_rate 展示与 no_progress 判定），但新增 `all_verified()` / `has_unverified_claims()` / `unverified_claims()`。
+- **收敛门**：loop 的收敛判据从 `all_resolved` 改为 `all_verified`；存在 CLAIMED 时不给 `converged`，回落 `continue` 并点名待人核准项（advisory 下人仍可径直合入）。
+- **autonomy 独立闸（多层校验）**：新增 `no_unverified_claims`——不信任 `loop_decision` 单点（result marker 理论上可被 author 虚报），`unverified_claims` 计数由 touchstone 侧写入 findings.json/result marker，即便 loop_decision 被虚报成 converged 也独立再拦一道。
+- **呈现**：报告横幅点名"N 条 waived/split 系 author 自证、机器未验证"；waived/split 的 note 加"（待人核准，机器未验证）"前缀，note 内容无论塞什么都改不了 status。
+- 6 条对抗测试 + 端到端复现（author waived 不改代码 → loop continue + autonomy 双闸 failed）。526 → **532** 测试全绿。
+
+## 未发布 — 2026-07-09（LLM 静默故障系统排查：部分降级与截断修复可见化）
+
+对"LLM 出问题但评审意见不体现"做全链路问题排查（pr-agent 0.37 两工具内部 → runner 出口 → provider 解析 → 判定/呈现），在既有机制（_degraded 结构化上报 / stdout fd 级隔离 / 分层失败签名 / review_reliable 判定+CAUTION 呈现 / 0-发现溯源）之外，识别并修复三个新盲区，另确认两类残余风险及其缓解：
+
+- **结构性事实（本次排查的钥匙）**：improve 与 review 的 `run()` 都在 pr-agent 顶层全量捕获异常——异常永远穿不透到 runner 的 try，`_degraded: llm_failed` 分支在自然情况下不可能触发。工具级故障只能靠 stderr 外化。据此 runner 新增三个**工具级专属标记**（improve produced no data / review produced empty prediction / review prediction malformed），并入吞没检测签名集合。
+- **S1 部分降级不可见（新堵）**：improve 连挂而 review 正常时，吞没检测按设计放行（评审仍有效）、engine ok、可信——建议侧信号可以缺失数日无人察觉。新增 `partial_tool_failure()` 工具级归因（专属顶层失败串 + 单侧空另一侧有产出），经新开的 invoke_meta 通道透出，报告横幅明示"本轮 improve/review 工具失败,该侧信号缺失"。
+- **S2 review 形变输出（新堵）**：review 段存在但非 dict（截断/答非所问被 try_fix_yaml 修出畸形），旧 runner `or {}` 静默吞成空清单且 stderr 无任何失败串——签名检测与启发式全部漏过。现 runner 显式打标记，进签名集合。
+- **S3 截断修复静默丢条目（新堵，透明化）**：LLM 输出截断（finish_reason=length）或轻度畸形时 try_fix_yaml 能"修好"但可能修丢条目，全程无失败串。现统计 stderr 中 "Initial failure to parse AI prediction" 次数经 meta 透出，报告注记"本轮有 N 次预测经修复解析（条目可能被修复丢弃）"。不改判定，只让人知道。
+- **残余 R1（不可消除，已有缓解）**：LLM 合法返回空建议（格式正确、内容为空判断）与"真审完没问题"不可区分——缓解为 0-发现溯源行 + added_lines 启发式 + 交互日志全量留痕。**残余 R2**：self-reflect 阶段模型劣化把全部建议打成低分被阈值过滤、或端点被换成弱模型仍返回 200——属质量漂移非故障，缓解为校准回路的采纳率监控（TF-GRPO 奖励侧可见）；可选增强是 preflight 加最小提示词回环校验（留待团队决策）。
+- 6 条回归测试；review_pr 返回契约增加 llm_notes 键。521 → **526** 测试全绿。
+
+## 未发布 — 2026-07-09（检测器盲区：review 工具解析层失败漏检）
+
+对"LLM 反馈为空"根因链做独立代码级复核（pr-agent 0.37 源码 + 本仓提交历史 + prompt token 实测），确认 #45/#46/5c1129c 的诊断大方向成立，并修正一处不精确——它构成现行检测器的真实盲区：
+
+- **复核结论 A（#45 语义用反）**：成立且证据更硬。b30d6fc 引入 llm_budget 时把 1ff7c67 原本正确的 8192 改成了 `output_tokens()`（默认 4096）——这是一次回归而非初始设计错。定量：pr-agent 的 `custom_model_max_tokens` 语义 = 上下文窗口（内置 MAX_TOKENS 表同义替代，get_pr_diff 以「该值 − 1000~1500 buffer」为 prompt 总预算）；review 工具 prompt 自重 ≈3.6–4.8K tokens，**零 diff 也超 4096−1500=2596 的预算**，任意大小 PR 的 diff 必被裁空（improve 自重 ≈2.3K，余量仅 ~300 token，正常 patch 同样放不下）。裁空是确定性的——解释了故障的普遍性而非偶发性。
+- **复核结论 B（空响应被吞，检测器可靠）**：一半成立。improve 的 YAML 解析在 `_get_prediction` 内、位于 retry 圈内，空 content 的解析失败重抛，stderr 必含 "Failed to generate prediction"——旧检测器覆盖 ✓。**review 的解析在 retry 圈外**（retry 只包取原始文本的 `_prepare_prediction`，解析在其后的 `_prepare_pr_review`）：空 content 走 "Failed to parse AI prediction after fallbacks" / "Failed to parse review data" / run() 顶层 "Failed to review PR:" 路径，**不含**上述签名。旧单签名检测器在"review 空响应 + improve 恰好 0 建议（小 PR 合法情形）"下漏检，engine_status 误判 ok，仅剩 added_lines≥20 启发式兜底——小 PR 兜不住。修复：`_PRED_FAILURE_SIG` 扩展为分层信号集合 `_PRED_FAILURE_SIGS`（4 串，逐层注明来源），判据其余不变（仍需本轮零建议共同成立，improve 单独失败而 review 有产出不误报）。3 条盲区回归测试。
+- **复核结论 C（ai_timeout）**：成立，litellm_ai_handler 确将 `config.ai_timeout` 透传 acompletion。
+
+## 未发布 — 2026-07-09（不可信评审的呈现层接入）
+
+PR #44/#46 暴露的最后一块拼图：`review_reliable` 信号已接判定层（#46：不销项/不收敛/不放行），但**呈现层缺位**——不可信轮的报告仍只在横幅里低调提示"改动不小却 0 建议——建议人工扫一眼"，态势表照常显示由 0 发现推得的 LOW·可跳过/skip，评审失败反而以最低风险示人。本轮接入：
+
+- **[!CAUTION] 置顶告警**：review_reliable=False 时以 GitHub 原生红色警示框置于 H2 正下方，首句即"**本轮 AI 评审不可信 —— 0 发现 ≠ 审过没问题**"；写明原因（engine_status 精确映射 no_engine/provider_failed/llm_failed，或裁空启发式并给出行数/建议数证据）、后果（不销项/不收敛/不放行）、出路（人工评审或修复后重触发，指向交互日志）。告警**替代**常规降级/溯源横幅（同一信息不两处重复），循环状态行保留其后。
+- **态势表不采信**：建议动作改示 `人工评审`（原建议不采信）、风险等级注明"仅确定性信号"。只改展示——result marker 里的机器数据原样写入，校准与台账重建不受影响。
+- 铁律写入模板头注，`test_unreliable_review_renders_caution_and_distrusts_action` 等三条回归测试锁死；设计文档变更历史记阶段十。515 → **518** 测试全绿。
+
+## 未发布 — 2026-07-04（评审报告易读性改版）
+
+七段版面**语义与信息不减**，呈现按易读性重排（版面变更=设计变更：模板头注、设计文档 §4.8 七段表与变更历史已同步）。排版铁律：
+
+- **层级修复（核心问题）**：旧版全文只有收敛清单是 H3 标题，其余段落全是加粗行——GitHub 渲染后 H3 远大于加粗正文，收敛清单看起来像整条评论的总标题，与之**语义并列**的"确定性事实"等段反像其下级。现在：全文唯一 H2（品牌 + ADVISORY 定位声明），确定性事实/评审发现/收敛清单/验证与日志四段一律 H3——并列段落并列层级。
+- **一眼态势**：风险等级/建议动作/验证建议/影响面从"全角空格挤一行"改为 Markdown 表格。
+- **关键信息前置**：逐条发现改编号列表，「`file:line` — 问题」打头；rule_id/severity/置信/来源是审计信息，降级为行尾 `<sub>` 小字。
+- **降噪**：状态横幅（循环/降级/溯源）统一 blockquote 与正文区隔；"完整 LLM 交互日志"去实现细节括注（原"（pr-agent 原始输出 / LLM 配置 / ping）"）；每轮重复的申报方式样板折叠进 `<details>`；收敛清单标题去品牌前缀（品牌只在 H2 出现一次）。
+- 新增 `test_report_layout_invariants` 把排版铁律固化为回归测试。488 → **489** 测试，既有断言零改动全绿。
+
 ## 未发布 — 2026-07-04（工程化加固·第四轮：工具链收尾）
 
 - **mypy 渐进接入**：pyproject 增加 `[tool.mypy]`（默认宽松：ignore_missing_imports，暂不开 check_untyped_defs——首测其在本仓 dict 密集风格下产生 71 处推断噪音，等核心结构补 TypedDict 后逐模块收紧）。默认模式抓到 4 处真问题并修复，其中 1 处是**类型契约与语义不符**：`VerificationResult.passed` 声明 `bool` 但语义上 None=无法判定（unsupported/漂移兜底），修正为 `Optional[bool]` 并注明三值语义。CI lint job 增加 mypy 步骤。

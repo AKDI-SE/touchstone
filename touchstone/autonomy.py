@@ -88,7 +88,8 @@ def graduate_classes(experience, min_samples=None, max_bad_rate=None):
 # --- 自动放行判据（可选路径，默认关）------------------------------------------
 def decide_auto_merge(risk, findings, loop_decision, gate,
                       autonomy_state, graduated_classes, cls,
-                      enabled=None, shadow=None, base_fresh=None, review_reliable=True):
+                      enabled=None, shadow=None, base_fresh=None, review_reliable=True,
+                      unverified_claims=0):
     enabled = AUTONOMY_ENABLED if enabled is None else enabled
     shadow = AUTONOMY_SHADOW if shadow is None else shadow
     # 阻断否决（不再是委员会）：high 风险档或任一幸存 block_candidate 发现 → 否决（能拦、不能批）
@@ -108,6 +109,10 @@ def decide_auto_merge(risk, findings, loop_decision, gate,
         # 引擎健康度：本轮 LLM 评审不可信（引擎降级/可疑空收敛）-> 收敛不可信，不自动放行。
         # 防"diff 被裁空/LLM 随机性"假收敛被当"低风险+收敛"自动合入未评审代码。
         "review_reliable": review_reliable,
+        # 独立校验（多层）：清单里有 author 自证但未经人核准的 waived/split 时，绝不自动放行。
+        # loop 侧已因此不给 converged（第一道），本闸不信 loop_decision 单点、独立再拦一道——
+        # 防 author 虚报 result marker 的 loop_decision=converged 跳过 loop 门。
+        "no_unverified_claims": (unverified_claims or 0) == 0,
     }
     base = {"checks": checks, "change_class": cls,
             "failed": [k for k, v in checks.items() if not v]}
@@ -221,6 +226,7 @@ def build_decision_inputs(touchstone_out, autonomy_state, graduated_classes):
         "graduated_classes": list(graduated_classes or []),
         "cls": touchstone_out.get("change_class"),
         "review_reliable": reliable,
+        "unverified_claims": touchstone_out.get("unverified_claims", 0),
     }
 
 
@@ -299,7 +305,9 @@ def main():
     dec = decide_auto_merge(d.get("risk", {}), d.get("findings", []), d.get("loop_decision"),
                             d.get("gate"), d.get("autonomy_state"),
                             set(d.get("graduated_classes", [])), cls,
-                        base_fresh=base_fresh, review_reliable=d.get("review_reliable", True))
+                            base_fresh=base_fresh,
+                            review_reliable=d.get("review_reliable", True),
+                            unverified_claims=d.get("unverified_claims", 0))
     print(json.dumps(dec, ensure_ascii=False))
     if dec["merge"] and args.execute and repo and pr and sha:
         if os.environ.get("AUTONOMY_MERGE_MODE", "direct") == "queue":

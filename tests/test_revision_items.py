@@ -361,12 +361,10 @@ def test_loop_unreliable_no_converge_round1_empty(rule_index):
 
 
 def test_loop_unreliable_no_converge_even_all_resolved(rule_index):
-    # 清单全销项（经 waived）+ 无可自改发现，但评审不可信 -> 不收敛
+    # 清单经 done 全销项 + 无可自改发现，但评审不可信 -> 不收敛（原意图：不可信兜底）
     prev = cl.from_findings([_finding("R-1")])
-    sig = "R-1:a.py:1"
-    resolved = cl.reconcile(prev, {sig: {"verb": "waived", "note": "人判断"}}, [],
-                            review_reliable=False)    # waived 销项
-    assert cl.all_resolved(resolved)
+    resolved = cl.reconcile(prev, {}, [], review_reliable=True)   # done 自动销项
+    assert cl.all_verified(resolved)
     dec, reason, _ = loop.loop_step([], rule_index, loop.LoopState(),
                                     checklist_pair=(prev, resolved), review_reliable=False)
     assert dec != "converged" and "不可信" in reason
@@ -379,3 +377,115 @@ def test_loop_reliable_converges_normally(rule_index):
     dec, _, _ = loop.loop_step([], rule_index, loop.LoopState(),
                                checklist_pair=(prev, resolved), review_reliable=True)
     assert dec == "converged"
+
+
+# ---------------- 易读性改版：排版铁律回归（2026-07-04）----------------
+def test_report_layout_invariants():
+    """铁律：全文唯一 H2；③④⑤⑥ 并列段一律 H3；横幅 blockquote；日志行无实现细节括注。"""
+    from touchstone import render, checklist as cl
+    risk = {"risk_band": "mid", "human_action": "a", "verification_decision": "v",
+            "blast_radius": ["x"]}
+    f = {"rule_id": "R1", "severity": "warn", "confidence": 0.9, "agent": "pr-agent",
+         "file": "a.py", "line": 1, "rationale": "r", "fix_direction": "d",
+         "done_criteria": {"kind": "deterministic", "spec": {"recheck": "R1"}}}
+    sf = {"parse_ok": True, "totals": {"files": 1, "added": 1, "deleted": 0}, "sensitive_hits": []}
+    body = render.render_report(
+        risk, [f], banner="**反馈循环：🔁 继续** — x", scope_facts=sf,
+        checklist_md=cl.render(cl.from_findings([f])),
+        verification_md="### 验证与日志\n\n📄 完整 LLM 交互日志：http://x",
+        markers="<!-- m -->", gate_line="1/1")
+    lines = body.split("\n")
+    h2 = [l for l in lines if l.startswith("## ")]
+    h3 = [l for l in lines if l.startswith("### ")]
+    assert len(h2) == 1 and "Touchstone · ADVISORY" in h2[0]       # 唯一 H2 承载品牌与定位
+    assert {l.split("（")[0] for l in h3} == {"### 确定性事实", "### 评审发现",
+                                              "### 收敛清单", "### 验证与日志"}  # 并列段同级
+    assert any(l.startswith("> ") for l in lines)                   # 横幅 blockquote
+    assert "完整 LLM 交互日志：" in body and "原始输出" not in body   # 日志行无括注
+    assert "<details><summary>如何申报销项</summary>" in body        # 样板折叠
+    assert "| 风险等级 | 建议动作 | 验证建议 | 影响面 |" in body     # 态势表
+
+
+# ---------------- 不可信评审的呈现层接入（PR #44 教训回归）----------------
+def test_unreliable_review_renders_caution_and_distrusts_action():
+    """铁律：review_reliable=False 必须 [!CAUTION] 置顶告警；态势表不采信 skip 类建议；
+    机器 marker 数据不受展示覆盖影响（由调用方原样写入，此处只验展示层不改 risk dict）。"""
+    from touchstone import render
+    risk = {"risk_band": "low", "human_action": "skip",
+            "verification_decision": "cheap_only", "blast_radius": []}
+    sf = {"parse_ok": True, "totals": {"files": 9, "added": 171, "deleted": 13},
+          "sensitive_hits": []}
+    body = render.render_report(risk, [], banner="**反馈循环：🔁 继续** — x",
+                                scope_facts=sf, review_reliable=False,
+                                engine_status="llm_failed", ai_raw_count=0, added_lines=171)
+    assert body.splitlines()[2] == "> [!CAUTION]"            # 置顶（H2 与空行之后第一块）
+    assert "0 发现 ≠ 审过没问题" in body
+    assert "不销项" in body and "不收敛" in body and "不放行" in body
+    assert "`人工评审`" in body and "原建议不采信" in body     # skip 不采信
+    assert "`skip`" not in body                               # 误导性建议动作不出现
+    assert risk["human_action"] == "skip"                     # 只改展示，不改机器数据
+
+
+def test_unreliable_suspicious_empty_names_cause():
+    """engine ok 但可疑空收敛：告警必须写明行数/建议数证据，而非泛泛'可能未实质产出'。"""
+    from touchstone import render
+    text = render.render_unreliable_callout("ok", ai_raw_count=0, added_lines=171)
+    assert "[!CAUTION]" in text and "171" in text and "0 条原始建议" in text
+
+
+def test_reliable_review_keeps_normal_layout():
+    """对照：可信时无 CAUTION，建议动作照常展示。"""
+    from touchstone import render
+    risk = {"risk_band": "low", "human_action": "skip",
+            "verification_decision": "cheap_only", "blast_radius": []}
+    body = render.render_report(risk, [], review_reliable=True)
+    assert "[!CAUTION]" not in body and "`skip`" in body
+
+
+# ---------------- pr-agent 评审意见：不可信时保留非降级 banner 内容 ----------------
+def test_render_unreliable_preserves_non_degradation_banner():
+    # 不可信时 det_warning/unverified_claims/循环状态不应被 CAUTION 告警整块覆盖丢弃
+    risk = {"risk_band": "high", "human_action": "read+arbitrate",
+            "verification_decision": "full_suite", "blast_radius": ["security_surface"]}
+    banner = ("**反馈循环：🔁 继续** - 第 1 轮\n\n"
+              "⚠️ **契约解析告警**\n\n"
+              "🟡 **2 条 waived/split 系 author 自证、机器未验证**")
+    md = orchestrator.render_report(
+        risk, [], banner=banner, review_reliable=False,
+        engine_status="llm_failed", ai_raw_count=0, added_lines=50)
+    assert "[!CAUTION]" in md                       # CAUTION 告警置顶
+    assert "契约解析告警" in md                      # det_warning 保留
+    assert "author 自证" in md                       # unverified_claims 保留
+    assert "反馈循环：🔁 继续" in md                 # 循环状态保留
+
+
+def test_render_unreliable_no_banner_still_has_caution():
+    # 无 banner 时不可信仍输出 CAUTION，不崩
+    risk = {"risk_band": "low", "human_action": "skip",
+            "verification_decision": "cheap_only", "blast_radius": []}
+    md = orchestrator.render_report(risk, [], banner="", review_reliable=False,
+                                    engine_status="llm_failed", ai_raw_count=0, added_lines=50)
+    assert "[!CAUTION]" in md
+
+
+def test_loop_unreliable_no_progress_does_not_escalate(rule_index):
+    # PR #47 第2轮 bug 回归保护：评审不可信轮 reconcile 会 withhold 销项->销项率不升，
+    # no_progress 旧逻辑会判"无推进"误升级。但 author 可能已改、只是评审不可信无法验证。
+    # 不可信轮不应因 withhold 而 escalate，回落 continue 等可靠轮再判。
+    prev = cl.from_findings([_finding("R-1")], round_no=1)     # 第1轮：1条 open
+    # 第2轮不可信：R-1 本轮未命中但 review_reliable=False -> withhold，保持 open
+    cur = cl.reconcile(prev, {}, [], round_no=2, review_reliable=False)
+    assert cl.no_progress(prev, cur) is True                   # 销项率确未提升（0->0）
+    dec, reason, _ = loop.loop_step([], rule_index, loop.LoopState(round=1),
+                                    checklist_pair=(prev, cur), review_reliable=False)
+    assert dec != "escalate"                                   # 不可信轮不因 withhold 升级
+    assert "不可信" in reason or "continue" == dec
+
+
+def test_loop_reliable_no_progress_still_escalates(rule_index):
+    # 对照：可信轮 no_progress 仍 escalate（抓 author 只发评论不改代码的假修）
+    prev = cl.from_findings([_finding("R-1")], round_no=1)
+    cur = cl.reconcile(prev, {}, [_finding("R-1")], round_no=2)  # 仍命中、无申报、可信
+    dec, _, _ = loop.loop_step([_finding("R-1")], rule_index, loop.LoopState(round=1),
+                               checklist_pair=(prev, cur), review_reliable=True)
+    assert dec == "escalate"

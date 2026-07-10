@@ -219,15 +219,34 @@ def run(pr_url, mode, extra_instructions=None):
                     "reason": f"取 PR / git provider 失败（pre-LLM）：{type(e).__name__}: {e}"}
         # 阶段二：跑工具（LLM 调用）+ 解析。失败归 llm_failed。
         try:
+            # 结构性事实（对 pr-agent 0.37 核实）：improve 与 review 的 run() 都在顶层全量
+            # 捕获异常并只打日志——异常永远不会穿透到本 try，下面的 llm_failed 分支在自然
+            # 情况下不可能触发。故工具级故障只能靠【专属 stderr 标记】外化，供
+            # review_provider 的签名检测与部分降级诊断使用。标记串是检测契约的一部分，
+            # 与 review_provider._PRED_FAILURE_SIGS / partial_tool_failure 联动，勿随意改写。
             if "cs" in instances:
                 asyncio.run(instances["cs"].run())           # 结果落在 cs.data = {"code_suggestions": [...]}
-                out["code_suggestions"] = (getattr(instances["cs"], "data", None) or {}).get("code_suggestions") or []
+                _cs_data = getattr(instances["cs"], "data", None)
+                if not _cs_data:
+                    print("[runner] improve produced no data（run() 内部已吞异常，真实错误见上文日志）",
+                          file=sys.stderr)
+                out["code_suggestions"] = (_cs_data or {}).get("code_suggestions") or []
             if "rv" in instances:
                 asyncio.run(instances["rv"].run())           # rv.prediction 是原始 YAML 串；自行解析
-                data = load_yaml((instances["rv"].prediction or "").strip(),
-                                 keys_fix_yaml=_REVIEW_KEYS_FIX,
+                _pred = (instances["rv"].prediction or "").strip()
+                if not _pred:
+                    print("[runner] review produced empty prediction（LLM 空响应或早退，真实原因见上文日志）",
+                          file=sys.stderr)
+                data = load_yaml(_pred, keys_fix_yaml=_REVIEW_KEYS_FIX,
                                  first_key="review", last_key="security_concerns") or {}
-                out["review"]["key_issues_to_review"] = (data.get("review") or {}).get("key_issues_to_review") or []
+                _rv = data.get("review")
+                if _pred and not isinstance(_rv, dict):
+                    # 有原文但修复解析后 review 段缺失/非 dict——形变输出（截断/答非所问），
+                    # 旧实现 `or {}` 静默吞成空清单且 stderr 无任何失败串（盲区）。
+                    print("[runner] review prediction malformed（review 段缺失或非 dict，原文见交互日志）",
+                          file=sys.stderr)
+                    _rv = {}   # sanitize：truthy 非 dict 时下方 .get 会抛 AttributeError 致 runner 崩溃（pr-agent 评审意见）
+                out["review"]["key_issues_to_review"] = (_rv or {}).get("key_issues_to_review") or []
             _ix(f"工具执行完成: code_suggestions={len(out['code_suggestions'])} "
                 f"key_issues={len(out['review']['key_issues_to_review'])}")
         except Exception as e:   # LLM 端点/鉴权/超时/解析失败等 —— 不静默吞掉，上报为 llm_failed

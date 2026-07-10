@@ -88,7 +88,19 @@ def loop_step(findings, rule_index, state, max_rounds=MAX_ROUNDS, ci_passed=None
     if checklist_pair is not None:
         from touchstone import checklist as _cl
         prev_cl, cur_cl = checklist_pair
-        if _cl.all_resolved(cur_cl) and not cur:
+        # 加固：收敛只认机器可验证销项（done）。存在 author 自证的 waived/split 时不收敛，
+        # 回落 continue 并点名待人核准项——防 author 用 "waived: 随便写" 单方闭环触发自动放行。
+        if _cl.all_resolved(cur_cl) and _cl.has_unverified_claims(cur_cl) and not cur:
+            claims = _cl.unverified_claims(cur_cl)
+            if nr >= max_rounds:
+                return ("escalate",
+                        f"清单表面全销项，但有 {len(claims)} 条 author 自证（waived/split）未经人核准，"
+                        f"轮次耗尽 → 交人裁决", LoopState(nr, hist, ci_passed))
+            return ("continue",
+                    f"清单表面全销项，但有 {len(claims)} 条 waived/split 系 author 自证、机器未验证："
+                    f"需人核准这些豁免/拆分后方可收敛（advisory 下人可径直合入）",
+                    LoopState(nr, hist, ci_passed))
+        if _cl.all_verified(cur_cl) and not cur:
             if ci_passed is False:
                 if nr >= max_rounds:
                     return ("escalate", f"清单已销项但 CI/verify 持续为红，轮次耗尽（≥ {max_rounds}）→ 交人",
@@ -106,7 +118,10 @@ def loop_step(findings, rule_index, state, max_rounds=MAX_ROUNDS, ci_passed=None
                         LoopState(nr, hist, ci_passed))
             return ("converged", "收敛清单全部销项且无新增可自改发现（正确性另由 verify 把关）",
                     LoopState(nr, hist, ci_passed))
-        if _cl.no_progress(prev_cl, cur_cl):
+        if review_reliable and _cl.no_progress(prev_cl, cur_cl):
+            # 无推进闸仅在评审可信时触发：不可信轮 checklist.reconcile 会 withhold 依赖复检的销项
+            # （done/自动销项），销项率自然不升--这是评审故障所致，非 author 未改。此时判"无推进"
+            # 会把"已改但评审不可信无法验证"误判为假修升级。不可信轮回落 continue 等可靠轮再判。
             return ("escalate", "无推进：清单销项率连续未提升且无 waived/split 申报（含假修）",
                     LoopState(nr, hist, ci_passed))
         if nr >= max_rounds:

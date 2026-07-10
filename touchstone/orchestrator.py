@@ -158,15 +158,26 @@ def _clean_review_trace(engine_status, ai_raw_count, added_lines, n_changed):
 def post_results(owner, repo, number, head_sha, token, risk, findings, loop_info=None,
                  change_class=None, diff=None, injected_types=None, injected_experience_ids=None,
                  engine_status="ok", det_warning="", ai_raw_count=0, added_lines=0, n_changed=0,
-                 scope_facts=None, checklist_md="", ledger=None):
+                 scope_facts=None, checklist_md="", ledger=None, review_reliable=True,
+                 llm_notes=None, unverified_claims=0):
     # (1) 摘要评论——总是成功；按七段版面模板组装（修订设计 §3 意见 4）：
     #     ①横幅(降级说明/0-发现溯源/循环状态) ②总结 ③确定性事实 ④逐条发现 ⑤收敛清单 ⑥验证 ⑦机器 marker
-    banner = _engine_banner(engine_status)
+    # 评审不可信时，降级说明/0-发现溯源统一并入 render 层的 [!CAUTION] 置顶告警
+    # （见 render.render_unreliable_callout；判定层的 review_reliable 信号在此接到呈现层）；
+    # 可信时保持原横幅逻辑。det_warning（确定性侧警告）与可信度无关，两种情形都保留。
+    banner = "" if not review_reliable else _engine_banner(engine_status)
     if det_warning:
         banner = (banner + "\n\n" if banner else "") + f"⚠️ **{det_warning}**"
-    # 引擎正常但 0 发现时，附溯源——让人能区分"LLM 真审了没问题"与"没真审"（防静默故障）
-    if not banner and not findings:
+    if review_reliable and not banner and not findings:
+        # 引擎正常且可信的 0 发现：附溯源，让人区分"LLM 真审了没问题"与"没真审"
         banner = _clean_review_trace(engine_status, ai_raw_count, added_lines, n_changed)
+    for note in (llm_notes or []):
+        banner = (banner + "\n\n" if banner else "") + note
+    if unverified_claims:
+        # author 自证销项点名——advisory 下提示人核准，autonomy 下已独立拦（no_unverified_claims 闸）
+        banner = (banner + "\n\n" if banner else "") + (
+            f"🟡 **{unverified_claims} 条 waived/split 系 author 自证、机器未验证**："
+            "这些豁免/拆分需人核准，不计入机器可验证收敛，也不触发自动放行。")
     markers = []
     if loop_info:
         decision, reason, marker = loop_info
@@ -177,10 +188,14 @@ def post_results(owner, repo, number, head_sha, token, risk, findings, loop_info
     verification_md = ""
     run_link = _run_link()
     if run_link:
-        verification_md = f"📄 **完整 LLM 交互日志**（pr-agent 原始输出 / LLM 配置 / ping）：{run_link}"
+        # 易读性改版：括号里的实现细节（pr-agent 原始输出 / LLM 配置 / ping）是噪音——
+        # 点开日志自然知道内容；段落升为与③④⑤并列的 H3。
+        verification_md = f"### 验证与日志\n\n📄 完整 LLM 交互日志：{run_link}"
     body = render_report(risk, findings, banner=banner, scope_facts=scope_facts,
                          checklist_md=checklist_md, verification_md=verification_md,
-                         markers="\n".join(markers), lineage=ledger)
+                         markers="\n".join(markers), lineage=ledger,
+                         review_reliable=review_reliable, engine_status=engine_status,
+                         ai_raw_count=ai_raw_count, added_lines=added_lines)
     # 机读 result marker（隐藏）——校准/自治经验从 API 重建数据的入口
     result_marker = "<!-- touchstone-result: " + json.dumps({
         "risk_band": risk["risk_band"],
@@ -191,6 +206,7 @@ def post_results(owner, repo, number, head_sha, token, risk, findings, loop_info
         "injected_experience_ids": injected_experience_ids,   # 本轮注入的经验【id】（单条归因/回退，见数据采集设计 取舍2）
         "findings": [{"rule_id": f.get("rule_id"), "agent": f.get("agent"),
                       "severity": f.get("severity")} for f in findings],
+        "unverified_claims": unverified_claims,
     }, ensure_ascii=False) + " -->"
     body = body + "\n\n" + result_marker
     try:
@@ -243,6 +259,7 @@ def review_pr(pr, contract, standards, provider=None):
     changed_files, added = contract_check.parse_diff(diff)
     added_lines = sum(len(v) for v in added.values())
     ai_raw_count = 0
+    llm_notes = []          # LLM 侧非致命注记（部分降级/截断修复），进报告横幅
     max_lines = int(os.environ.get("TOUCHSTONE_MAX_DIFF_LINES", "0") or 0)
     size_findings = []
     if max_lines > 0 and added_lines > max_lines:
@@ -265,6 +282,19 @@ def review_pr(pr, contract, standards, provider=None):
             raw_items = review_provider.fetch(pr, provider)
             ai_raw_count = len(raw_items)
             review_findings = review_provider.normalize(raw_items, nmap)
+            _meta = review_provider.invoke_meta()
+            # 部分降级/修复解析：整轮仍可信（另一侧有真实产出/条目仍在），不触发降级，
+            # 但必须在报告可见——improve 连挂数日而 review 正常时，建议侧信号长期缺失
+            # 却无人察觉；截断修复则意味着条目可能被静默修丢（本次静默故障排查 S1/S3）。
+            if _meta.get("partial_tool_failure") == "improve":
+                llm_notes.append("⚠️ **本轮 improve 工具失败**：建议侧（code_suggestions）信号缺失，"
+                                 "review 侧发现仍有效——非整轮不可信，真实错误见交互日志。")
+            elif _meta.get("partial_tool_failure") == "review":
+                llm_notes.append("⚠️ **本轮 review 工具失败**：key_issues 侧信号缺失，"
+                                 "improve 侧建议仍有效——非整轮不可信，真实错误见交互日志。")
+            if _meta.get("repaired_parses"):
+                llm_notes.append(f"ℹ️ 本轮有 {_meta['repaired_parses']} 次 LLM 预测经修复解析"
+                                 "（输出截断/畸形的弱信号，条目可能被修复丢弃），原文见交互日志。")
         except review_provider.ReviewEngineDegraded as e:
             engine_status = e.degraded
             print(f"[review_pr] 评审引擎降级（{e.degraded}）：{e.reason}", file=sys.stderr)
@@ -285,7 +315,7 @@ def review_pr(pr, contract, standards, provider=None):
     return {"findings": findings, "risk": risk, "engine_status": engine_status,
             "det_warning": det_warning, "ai_raw_count": ai_raw_count,
             "added_lines": added_lines, "changed_files": changed_files,
-            "scope_facts": sf}
+            "scope_facts": sf, "llm_notes": llm_notes}
 
 
 def main():
@@ -316,6 +346,7 @@ def main():
     engine_status = _out.get("engine_status", "ok")
     det_warning = _out.get("det_warning", "")
     ai_raw_count = _out.get("ai_raw_count", 0)
+    llm_notes = _out.get("llm_notes") or []
     added_lines = _out.get("added_lines", 0)
     n_changed = len(_out.get("changed_files") or [])
     # 本轮 LLM 评审是否可靠（engine_status + 可疑空收敛判据）。不可靠时 checklist 不予自动销项、
@@ -359,6 +390,7 @@ def main():
     cur_cl = checklist_mod.reconcile(prev_cl, acks, findings, round_no=state.round + 1,
                                      review_reliable=reliable)
     checklist_mod.snapshot(cur_cl)          # 本轮快照写入文件（供可视化与校准回放）
+    n_unverified = len(checklist_mod.unverified_claims(cur_cl))   # author 自证未核准销项数
 
     ci_pass = ci_verdict(owner, repo, head_sha, token)   # 供闭环：CI/verify 红则不收敛
     decision, reason, new_state = loop.loop_step(
@@ -396,7 +428,9 @@ def main():
                  injected_types=injected_types, injected_experience_ids=injected_experience_ids,
                  engine_status=engine_status, det_warning=det_warning,
                  ai_raw_count=ai_raw_count, added_lines=added_lines, n_changed=n_changed,
-                 scope_facts=scope_facts, checklist_md=checklist_md, ledger=ledger)
+                 scope_facts=scope_facts, checklist_md=checklist_md, ledger=ledger,
+                 review_reliable=reliable, llm_notes=llm_notes,
+                 unverified_claims=n_unverified)
 
     # 可插拔检查 → 对外发【一个】总闸状态（策略全在 .touchstone/checks.yaml）。
     # CI 中由独立 gate job 在(可选)verify 之后聚合并发布，此处置 TOUCHSTONE_SKIP_GATE 跳过自发、
@@ -433,7 +467,10 @@ def main():
                    # 预算 review_reliable。review_reliable=False 时 autonomy 不自动放行
                    # （防假收敛放行未评审代码，见 review_provider.review_reliable）。
                    "engine_status": engine_status, "ai_raw_count": ai_raw_count,
-                   "added_lines": added_lines, "review_reliable": reliable},
+                   "added_lines": added_lines, "review_reliable": reliable,
+                   # author 自证但未经人核准的销项数（waived/split）——autonomy 独立闸据此
+                   # 拒放行（多层：即便 loop_decision 被虚报，本计数由 touchstone 侧写入）。
+                   "unverified_claims": n_unverified},
                   f, ensure_ascii=False, indent=2)
 
     # 风险分流的 job 输出：供下游 verify job 决定是否触发验证
