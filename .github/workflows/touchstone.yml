@@ -63,6 +63,9 @@ jobs:
                                                           # improve+review 各含重试，需足够余量；可调
           TOUCHSTONE_LLM_CALL_TIMEOUT: "600"            # 单次 LLM 调用超时（秒，pr-agent ai_timeout）。
                                                           # pr-agent 默认 120s 对 glm-5.2（实测 360s+）不够必超时
+          TOUCHSTONE_LITELLM_VERBOSE: "true"            # 诊断：litellm.set_verbose=True（runner.py:170 读取），把完整请求
+                                                          # (model/messages/token 估算)打到 stderr → 进 pr-agent-interaction artifact。
+                                                          # 定位"LLM 被调了没/输入多大/真实异常"。确认后可置 false 关闭。
           TOUCHSTONE_SKIP_GATE: "true"                 # 不自发总闸：由下方 gate job 在(可选)verify 之后统一发
           # 经验库路径：必须用 learning_loop 认的 env 名 TOUCHSTONE_EXPERIENCE（不是 STORE_PATH），
           # 否则评审侧 load_store() 读不到 learn.yml 维护的 data/experience_store.json。
