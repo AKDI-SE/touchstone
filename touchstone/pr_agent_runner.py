@@ -259,6 +259,21 @@ def run(pr_url, mode, extra_instructions=None):
         os.close(_saved_stdout_fd)
 
 
+# 哨兵包裹 JSON：父进程（review_provider._extract_json）按哨兵精确提取 runner 的结构化输出，
+# 隔离 litellm/pr-agent 延迟 print 到 stdout 的噪音（如 "Logging Details LiteLLM-Async Success Call"
+# ——async 回调，晚于上方 fd 级 dup2 重定向恢复才落盘，dup2 拦不住）。哨兵是 fd 重定向之上更可靠的第二道。
+_JSON_BEGIN = "\n<<<TOUCHSTONE_JSON_BEGIN>>>\n"
+_JSON_END = "\n<<<TOUCHSTONE_JSON_END>>>\n"
+
+
+def _emit_json(out, stream):
+    """用哨兵包裹 JSON 写到 stream，供父进程按哨兵提取、隔离第三方 stdout 噪音。"""
+    stream.write(_JSON_BEGIN)
+    json.dump(out, stream, ensure_ascii=False)
+    stream.write(_JSON_END)
+    stream.flush()
+
+
 def main():
     ap = argparse.ArgumentParser(prog="pr_agent_runner",
                                  description="调 PR-Agent（不发评论）并打印 JSON 供 touchstone 解析")
@@ -268,7 +283,7 @@ def main():
     a = ap.parse_args()
     out = run(a.pr_url, a.mode, _read(a.extra_instructions_file))
     _write_interaction_log(out)   # 写完整 LLM 交互日志（TOUCHSTONE_INTERACTION_LOG，供 artifact + 评审链接）
-    json.dump(out, sys.stdout, ensure_ascii=False)
+    _emit_json(out, sys.stdout)   # 哨兵包裹，父进程按哨兵提取（防 litellm/pr-agent stdout 噪音）
 
 
 if __name__ == "__main__":
