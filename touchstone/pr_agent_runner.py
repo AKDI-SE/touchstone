@@ -143,9 +143,17 @@ def run(pr_url, mode, extra_instructions=None):
         try:
             from touchstone.llm_budget import context_tokens
             ctx = context_tokens()
-            s.config.custom_model_max_tokens = ctx if ctx > 0 else 128000
+            window = ctx if ctx > 0 else 128000
+            s.config.custom_model_max_tokens = window
+            # 第二闸：pr-agent get_max_tokens（utils.py:992）末尾 min(max_model_tokens,
+            # custom_model_max_tokens)。configuration.toml:34 默认 max_model_tokens=32000
+            # （"防输入太长降智"全局 cap）。不覆盖则不管上面 custom 设多大都被 min 成 32000 →
+            # 大 PR diff 被裁、review 看不全（run 29082805842：39518 token 裁到 32000）。
+            # 与 custom 同设同一 window，让 diff 上限跟模型真实窗口走（部署方经 secret 钉值）。
+            s.config.max_model_tokens = window
         except Exception:
             s.config.custom_model_max_tokens = 128000
+            s.config.max_model_tokens = 128000
         # 清空 fallback_models：默认 fallback（gpt-5.4-mini 等）发到我们的 base 会返回"模型不存在"，徒增失败噪音。
         try:
             s.config.fallback_models = []

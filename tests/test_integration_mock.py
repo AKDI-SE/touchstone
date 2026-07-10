@@ -703,6 +703,7 @@ def test_custom_max_tokens_uses_context_window_not_output(monkeypatch):
     cs_mod.PRCodeSuggestions = CS
     R.run("https://pr", "improve")
     assert settings.config.custom_model_max_tokens == 200000   # 取上下文窗口，不是输出 4096
+    assert settings.config.max_model_tokens == 200000          # 第二闸：否则被 pr-agent 默认 32000 min 掉，diff 被裁（本轮真根因）
 
 
 def test_custom_max_tokens_context_unset_falls_back_to_128k(monkeypatch):
@@ -721,6 +722,7 @@ def test_custom_max_tokens_context_unset_falls_back_to_128k(monkeypatch):
     cs_mod.PRCodeSuggestions = CS
     R.run("https://pr", "improve")
     assert settings.config.custom_model_max_tokens == 128000   # 回退 128k，不是 4096
+    assert settings.config.max_model_tokens == 128000          # 第二闸同样回退，不留 pr-agent 默认 32000
 
 
 def test_custom_max_tokens_and_fallback_actually_set(monkeypatch):
