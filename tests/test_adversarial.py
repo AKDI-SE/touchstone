@@ -99,8 +99,8 @@ def test_result_marker_remains_parseable_with_quotes_in_content(monkeypatch):
     assert parsed["findings"][0]["rule_id"] == "PRA-X"
 
 
-# ==================== author 自证销项欺骗（2026-07-09 攻击面加固）====================
-# 威胁：advisory 下 waived 标了"待人核准"但只是视觉；自动放行下无闸拦——author 一句
+# ==================== author 自证销项·销项判据加固（2026-07-09）====================
+# 问题：advisory 下 waived 标了"待人核准"但只是视觉；自动放行下无闸拦——author 一句
 # "SIG: waived: 无所谓" 即可拉高 resolved_rate、触发 converged、通过 autonomy loop_converged 闸，
 # 在【不修改代码】下闭环任意评审意见。加固后：waived/split 是 CLAIMED（author 自证），
 # 不进 VERIFIED，收敛只认 all_verified，autonomy 独立 no_unverified_claims 闸再拦一道。
@@ -128,7 +128,7 @@ def test_waived_does_not_count_as_verified_resolution():
 
 
 def test_waived_note_verbatim_cannot_forge_verified_status():
-    """note 里塞任何字样（哪怕伪造 '已核准/machine-verified'）也改不了 status——只当理由文本。"""
+    """note 里塞任何字样（哪怕虚报 '已核准/machine-verified'）也改不了 status——只当理由文本。"""
     prev = _ck.from_findings([_finding("R-1")])
     sig = "R-1:a.py:1"
     cur = _ck.reconcile(prev, {sig: {"verb": "waived",
@@ -149,10 +149,10 @@ def test_loop_withholds_convergence_on_unverified_claims(rule_index):
 
 
 def test_autonomy_independent_gate_blocks_unverified_claims():
-    """纵深防御：即便 loop_decision 被伪造成 converged，autonomy no_unverified_claims 闸独立拦。"""
+    """多层校验：即便 loop_decision 被虚报成 converged，autonomy no_unverified_claims 闸独立拦。"""
     dec = _au.decide_auto_merge(
         risk={"risk_band": "low", "blast_radius": []}, findings=[],
-        loop_decision="converged",                 # 伪造/被绕过的收敛
+        loop_decision="converged",                 # 虚报/被跳过的收敛
         gate="success", autonomy_state={}, graduated_classes={"docs_only"}, cls="docs_only",
         enabled=True, shadow=False, base_fresh=True, review_reliable=True,
         unverified_claims=1)                        # 存在 1 条 author 自证

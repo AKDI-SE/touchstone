@@ -109,9 +109,9 @@ def decide_auto_merge(risk, findings, loop_decision, gate,
         # 引擎健康度：本轮 LLM 评审不可信（引擎降级/可疑空收敛）-> 收敛不可信，不自动放行。
         # 防"diff 被裁空/LLM 随机性"假收敛被当"低风险+收敛"自动合入未评审代码。
         "review_reliable": review_reliable,
-        # 独立防线（纵深）：清单里有 author 自证但未经人核准的 waived/split 时，绝不自动放行。
+        # 独立校验（多层）：清单里有 author 自证但未经人核准的 waived/split 时，绝不自动放行。
         # loop 侧已因此不给 converged（第一道），本闸不信 loop_decision 单点、独立再拦一道——
-        # 防 author 伪造 result marker 的 loop_decision=converged 绕过 loop 门。
+        # 防 author 虚报 result marker 的 loop_decision=converged 跳过 loop 门。
         "no_unverified_claims": (unverified_claims or 0) == 0,
     }
     base = {"checks": checks, "change_class": cls,

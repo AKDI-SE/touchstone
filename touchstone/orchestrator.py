@@ -469,7 +469,7 @@ def main():
                    "engine_status": engine_status, "ai_raw_count": ai_raw_count,
                    "added_lines": added_lines, "review_reliable": reliable,
                    # author 自证但未经人核准的销项数（waived/split）——autonomy 独立闸据此
-                   # 拒放行（纵深：即便 loop_decision 被伪造，本计数由 touchstone 侧写入）。
+                   # 拒放行（多层：即便 loop_decision 被虚报，本计数由 touchstone 侧写入）。
                    "unverified_claims": n_unverified},
                   f, ensure_ascii=False, indent=2)
 
