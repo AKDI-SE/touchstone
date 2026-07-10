@@ -118,7 +118,10 @@ def loop_step(findings, rule_index, state, max_rounds=MAX_ROUNDS, ci_passed=None
                         LoopState(nr, hist, ci_passed))
             return ("converged", "收敛清单全部销项且无新增可自改发现（正确性另由 verify 把关）",
                     LoopState(nr, hist, ci_passed))
-        if _cl.no_progress(prev_cl, cur_cl):
+        if review_reliable and _cl.no_progress(prev_cl, cur_cl):
+            # 无推进闸仅在评审可信时触发：不可信轮 checklist.reconcile 会 withhold 依赖复检的销项
+            # （done/自动销项），销项率自然不升--这是评审故障所致，非 author 未改。此时判"无推进"
+            # 会把"已改但评审不可信无法验证"误判为假修升级。不可信轮回落 continue 等可靠轮再判。
             return ("escalate", "无推进：清单销项率连续未提升且无 waived/split 申报（含假修）",
                     LoopState(nr, hist, ci_passed))
         if nr >= max_rounds:

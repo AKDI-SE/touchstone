@@ -466,3 +466,26 @@ def test_render_unreliable_no_banner_still_has_caution():
     md = orchestrator.render_report(risk, [], banner="", review_reliable=False,
                                     engine_status="llm_failed", ai_raw_count=0, added_lines=50)
     assert "[!CAUTION]" in md
+
+
+def test_loop_unreliable_no_progress_does_not_escalate(rule_index):
+    # PR #47 第2轮 bug 回归保护：评审不可信轮 reconcile 会 withhold 销项->销项率不升，
+    # no_progress 旧逻辑会判"无推进"误升级。但 author 可能已改、只是评审不可信无法验证。
+    # 不可信轮不应因 withhold 而 escalate，回落 continue 等可靠轮再判。
+    prev = cl.from_findings([_finding("R-1")], round_no=1)     # 第1轮：1条 open
+    # 第2轮不可信：R-1 本轮未命中但 review_reliable=False -> withhold，保持 open
+    cur = cl.reconcile(prev, {}, [], round_no=2, review_reliable=False)
+    assert cl.no_progress(prev, cur) is True                   # 销项率确未提升（0->0）
+    dec, reason, _ = loop.loop_step([], rule_index, loop.LoopState(round=1),
+                                    checklist_pair=(prev, cur), review_reliable=False)
+    assert dec != "escalate"                                   # 不可信轮不因 withhold 升级
+    assert "不可信" in reason or "continue" == dec
+
+
+def test_loop_reliable_no_progress_still_escalates(rule_index):
+    # 对照：可信轮 no_progress 仍 escalate（抓 author 只发评论不改代码的假修）
+    prev = cl.from_findings([_finding("R-1")], round_no=1)
+    cur = cl.reconcile(prev, {}, [_finding("R-1")], round_no=2)  # 仍命中、无申报、可信
+    dec, _, _ = loop.loop_step([_finding("R-1")], rule_index, loop.LoopState(round=1),
+                               checklist_pair=(prev, cur), review_reliable=True)
+    assert dec == "escalate"
