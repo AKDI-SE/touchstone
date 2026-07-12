@@ -140,5 +140,11 @@ def _history_from_comments(api, owner, repo, number):
     bodies = loop.trusted_bodies(comments, None)      # 按 [bot] 后缀过滤，防伪造历史
     state = loop.parse_latest_state(bodies)
     cl = _checklist.parse_latest(bodies)
-    open_items = [i for i in (cl or {}).get("items", []) if i.get("status") == "open"]
+    open_items = []
+    for i in (cl or {}).get("items", []):
+        if i.get("status") != "open":
+            continue
+        it = dict(i)
+        it["sig"] = _checklist._norm_sig(it.get("sig", ""))   # 旧 marker 脏 sig 归一化，台账跨 PR 去重可比
+        open_items.append(it)
     return state.round, open_items

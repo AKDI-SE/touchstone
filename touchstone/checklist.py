@@ -52,9 +52,22 @@ CLAIMED = {"waived", "split"}
 RESOLVED = VERIFIED | CLAIMED
 
 
+def _norm_sig(sig):
+    """规整清单签名：去除所有空白（含换行/制表符/首尾空格）。
+
+    sig = rule_id:file:line，各段本不含合法空格，故全去空白安全。防 pr-agent 输出的
+    file/line 字段带尾换行（见 PR #52 advisory 的 PRA-POSSIBLE_ISSUE）——未归一化时 sig 内嵌
+    \\n，而 author 的 touchstone-ack 经 splitlines()+strip() 产不出含内部换行的 sig，导致
+    acks.get(item_sig) 恒 None、显式 done/waived/split 申报永远匹配不上该项（structurally
+    无法销项，只能走复检自动销项）。归一化在构造（sig_of）与加载（reconcile 读旧 marker）
+    两端一致施加，使含脏空白的旧清单项也能被 ack 命中。"""
+    return re.sub(r"\s+", "", sig or "")
+
+
 def sig_of(finding):
-    """清单项签名——与 loop._sig 同构（rule_id:file:line），保证两处对同一发现的指认一致。"""
-    return f"{finding.get('rule_id')}:{finding.get('file')}:{finding.get('line')}"
+    """清单项签名——与 loop._sig 同构（rule_id:file:line），保证两处对同一发现的指认一致。
+    构造即归一化（_norm_sig）：防 file/line 带尾换行等脏空白渗入签名。"""
+    return _norm_sig(f"{finding.get('rule_id')}:{finding.get('file')}:{finding.get('line')}")
 
 
 def from_findings(findings, round_no=1):
@@ -100,7 +113,7 @@ def parse_acks(bodies):
                 m = _ACK_LINE.match(line)
                 if not m:
                     continue
-                acks[m.group("sig")] = {"verb": m.group("verb"),
+                acks[_norm_sig(m.group("sig"))] = {"verb": m.group("verb"),
                                         "note": (m.group("note") or "").strip()}
     return acks
 
@@ -122,6 +135,8 @@ def reconcile(prev, acks, current_findings, round_no=None, review_reliable=True)
     acks = acks or {}
     cur_sigs = {sig_of(f) for f in (current_findings or [])}
     items = [dict(i) for i in prev.get("items", [])]
+    for it in items:                                  # 旧 marker 的脏 sig（file/line 带换行）归一化
+        it["sig"] = _norm_sig(it.get("sig", ""))      # → 与归一化的 ack / cur_sigs / known 可比
     known = {i["sig"] for i in items}
 
     for it in items:

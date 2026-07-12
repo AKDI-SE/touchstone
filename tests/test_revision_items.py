@@ -162,6 +162,67 @@ def test_checklist_ack_parse_and_render_marker_roundtrip():
     assert cl.parse_latest([md]) == c                     # marker 往返无损
 
 
+# ---------------- sig 归一化（闭环 PR #52 advisory 发现的换行 bug）----------------
+def test_sig_of_strips_whitespace_in_file_and_line():
+    # pr-agent 输出的 file/line 字段可能带尾换行/空格——sig 构造即归一化，不渗入签名
+    assert cl.sig_of({"rule_id": "R", "file": "a.py\n", "line": " 12 "}) == "R:a.py:12"
+    assert cl.sig_of({"rule_id": "R", "file": "a.py", "line": 1}) == "R:a.py:1"   # 正常输入不变
+
+
+def test_loop_sig_normalizes_like_checklist():
+    # loop._sig 委派 sig_of，保持两处同构 + 同归一化
+    f = {"rule_id": "R-1", "file": "a.py\n", "line": 1}
+    assert loop._sig(f) == cl.sig_of(f) == "R-1:a.py:1"
+
+
+def test_checklist_dirty_persisted_sig_matchable_by_clean_ack():
+    """闭环 sig 换行 bug：旧 marker 的 sig 内嵌 \\n（pr-agent file 字段带尾换行），author 发的
+    ack 是干净 sig。修复前 acks.get(item_sig) 恒 None——structurally 无法销项；修复后 reconcile
+    加载时归一化 persisted sig、parse_acks 归一化 ack sig，两端命中。用 waived（仅经 ack 销项、
+    不依赖 review_reliable）隔离可靠轮变量。"""
+    prev = {"round": 1, "items": [{"sig": "R-1:a.py\n:1", "status": "open",
+                                    "direction": "d", "reasoning": "r",
+                                    "done_criteria": {"kind": "review", "spec": {"question": "q"}},
+                                    "note": ""}]}
+    acks = cl.parse_acks(["```touchstone-ack\nR-1:a.py:1: waived: 测试夹具\n```"])
+    assert "R-1:a.py:1" in acks                                  # parse_acks 归一化出干净 key
+    cur = cl.reconcile(prev, acks, [], review_reliable=False)    # 不可信轮：waived 仍应经 ack 销项
+    assert cur["items"][0]["status"] == "waived"                 # 修复前：open（ack 没匹配上）
+
+
+def test_checklist_dirty_sig_done_ack_records_ack_driven_close():
+    """done 侧：脏 sig + 干净 done ack + 可靠轮 + 不再命中 → note 为「申报并经复核销项」（ack 命中），
+    而非「复检未再命中，销项」（自动销项）。锁死 ack 确实匹配上，而非靠自动销项侥幸过。"""
+    prev = {"round": 1, "items": [{"sig": "R-1:a.py\n:1", "status": "open",
+                                    "direction": "d", "reasoning": "r",
+                                    "done_criteria": {"kind": "review", "spec": {"question": "q"}},
+                                    "note": ""}]}
+    acks = cl.parse_acks(["```touchstone-ack\nR-1:a.py:1: done\n```"])
+    cur = cl.reconcile(prev, acks, [], review_reliable=True)
+    assert cur["items"][0]["status"] == "done"
+    assert cur["items"][0]["note"] == "申报并经复核销项"          # ack 命中（修复前：自动销项的 note）
+
+
+def test_detect_lineage_normalizes_inherited_dirty_sig():
+    # 旧 PR 的清单 marker 带 file 尾换行的脏 sig → 台账继承时归一化（修复前原样含 \n）
+    fp = {"fileset": ["a.py"], "shape": {"a.py": [10, 0]}, "fileset_hash": "x"}
+    dirty_cl = {"round": 1, "resolved_rate": 0.0,
+                "items": [{"sig": "R-1:a.py\n:1", "status": "open",
+                                        "direction": "d", "reasoning": "r",
+                                        "done_criteria": {"kind": "review", "spec": {"question": "q"}},
+                                        "note": ""}]}
+    bot_comment = {"user": {"login": "github-actions[bot]"},
+                   "body": loop.render_marker(loop.LoopState(2, [], None)) + "\n" + cl.render(dirty_cl)}
+    api = _fake_api(closed_prs=[{"number": 41, "merged_at": None, "closed_at": "2026-07-01T00:00:00Z"}],
+                    files_by_pr={41: [{"filename": "a.py", "additions": 10, "deletions": 0}]},
+                    comments_by_pr={41: [bot_comment]})
+    import datetime
+    now = datetime.datetime(2026, 7, 4, tzinfo=datetime.timezone.utc)
+    led = lineage.detect_lineage(fp, api, "o", "r", 42, now=now)
+    assert len(led["inherited_open_items"]) == 1
+    assert led["inherited_open_items"][0]["sig"] == "R-1:a.py:1"   # 归一化（修复前：R-1:a.py\n:1）
+
+
 def test_checklist_no_progress_detection():
     prev = cl.from_findings([_finding("R-1")])
     same = cl.reconcile(prev, {}, [_finding("R-1")])      # 无申报且仍命中

@@ -15,6 +15,8 @@ import json
 from dataclasses import dataclass, field
 from typing import Optional
 
+from touchstone import checklist as _checklist   # 单一签名构造源（_sig 委派 sig_of，保持同构）
+
 MAX_ROUNDS = int(__import__("os").environ.get("TOUCHSTONE_MAX_ROUNDS", "9"))
 _OPEN = "<!-- touchstone-loop:"
 _CLOSE = "-->"
@@ -31,7 +33,8 @@ class LoopState:
 
 
 def _sig(f):
-    return f"{f.get('rule_id')}:{f.get('file')}:{f.get('line')}"
+    # 委派 checklist.sig_of：单一构造源，自动随其归一化（去 file/line 脏空白），保持两处同构。
+    return _checklist.sig_of(f)
 
 
 def author_actionable(findings, rule_index):
