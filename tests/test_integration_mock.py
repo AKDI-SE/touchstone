@@ -201,11 +201,37 @@ def _install_fake_pr_agent(monkeypatch):
     algo_utils.load_yaml = lambda s, **k: {"review": {"key_issues_to_review": [{"x": 1}]}}
     cfg = types.ModuleType("pr_agent.config_loader")
     settings = types.SimpleNamespace(
-        config=types.SimpleNamespace(publish_output=True, publish_output_progress=True),
+        config=types.SimpleNamespace(
+            publish_output=True, publish_output_progress=True,
+            # 忠实复刻 pr_agent/settings/configuration.toml:34 默认值：
+            #   max_model_tokens=32000（全局输入 cap）、custom_model_max_tokens=0（未声明）。
+            # 让 fake 是 pr-agent 的忠实替身——既有上限测试才验得到 min 后的"有效上限"，
+            # 而不是验一个不存在的默认（PR #49 真根因：第二闸 32000 把窗口压塌）。
+            max_model_tokens=32000, custom_model_max_tokens=0),
         github=types.SimpleNamespace(user_token=""),
         pr_code_suggestions=types.SimpleNamespace(extra_instructions=""),
         pr_reviewer=types.SimpleNamespace(extra_instructions=""))
     cfg.get_settings = lambda: settings
+    # 忠实复刻 pr_agent get_max_tokens（algo/utils.py:992-1013 契约）：
+    #   base = MAX_TOKENS[model] 或 custom_model_max_tokens；若 max_model_tokens>0 取 min。
+    # 把此契约固化进 fake——效果测试才能锁死"min 后的有效上限"，而非仅"runner 设了某字段"。
+    # MAX_TOKENS 留空：touchstone 用自定义模型（glm-5.2 等不在 pr-agent 内置表），必走
+    # custom 分支，与真实部署一致。
+    algo_utils.MAX_TOKENS = {}
+
+    def _get_max_tokens(model):
+        s = cfg.get_settings().config
+        if model in algo_utils.MAX_TOKENS:
+            base = algo_utils.MAX_TOKENS[model]
+        elif getattr(s, "custom_model_max_tokens", 0) > 0:
+            base = s.custom_model_max_tokens
+        else:
+            raise Exception(
+                f"Ensure {model} is defined in MAX_TOKENS or set config.custom_model_max_tokens")
+        if getattr(s, "max_model_tokens", 0) and s.max_model_tokens > 0:
+            base = min(s.max_model_tokens, base)
+        return base
+    algo_utils.get_max_tokens = _get_max_tokens
     cs_mod = types.ModuleType("pr_agent.tools.pr_code_suggestions")
 
     class PRCodeSuggestions:
@@ -757,6 +783,40 @@ def test_custom_max_tokens_and_fallback_actually_set(monkeypatch):
     assert settings.config.fallback_models == []             # 清空，不再试不存在的 gpt-5.4-mini
     assert settings.config.model == "openai/m"               # provider 前缀就位
     assert settings.config.git_provider == "github"
+
+
+def test_effective_max_tokens_reflects_full_context_window(monkeypatch):
+    # 【验效果，非意图】runner 设完 config 后，pr-agent get_max_tokens(model) 必须返回完整
+    # 上下文窗口——不只看 custom_model_max_tokens / max_model_tokens 各自被设了，而看两者
+    # min 之后的【有效上限】。这正是 PR #49 的真根因：只设 custom、第二闸 max_model_tokens
+    # 留 pr-agent 默认 32000，min 后有效上限塌成 32000 → 大 PR diff 被裁（run 29082805842）。
+    # 若有人删掉 runner 里 `s.config.max_model_tokens = window` 那行，本测试即破。
+    _install_fake_pr_agent(monkeypatch)
+    _stub_llm(monkeypatch)
+    monkeypatch.setenv("TOUCHSTONE_LLM_CONTEXT_TOKENS", "200000")
+    import pr_agent.tools.pr_code_suggestions as cs_mod
+
+    class CS:
+        def __init__(self, url):
+            self.data = {"code_suggestions": []}
+        async def run(self):
+            return None
+    cs_mod.PRCodeSuggestions = CS
+    R.run("https://pr", "improve")
+    import pr_agent.algo.utils as au
+    # 有效上限 = min(max_model_tokens, custom) = min(200000, 200000) = 200000，非 32000
+    assert au.get_max_tokens("openai/m") == 200000
+
+
+def test_effective_cap_collapses_if_second_gate_at_default(monkeypatch):
+    # 【灵敏度对照】模拟 PR #49 之前的 bug 形态：custom=200000 设了，但 max_model_tokens
+    # 留 pr-agent 默认 32000（未被 runner 覆盖）→ get_max_tokens min 后塌成 32000。
+    # 证明第二闸是 load-bearing，且上方正向测试对"漏设 max_model_tokens"这一类回归敏感。
+    settings = _install_fake_pr_agent(monkeypatch)
+    settings.config.custom_model_max_tokens = 200000
+    settings.config.max_model_tokens = 32000        # pr-agent 默认，未被 runner 覆盖
+    import pr_agent.algo.utils as au
+    assert au.get_max_tokens("openai/m") == 32000   # 第二闸把窗口压回 32000
 
 
 def test_runner_malformed_review_prediction_does_not_crash(monkeypatch):
