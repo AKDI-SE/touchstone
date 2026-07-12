@@ -492,6 +492,21 @@ def test_extract_review_excerpt_truncates_and_singlelines():
     assert len(RP.extract_review_excerpt({"review": big}, max_segments=3)) == 3
 
 
+def test_extract_review_excerpt_escapes_backticks_for_markdown_safety():
+    # PR #57 评审意见：v 是 LLM 生成文本，security_concerns 等段会以反引号引用代码标识符（如 `eval()`）；
+    # 奇数个反引号会让 _clean_review_trace 横幅里 `段名`: 值 的 inline-code span 失衡，腐蚀整段评论渲染。
+    # 单一真源处把反引号归一化为单引号 → 快照 markdown-safe，所有消费方安全。
+    d = {"review": {"security_concerns": "uses `eval()` for dynamic dispatch",
+                    "code_feedback": "even count `a` plus `b` is fine but still normalized"}}
+    ex = RP.extract_review_excerpt(d)
+    assert "`" not in ex["security_concerns"]          # 反引号已归一化（奇数个 = 真正会失衡的场景）
+    assert ex["security_concerns"] == "uses 'eval()' for dynamic dispatch"
+    assert "`" not in ex["code_feedback"]              # 偶数个也一律归一化（统一契约，不数个数）
+    # 渲染进横幅模板后，inline-code span 始终成对（值内再无反引号打开新 span）
+    rendered = "\n".join(f"- `{k}`: {v}" for k, v in ex.items())
+    assert rendered.count("`") % 2 == 0                # 每段恰好一对 `{k}` → 总数必为偶
+
+
 def test_extract_excerpt_prefers_runner_flag_then_falls_back():
     # 镜像 _extract_engaged：子进程路径读 runner 写的 review._raw_excerpt；缺失（注入/老协议）则现算。
     flagged = {"review": {"_raw_excerpt": {"a": "1"}, "estimated_effort_to_review": "2"}}

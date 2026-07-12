@@ -215,8 +215,11 @@ def extract_review_excerpt(data, max_chars=160, max_segments=8):
     用途：ai_raw_count==0（无 key_issues、无 code_suggestions）时把此快照贴进评审报告的 0-发现溯源
     横幅，打消"0 是否真审过"的疑虑——glm 审完无问题的干净评审仍会填 estimated_effort/relevant_tests/
     security_concerns 等结构段，这些段的存在即"真审了、只是无实质问题"的证据（PR #55 评审意见）。
-    段值多为短串，也可能多行（如 security_concerns 段落）→ 单行化 + 截断，保序，最多 max_segments 段。
-    返回 dict（段名→截断单行值）；无内容返回 {}。纯函数，便于离线测试。"""
+    段值多为短串，也可能多行（如 security_concerns 段落）→ 单行化 + 截断 + 反引号归一化，保序，最多
+    max_segments 段。返回 dict（段名→归一化单行值）；无内容返回 {}。纯函数，便于离线测试。
+    返回值天然 markdown-safe：反引号已归一化为单引号——v 是 LLM 生成文本，security_concerns 等段常以
+    反引号引用代码标识符（如 `eval()`），奇数个反引号会让消费方（_clean_review_trace 横幅的 `段名`: 值
+    inline-code span、findings.json 审计）渲染失衡（PR #57 评审意见）。归一化放单一真源处，一处兜底全局安全。"""
     if not isinstance(data, dict):
         return {}
     review = data.get("review")
@@ -227,7 +230,7 @@ def extract_review_excerpt(data, max_chars=160, max_segments=8):
             continue
         if v in (None, "", [], {}):
             continue
-        s = str(v).replace("\r", " ").replace("\n", " ").strip()
+        s = str(v).replace("\r", " ").replace("\n", " ").replace("`", "'").strip()
         if not s:
             continue
         if len(s) > max_chars:
