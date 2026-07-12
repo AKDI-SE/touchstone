@@ -429,6 +429,62 @@ def test_invoke_endpoint_partial_success_not_degraded(monkeypatch):
     assert len(items) == 1                                    # review 的 1 条意见照常返回
 
 
+# ---------------- 子进程 stdout 噪音容错（litellm/pr-agent 延迟 print 污染；PR #49 no_engine 真根因）----------------
+# runner（pr_agent_runner._emit_json）用 _JSON_BEGIN/_JSON_END 哨兵包裹 JSON；父进程 _extract_json
+# 按哨兵提取、无哨兵则 raw_decode 兜底。模拟各种 litellm async 延迟 print 场景，确保不误判 no_engine。
+def test_invoke_endpoint_json_with_trailing_litellm_noise(monkeypatch):
+    # 〔本次 bug〕哨兵包裹的 JSON 后跟 litellm "Logging Details LiteLLM-Async Success Call"
+    # （async 回调晚于 runner fd 级 dup2 重定向恢复才落盘）→ 父进程按哨兵提取，不 no_engine。
+    noisy = (RP._JSON_BEGIN + json.dumps(_RAW) + RP._JSON_END +
+             "\nLogging Details LiteLLM-Async Success Call, cache_hit=None")
+    monkeypatch.setattr(RP.subprocess, "run", lambda a, **k: _Proc(0, out=noisy))
+    monkeypatch.setattr(RP, "_experience_injection", lambda d: "")
+    assert len(RP.fetch({"owner": "o", "repo": "r", "number": 3})) == 4
+
+
+def test_invoke_endpoint_json_with_leading_noise(monkeypatch):
+    # litellm 噪音在哨兵之前（回调早于 main 的 _emit_json）也能按哨兵提取。
+    noisy = ("LiteLLM.Info: Give Feedback ...\n" + RP._JSON_BEGIN +
+             json.dumps(_RAW) + RP._JSON_END)
+    monkeypatch.setattr(RP.subprocess, "run", lambda a, **k: _Proc(0, out=noisy))
+    monkeypatch.setattr(RP, "_experience_injection", lambda d: "")
+    assert len(RP.fetch({"owner": "o", "repo": "r", "number": 3})) == 4
+
+
+def test_invoke_endpoint_json_with_noise_both_sides(monkeypatch):
+    noisy = ("preamble\n" + RP._JSON_BEGIN + json.dumps(_RAW) + RP._JSON_END + "\ntrailing")
+    monkeypatch.setattr(RP.subprocess, "run", lambda a, **k: _Proc(0, out=noisy))
+    monkeypatch.setattr(RP, "_experience_injection", lambda d: "")
+    assert len(RP.fetch({"owner": "o", "repo": "r", "number": 3})) == 4
+
+
+def test_invoke_endpoint_sentinel_absent_raw_decode_fallback(monkeypatch):
+    # 无哨兵（老协议 runner / 哨兵缺失）：JSON 后跟噪音 → raw_decode 取首个对象兜底，
+    # 不再 "Extra data" 崩成 no_engine（这正是 PR #49 修复前的失败模式）。
+    noisy = json.dumps(_RAW) + "\nLogging Details LiteLLM-Async Success Call"
+    monkeypatch.setattr(RP.subprocess, "run", lambda a, **k: _Proc(0, out=noisy))
+    monkeypatch.setattr(RP, "_experience_injection", lambda d: "")
+    assert len(RP.fetch({"owner": "o", "repo": "r", "number": 3})) == 4
+
+
+def test_extract_json_unit():
+    # 纯函数直接测 _extract_json 三分支：哨兵提取 / raw_decode 兜底 / 纯噪音抛。
+    payload = {"code_suggestions": [], "review": {"key_issues_to_review": []}}
+    raw = json.dumps(payload)
+    assert RP._extract_json(RP._JSON_BEGIN + raw + RP._JSON_END + "trailing") == payload
+    assert RP._extract_json("leading" + RP._JSON_BEGIN + raw + RP._JSON_END) == payload
+    assert RP._extract_json(raw + " trailing noise") == payload          # raw_decode 兜底
+    with pytest.raises(json.JSONDecodeError):
+        RP._extract_json("not json at all")                              # 纯噪音无 JSON → 抛
+
+
+def test_swallowed_failure_ignores_litellm_success_log():
+    # 〔举一反三·stderr 侧〕litellm 正常成功日志不含 _PRED_FAILURE_SIGS；即便 findings 空
+    # （glm 真审了认为没问题）也不应误判吞没。锁死：成功日志不命中失败签名。
+    data = {"code_suggestions": [], "review": {"key_issues_to_review": []}}
+    assert RP.prediction_swallowed_failure(data, "Logging Details LiteLLM-Async Success Call") is False
+
+
 # ---------------- 检测器盲区回归（对 pr-agent 0.37 源码核实的分层失败串）----------------
 def test_swallowed_failure_detects_review_parse_layer():
     """review 工具的空 content 失败发生在 retry 圈外的解析层，stderr 不含

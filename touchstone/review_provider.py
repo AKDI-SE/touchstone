@@ -163,6 +163,27 @@ def prediction_swallowed_failure(data, stderr):
     return not cs and not ki
 
 
+# 哨兵常量须与 pr_agent_runner._JSON_BEGIN/_JSON_END 字面一致（plumbing 协议）。
+_JSON_BEGIN = "\n<<<TOUCHSTONE_JSON_BEGIN>>>\n"
+_JSON_END = "\n<<<TOUCHSTONE_JSON_END>>>\n"
+
+
+def _extract_json(stdout):
+    """从 runner 子进程 stdout 提取结构化 JSON，容忍第三方库（litellm/pr-agent）延迟 print 的噪音。
+
+    runner（pr_agent_runner._emit_json）用 _JSON_BEGIN/_JSON_END 哨兵包裹 JSON，本函数按哨兵精确提取；
+    无哨兵（老协议/哨兵缺失）时退化为 raw_decode 取首个 JSON 对象，容忍前后噪音。都失败则抛
+    json.JSONDecodeError（_invoke_endpoint 据此判 no_engine——纯噪音无 JSON 仍正确降级）。
+
+    背景：litellm 1.84 async 成功回调会延迟把 "Logging Details LiteLLM-Async Success Call" 打到 stdout
+    （晚于 runner 的 fd 级 dup2 重定向恢复），曾致 json.loads "Extra data" → 误判 no_engine（PR #49）。"""
+    m = re.search(re.escape(_JSON_BEGIN) + r"(.*?)" + re.escape(_JSON_END), stdout or "", re.S)
+    if m:
+        return json.loads(m.group(1))
+    obj, _end = json.JSONDecoder().raw_decode((stdout or "").lstrip())
+    return obj
+
+
 def load_nmap(repo_dir="."):
     """读 .touchstone/pr-agent.yaml 的 normalization 段（缺省用内置默认）。env TOUCHSTONE_PRAGENT 可覆盖路径。"""
     path = os.environ.get("TOUCHSTONE_PRAGENT", os.path.join(repo_dir, ".touchstone", "pr-agent.yaml"))
@@ -325,7 +346,7 @@ class PRAgentProvider:
                     f"PR-Agent 适配子进程非零退出（{proc.returncode}）。stderr 末尾：\n"
                     f"{(proc.stderr or '').strip()[-600:]}")
             try:
-                data = json.loads(proc.stdout)
+                data = _extract_json(proc.stdout)
             except json.JSONDecodeError as e:
                 raise ReviewEngineDegraded(
                     "no_engine",

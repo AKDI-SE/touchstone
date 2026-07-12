@@ -723,6 +723,19 @@ def test_custom_max_tokens_context_unset_falls_back_to_128k(monkeypatch):
     assert settings.config.custom_model_max_tokens == 128000   # 回退 128k，不是 4096
 
 
+def test_runner_emit_wraps_json_with_sentinels():
+    # runner 的结构化输出用 _JSON_BEGIN/_JSON_END 哨兵包裹，父进程 _extract_json 按哨兵提取
+    # （防 litellm/pr-agent 延迟 print 污染 stdout，PR #49 no_engine 真根因）。
+    import io, json as _j
+    out = {"code_suggestions": [{"s": 1}], "review": {"key_issues_to_review": []}}
+    buf = io.StringIO()
+    R._emit_json(out, buf)
+    text = buf.getvalue()
+    assert R._JSON_BEGIN in text and R._JSON_END in text
+    inner = text.split(R._JSON_BEGIN, 1)[1].split(R._JSON_END, 1)[0]
+    assert _j.loads(inner) == out
+
+
 def test_custom_max_tokens_and_fallback_actually_set(monkeypatch):
     # 锁死：run 后 custom_model_max_tokens 已设（取 context_tokens）、fallback_models 已清空。
     # 这两项正是 glm-5.2 出真实意见的根因修复——若静默失败会回到"0 建议"。
