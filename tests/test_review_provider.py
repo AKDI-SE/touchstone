@@ -423,6 +423,17 @@ def test_extract_engaged_reads_runner_signal():
     assert RP._extract_engaged(None) is False                                      # 非 dict
 
 
+def test_extract_engaged_truthy_nondict_review_is_false():
+    # 闭环 PR #52 advisory（PRA-POSSIBLE_ISSUE）：review 为 truthy 非 dict（malformed/legacy
+    # 字符串/列表/数）时，`data.get("review") or {}` 短路返回该非 dict 值，旧实现 .get("_engaged")
+    # 会抛 AttributeError。守卫后须安全落到 False，且不抛。
+    assert RP._extract_engaged({"review": "some string"}) is False
+    assert RP._extract_engaged({"review": ["a", "b"]}) is False
+    assert RP._extract_engaged({"review": 42}) is False
+    # 正常 dict 仍工作（回归保护）
+    assert RP._extract_engaged({"review": {"_engaged": True}}) is True
+
+
 # ---------------- prediction_swallowed_failure：pr-agent 吞掉的 LLM 失败检测 ----------------
 def test_prediction_swallowed_failure_empty_with_sig():
     # round-3 / #46 真场景：失败串在 stderr + 本轮 0 原始建议 -> 吞没失败

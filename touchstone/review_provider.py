@@ -197,7 +197,12 @@ def _extract_engaged(data):
     离线注入 / 老协议 / 非 dict → False（保守：无 engagement 信号时维持可疑空收敛判据）。"""
     if not isinstance(data, dict):
         return False
-    return bool(((data.get("review") or {}).get("_engaged")))
+    review = data.get("review")
+    if not isinstance(review, dict):
+        # review 为 truthy 非 dict（malformed/legacy：字符串/列表/数）时，`... or {}` 会短路返回该非 dict 值，
+        # 再 .get("_engaged") 抛 AttributeError。守卫之，使其安全落到 False（与 docstring 承诺一致）。
+        return False
+    return bool(review.get("_engaged"))
 
 
 def load_nmap(repo_dir="."):
