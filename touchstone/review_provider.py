@@ -204,6 +204,40 @@ def compute_engaged(data):
                if k != "key_issues_to_review" and v not in (None, "", [], {})) >= 2
 
 
+_EXCERPT_SKIP_KEYS = ("key_issues_to_review", "_engaged", "_raw_excerpt")
+
+
+def extract_review_excerpt(data, max_chars=160, max_segments=8):
+    """从 pr-agent 原始输出抽取 review 的【非空】结构段（排除 key_issues_to_review 与内部标志），
+    作"原始反馈"快照。单一真源——pr_agent_runner 经 lazy import 复用（防子进程内/外两套抽取漂移，
+    同 compute_engaged）。
+
+    用途：ai_raw_count==0（无 key_issues、无 code_suggestions）时把此快照贴进评审报告的 0-发现溯源
+    横幅，打消"0 是否真审过"的疑虑——glm 审完无问题的干净评审仍会填 estimated_effort/relevant_tests/
+    security_concerns 等结构段，这些段的存在即"真审了、只是无实质问题"的证据（PR #55 评审意见）。
+    段值多为短串，也可能多行（如 security_concerns 段落）→ 单行化 + 截断，保序，最多 max_segments 段。
+    返回 dict（段名→截断单行值）；无内容返回 {}。纯函数，便于离线测试。"""
+    if not isinstance(data, dict):
+        return {}
+    review = data.get("review")
+    review = review if isinstance(review, dict) else {}
+    out = {}
+    for k, v in review.items():
+        if k in _EXCERPT_SKIP_KEYS:
+            continue
+        if v in (None, "", [], {}):
+            continue
+        s = str(v).replace("\r", " ").replace("\n", " ").strip()
+        if not s:
+            continue
+        if len(s) > max_chars:
+            s = s[:max_chars].rstrip() + "…"
+        out[k] = s
+        if len(out) >= max_segments:
+            break
+    return out
+
+
 def _extract_engaged(data):
     """优先读 runner 写的 review._engaged 标志（子进程路径）；缺失（离线注入 / 老协议）则按
     compute_engaged 现算。非 dict / review 非 dict → False（保守：维持可疑空收敛判据）。"""
@@ -217,6 +251,19 @@ def _extract_engaged(data):
     if "_engaged" in review:
         return bool(review.get("_engaged"))
     return compute_engaged(data)
+
+
+def _extract_excerpt(data):
+    """优先读 runner 写的 review._raw_excerpt 标志（子进程路径，跨 JSON 边界透出）；缺失
+    （离线注入 / 老协议 / 段全空）则按 extract_review_excerpt 现算。镜像 _extract_engaged 的
+    两级回退，使端到端注入测试里"原始反馈"信号能流转。返回 dict（可能空）。"""
+    if not isinstance(data, dict):
+        return {}
+    review = data.get("review")
+    if isinstance(review, dict) and "_raw_excerpt" in review:
+        val = review.get("_raw_excerpt")
+        return val if isinstance(val, dict) else {}
+    return extract_review_excerpt(data)
 
 
 def load_nmap(repo_dir="."):
@@ -337,6 +384,8 @@ class PRAgentProvider:
         # 「0意见→卡死」问题难以用注入式 e2e 锁住）。两条路径统一在 fetch 出口设，子进程路径里
         # _invoke_endpoint 不再重复设。
         _LAST_META["review_engaged"] = _extract_engaged(data)
+        # 原始反馈快照：0 原始建议时贴进报告横幅打消"是否真审过"疑虑（见 extract_review_excerpt）。
+        _LAST_META["raw_review_excerpt"] = _extract_excerpt(data)
         return parse_pr_agent(data)
 
     def _invoke(self, pr_ctx):
@@ -447,7 +496,8 @@ class PRAgentProvider:
 # 本次 invoke 的诊断元信息（部分降级/修复解析计数）。单次 CLI 进程内串行使用；
 # fetch() 开头重置，_invoke_endpoint 填充，orchestrator 经 invoke_meta() 读取。
 # 离线注入路径（pr_agent_output）不产生 stderr，保持默认值。
-_LAST_META = {"partial_tool_failure": None, "repaired_parses": 0, "review_engaged": False}
+_LAST_META = {"partial_tool_failure": None, "repaired_parses": 0,
+               "review_engaged": False, "raw_review_excerpt": None}
 
 
 def invoke_meta():
@@ -458,7 +508,8 @@ def invoke_meta():
 def fetch(pr_ctx, provider=None):
     """按 provider 取评审观察（默认 pr-agent；目前仅此一种，未知 provider 抛错）。
     orchestrator.review_pr 已直连本函数；REVIEW_PROVIDER 留作未来接入其它评审来源的开关。"""
-    _LAST_META.update(partial_tool_failure=None, repaired_parses=0, review_engaged=False)
+    _LAST_META.update(partial_tool_failure=None, repaired_parses=0,
+                       review_engaged=False, raw_review_excerpt=None)
     provider = provider or os.environ.get("REVIEW_PROVIDER", "pr-agent")
     if provider == "pr-agent":
         return PRAgentProvider().fetch(pr_ctx)

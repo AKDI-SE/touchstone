@@ -94,8 +94,9 @@ def test_review_pr_composes_stack_and_returns_risk(monkeypatch):
     out = orchestrator.review_pr(pr, {}, _standards())
     assert set(out) == {"findings", "risk", "engine_status", "det_warning",
                         "ai_raw_count", "added_lines", "changed_files", "scope_facts",
-                        "llm_notes", "engaged"}
+                        "llm_notes", "engaged", "raw_excerpt"}
     assert isinstance(out["engaged"], bool)               # glm 实质性评审信号（PR #51），供 review_reliable
+    assert isinstance(out["raw_excerpt"], dict)           # LLM 原始 review 段快照（PR #55），0 建议时贴横幅
     assert out["scope_facts"]["parse_ok"] is True        # 范围事实随主链产出（修订设计 §4.1）
     assert out["engine_status"] == "ok"                  # fetch 打桩成功 → 引擎正常
     assert out["det_warning"] == ""                      # diff 解析正常 → 无确定性核对告警
