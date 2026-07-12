@@ -402,7 +402,8 @@ def main():
         checklist_pair=(prev_cl, cur_cl), ledger=ledger, review_reliable=reliable)
     loop_info = (decision, reason, loop.render_marker(new_state))
     checklist_md = checklist_mod.render(
-        cur_cl, rounds_left=max(0, ledger.get("rounds_left", loop.MAX_ROUNDS) - 1),
+        cur_cl, rounds_left=loop.remaining_rounds(
+            cur_cl.get("round", 0), ledger.get("rounds_left", loop.MAX_ROUNDS)),
         lineage=ledger)
 
     # 变更分类（供自治经验层/auto_merge）：touchstone 侧此时已知 risk/findings/changed_files
