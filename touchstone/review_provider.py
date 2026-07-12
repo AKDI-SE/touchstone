@@ -67,25 +67,33 @@ class ReviewEngineDegraded(RuntimeError):
 _SUSPICIOUS_EMPTY_LINES = int(os.environ.get("TOUCHSTONE_SUSPICIOUS_EMPTY_LINES", "20") or 20)
 
 
-def review_reliable(engine_status, ai_raw_count, added_lines):
+def review_reliable(engine_status, ai_raw_count, added_lines, engaged=False):
     """本轮 LLM 评审是否可作为 checklist 销项 / loop 收敛 / autonomy 自动放行的可靠证据。
 
-    不可靠（返回 False）的两种情形--都意味着"本轮 0 建议不代表代码没问题"：
+    不可靠（返回 False）的情形--都意味着"本轮 0 建议不代表代码没问题"：
       1. 引擎降级：engine_status != "ok"（no_engine/provider_failed/llm_failed/skipped_large_diff）。
          pr-agent 没真跑或 LLM 调用失败 -> 0 建议是缺审，非审完无问题。
-      2. 可疑空收敛：added_lines >= SUSPICIOUS_EMPTY_LINES 且 ai_raw_count == 0。
-         引擎虽 ok 但改动不小却 0 原始建议--如 pr-agent 把 diff 裁空（PR #44 真根因：
-         custom_model_max_tokens 语义用反致 4096 当窗口裁空 diff）。pr-agent 正常返回、
-         engine_status="ok"，唯有此判据能抓住。
+      2. 可疑空收敛：added_lines >= SUSPICIOUS_EMPTY_LINES 且 ai_raw_count == 0 且【未 engaged】。
+         引擎虽 ok 但改动不小却 0 原始建议且 glm 没给出实质性评审结构--如 pr-agent 把 diff 裁空
+         （PR #44 真根因：custom_model_max_tokens 语义用反致 4096 当窗口裁空 diff）：diff 空 →
+         glm 无米下锅 → review 段近乎空（not engaged）。pr-agent 正常返回、engine_status="ok"，
+         唯有此判据能抓住。
+
+    engaged 逃生口（PR #51 排查）：engine_status="ok"、改动不小、0 key_issues/suggestions、
+    但 glm 给出了实质性多段评审（effort/security/relevant_tests 等 ≥2 段非空）= 【审完无问题】，
+    非"没审"。runner 在 review 段写 _engaged（见 _extract_engaged）。engaged 只放宽"可疑空收敛"，
+    不救引擎降级（情形 1 仍优先）。engaged 默认 False → 老调用/老产物保持原行为（向后兼容）。
 
     返回 False 时：checklist 不予"复检未再命中"自动销项、loop 不收敛、autonomy 不自动放行
     --回落到人（ADVISORY 不拦人工合入）。是 PR #45 引擎根因修复之上的 defense-in-depth：
     引擎再坏或超大 PR 超 pr-agent token 预算被裁空时，不再假收敛放行未评审代码。"""
     if engine_status != "ok":
         return False
-    if added_lines >= _SUSPICIOUS_EMPTY_LINES and ai_raw_count == 0:
-        return False
-    return True
+    if ai_raw_count > 0:
+        return True                       # 有原始建议 → 引擎确审
+    if added_lines < _SUSPICIOUS_EMPTY_LINES:
+        return True                       # 小改动 0 建议合理
+    return bool(engaged)                  # 改动不小却 0 建议：engaged=审完无问题；否则可疑（裁空/吞没）
 
 
 # pr-agent 把 LLM 预测失败吞成 0 建议时，stderr 留下的可靠信号串。
@@ -182,6 +190,19 @@ def _extract_json(stdout):
         return json.loads(m.group(1))
     obj, _end = json.JSONDecoder().raw_decode((stdout or "").lstrip())
     return obj
+
+
+def _extract_engaged(data):
+    """runner 在 review 段写 _engaged（glm 是否给出实质性多段评审结构，见 pr_agent_runner）。
+    离线注入 / 老协议 / 非 dict → False（保守：无 engagement 信号时维持可疑空收敛判据）。"""
+    if not isinstance(data, dict):
+        return False
+    review = data.get("review")
+    if not isinstance(review, dict):
+        # review 为 truthy 非 dict（malformed/legacy：字符串/列表/数）时，`... or {}` 会短路返回该非 dict 值，
+        # 再 .get("_engaged") 抛 AttributeError。守卫之，使其安全落到 False（与 docstring 承诺一致）。
+        return False
+    return bool(review.get("_engaged"))
 
 
 def load_nmap(repo_dir="."):
@@ -391,7 +412,8 @@ class PRAgentProvider:
             #             或轻度畸形的弱信号，条目可能被静默修丢（本次排查盲区 S3）。
             _LAST_META.update(
                 partial_tool_failure=partial_tool_failure(data, proc.stderr),
-                repaired_parses=(proc.stderr or "").count(_REPAIRED_PARSE_SIG))
+                repaired_parses=(proc.stderr or "").count(_REPAIRED_PARSE_SIG),
+                review_engaged=_extract_engaged(data))
             return data
         finally:
             if tmp:
@@ -404,7 +426,7 @@ class PRAgentProvider:
 # 本次 invoke 的诊断元信息（部分降级/修复解析计数）。单次 CLI 进程内串行使用；
 # fetch() 开头重置，_invoke_endpoint 填充，orchestrator 经 invoke_meta() 读取。
 # 离线注入路径（pr_agent_output）不产生 stderr，保持默认值。
-_LAST_META = {"partial_tool_failure": None, "repaired_parses": 0}
+_LAST_META = {"partial_tool_failure": None, "repaired_parses": 0, "review_engaged": False}
 
 
 def invoke_meta():
@@ -415,7 +437,7 @@ def invoke_meta():
 def fetch(pr_ctx, provider=None):
     """按 provider 取评审观察（默认 pr-agent；目前仅此一种，未知 provider 抛错）。
     orchestrator.review_pr 已直连本函数；REVIEW_PROVIDER 留作未来接入其它评审来源的开关。"""
-    _LAST_META.update(partial_tool_failure=None, repaired_parses=0)
+    _LAST_META.update(partial_tool_failure=None, repaired_parses=0, review_engaged=False)
     provider = provider or os.environ.get("REVIEW_PROVIDER", "pr-agent")
     if provider == "pr-agent":
         return PRAgentProvider().fetch(pr_ctx)
