@@ -167,6 +167,15 @@ def run(pr_url, mode, extra_instructions=None):
         s.config.ai_timeout = int(os.environ.get("TOUCHSTONE_LLM_CALL_TIMEOUT", "600"))
     except (ValueError, TypeError):
         s.config.ai_timeout = 600
+    # 关 pr-agent 的工单合规分析（pr_reviewer.require_ticket_analysis_review，pr-agent
+    # configuration.toml:86 默认 true）。它调 GitHub GraphQL fetch_sub_issues，对本仓 token/
+    # 配置返回 None → github_provider.py:1243 response_json.get(...) 抛 AttributeError（每轮
+    # review 必崩一次，虽被 pr-agent 捕获非致命，但是噪音 + 脆弱路径），且把 ticket 合规塞进
+    # 评审 prompt、偏移 glm 对代码本身的注意力。touchstone 做代码评审门禁、不做工单合规——关掉。
+    try:
+        s.pr_reviewer.require_ticket_analysis_review = False
+    except Exception:
+        pass
     if extra_instructions:
         s.pr_code_suggestions.extra_instructions = extra_instructions
         s.pr_reviewer.extra_instructions = extra_instructions
@@ -255,6 +264,13 @@ def run(pr_url, mode, extra_instructions=None):
                           file=sys.stderr)
                     _rv = {}   # sanitize：truthy 非 dict 时下方 .get 会抛 AttributeError 致 runner 崩溃（pr-agent 评审意见）
                 out["review"]["key_issues_to_review"] = (_rv or {}).get("key_issues_to_review") or []
+                # engagement：glm 是否给出实质性的多段评审结构（key_issues 之外仍有非空段）。
+                # 供 review_reliable 区分"审完无问题"（engaged，如干净 PR——glm 给了 effort/
+                # security/relevant_tests 等段但无 key_issues）与"diff 被裁空 / 响应被吞"
+                # （not engaged，_rv 几乎空）。阈值 >=2 段：单段恐是空 key_issues 的回声，两段以上才是真评审。
+                _rv_dict = _rv if isinstance(_rv, dict) else {}
+                out["review"]["_engaged"] = sum(
+                    1 for v in _rv_dict.values() if v not in (None, "", [], {})) >= 2
             _ix(f"工具执行完成: code_suggestions={len(out['code_suggestions'])} "
                 f"key_issues={len(out['review']['key_issues_to_review'])}")
         except Exception as e:   # LLM 端点/鉴权/超时/解析失败等 —— 不静默吞掉，上报为 llm_failed

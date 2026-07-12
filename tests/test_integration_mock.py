@@ -839,3 +839,54 @@ def test_runner_malformed_review_prediction_does_not_crash(monkeypatch):
     out = R.run("https://pr", "review")          # 不应抛 AttributeError
     assert out["review"]["key_issues_to_review"] == []   # malformed -> 空清单，不崩
     assert "_degraded" not in out                        # 非 _degraded（malformed 是可恢复的）
+
+
+def test_runner_emits_engaged_for_substantive_review(monkeypatch):
+    # glm 审完无问题：review 段有多段实质性内容（effort/security/relevant_tests）但 key_issues 空。
+    # runner 应置 _engaged=True，让 review_reliable 把它认作"审完无问题"而非"裁空/吞没"（PR #51）。
+    _install_fake_pr_agent(monkeypatch)
+    _stub_llm(monkeypatch)
+    import pr_agent.algo.utils as algo_utils
+    import pr_agent.tools.pr_reviewer as rv_mod
+    algo_utils.load_yaml = lambda s, **k: {"review": {
+        "key_issues_to_review": [],
+        "estimated_effort_to_review": "2",
+        "relevant_tests": "Yes",
+        "security_concerns": "No",
+    }}
+
+    class PRReviewer:
+        def __init__(self, url):
+            self.prediction = "review:\n  key_issues_to_review: []"
+        async def run(self):
+            return None
+    rv_mod.PRReviewer = PRReviewer
+    out = R.run("https://pr", "review")
+    assert out["review"]["key_issues_to_review"] == []
+    assert out["review"]["_engaged"] is True          # 多段非空 -> 审完无问题
+
+
+def test_runner_engaged_false_when_review_empty(monkeypatch):
+    # _rv 近乎空（如 diff 被裁空、glm 无米下锅）-> _engaged=False，review_reliable 维持可疑判据。
+    _install_fake_pr_agent(monkeypatch)
+    _stub_llm(monkeypatch)
+    import pr_agent.algo.utils as algo_utils
+    import pr_agent.tools.pr_reviewer as rv_mod
+    algo_utils.load_yaml = lambda s, **k: {"review": {"key_issues_to_review": []}}
+
+    class PRReviewer:
+        def __init__(self, url):
+            self.prediction = "review:\n  key_issues_to_review: []"
+        async def run(self):
+            return None
+    rv_mod.PRReviewer = PRReviewer
+    out = R.run("https://pr", "review")
+    assert out["review"]["_engaged"] is False         # 仅空 key_issues，无其他段 -> 未 engaged
+
+
+def test_runner_disables_ticket_analysis(monkeypatch):
+    # 关 pr-agent 工单合规分析（默认 true 致 fetch_sub_issues 每轮崩 + prompt 噪音，PR #51 排查）。
+    settings = _install_fake_pr_agent(monkeypatch)
+    _stub_llm(monkeypatch)
+    R.run("https://pr", "improve")
+    assert settings.pr_reviewer.require_ticket_analysis_review is False

@@ -385,6 +385,44 @@ def test_review_reliable_engine_degraded():
         assert RP.review_reliable(st, ai_raw_count=0, added_lines=5) is False
 
 
+# ---------------- review_reliable engaged 逃生口（PR #51：审完无问题 ≠ 裁空/吞没）----------------
+def test_review_reliable_engaged_clean_is_reliable():
+    # glm 审完无问题：engine ok、改动不小、0 建议、但 engaged（多段实质性评审）-> 可靠。
+    # 这是 PR #51 的真场景：干净 PR 被旧逻辑误判可疑空收敛。
+    assert RP.review_reliable("ok", ai_raw_count=0, added_lines=61, engaged=True) is True
+    assert RP.review_reliable("ok", ai_raw_count=0, added_lines=20, engaged=True) is True  # 边界
+
+
+def test_review_reliable_not_engaged_large_still_suspicious():
+    # 未 engaged（_rv 近乎空，如 diff 被裁空）+ 大改动 + 0 建议 -> 仍可疑（guard 不削弱）
+    assert RP.review_reliable("ok", ai_raw_count=0, added_lines=61, engaged=False) is False
+
+
+def test_review_reliable_engaged_default_false_preserves_old_behavior():
+    # 不传 engaged（老调用/autonomy）-> 默认 False -> 大改动 0 建议仍可疑（向后兼容）
+    assert RP.review_reliable("ok", ai_raw_count=0, added_lines=61) is False
+
+
+def test_review_reliable_engaged_does_not_rescue_degraded():
+    # 引擎降级时 engaged 无效——降级优先，0 建议是缺审不是审完
+    assert RP.review_reliable("llm_failed", ai_raw_count=0, added_lines=61, engaged=True) is False
+    assert RP.review_reliable("no_engine", ai_raw_count=0, added_lines=61, engaged=True) is False
+
+
+def test_review_reliable_engaged_irrelevant_when_findings_present():
+    # 有原始建议时本就可靠，engaged 无关
+    assert RP.review_reliable("ok", ai_raw_count=2, added_lines=61, engaged=False) is True
+
+
+def test_extract_engaged_reads_runner_signal():
+    # runner 在 review 段写 _engaged；离线注入/老协议/非 dict -> False（保守）
+    assert RP._extract_engaged({"review": {"_engaged": True, "key_issues_to_review": []}}) is True
+    assert RP._extract_engaged({"review": {"_engaged": False}}) is False
+    assert RP._extract_engaged({"review": {"key_issues_to_review": []}}) is False  # 无 _engaged 键
+    assert RP._extract_engaged({"code_suggestions": []}) is False                  # 无 review 段
+    assert RP._extract_engaged(None) is False                                      # 非 dict
+
+
 # ---------------- prediction_swallowed_failure：pr-agent 吞掉的 LLM 失败检测 ----------------
 def test_prediction_swallowed_failure_empty_with_sig():
     # round-3 / #46 真场景：失败串在 stderr + 本轮 0 原始建议 -> 吞没失败

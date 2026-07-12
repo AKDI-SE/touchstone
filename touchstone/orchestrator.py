@@ -259,6 +259,7 @@ def review_pr(pr, contract, standards, provider=None):
     changed_files, added = contract_check.parse_diff(diff)
     added_lines = sum(len(v) for v in added.values())
     ai_raw_count = 0
+    engaged = False         # glm 是否给出实质性多段评审（runner 经 _LAST_META 透出，见 review_provider）
     llm_notes = []          # LLM 侧非致命注记（部分降级/截断修复），进报告横幅
     max_lines = int(os.environ.get("TOUCHSTONE_MAX_DIFF_LINES", "0") or 0)
     size_findings = []
@@ -283,6 +284,7 @@ def review_pr(pr, contract, standards, provider=None):
             ai_raw_count = len(raw_items)
             review_findings = review_provider.normalize(raw_items, nmap)
             _meta = review_provider.invoke_meta()
+            engaged = _meta.get("review_engaged", False)   # review_reliable 据此区分"审完无问题"与"裁空/吞没"
             # 部分降级/修复解析：整轮仍可信（另一侧有真实产出/条目仍在），不触发降级，
             # 但必须在报告可见——improve 连挂数日而 review 正常时，建议侧信号长期缺失
             # 却无人察觉；截断修复则意味着条目可能被静默修丢（本次静默故障排查 S1/S3）。
@@ -315,7 +317,7 @@ def review_pr(pr, contract, standards, provider=None):
     return {"findings": findings, "risk": risk, "engine_status": engine_status,
             "det_warning": det_warning, "ai_raw_count": ai_raw_count,
             "added_lines": added_lines, "changed_files": changed_files,
-            "scope_facts": sf, "llm_notes": llm_notes}
+            "scope_facts": sf, "llm_notes": llm_notes, "engaged": engaged}
 
 
 def main():
@@ -349,9 +351,11 @@ def main():
     llm_notes = _out.get("llm_notes") or []
     added_lines = _out.get("added_lines", 0)
     n_changed = len(_out.get("changed_files") or [])
-    # 本轮 LLM 评审是否可靠（engine_status + 可疑空收敛判据）。不可靠时 checklist 不予自动销项、
-    # loop 不收敛、autonomy 不自动放行--防"diff 被裁空/LLM 随机性"假收敛放行未评审代码。
-    reliable = review_provider.review_reliable(engine_status, ai_raw_count, added_lines)
+    engaged = _out.get("engaged", False)
+    # 本轮 LLM 评审是否可靠（engine_status + 可疑空收敛判据 + engaged 逃生口）。不可靠时
+    # checklist 不予自动销项、loop 不收敛、autonomy 不自动放行--防"diff 被裁空/LLM 随机性"
+    # 假收敛放行未评审代码。engaged 让"glm 审完无问题"的干净 PR 不再被误判可疑（PR #51）。
+    reliable = review_provider.review_reliable(engine_status, ai_raw_count, added_lines, engaged=engaged)
 
     # 反馈循环：从历史评论 marker 取状态 → 决策 → 回贴附状态与新 marker。
     # 只信机器人自己发的评论（按发帖人过滤）——否则 author 可自己发伪造 marker 洗掉抗博弈闸。
@@ -468,6 +472,7 @@ def main():
                    # （防假收敛放行未评审代码，见 review_provider.review_reliable）。
                    "engine_status": engine_status, "ai_raw_count": ai_raw_count,
                    "added_lines": added_lines, "review_reliable": reliable,
+                   "review_engaged": engaged,
                    # author 自证但未经人核准的销项数（waived/split）——autonomy 独立闸据此
                    # 拒放行（多层：即便 loop_decision 被虚报，本计数由 touchstone 侧写入）。
                    "unverified_claims": n_unverified},
