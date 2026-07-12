@@ -461,6 +461,92 @@ def test_extract_engaged_falls_back_to_compute_when_no_flag():
         "estimated_effort_to_review": "2", "relevant_tests": "Yes"}}) is False
 
 
+# ---------------- extract_review_excerpt：0 原始建议时贴 LLM 原始段打消"是否真审过"疑虑（PR #55）-----
+def test_extract_review_excerpt_picks_nonempty_segments_excluding_key_issues():
+    # 单一真源：抽 review 段里【非空】结构段，排除 key_issues_to_review（即"0 意见"本体）与内部标志。
+    d = {"review": {
+        "estimated_effort_to_review": "3",
+        "relevant_tests": "Yes",
+        "key_issues_to_review": [],          # 排除
+        "security_concerns": "No",
+        "_engaged": True,                     # 排除（内部标志）
+        "_raw_excerpt": {},                   # 排除（内部标志）
+        "empty_seg": "",                      # 排除（空值）
+    }}
+    assert RP.extract_review_excerpt(d) == {
+        "estimated_effort_to_review": "3", "relevant_tests": "Yes", "security_concerns": "No"}
+    assert RP.extract_review_excerpt({"review": {"key_issues_to_review": []}}) == {}   # 无非空段
+    assert RP.extract_review_excerpt({"code_suggestions": []}) == {}                   # 无 review 段
+    assert RP.extract_review_excerpt(None) == {}                                       # 非 dict
+
+
+def test_extract_review_excerpt_truncates_and_singlelines():
+    # 多行段值（如 security_concerns 段落）单行化 + 截断，快照可读且不撑爆横幅。
+    long = "line1\nline2\nline3 " + "x" * 200
+    ex = RP.extract_review_excerpt({"review": {"security_concerns": long}})
+    assert ex["security_concerns"].endswith("…")
+    assert len(ex["security_concerns"]) <= 161            # 截断后 <= max_chars(160) + 省略号
+    assert "\n" not in ex["security_concerns"]            # 单行化
+    # max_segments 封顶（保序取前 N 段）
+    big = {f"seg_{i}": str(i) for i in range(20)}
+    assert len(RP.extract_review_excerpt({"review": big}, max_segments=3)) == 3
+
+
+def test_extract_review_excerpt_escapes_backticks_for_markdown_safety():
+    # PR #57 评审意见：v 是 LLM 生成文本，security_concerns 等段会以反引号引用代码标识符（如 `eval()`）；
+    # 奇数个反引号会让 _clean_review_trace 横幅里 `段名`: 值 的 inline-code span 失衡，腐蚀整段评论渲染。
+    # 单一真源处把反引号归一化为单引号 → 快照 markdown-safe，所有消费方安全。
+    d = {"review": {"security_concerns": "uses `eval()` for dynamic dispatch",
+                    "code_feedback": "even count `a` plus `b` is fine but still normalized"}}
+    ex = RP.extract_review_excerpt(d)
+    assert "`" not in ex["security_concerns"]          # 反引号已归一化（奇数个 = 真正会失衡的场景）
+    assert ex["security_concerns"] == "uses 'eval()' for dynamic dispatch"
+    assert "`" not in ex["code_feedback"]              # 偶数个也一律归一化（统一契约，不数个数）
+    # 渲染进横幅模板后，inline-code span 始终成对（值内再无反引号打开新 span）
+    rendered = "\n".join(f"- `{k}`: {v}" for k, v in ex.items())
+    assert rendered.count("`") % 2 == 0                # 每段恰好一对 `{k}` → 总数必为偶
+
+
+def test_extract_excerpt_prefers_runner_flag_then_falls_back():
+    # 镜像 _extract_engaged：子进程路径读 runner 写的 review._raw_excerpt；缺失（注入/老协议）则现算。
+    flagged = {"review": {"_raw_excerpt": {"a": "1"}, "estimated_effort_to_review": "2"}}
+    assert RP._extract_excerpt(flagged) == {"a": "1"}               # 标志优先，不被现算覆盖
+    no_flag = {"review": {"estimated_effort_to_review": "2", "relevant_tests": "Yes"}}
+    assert RP._extract_excerpt(no_flag) == {"estimated_effort_to_review": "2",
+                                            "relevant_tests": "Yes"}  # 无标志 -> 现算
+    assert RP._extract_excerpt({"review": {"_raw_excerpt": "not a dict"}}) == {}   # 非 dict 标志 -> {}
+    assert RP._extract_excerpt(None) == {}                                         # 非 dict
+
+
+def test_fetch_sets_raw_review_excerpt_meta_on_injection():
+    # PRAgentProvider.fetch 出口统一设 raw_review_excerpt（覆盖注入+子进程两路径，镜像 review_engaged）。
+    data = {"review": {"estimated_effort_to_review": "3", "relevant_tests": "Yes",
+                       "key_issues_to_review": []}}
+    items = RP.fetch({"pr_agent_output": data})
+    assert items == []                                    # 无 key_issues/code_suggestions
+    assert RP.invoke_meta()["raw_review_excerpt"] == {
+        "estimated_effort_to_review": "3", "relevant_tests": "Yes"}
+
+
+def test_clean_review_trace_appends_llm_excerpt_when_zero_raw():
+    from touchstone import orchestrator as orc
+    excerpt = {"estimated_effort_to_review": "3", "relevant_tests": "Yes", "security_concerns": "No"}
+    # 0 原始建议（无实质意见）→ 贴 LLM 原始 review 段，打消"是否真审过"疑虑
+    t = orc._clean_review_trace("ok", ai_raw_count=0, added_lines=120, n_changed=8,
+                                raw_excerpt=excerpt)
+    assert "LLM 原始评审" in t
+    assert "`estimated_effort_to_review`: 3" in t
+    assert "key_issues / code_suggestions 均空" in t
+    # 有原始建议（ai_raw_count>0）→ 不贴 excerpt（"返回 N 条原始建议"已足）
+    assert "LLM 原始评审" not in orc._clean_review_trace(
+        "ok", ai_raw_count=5, added_lines=120, n_changed=8, raw_excerpt=excerpt)
+    # excerpt 空 → 无内容可贴，不输出该块
+    assert "LLM 原始评审" not in orc._clean_review_trace(
+        "ok", ai_raw_count=0, added_lines=3, n_changed=1, raw_excerpt={})
+    # 降级 → 溯源整体不输出（由 _engine_banner 负责）
+    assert orc._clean_review_trace("llm_failed", 0, 0, 0, raw_excerpt=excerpt) == ""
+
+
 # ---------------- prediction_swallowed_failure：pr-agent 吞掉的 LLM 失败检测 ----------------
 def test_prediction_swallowed_failure_empty_with_sig():
     # round-3 / #46 真场景：失败串在 stderr + 本轮 0 原始建议 -> 吞没失败
