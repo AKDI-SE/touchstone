@@ -415,10 +415,11 @@ def test_review_reliable_engaged_irrelevant_when_findings_present():
 
 
 def test_extract_engaged_reads_runner_signal():
-    # runner 在 review 段写 _engaged；离线注入/老协议/非 dict -> False（保守）
+    # runner 在 review 段写 _engaged（子进程路径）；无 _engaged 键时退化到 compute_engaged 现算（注入路径）。
     assert RP._extract_engaged({"review": {"_engaged": True, "key_issues_to_review": []}}) is True
     assert RP._extract_engaged({"review": {"_engaged": False}}) is False
-    assert RP._extract_engaged({"review": {"key_issues_to_review": []}}) is False  # 无 _engaged 键
+    # 无 _engaged 键 -> 现算：仅空 key_issues、无其他段 -> 0 段 -> False
+    assert RP._extract_engaged({"review": {"key_issues_to_review": []}}) is False
     assert RP._extract_engaged({"code_suggestions": []}) is False                  # 无 review 段
     assert RP._extract_engaged(None) is False                                      # 非 dict
 
@@ -432,6 +433,32 @@ def test_extract_engaged_truthy_nondict_review_is_false():
     assert RP._extract_engaged({"review": 42}) is False
     # 正常 dict 仍工作（回归保护）
     assert RP._extract_engaged({"review": {"_engaged": True}}) is True
+
+
+def test_compute_engaged_counts_nonempty_sections_excluding_key_issues():
+    # 单一真源：compute_engaged 数 review 段里【排除 key_issues_to_review】后 >=2 个非空段。
+    # pr_agent_runner 经 lazy import 复用本函数（防子进程内/外两套 engaged 逻辑漂移）。
+    assert RP.compute_engaged({"review": {  # 3 段非空 -> True
+        "estimated_effort_to_review": "2", "relevant_tests": "Yes", "security_concerns": "No",
+        "key_issues_to_review": []}}) is True
+    assert RP.compute_engaged({"review": {  # key_issues 非空但被排除，仅 1 段 -> False
+        "estimated_effort_to_review": "2", "key_issues_to_review": [{"x": 1}]}}) is False
+    assert RP.compute_engaged({"review": {"key_issues_to_review": []}}) is False  # 无其他段
+    assert RP.compute_engaged({"review": {  # 空值段不计（""/None/[]/{}）
+        "estimated_effort_to_review": "", "security_concerns": None, "relevant_tests": []}}) is False
+    assert RP.compute_engaged({"review": "x"}) is False          # review 非 dict
+    assert RP.compute_engaged({"code_suggestions": []}) is False  # 无 review 段
+    assert RP.compute_engaged(None) is False                      # 非 dict
+
+
+def test_extract_engaged_falls_back_to_compute_when_no_flag():
+    # 离线注入路径（无 runner、无 _engaged 标志）——_extract_engaged 退化到 compute_engaged 现算，
+    # 使端到端注入测试里 engaged 信号能流转（修复前：注入评审恒 engaged=False 的盲区）。
+    assert RP._extract_engaged({"review": {  # 无 _engaged 键但多段非空 -> 现算 True
+        "estimated_effort_to_review": "2", "relevant_tests": "Yes"}}) is True
+    # 有 _engaged 键时优先读标志（不被现算覆盖）——子进程路径行为不变
+    assert RP._extract_engaged({"review": {"_engaged": False,
+        "estimated_effort_to_review": "2", "relevant_tests": "Yes"}}) is False
 
 
 # ---------------- prediction_swallowed_failure：pr-agent 吞掉的 LLM 失败检测 ----------------

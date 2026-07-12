@@ -192,9 +192,21 @@ def _extract_json(stdout):
     return obj
 
 
+def compute_engaged(data):
+    """glm 是否给出实质性多段评审结构：review 段里【排除 key_issues_to_review】后 >=2 个非空段。
+    单一真源——pr_agent_runner 经 lazy import 复用本函数（防子进程内/外两套 engaged 逻辑漂移，
+    见 memory「集成 mock 盲区」教训）。供离线注入路径（无 runner、无 _engaged 标志）按相同口径现算。"""
+    if not isinstance(data, dict):
+        return False
+    review = data.get("review")
+    review = review if isinstance(review, dict) else {}
+    return sum(1 for k, v in review.items()
+               if k != "key_issues_to_review" and v not in (None, "", [], {})) >= 2
+
+
 def _extract_engaged(data):
-    """runner 在 review 段写 _engaged（glm 是否给出实质性多段评审结构，见 pr_agent_runner）。
-    离线注入 / 老协议 / 非 dict → False（保守：无 engagement 信号时维持可疑空收敛判据）。"""
+    """优先读 runner 写的 review._engaged 标志（子进程路径）；缺失（离线注入 / 老协议）则按
+    compute_engaged 现算。非 dict / review 非 dict → False（保守：维持可疑空收敛判据）。"""
     if not isinstance(data, dict):
         return False
     review = data.get("review")
@@ -202,7 +214,9 @@ def _extract_engaged(data):
         # review 为 truthy 非 dict（malformed/legacy：字符串/列表/数）时，`... or {}` 会短路返回该非 dict 值，
         # 再 .get("_engaged") 抛 AttributeError。守卫之，使其安全落到 False（与 docstring 承诺一致）。
         return False
-    return bool(review.get("_engaged"))
+    if "_engaged" in review:
+        return bool(review.get("_engaged"))
+    return compute_engaged(data)
 
 
 def load_nmap(repo_dir="."):
@@ -317,7 +331,13 @@ class PRAgentProvider:
     """把 PR-Agent 抽象成一个可替换的"评审观察来源"。对上层只暴露 fetch(pr_ctx) -> [ReviewItem]。"""
 
     def fetch(self, pr_ctx):
-        return parse_pr_agent(self._invoke(pr_ctx))
+        data = self._invoke(pr_ctx)
+        # 注入路径（pr_agent_output）也按相同口径算 engaged——此前仅 _invoke_endpoint 设此 meta，
+        # 离线/注入评审永远 engaged=False，使 engaged 信号无法在端到端测试里流转（盲区：PR#52 类
+        # 「0意见→卡死」问题难以用注入式 e2e 锁住）。两条路径统一在 fetch 出口设，子进程路径里
+        # _invoke_endpoint 不再重复设。
+        _LAST_META["review_engaged"] = _extract_engaged(data)
+        return parse_pr_agent(data)
 
     def _invoke(self, pr_ctx):
         # 注入点：测试/离线下经 pr_ctx['pr_agent_output'] 直接传入原始输出
@@ -412,8 +432,9 @@ class PRAgentProvider:
             #             或轻度畸形的弱信号，条目可能被静默修丢（本次排查盲区 S3）。
             _LAST_META.update(
                 partial_tool_failure=partial_tool_failure(data, proc.stderr),
-                repaired_parses=(proc.stderr or "").count(_REPAIRED_PARSE_SIG),
-                review_engaged=_extract_engaged(data))
+                repaired_parses=(proc.stderr or "").count(_REPAIRED_PARSE_SIG))
+            # review_engaged 统一在 PRAgentProvider.fetch 出口经 _extract_engaged(data) 设置
+            # （覆盖注入与子进程两路径）；此处不重复设。
             return data
         finally:
             if tmp:

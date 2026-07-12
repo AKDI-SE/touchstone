@@ -121,7 +121,11 @@ def run(pr_url, mode, extra_instructions=None):
     s = get_settings()
     s.config.publish_output = False           # 关键：不往 PR 发评论，只取结构化结果
     s.config.publish_output_progress = False
-    s.config.git_provider = "github"          # 显式：headless 运行时避免 provider 自动探测失败
+    # git_provider 经 env 可覆盖：默认 github（headless 运行避免 provider 自动探测失败）。
+    # 设 TOUCHSTONE_GIT_PROVIDER=local → LocalGitProvider：审【本地分支】（HEAD vs --pr-url 给的
+    # 目标分支），不经 GitHub、无需 token。用于本地端到端 / pre-push 自查。
+    # 注意 local 模式 pr-agent 仅支持 review（不支持 improve，见 local_git_provider），故配 --mode review。
+    s.config.git_provider = os.environ.get("TOUCHSTONE_GIT_PROVIDER", "github")
     gh_tok = os.environ.get("GITHUB_TOKEN") or os.environ.get("GITHUB_USER_TOKEN")
     if gh_tok:
         s.github.user_token = gh_tok          # pr-agent 取 PR 需要 GitHub token
@@ -273,10 +277,12 @@ def run(pr_url, mode, extra_instructions=None):
                 # 它非空时 ai_raw_count>0 已使 review_reliable=True（走"有原始建议"路），engaged 只在
                 # key_issues 为空的干净评审场景起作用——此时数 effort/security/relevant_tests 等段是否
                 # >=2，区分"审完无问题"（engaged）与"diff 被裁空 / 响应被吞"（_rv 近乎空，not engaged）。
+                # 复用 review_provider.compute_engaged（单一真源，防子进程内/外两套逻辑漂移）；
+                # _rv_dict 是完整解析的 review 段（含 effort/security/relevant_tests 等），out["review"]
+                # 此刻只有 key_issues_to_review——故以 {"review": _rv_dict} 喂入算。
                 _rv_dict = _rv if isinstance(_rv, dict) else {}
-                out["review"]["_engaged"] = sum(
-                    1 for k, v in _rv_dict.items()
-                    if k != "key_issues_to_review" and v not in (None, "", [], {})) >= 2
+                from touchstone.review_provider import compute_engaged
+                out["review"]["_engaged"] = compute_engaged({"review": _rv_dict})
             _ix(f"工具执行完成: code_suggestions={len(out['code_suggestions'])} "
                 f"key_issues={len(out['review']['key_issues_to_review'])}")
         except Exception as e:   # LLM 端点/鉴权/超时/解析失败等 —— 不静默吞掉，上报为 llm_failed
