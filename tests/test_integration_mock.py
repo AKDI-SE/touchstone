@@ -908,6 +908,50 @@ def test_runner_engaged_excludes_key_issues_from_count(monkeypatch):
     assert out["review"]["_engaged"] is False         # 排除 key_issues 后仅 1 段 < 2
 
 
+def test_runner_emits_raw_excerpt_for_substantive_review(monkeypatch):
+    # 0 原始建议（key_issues 空）时，runner 仍把 review 的非空结构段快照随 JSON 透出（_raw_excerpt），
+    # 供报告横幅贴"LLM 原始评审"打消"是否真审过"疑虑（PR #55 评审意见）。
+    _install_fake_pr_agent(monkeypatch)
+    _stub_llm(monkeypatch)
+    import pr_agent.algo.utils as algo_utils
+    import pr_agent.tools.pr_reviewer as rv_mod
+    algo_utils.load_yaml = lambda s, **k: {"review": {
+        "key_issues_to_review": [],
+        "estimated_effort_to_review": "2",
+        "relevant_tests": "Yes",
+        "security_concerns": "No",
+    }}
+
+    class PRReviewer:
+        def __init__(self, url):
+            self.prediction = "review:\n  key_issues_to_review: []"
+        async def run(self):
+            return None
+    rv_mod.PRReviewer = PRReviewer
+    out = R.run("https://pr", "review")
+    assert out["review"]["_raw_excerpt"] == {
+        "estimated_effort_to_review": "2", "relevant_tests": "Yes", "security_concerns": "No"}
+    assert "key_issues_to_review" not in out["review"]["_raw_excerpt"]   # "0 意见"本体不进快照
+
+
+def test_runner_raw_excerpt_empty_when_review_empty(monkeypatch):
+    # _rv 近乎空（diff 被裁空 / glm 无米下锅）→ 快照空；横幅无内容可贴，回退纯文本溯源。
+    _install_fake_pr_agent(monkeypatch)
+    _stub_llm(monkeypatch)
+    import pr_agent.algo.utils as algo_utils
+    import pr_agent.tools.pr_reviewer as rv_mod
+    algo_utils.load_yaml = lambda s, **k: {"review": {"key_issues_to_review": []}}
+
+    class PRReviewer:
+        def __init__(self, url):
+            self.prediction = "review:\n  key_issues_to_review: []"
+        async def run(self):
+            return None
+    rv_mod.PRReviewer = PRReviewer
+    out = R.run("https://pr", "review")
+    assert out["review"]["_raw_excerpt"] == {}
+
+
 def test_runner_warns_when_ticket_disable_fails(monkeypatch, capsys):
     # 闭环 round-3 PRA-GENERAL:pr_agent_runner.py:175——bare except:pass 改为告警（防静默故障）。
     # require_ticket_analysis_review 不可设（pr_reviewer 版本不符/只读）时，须落 _IX + stderr，不静默吞。

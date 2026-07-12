@@ -281,8 +281,11 @@ def run(pr_url, mode, extra_instructions=None):
                 # _rv_dict 是完整解析的 review 段（含 effort/security/relevant_tests 等），out["review"]
                 # 此刻只有 key_issues_to_review——故以 {"review": _rv_dict} 喂入算。
                 _rv_dict = _rv if isinstance(_rv, dict) else {}
-                from touchstone.review_provider import compute_engaged
+                from touchstone.review_provider import compute_engaged, extract_review_excerpt
                 out["review"]["_engaged"] = compute_engaged({"review": _rv_dict})
+                # 原始反馈快照（effort/tests/security 等非空段）：0 原始建议时贴进报告横幅，打消
+                # "是否真审过"疑虑（PR #55 评审意见）。跨子进程 JSON 边界透出，父进程 _extract_excerpt 读取。
+                out["review"]["_raw_excerpt"] = extract_review_excerpt({"review": _rv_dict})
             _ix(f"工具执行完成: code_suggestions={len(out['code_suggestions'])} "
                 f"key_issues={len(out['review']['key_issues_to_review'])}")
         except Exception as e:   # LLM 端点/鉴权/超时/解析失败等 —— 不静默吞掉，上报为 llm_failed
