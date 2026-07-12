@@ -37,6 +37,25 @@ def _sig(f):
     return _checklist.sig_of(f)
 
 
+def remaining_rounds(cur_round, budget_left, max_rounds=MAX_ROUNDS):
+    """本 PR 在 escalate 前还能再走几轮——供收敛清单头部「剩余轮次」展示。
+
+    真实剩余 = min(总预算 − 当前轮, 台账继承额度 − 1)：
+      - 总预算 − 当前轮：无同源历史时的自然剩余（9 轮制下第 4 轮剩 5）。
+      - 台账继承额度 − 1：同源历史吃掉部分预算后的硬上限（loop_step 的
+        ``max_rounds = min(MAX_ROUNDS, state.round + budget_left)``，state.round =
+        cur_round − 1，故从 cur_round 起还可走 budget_left − 1 轮）。
+    取两者 min 并夹 0——修复前 orchestrator 直接传静态 ``ledger_budget − 1``，与当前轮
+    无关，致第 1..N 轮恒显同一值（如永远「剩余轮次 8」），误导「还剩很多轮」。
+    """
+    try:
+        cur_round = int(cur_round or 0)
+        budget_left = int(budget_left if budget_left is not None else max_rounds)
+    except (TypeError, ValueError):
+        return max(0, max_rounds - 1)
+    return max(0, min(max_rounds - cur_round, budget_left - 1))
+
+
 def author_actionable(findings, rule_index):
     """可由 author 自改的发现：非正确性类 且 有 fix_direction（改进方向）。
     正确性判定双路：① 在册规则的 class==correctness；② 发现自带 category 落在正确性集合

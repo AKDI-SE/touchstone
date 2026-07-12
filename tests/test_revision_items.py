@@ -175,6 +175,26 @@ def test_loop_sig_normalizes_like_checklist():
     assert loop._sig(f) == cl.sig_of(f) == "R-1:a.py:1"
 
 
+def test_remaining_rounds_decreases_across_rounds():
+    # 闭环「剩余轮次永远 8」bug：orchestrator 旧实现传静态 ledger_budget−1，与当前轮无关。
+    # 真实剩余须随当前轮递减：9 轮制下第 1 轮→8、第 4 轮→5、第 9 轮→0。
+    assert loop.remaining_rounds(1, loop.MAX_ROUNDS) == loop.MAX_ROUNDS - 1   # 第 1 轮
+    assert loop.remaining_rounds(4, loop.MAX_ROUNDS) == loop.MAX_ROUNDS - 4   # 第 4 轮（修复前恒显 8）
+    assert loop.remaining_rounds(loop.MAX_ROUNDS, loop.MAX_ROUNDS) == 0       # 到顶
+    assert loop.remaining_rounds(loop.MAX_ROUNDS + 3, loop.MAX_ROUNDS) == 0   # 超顶夹 0
+
+
+def test_remaining_rounds_lineage_budget_binds():
+    # 台账继承额度（同源历史）可硬压剩余：budget_left=2 时第 1 轮只剩 1（min(8, 1)）。
+    assert loop.remaining_rounds(1, 2) == 1
+    # budget_left 充裕时不绑定：第 4 轮、额度 8 → min(5, 7) = 5（与无 lineage 的 9 制一致）
+    assert loop.remaining_rounds(4, 8) == loop.MAX_ROUNDS - 4
+    # budget_left 耗尽 → 0
+    assert loop.remaining_rounds(1, 1) == 0
+    # None budget 退回自然剩余（防 ledger 缺字段）
+    assert loop.remaining_rounds(3, None) == loop.MAX_ROUNDS - 3
+
+
 def test_checklist_dirty_persisted_sig_matchable_by_clean_ack():
     """闭环 sig 换行 bug：旧 marker 的 sig 内嵌 \\n（pr-agent file 字段带尾换行），author 发的
     ack 是干净 sig。修复前 acks.get(item_sig) 恒 None——structurally 无法销项；修复后 reconcile
