@@ -267,6 +267,36 @@ def test_llm_e2e_security_secret_surface(tmp_path, capsys):
     assert out["reliable"] is True
 
 
+@_skip
+def test_llm_e2e_eval_bypass_empirical(tmp_path, capsys):
+    """【经验探针·对应 test_adversarial 的 B2 绕过】非常规坏代码（.py 的 eval(user_input)）+ 空壳测试
+    → 确定性侧完全漏（见 test_adversarial.test_CHARACTERIZES_nonjava_badeval_with_dummy_test_bypasses_to_low_risk）。
+    本探针用真 LLM 经验性回答：glm 能否抓到这个 eval？——即该绕过在真实评审下有多可 exploit。
+    不强断 glm 是否抓到（LLM 漏报固有、会 flaky）；只锁不变式（不崩、engine ok），打印 raw key_issues
+    与 security findings 供人诊断真实严重度。若 glm 多数轮次空回 → 该绕过在真实链路中确可放行，
+    需走联审加确定性兜底（见 B2 测试标注）。"""
+    diff = _make_diff(tmp_path, {
+        "src/utils/eval_helper.py": "def run(s):\n    return eval(s)  # 反射执行用户串\n",
+        "tests/test_eval.py": "def test_noop():\n    pass\n",
+    })
+    try:
+        raw = _llm_review(diff, "重点：是否有安全漏洞（代码注入风险）")
+    except RuntimeError as e:
+        msg = str(e)
+        if "内容过滤" in msg or "BadRequest" in msg or "filter" in msg.lower():
+            pytest.skip(f"glm 内容过滤（已知端点限制）：{msg[:120]}")
+        raise
+    out = _run_pipeline(diff, raw)
+    _dump("eval-bypass", out)
+    ki = (raw.get("review") or {}).get("key_issues_to_review") or []
+    sec = [f for f in out["findings"] if f.get("category") == "security"]
+    print(f"  raw_key_issues={len(ki)}: {[k.get('issue_header', '')[:50] for k in ki[:5]]}")
+    print(f"  security_findings={len(sec)} risk={out['risk']['risk_band']} "
+          f"reliable={out['reliable']}（reliable=True 且 0 security → 该绕过本轮确被放行）")
+    assert out["engine_status"] == "ok"           # 不崩
+    assert isinstance(out["findings"], list)
+
+
 # ===========================================================================
 # 真子进程模式（真 pr-agent + 真 LLM；需本地 .pragent-venv）
 # ===========================================================================
