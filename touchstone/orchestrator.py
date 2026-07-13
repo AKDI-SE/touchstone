@@ -198,11 +198,20 @@ def post_results(owner, repo, number, head_sha, token, risk, findings, loop_info
         banner = f"**反馈循环：{head}** — {reason}" + ("\n\n" + banner if banner else "")
         markers.append(marker)
     verification_md = ""
+    # 验证档（verification_decision）是机器路由信号——决定 CI 跑哪档验证，非给人的待办。
+    # 易读性改版·二（方案 3）：从态势区移除，降级到本段作一行小字，与验证结果同处（因果一体）。
+    _VD = {"cheap_only": "仅基础检查（不额外跑验证）",
+           "targeted_tests": "针对性验收测试",
+           "full_suite": "完整验证（针对性测试 + 变异测试）"}
+    _vd = risk.get("verification_decision")
+    _vd_line = f"本轮验证档：{_VD.get(_vd, _vd or '—')}（`{_vd}`）" if _vd else ""
     run_link = _run_link()
-    if run_link:
-        # 易读性改版：括号里的实现细节（pr-agent 原始输出 / LLM 配置 / ping）是噪音——
-        # 点开日志自然知道内容；段落升为与③④⑤并列的 H3。
-        verification_md = f"### 验证与日志\n\n📄 完整 LLM 交互日志：{run_link}"
+    if run_link or _vd_line:
+        verification_md = "### 验证与日志\n"
+        if _vd_line:
+            verification_md += f"\n{_vd_line}"
+        if run_link:
+            verification_md += f"\n\n📄 完整 LLM 交互日志：{run_link}"
     body = render_report(risk, findings, banner=banner, scope_facts=scope_facts,
                          checklist_md=checklist_md, verification_md=verification_md,
                          markers="\n".join(markers), lineage=ledger,

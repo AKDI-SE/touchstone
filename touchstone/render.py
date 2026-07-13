@@ -94,63 +94,83 @@ def render_facts(scope_facts, gate_line="", lineage=None):
 
 
 def render_findings(risk, findings, review_reliable=True):
-    """②态势表 + ④逐条发现。
-    态势表：风险/动作/验证/影响面收进一张表，一眼扫读（此前三要素全角空格挤一行）。
-    逐条发现：人最关心的「位置 — 问题」前置；rule_id/severity/置信/来源是审计信息，
-    降级为行尾 <sub> 小字。每条仍按「定位 · 方向 · 依据 · 达成判据」四要素呈现
-    （修订设计 §3 意见 2、4）——不再输出补丁/精确指令。"""
-    _RISK_LABELS = {"high": "HIGH · 建议人细看/仲裁", "mid": "MID · 建议人过目",
-                    "low": "LOW · 可跳过"}
-    label = _RISK_LABELS.get(risk.get("risk_band"), "UNKNOWN · 待人工定性")
-    blast = ", ".join(risk.get("blast_radius") or []) or "—"
+    """②态势区 + ④逐条发现（2026-07-10 易读性改版·二）。
+    态势区：放弃四列枚举表格，改「标签 + 人话」陈述行——只呈现人真正要关心的两件事，
+      风险等级（含"该怎么办"）与触发因子；枚举值译成中文、英文原名括注。
+      verification_decision 是机器路由信号（决定 CI 跑哪档验证，非给人的待办），
+      已移出态势区、降级到「验证与日志」段（render_report 处理）。
+    逐条发现：按来源分组——规则检查命中（rule-based，可复现）/ AI 评审建议（LLM，含置信度），
+      呼应系统"确定性 vs 概率性"核心；「位置 — 问题」前置，审计元数据降 <sub> 行尾。"""
+    _RISK = {"high": "高", "mid": "中", "low": "低"}
+    _ACTION = {"read+arbitrate": "需人工评审后合入", "read": "建议人工过目",
+               "skip": "无需人工介入"}
+    _BLAST = {"cross_module_contract": "跨模块契约变更", "security_surface": "涉及安全面"}
+    band = _RISK.get(risk.get("risk_band"), "未定")
+    action = _ACTION.get(risk.get("human_action"), "建议人工过目")
+    factors = "、".join(_BLAST.get(b, b) for b in (risk.get("blast_radius") or [])) or "无"
     if review_reliable:
-        risk_cell, action_cell, verify_cell = (f"**{label}**",
-                                               f"`{risk.get('human_action', '—')}`",
-                                               f"`{risk.get('verification_decision', '—')}`")
+        head = [f"> **风险等级：{band}** — {action}",
+                f"> **触发因子：** {factors}"]
     else:
-        # 只改【展示】不改机器数据（result marker 里的 risk 原样保留，校准/台账不受影响）。
-        # 不可信轮的 risk 由"0 发现"推得，照常展示 LOW/skip 是主动误导（PR #44 实测）。
-        risk_cell = f"**{label}**<br><sub>仅确定性信号，LLM 评审不可信</sub>"
-        action_cell = "`人工评审`<br><sub>原建议不采信</sub>"
-        verify_cell = f"`{risk.get('verification_decision', '—')}`"
-    head = [
-        "| 风险等级 | 建议动作 | 验证建议 | 影响面 |",
-        "| :-- | :-- | :-- | :-- |",
-        f"| {risk_cell} | {action_cell} | {verify_cell} | {blast} |",
-    ]
+        head = [f"> **风险等级：{band}** <sub>（仅确定性信号，LLM 评审不可信）</sub>"
+                " — 需人工评审，原 AI 建议不采信",
+                f"> **触发因子：** {factors}"]
+
     body = []
     if not findings:
         body.append("### 评审发现")
         body.append("")
         body.append("本次未发现规则范围内的问题。")
-    else:
-        shown = findings[:MAX_FINDINGS_IN_SUMMARY]
-        cap = (f"，仅列前 {MAX_FINDINGS_IN_SUMMARY} 条" if len(findings) > MAX_FINDINGS_IN_SUMMARY else "")
-        body.append(f"### 评审发现（共 {len(findings)} 条，按置信降序{cap}）")
+        return "\n".join(head), "\n".join(body)
+
+    rule_based = [f for f in findings if f.get("agent") != "pr-agent"]
+    ai_based = [f for f in findings if f.get("agent") == "pr-agent"]
+
+    def _entry(i, f):
+        direction = f.get("fix_direction") or f.get("suggested_fix") or ""
+        reasoning = f.get("fix_reasoning") or ""
+        dc = f.get("done_criteria") or {}
+        _spec = dc.get("spec") or {}
+        if dc.get("kind") == "deterministic":
+            dc_line = f"规则 `{_spec.get('recheck', '?')}` 复检不再命中"
+        elif dc.get("kind") == "review":
+            q = _spec.get("question", "")
+            dc_line = f"需人工复核：{q}" if q else "定向复核通过"
+        else:
+            dc_line = ""
+        e = (f"{i}. **`{f.get('file','?')}:{f.get('line','?')}`** — {f.get('rationale','')}\n"
+             f"   - 修复方向：{direction}")
+        if reasoning and reasoning != f.get("rationale"):
+            e += f"\n   - 依据：{reasoning}"
+        if dc_line:
+            e += f"\n   - 达成判据：{dc_line}"
+        e += (f"\n   - <sub>`{f['rule_id']}` · {f.get('severity','')} · "
+              f"置信 {f['confidence']:.2f} · 来源 {f['agent']}</sub>")
+        return e
+
+    total = len(findings)
+    cap = (f"，仅列前 {MAX_FINDINGS_IN_SUMMARY} 条" if total > MAX_FINDINGS_IN_SUMMARY else "")
+    body.append(f"### 评审发现（共 {total} 条{cap}）")
+    body.append("")
+    n = 0
+    budget = MAX_FINDINGS_IN_SUMMARY
+    if rule_based:
+        body.append("#### 规则检查命中（rule-based，可复现）")
         body.append("")
-        for i, f in enumerate(shown, 1):
-            direction = f.get("fix_direction") or f.get("suggested_fix") or ""
-            reasoning = f.get("fix_reasoning") or ""
-            dc = f.get("done_criteria") or {}
-            _spec = dc.get("spec") or {}     # spec 可能为 None（评审意见 PRA 防空）
-            if dc.get("kind") == "deterministic":
-                dc_line = f"规则 `{_spec.get('recheck', '?')}` 复检不再命中"
-            elif dc.get("kind") == "review":
-                dc_line = _spec.get("question", "定向复核通过")
-            else:
-                dc_line = ""
-            entry = (f"{i}. **`{f.get('file','?')}:{f.get('line','?')}`** — {f.get('rationale','')}\n"
-                     f"   - 修复方向：{direction}")
-            if reasoning and reasoning != f.get("rationale"):
-                entry += f"\n   - 依据：{reasoning}"
-            if dc_line:
-                entry += f"\n   - 达成判据：{dc_line}"
-            entry += (f"\n   - <sub>`{f['rule_id']}` · {f.get('severity','')} · "
-                      f"置信 {f['confidence']:.2f} · 来源 {f['agent']}</sub>")
-            body.append(entry)
-        if len(findings) > MAX_FINDINGS_IN_SUMMARY:
-            body.append(f"{len(shown) + 1}. ……另有 {len(findings) - MAX_FINDINGS_IN_SUMMARY} 条"
-                        f"（确定性核对已覆盖全文，见 check 标题/总闸）。")
+        for f in rule_based[:budget]:
+            n += 1
+            body.append(_entry(n, f))
+        budget -= len(rule_based[:budget])
+        body.append("")
+    if ai_based and budget > 0:
+        body.append("#### AI 评审建议（LLM，含置信度）")
+        body.append("")
+        for f in sorted(ai_based, key=lambda x: -x.get("confidence", 0))[:budget]:
+            n += 1
+            body.append(_entry(n, f))
+    if total > MAX_FINDINGS_IN_SUMMARY:
+        body.append("")
+        body.append(f"……另有 {total - MAX_FINDINGS_IN_SUMMARY} 条（确定性核对已覆盖全文，见 check 标题/总闸）。")
     return "\n".join(head), "\n".join(body)
 
 
@@ -198,16 +218,17 @@ def render_report(risk, findings, banner="", scope_facts=None, checklist_md="",
 
 
 def render_summary(risk, findings):
-    label = {"high": "HIGH · 建议人细看/仲裁", "mid": "MID · 建议人过目",
-             "low": "LOW · 可跳过"}[risk["risk_band"]]
+    label = {"high": "高", "mid": "中", "low": "低"}.get(risk["risk_band"], "未定")
+    action = {"read+arbitrate": "需人工评审后合入", "read": "建议人工过目",
+              "skip": "无需人工介入"}.get(risk["human_action"], "建议人工过目")
     lines = [
         "**Touchstone · ADVISORY**（不拦截合入，与人工审核并行）",
         "",
-        f"风险等级：**{label}**　建议动作：`{risk['human_action']}`　"
-        f"验证建议：`{risk['verification_decision']}`",
+        f"风险等级：**{label}** — {action}",
     ]
+    _blast = {"cross_module_contract": "跨模块契约变更", "security_surface": "涉及安全面"}
     if risk["blast_radius"]:
-        lines.append("影响面：" + ", ".join(risk["blast_radius"]))
+        lines.append("触发因子：" + "、".join(_blast.get(b, b) for b in risk["blast_radius"]))
     lines.append("")
     if not findings:
         lines.append("本次未发现规则范围内的问题。")

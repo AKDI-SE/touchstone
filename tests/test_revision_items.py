@@ -479,12 +479,15 @@ def test_report_layout_invariants():
     h2 = [l for l in lines if l.startswith("## ")]
     h3 = [l for l in lines if l.startswith("### ")]
     assert len(h2) == 1 and "Touchstone · ADVISORY" in h2[0]       # 唯一 H2 承载品牌与定位
+    # 易读性改版·二：发现区新增 #### 分组子标题（规则检查/AI建议），h3 仍是四段，不含 ####
+    h3 = [l for l in h3 if not l.startswith("#### ")]
     assert {l.split("（")[0] for l in h3} == {"### 确定性事实", "### 评审发现",
                                               "### 收敛清单", "### 验证与日志"}  # 并列段同级
     assert any(l.startswith("> ") for l in lines)                   # 横幅 blockquote
     assert "完整 LLM 交互日志：" in body and "原始输出" not in body   # 日志行无括注
     assert "<details><summary>如何申报销项</summary>" in body        # 样板折叠
-    assert "| 风险等级 | 建议动作 | 验证建议 | 影响面 |" in body     # 态势表
+    assert "> **风险等级：" in body and "> **触发因子：**" in body   # 态势区改陈述行（非四列表）
+    assert "| 风险等级 | 建议动作 | 验证建议 | 影响面 |" not in body    # 旧四列枚举表已移除
 
 
 # ---------------- 不可信评审的呈现层接入（PR #44 教训回归）----------------
@@ -502,8 +505,8 @@ def test_unreliable_review_renders_caution_and_distrusts_action():
     assert body.splitlines()[2] == "> [!CAUTION]"            # 置顶（H2 与空行之后第一块）
     assert "0 发现 ≠ 审过没问题" in body
     assert "不销项" in body and "不收敛" in body and "不放行" in body
-    assert "`人工评审`" in body and "原建议不采信" in body     # skip 不采信
-    assert "`skip`" not in body                               # 误导性建议动作不出现
+    assert "需人工评审" in body and "原 AI 建议不采信" in body   # 不可信时改示待人工
+    assert "无需人工介入" not in body                            # skip→"无需人工介入"不该出现（误导）
     assert risk["human_action"] == "skip"                     # 只改展示，不改机器数据
 
 
@@ -520,7 +523,7 @@ def test_reliable_review_keeps_normal_layout():
     risk = {"risk_band": "low", "human_action": "skip",
             "verification_decision": "cheap_only", "blast_radius": []}
     body = render.render_report(risk, [], review_reliable=True)
-    assert "[!CAUTION]" not in body and "`skip`" in body
+    assert "[!CAUTION]" not in body and "无需人工介入" in body   # skip 译为"无需人工介入"
 
 
 # ---------------- pr-agent 评审意见：不可信时保留非降级 banner 内容 ----------------
@@ -570,3 +573,66 @@ def test_loop_reliable_no_progress_still_escalates(rule_index):
     dec, _, _ = loop.loop_step([_finding("R-1")], rule_index, loop.LoopState(round=1),
                                checklist_pair=(prev, cur), review_reliable=True)
     assert dec == "escalate"
+
+
+# ---------------- 易读性改版·二：态势区陈述行 + 发现分组 + 清单方向标题（2026-07-10）----------------
+def test_situation_block_is_prose_not_table():
+    """态势区改「标签+人话」陈述行；枚举译中文；verification_decision 移出（机器信号）。"""
+    from touchstone import render
+    risk = {"risk_band": "high", "human_action": "read+arbitrate",
+            "verification_decision": "targeted_tests",
+            "blast_radius": ["cross_module_contract", "security_surface"]}
+    head, _ = render.render_findings(risk, [])
+    assert "风险等级：高" in head and "需人工评审后合入" in head
+    assert "触发因子：" in head and "跨模块契约变更" in head and "涉及安全面" in head
+    assert "|" not in head                                  # 不再是表格
+    assert "targeted_tests" not in head                     # 验证档不在态势区（移至验证与日志）
+    assert "read+arbitrate" not in head                     # 枚举名不外露
+
+
+def test_findings_grouped_by_rule_vs_ai():
+    """发现按来源分组：规则检查命中（非 pr-agent）/ AI 评审建议（pr-agent）。"""
+    from touchstone import render
+    risk = {"risk_band": "high", "human_action": "read", "verification_decision": "cheap_only",
+            "blast_radius": []}
+    findings = [
+        {"rule_id": "DANGER-001", "severity": "error", "confidence": 1.0, "agent": "contract",
+         "file": "a.py", "line": 1, "rationale": "r", "fix_direction": "d",
+         "done_criteria": {"kind": "deterministic", "spec": {"recheck": "DANGER-001"}}},
+        {"rule_id": "PRA-X", "severity": "warn", "confidence": 0.7, "agent": "pr-agent",
+         "file": "b.py", "line": 2, "rationale": "r", "fix_direction": "d",
+         "done_criteria": {"kind": "review", "spec": {"question": "q？"}}},
+    ]
+    _, body = render.render_findings(risk, findings)
+    assert "#### 规则检查命中（rule-based，可复现）" in body
+    assert "#### AI 评审建议（LLM，含置信度）" in body
+    # 规则检查组在 AI 组之前（确定性优先）
+    assert body.index("规则检查命中") < body.index("AI 评审建议")
+    # review 判据人话化为"需人工复核：..."
+    assert "需人工复核：q？" in body
+
+
+def test_checklist_direction_as_title_and_status_unified():
+    """收敛清单：方向当标题、位置次要、sig 降锚点；状态措辞统一；销项率不溢出。"""
+    from touchstone import checklist as cl
+    c = {"round": 3, "resolved_rate": 0.33, "items": [
+        {"sig": "R@a.py:1", "status": "open", "direction": "收紧正则", "reasoning": "",
+         "done_criteria": {"kind": "deterministic", "spec": {"recheck": "R"}}, "note": ""},
+        {"sig": "R@b.py:2", "status": "done", "direction": "加 try/except", "reasoning": "",
+         "done_criteria": {"kind": "review", "spec": {"question": "q？"}}, "note": "复核通过"},
+        {"sig": "R@c.py:3", "status": "waived", "direction": "后补", "reasoning": "",
+         "done_criteria": {}, "note": "下个 PR"}]}
+    md = cl.render(c, rounds_left=6)
+    assert "销项率 33%" in md                                # 0.33→33%（非 3300%）
+    assert "**收紧正则**" in md and "位置：`a.py:1`" in md    # 方向标题 + 位置次要
+    assert "⬜ 待处理" in md and "✅ 已复核销项" in md
+    assert "🟡 待人核准（author 豁免）" in md
+    assert "状态说明：" not in md                            # 去前缀
+    assert "锚点 `R@a.py:1`" in md                           # sig 降锚点小字
+
+
+def test_checklist_resolved_rate_never_exceeds_100():
+    """销项率兜底：异常大值也不溢出（护栏）。"""
+    from touchstone import checklist as cl
+    md = cl.render({"round": 1, "resolved_rate": 33, "items": []})   # 误传 33 而非 0.33
+    assert "销项率 100%" in md                               # min(100,...) 兜底
