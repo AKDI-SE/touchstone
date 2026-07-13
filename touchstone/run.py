@@ -61,6 +61,8 @@ def _checkout(repo, head_sha, token):
 
 def main():
     ap = argparse.ArgumentParser(prog="touchstone.run", description="对任意 PR 跑 Touchstone 评审")
+    from touchstone import __version__
+    ap.add_argument("--version", action="version", version=f"touchstone {__version__}")
     ap.add_argument("--repo", required=True, help="owner/name")
     ap.add_argument("--pr", required=True, type=int)
     ap.add_argument("--post", action="store_true", help="回贴评论/check(默认 dry-run 只打印)")

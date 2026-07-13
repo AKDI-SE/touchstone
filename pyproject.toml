@@ -13,28 +13,28 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "touchstone-gate"
-version = "0.9.0"
+dynamic = ["version"]
 description = "给 AI 时代的代码合入装一把试金石：PR 评审归一 + 确定性门禁 + 独立验证 + 渐进自治"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }
 dependencies = [
     # 原则：优先成熟开源实现；手写仅限本系统独有领域逻辑或硬运行时约束。
-    "pyyaml>=6.0",
-    "requests>=2.31",   # GitHub REST/GraphQL（连接池 + urllib3.Retry 退避，见 ghclient）
-    "unidiff>=0.7",     # unified diff 解析（替代手写状态机）
-    "openai>=1.30",     # LLM 调用（OpenAI 兼容；支持自定义 base_url）
+    "pyyaml>=6.0,<7",
+    "requests>=2.31,<3",   # GitHub REST/GraphQL（连接池 + urllib3.Retry 退避，见 ghclient）
+    "unidiff>=0.7,<1",     # unified diff 解析（替代手写状态机）
+    "openai>=1.30,<3",  # 实测兼容 2.x（constraints.txt 锁具体版本）     # LLM 调用（OpenAI 兼容；支持自定义 base_url）
 ]
 
 [project.optional-dependencies]
 # verify_change（命门）参考实现的执行侧依赖
-verify = ["pytest>=7.0", "coverage>=7.0"]
+verify = ["pytest>=7.0,<9", "coverage>=7.0,<8"]
 dev = [
-    "pytest>=7.0",
-    "coverage>=7.0",
-    "hypothesis>=6.0",  # 属性测试（tests/test_property.py）
-    "mutmut>=2.0",      # 变异测试（setup.cfg [mutmut]；产物 mutants/ 不入库）
-    "mypy>=1.8",        # 类型检查（渐进：全局宽松，见 [tool.mypy]）
+    "pytest>=7.0,<9",
+    "coverage>=7.0,<8",
+    "hypothesis>=6.0,<7",  # 属性测试（tests/test_property.py）
+    "mutmut>=2.0,<4",      # 变异测试（setup.cfg [mutmut]；产物 mutants/ 不入库）
+    "mypy>=1.8,<2",        # 类型检查（渐进：全局宽松，见 [tool.mypy]）
     "types-PyYAML", "types-requests",
 ]
 
@@ -43,6 +43,9 @@ touchstone = "touchstone.run:main"
 
 [tool.setuptools]
 packages = ["touchstone", "verify"]
+
+[tool.setuptools.dynamic]
+version = { attr = "touchstone.__version__" }
 
 [tool.setuptools.package-data]
 touchstone = ["templates/*.md"]

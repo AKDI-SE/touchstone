@@ -506,6 +506,28 @@ def main():
                    "unverified_claims": n_unverified},
                   f, ensure_ascii=False, indent=2)
 
+    # 运行指标（运维可观测性）：每轮追加一条扁平指标到事件流，供 CI 聚合成 dashboard/告警。
+    # 与 findings.json（autonomy 决策用的完整状态）分开——本条只含可累加的健康数值。失败不阻塞。
+    try:
+        from touchstone import metrics as _metrics
+        _meta = None
+        try:
+            _meta = review_provider.invoke_meta()
+        except Exception as e:
+            # meta 是 best-effort（partial_tool_failure/repaired_parses 计数）；取不到按 None，
+            # 不阻断指标产出——但留痕，不让降级静默（防静默故障约定）。
+            print(f"[info] metrics invoke_meta 取数失败（按 None 继续）: {e}", file=sys.stderr)
+        _metrics.emit(_metrics.build(
+            number, head_sha, risk, findings,
+            engine_status=engine_status, review_reliable=reliable,
+            ai_raw_count=ai_raw_count, loop_decision=decision, gate=gate,
+            unverified_claims=n_unverified, change_class=cls,
+            added_lines=added_lines, round_no=new_state.round, invoke_meta=_meta))
+    except Exception as e:
+        # 指标产出失败不阻塞评审主链——但绝不静默：可观测性子系统自身故障必须留痕
+        # （同 learning_loop 2026-07-04 的防静默约定，ironic-for-observability 反模式）。
+        print(f"[warn] 运行指标产出失败: {e}", file=sys.stderr)
+
     # 风险分流的 job 输出：供下游 verify job 决定是否触发验证
     gho = os.environ.get("GITHUB_OUTPUT")
     if gho:

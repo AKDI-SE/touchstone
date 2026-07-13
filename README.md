@@ -59,7 +59,9 @@ Touchstone **不自己实现通用代码评审**——那部分复用成熟的 P
 
 ```bash
 # 1. 依赖
-pip install -e .            # 打包安装（依赖清单见 pyproject.toml）
+pip install -e .                        # 依赖范围见 pyproject.toml
+# 客户环境复现一致版本：pip install -e . -c constraints.txt
+python -m touchstone.run --version      # 查看版本
 
 # 2. 起步自检(配置 / 端点 / 权限)
 python -m touchstone.preflight
@@ -248,3 +250,10 @@ pr-agent **取 PR** 用 workflow 自带的 `GITHUB_TOKEN`——**无需额外配
 ## 名称由来
 
 试金石是古人辨真金与愚人金的器物:不听成色的说辞,把东西在石上一划,真假立现。它也指"评判事物的标准"。这两层意思正是本系统的立身之本——**对似是而非的判断,不信表象,只认那道客观的标尺。**
+
+## 运维与安全
+
+- **版本**：遵循 SemVer，版本号单一来源在 `touchstone/__init__.py`。首个正式版本 v1.0.0，历史见 `CHANGELOG.md`。
+- **可观测性**：每轮评审产出 `touchstone-metrics.json`（评审可信率、静默故障、放行率、引擎状态分布）。聚合：`python -m touchstone.metrics touchstone-metrics.json`。用于把 LLM 静默故障从"事后追问"变为"主动可见"。
+- **部署前自检**：`python -m touchstone.preflight` 校验配置完整性与连通性，含"不设就撞坑"的关键项（如 `TOUCHSTONE_LLM_CONTEXT_TOKENS` 未按模型卡设置的警告）。
+- **安全**：漏洞披露流程与本系统的安全边界见 `SECURITY.md`。请勿通过公开 issue 报告安全问题。
