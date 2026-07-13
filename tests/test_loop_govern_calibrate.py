@@ -48,6 +48,16 @@ def test_loop_escalate_on_max_rounds(rule_index):
     assert dec == "escalate" and "轮次" in reason
 
 
+def test_loop_escalate_on_no_progress_legacy(rule_index):
+    # 无推进（非清单路径）：相比上一轮既没减少、也没解决任何既有发现（只加不减/含假修）→ 必须升级。
+    # 守抗博弈闸：变异审计发现此分支若被误判为 continue（"escalate"→"continue"）测试无感知，
+    # 则 author 可只加不减地无限拖轮而永不被升级。本测试锁死该分支。
+    st = loop.LoopState(round=1, history=[["OE-001:f:1"]])
+    dec, reason, _ = loop.loop_step(
+        [_f("OE-001", line=1), _f("OE-001", line=2)], rule_index, st)   # 保留旧发现 + 新增，未解决任何既有
+    assert dec == "escalate" and "无推进" in reason
+
+
 def test_loop_marker_roundtrip():
     st = loop.LoopState(round=2, history=[["OE-001:f:1"], ["OE-001:f:2"]])
     body = loop.render_marker(st)
