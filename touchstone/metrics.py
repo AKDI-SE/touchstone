@@ -88,13 +88,18 @@ def load(path=None):
 
 def summarize(records):
     """把事件流聚合成运维关心的比率——评审可信率、静默故障率、被拒率、放行率。
-    这些比率就是告警阈值的输入（如可信率 < 0.8 应报警）。"""
+    这些比率就是告警阈值的输入（如可信率 < 0.8 应报警）。
+
+    无论 records 是否为空都返回**同一套 schema**（空记录给零值默认）——下游
+    监控脚本/告警直接 index rate 字段，若空时只回 ``{"rounds": 0}`` 会 KeyError。
+    """
     n = len(records)
-    if not n:
-        return {"rounds": 0}
     reliable = sum(1 for r in records if r.get("review_reliable"))
+    # 【静默故障】= 引擎自报 ok（看着正常）但本轮被判定不可信（false-convergence 守则抓到的）。
+    # 注意：llm_failed / provider_failed / no_engine 是引擎【已检测到】的故障（大声报错），
+    # 不是静默——把它们算进 silent 会虚高静默指标、误导运维。故这里只数 engine_status=='ok'。
     silent = sum(1 for r in records
-                 if not r.get("review_reliable") and r.get("engine_status") in ("ok", "llm_failed"))
+                 if not r.get("review_reliable") and r.get("engine_status") == "ok")
     converged = sum(1 for r in records if r.get("loop_decision") == "converged")
     blocked_by_claims = sum(1 for r in records if (r.get("unverified_claims") or 0) > 0)
     engine_dist = {}
@@ -103,9 +108,9 @@ def summarize(records):
         engine_dist[k] = engine_dist.get(k, 0) + 1
     return {
         "rounds": n,
-        "review_reliable_rate": round(reliable / n, 3),      # 越高越好；< 0.8 值得排查
+        "review_reliable_rate": round(reliable / n, 3) if n else 0.0,   # 越高越好；< 0.8 值得排查
         "silent_failure_rounds": silent,                     # 疑似静默故障轮数
-        "converged_rate": round(converged / n, 3),
+        "converged_rate": round(converged / n, 3) if n else 0.0,
         "blocked_by_unverified_claims": blocked_by_claims,   # 被 author 自证闸拦下的轮数
         "engine_status_dist": engine_dist,                   # 引擎状态分布（诊断入口）
     }

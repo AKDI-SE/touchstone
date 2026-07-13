@@ -37,19 +37,40 @@ def test_load_skips_corrupt_lines(tmp_path):
 
 
 def test_summarize_rates():
-    recs = [_rec(reliable=True, decision="converged"),
-            _rec(reliable=False, engine="llm_failed", ai=0),   # 静默故障
-            _rec(reliable=True, claims=1)]                     # 被自证闸拦
+    recs = [_rec(reliable=True, decision="converged"),         # 收敛轮（engine ok）
+            _rec(reliable=False, engine="ok", ai=0),           # 静默故障：engine 报 ok 却不可信
+            _rec(reliable=True, claims=1)]                     # 被自证闸拦（engine ok）
     s = M.summarize(recs)
     assert s["rounds"] == 3
     assert s["review_reliable_rate"] == round(2 / 3, 3)
     assert s["silent_failure_rounds"] == 1
     assert s["blocked_by_unverified_claims"] == 1
+    assert s["engine_status_dist"] == {"ok": 3}
+
+
+def test_summarize_detected_failure_is_not_silent():
+    """llm_failed / provider_failed 是引擎【已检测到】的故障，不算静默——只有
+    engine_status=='ok' 却 review_reliable=False 才算（false-convergence 守则抓的）。
+    锁死 silent 计数不把这些大声报错的状态计入，避免虚高静默指标误导运维。"""
+    recs = [_rec(reliable=False, engine="llm_failed", ai=0),
+            _rec(reliable=False, engine="provider_failed", ai=0)]
+    s = M.summarize(recs)
+    assert s["silent_failure_rounds"] == 0
+    assert s["review_reliable_rate"] == 0.0
     assert s["engine_status_dist"]["llm_failed"] == 1
+    assert s["engine_status_dist"]["provider_failed"] == 1
 
 
 def test_summarize_empty():
-    assert M.summarize([])["rounds"] == 0
+    """空记录也必须返回完整 schema（零值默认）——下游监控/告警直接 index rate 字段，
+    若空时只回 {"rounds":0} 会 KeyError。"""
+    s = M.summarize([])
+    assert s["rounds"] == 0
+    assert s["review_reliable_rate"] == 0.0
+    assert s["silent_failure_rounds"] == 0
+    assert s["converged_rate"] == 0.0
+    assert s["blocked_by_unverified_claims"] == 0
+    assert s["engine_status_dist"] == {}
 
 
 def test_build_carries_round_no():
