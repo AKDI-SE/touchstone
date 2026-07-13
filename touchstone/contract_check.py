@@ -201,15 +201,60 @@ def check_secrets(added, rule_index):
     return out
 
 
+# --- DANGER-001：危险代码构造（eval/exec/shell 注入/os.system/pickle）--------------
+# 与 SEC-001 同构（正则扫新增行、跳测试文件、category=security），但：
+#   • 不走 _PLACEHOLDER 过滤——这些是【构造本身】危险，非"值像凭据"，没有占位符概念；
+#   • severity=warn（规则侧）、confidence=0.9——构造有少量合法用途，不一刀切 block，只升 high+full_suite；
+#   • 定位是 SEC-002（污点注入，需 SAST 数据流）的廉价前置兜底：构造出现即风险，不等数据流证实。
+# 已知小误报：注释/docstring 里这些构造的【调用形】字面也会命中（同 SEC-001 不区分注释）——warn 级，人复核即消。
+# 不扫 os.exec*（进程替换，非任意 Python 求值）、yaml.load（需判 Loader 参数，正则不可靠）——留 SEC-002/SAST。
+# 注意：本块的标签/注释刻意不写裸调用字面（如 eval 后跟括号），否则扫描器会 FP 自身源码；
+# 规则的权威字面清单见 .touchstone/standards.yaml 的 DANGER-001 描述。
+_DANGER_PATTERNS = [
+    (re.compile(r"\beval\s*\("), "eval 求值，任意代码执行"),
+    (re.compile(r"\bexec\s*\("), "exec 执行，任意代码执行"),
+    (re.compile(r"\bshell\s*=\s*True\b"), "subprocess 启用 shell，注入面"),
+    (re.compile(r"\bos\.system\s*\("), "os.system 调用，命令注入"),
+    (re.compile(r"\bpickle\.loads?\s*\("), "pickle 反序列化，RCE"),
+]
+
+
+def check_danger_patterns(added, rule_index):
+    """DANGER-001：扫新增行里的危险代码构造（确定性、离线）。与 check_secrets 同构：仅当 DANGER-001
+    在册且 machine_checkable 时生效；跳过测试文件（与 SEC-001 一致——测试夹具里的 eval 不进生产）。
+    产 finding(agent=contract-check, category=security, severity 取自规则=warn, confidence=0.9)
+    → security 类别进 map_verdict 升 high+full_suite：LLM 空回/误判时仍兜住，关上"非 java 坏代码全押 LLM"窗口。"""
+    rule = rule_index.get("DANGER-001", {})
+    if not rule.get("machine_checkable"):
+        return []
+    out = []
+    for path, lines in added.items():
+        if _is_test(path):
+            continue            # 测试文件里的危险构造是夹具/演示，不据此抬风险（生产代码仍扫）
+        for lineno, text in lines:
+            for pat, label in _DANGER_PATTERNS:
+                if pat.search(text):
+                    out.append(_finding("DANGER-001", path, lineno, "security",
+                                        f"危险代码构造（{label}）—— 构造存在即高风险，"
+                                        "即便参数看似可信也应改用安全替代",
+                                        "用安全替代（ast.literal_eval/subprocess 列表参数/json 替 pickle）"
+                                        "；确需使用须在 PR 说明可信边界",
+                                        rule_index, confidence=0.9))
+                    break                               # 一行最多报一条
+    return out
+
+
 def check_contract_consistency(diff_text, contract, rule_index):
-    """确定性核对契约三项声明（需 manifest）+ 无 manifest 也能跑的纯 diff 事实检查 + SEC-001 密钥扫描。"""
+    """确定性核对契约三项声明（需 manifest）+ 无 manifest 也能跑的纯 diff 事实检查 + SEC-001 密钥扫描
+    + DANGER-001 危险代码构造扫描。"""
     contract = contract or {}
     files, added = parse_diff(diff_text)
     return (check_scope(files, contract.get("scope"), rule_index)
             + check_tests(files, contract.get("tests_added"), rule_index)
             + check_reuse(added, contract.get("reused_components"), rule_index)
             + check_untested_code(files, rule_index)
-            + check_secrets(added, rule_index))
+            + check_secrets(added, rule_index)
+            + check_danger_patterns(added, rule_index))
 
 
 # ============================================================================
