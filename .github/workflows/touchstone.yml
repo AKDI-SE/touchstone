@@ -87,6 +87,13 @@ jobs:
           name: touchstone-findings
           path: touchstone-findings.json
           if-no-files-found: ignore
+      - name: Upload metrics (运维可观测性：可信率/静默故障/放行率聚合)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: touchstone-metrics
+          path: touchstone-metrics.json
+          if-no-files-found: ignore
 
   # ---- 可选深检：verify（默认关；vars.VERIFY_ENABLED=='true' 且风险分流判为需验证时才跑）----
   # 凭据隔离（设计 §6.6 的落地）：verify 拆成两个 job——

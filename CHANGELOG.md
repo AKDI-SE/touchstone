@@ -1,8 +1,20 @@
 # Changelog
 
 本文件记录 Touchstone 的发布版本。设计的逐版迭代历史见 `docs/touchstone-design.html` 的变更历史。
+版本遵循语义化版本（SemVer）。版本号单一来源在 `touchstone/__init__.py` 的 `__version__`。
 
-## 未发布 — 2026-07-09（author 自证销项的校验缺口加固）
+## [1.0.0] — 2026-07-10（首个正式版本）
+
+**商用化 P0 加固（本批）**：
+- **版本发布纪律**：版本号统一到单一来源 `touchstone/__init__.py`（修复此前 `__init__` 0.1.0 与 pyproject 0.9.0 不一致），pyproject 动态读取；新增 `--version` CLI；CHANGELOG 归档为可引用的 v1.0.0。
+- **依赖锁定**：主依赖加上界（`pyyaml>=6.0,<7` / `requests>=2.31,<3` / `unidiff>=0.7,<1` / `openai>=1.30,<3`，防上游破坏性大版本静默破坏客户环境）；新增 `constraints.txt` 锁一组已验证版本供客户复现。
+- **安全政策**：新增 `SECURITY.md`——私密漏洞披露渠道、响应 SLA、以及本系统五条关键安全边界（author 不可自证闭环 / 不可信不得伪装通过 / 凭据隔离 / 确定性核对不打折 / 权威状态只信机器人）。
+- **配置强校验**：preflight 增补"不设就撞坑"的关键配置校验——`TOUCHSTONE_LLM_CONTEXT_TOKENS` 未按模型卡设置的警告（PR #47 被拒根因类）、过小值检测（PR #44 裁空类）、VERIFY_ENABLED 缺凭据、PRAGENT 超时过小（PR #48 慢模型类）。部署前一键暴露隐患。
+- **运行指标（可观测性）**：新增 `touchstone/metrics.py`——每轮评审产出扁平指标事件流（评审可信率 / 静默故障轮数 / 放行率 / 引擎状态分布 / author 自证拦截数），workflow 上传 `touchstone-metrics.json` artifact，`python -m touchstone.metrics` 聚合。把历史上"靠人追问才发现"的 LLM 静默故障变为主动可见、可告警。5 条测试。
+
+以下为 1.0.0 汇集的各轮加固明细（时间倒序）：
+
+### 2026-07-09（author 自证销项的校验缺口加固）
 
 问题分析："author 能否通过写 ack 答复、在不修改/假修改下闭环 touchstone 意见列表"——答案是**能**，且直通自动放行。已修复。
 
@@ -15,7 +27,7 @@
 - **呈现**：报告横幅点名"N 条 waived/split 系 author 自证、机器未验证"；waived/split 的 note 加"（待人核准，机器未验证）"前缀，note 内容无论塞什么都改不了 status。
 - 6 条对抗测试 + 端到端复现（author waived 不改代码 → loop continue + autonomy 双闸 failed）。526 → **532** 测试全绿。
 
-## 未发布 — 2026-07-09（LLM 静默故障系统排查：部分降级与截断修复可见化）
+### 2026-07-09（LLM 静默故障系统排查：部分降级与截断修复可见化）
 
 对"LLM 出问题但评审意见不体现"做全链路问题排查（pr-agent 0.37 两工具内部 → runner 出口 → provider 解析 → 判定/呈现），在既有机制（_degraded 结构化上报 / stdout fd 级隔离 / 分层失败签名 / review_reliable 判定+CAUTION 呈现 / 0-发现溯源）之外，识别并修复三个新盲区，另确认两类残余风险及其缓解：
 
@@ -26,7 +38,7 @@
 - **残余 R1（不可消除，已有缓解）**：LLM 合法返回空建议（格式正确、内容为空判断）与"真审完没问题"不可区分——缓解为 0-发现溯源行 + added_lines 启发式 + 交互日志全量留痕。**残余 R2**：self-reflect 阶段模型劣化把全部建议打成低分被阈值过滤、或端点被换成弱模型仍返回 200——属质量漂移非故障，缓解为校准回路的采纳率监控（TF-GRPO 奖励侧可见）；可选增强是 preflight 加最小提示词回环校验（留待团队决策）。
 - 6 条回归测试；review_pr 返回契约增加 llm_notes 键。521 → **526** 测试全绿。
 
-## 未发布 — 2026-07-09（检测器盲区：review 工具解析层失败漏检）
+### 2026-07-09（检测器盲区：review 工具解析层失败漏检）
 
 对"LLM 反馈为空"根因链做独立代码级复核（pr-agent 0.37 源码 + 本仓提交历史 + prompt token 实测），确认 #45/#46/5c1129c 的诊断大方向成立，并修正一处不精确——它构成现行检测器的真实盲区：
 
@@ -34,7 +46,7 @@
 - **复核结论 B（空响应被吞，检测器可靠）**：一半成立。improve 的 YAML 解析在 `_get_prediction` 内、位于 retry 圈内，空 content 的解析失败重抛，stderr 必含 "Failed to generate prediction"——旧检测器覆盖 ✓。**review 的解析在 retry 圈外**（retry 只包取原始文本的 `_prepare_prediction`，解析在其后的 `_prepare_pr_review`）：空 content 走 "Failed to parse AI prediction after fallbacks" / "Failed to parse review data" / run() 顶层 "Failed to review PR:" 路径，**不含**上述签名。旧单签名检测器在"review 空响应 + improve 恰好 0 建议（小 PR 合法情形）"下漏检，engine_status 误判 ok，仅剩 added_lines≥20 启发式兜底——小 PR 兜不住。修复：`_PRED_FAILURE_SIG` 扩展为分层信号集合 `_PRED_FAILURE_SIGS`（4 串，逐层注明来源），判据其余不变（仍需本轮零建议共同成立，improve 单独失败而 review 有产出不误报）。3 条盲区回归测试。
 - **复核结论 C（ai_timeout）**：成立，litellm_ai_handler 确将 `config.ai_timeout` 透传 acompletion。
 
-## 未发布 — 2026-07-09（不可信评审的呈现层接入）
+### 2026-07-09（不可信评审的呈现层接入）
 
 PR #44/#46 暴露的最后一块拼图：`review_reliable` 信号已接判定层（#46：不销项/不收敛/不放行），但**呈现层缺位**——不可信轮的报告仍只在横幅里低调提示"改动不小却 0 建议——建议人工扫一眼"，态势表照常显示由 0 发现推得的 LOW·可跳过/skip，评审失败反而以最低风险示人。本轮接入：
 
@@ -42,7 +54,7 @@ PR #44/#46 暴露的最后一块拼图：`review_reliable` 信号已接判定层
 - **态势表不采信**：建议动作改示 `人工评审`（原建议不采信）、风险等级注明"仅确定性信号"。只改展示——result marker 里的机器数据原样写入，校准与台账重建不受影响。
 - 铁律写入模板头注，`test_unreliable_review_renders_caution_and_distrusts_action` 等三条回归测试锁死；设计文档变更历史记阶段十。515 → **518** 测试全绿。
 
-## 未发布 — 2026-07-04（评审报告易读性改版）
+### 2026-07-04（评审报告易读性改版）
 
 七段版面**语义与信息不减**，呈现按易读性重排（版面变更=设计变更：模板头注、设计文档 §4.8 七段表与变更历史已同步）。排版铁律：
 
@@ -52,14 +64,14 @@ PR #44/#46 暴露的最后一块拼图：`review_reliable` 信号已接判定层
 - **降噪**：状态横幅（循环/降级/溯源）统一 blockquote 与正文区隔；"完整 LLM 交互日志"去实现细节括注（原"（pr-agent 原始输出 / LLM 配置 / ping）"）；每轮重复的申报方式样板折叠进 `<details>`；收敛清单标题去品牌前缀（品牌只在 H2 出现一次）。
 - 新增 `test_report_layout_invariants` 把排版铁律固化为回归测试。488 → **489** 测试，既有断言零改动全绿。
 
-## 未发布 — 2026-07-04（工程化加固·第四轮：工具链收尾）
+### 2026-07-04（工程化加固·第四轮：工具链收尾）
 
 - **mypy 渐进接入**：pyproject 增加 `[tool.mypy]`（默认宽松：ignore_missing_imports，暂不开 check_untyped_defs——首测其在本仓 dict 密集风格下产生 71 处推断噪音，等核心结构补 TypedDict 后逐模块收紧）。默认模式抓到 4 处真问题并修复，其中 1 处是**类型契约与语义不符**：`VerificationResult.passed` 声明 `bool` 但语义上 None=无法判定（unsupported/漂移兜底），修正为 `Optional[bool]` 并注明三值语义。CI lint job 增加 mypy 步骤。
 - **mutmut 扩围并修通**：变异测试范围从 contract_check 一个文件扩至全部确定性裁决模块（+stack_rules/loop/checklist——红线契约的裁决代码，变异测试对其价值最高）。同时修通此前"mutmut 3.x 与本仓测试集成需单独配置"的遗留：setup.cfg 改多行列表语法 + `also_copy` 带上沙箱缺的 `.touchstone/` 规则文件与完整包目录。已实测端到端可跑（4 模块共 1798 个变异体）；全量跑一遍并建立击杀率基线留作团队任务。
 - **verify_change CLI 函数化 + 补测**：`__main__` 裸块（100+ 行零覆盖）重构为可测的 `main(argv)`（learning_loop 同款模式，退出码 0/1/2 语义不变）；新增 `tests/test_cli_paths.py`（plan 落盘/execute 读回/产物缺失退 2/verify 不过退 1/GitHub 回贴、autonomy --graduate 与 no-op 路径）。verify_change 覆盖率 73%→95%，总覆盖率 90%→**92%**，CI 门槛 85→**88**。
 - **杂项**：`push-to-github.sh`（一次性引导脚本）挪至 `scripts/`；测试 481→**488**。
 
-## 未发布 — 2026-07-04（工程化加固·第三轮：模块拆分）
+### 2026-07-04（工程化加固·第三轮：模块拆分）
 
 两个巨型模块按职责拆分，全部既有引用路径经门面再导出零改动兼容。测试 481 全绿、逐文件独立通过、ruff 清零、覆盖率 90% 不变。
 
@@ -67,7 +79,7 @@ PR #44/#46 暴露的最后一块拼图：`review_reliable` 信号已接判定层
 - **verify runner 层拆分**：`verify/runners.py` 承接 PythonRunner/MavenRunner/select_runner 及全部执行/覆盖/变异落地（pytest/coverage/AST 变异/JaCoCo/PIT）；verify_change（861→471 行）只留裁决编排（plan/execute、判过条件、充分性阶梯、diff 改动行解析）。新语言 runner（Go/TS/…）在 runners.py 挂 select_runner 即可——"换语言只需替换 LANG RUNNER"从头注承诺变成正式扩展点。verify 运行方式统一为 `python -m verify.verify_change`（workflow/RUNBOOK/测试同步）。
 - **测试迁移**：monkeypatch 需打在实现所在模块才能影响内部调用——涉及 runner 内部的 patch 目标从 verify_change 迁至 runners（17 处），learning_loop 的 STORE_PATH reload / _gh_get patch 迁至 experience_store / ground_truth（既有 import_hygiene 守卫自动覆盖四个新模块）。
 
-## 未发布 — 2026-07-04（工程化加固·第二轮）
+### 2026-07-04（工程化加固·第二轮）
 
 第一轮的两个"留作后续"项落地（lint 工具链、渲染层拆分），过程中又抓到并根治一类**被双重掩盖的运行期地雷**。测试 478 → **481**，ruff 全绿。
 
@@ -76,7 +88,7 @@ PR #44/#46 暴露的最后一块拼图：`review_reliable` 信号已接判定层
 - **verify 执行环境的 token 落盘缺口（第一轮遗留的过度承诺，自查修复）**：verify_plan/verify_execute 未写 job 级 permissions，继承了 workflow 级 `checks: write`；且 actions/checkout 默认 `persist-credentials: true` 会把 GITHUB_TOKEN 写进 `.git/config`——verify_execute 里执行的 PR 代码读 `.git/config` 即可拿到足以**伪造 touchstone/gate 总闸**的 token（该缺口在拆分前的单 verify job 就存在，"GITHUB_TOKEN 已去掉"只去了 env 未去凭据落盘）。现两 job 权限降为 `contents: read` + checkout `persist-credentials: false`："执行环境零凭据"承诺至此才真正成立。
 - **ruff 工具链（克制配置）**：pyproject 增加 `[tool.ruff]`——只选真缺陷规则（F/E7/E9/B/PLE），显式豁免 E701/E702/E731（单行紧凑写法是本仓刻意风格，不做格式化重排以免噪音淹没语义变更）。首跑 31 处命中，修复其中真缺陷：3 处死导入（含 orchestrator 拆分后彻底不用的 `re`）、3 处 `raise ... from e` 补异常因果链（排障时可见原始异常）、1 处 `zip(strict=True)` 把 rollout 同长不变式显式化、2 处无占位 f-string、测试侧重复导入/死变量各 1。CI 新增 lint job。
 
-## 未发布 — 2026-07-04（工程化加固）
+### 2026-07-04（工程化加固）
 
 外部代码评审驱动的一轮工程卫生与安全边界修复。测试 109 → **478**，覆盖率 52% → **90%**（verify 0% → 81%）。
 
@@ -88,7 +100,7 @@ PR #44/#46 暴露的最后一块拼图：`review_reliable` 信号已接判定层
 - **ghclient「唯一入口」承诺兑现（P1）**：`autonomy` 的 5 处裸 urllib 调用（check_base_fresh / update-branch / GraphQL 入队 / merge 执行 / marker 评论）全部迁至 ghclient——自动合并链路此前无任何重试与 Retry-After 处理；orchestrator 清理 urllib 残留 except 与死导入。
 - **可排障性（P2）**：learning_loop 三处静默吞异常（LLM 调用回退 / 评审线程解析 / diff 取数）补 stderr 留痕；`gitcode_check` 的 `GITCODE_DIFF_CMD` 执行去 `shell=True`（改 shlex.split，管道需求需显式 `bash -c` 包裹，让 shell 语义成为明示选择）。
 
-## 未发布 — 2026-07-04
+### 2026-07-04
 
 2026-06-25 技术方案评审已采纳意见（1–7、10）的落地实现（意见 8、9、11 明确不采纳）。修订设计与数据结构-流程锚定矩阵见 `docs/touchstone-design-revision.html`。
 
@@ -103,7 +115,7 @@ PR #44/#46 暴露的最后一块拼图：`review_reliable` 信号已接判定层
 - **真实数据回放发现并修复一处缺陷**：台账继承的种子清单（round=0）曾使同源新 PR 的第 1 轮被误判「无推进」直接升级（author 尚未获得修改机会）——`checklist.no_progress` 增加第 0 轮闸 + 回归测试。这正是意见 6「用真实数据核对中间状态」的预期收益。
 - 测试 444 → **469**（+25：`tests/test_revision_items.py` 覆盖范围事实/字段改造/清单状态机与复核/台账同源与伪造防御/版面七段/种子清单回归），全绿、离线。
 
-## 未发布 — 2026-07-03
+### 2026-07-03
 
 v0.2.1 之后的积累：基准仓收敛到 **AKDI-SE/touchstone** main（PR #16 合入），并补齐文档与代码的一致性。
 

@@ -497,6 +497,24 @@ def main():
                    "unverified_claims": n_unverified},
                   f, ensure_ascii=False, indent=2)
 
+    # 运行指标（运维可观测性）：每轮追加一条扁平指标到事件流，供 CI 聚合成 dashboard/告警。
+    # 与 findings.json（autonomy 决策用的完整状态）分开——本条只含可累加的健康数值。失败不阻塞。
+    try:
+        from touchstone import metrics as _metrics
+        _meta = None
+        try:
+            _meta = review_provider.invoke_meta()
+        except Exception:
+            pass
+        _metrics.emit(_metrics.build(
+            number, head_sha, risk, findings,
+            engine_status=engine_status, review_reliable=reliable,
+            ai_raw_count=ai_raw_count, loop_decision=decision, gate=gate,
+            unverified_claims=n_unverified, change_class=cls,
+            added_lines=added_lines, round_no=(loop_info and None), invoke_meta=_meta))
+    except Exception:
+        pass
+
     # 风险分流的 job 输出：供下游 verify job 决定是否触发验证
     gho = os.environ.get("GITHUB_OUTPUT")
     if gho:

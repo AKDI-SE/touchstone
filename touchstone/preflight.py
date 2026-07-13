@@ -42,6 +42,44 @@ def check_config(env):
     # 常见坑：经代理访问公网时代理未配好会 407/挂起
     if env.get("HTTPS_PROXY") or env.get("HTTP_PROXY"):
         rows.append(("proxy", True, "检测到代理变量——若经代理访问公网，确认 *_PROXY/NO_PROXY 配置正确"))
+
+    # 「不设就撞默认坑」的配置强校验（运维成熟度）——这些不设不会立刻报错，但会在真实
+    # 运行中触发已知故障，preflight 必须提前 WARN 并说明后果，而非等线上撞坑再排查：
+    #
+    # TOUCHSTONE_LLM_CONTEXT_TOKENS 未按模型卡设置 → 回退 32768；若模型真实窗口 < 32768
+    # 会超窗被端点 400 拒（大 PR 触发），> 32768 则没吃满上下文。是 PR #47 被拒的根因类别。
+    ctx = env.get("TOUCHSTONE_LLM_CONTEXT_TOKENS")
+    if not ctx:
+        rows.append(("LLM 上下文窗口", True,
+                     "未设 TOUCHSTONE_LLM_CONTEXT_TOKENS → 回退 32768。强烈建议按模型卡显式设置："
+                     "过小端点会因输入超窗拒绝大 PR，过大则浪费上下文（见 SECURITY/CHANGELOG）"))
+    else:
+        try:
+            _c = int(ctx)
+            if _c < 8192:
+                rows.append(("LLM 上下文窗口", False,
+                             f"TOUCHSTONE_LLM_CONTEXT_TOKENS={_c} 过小——diff 极易被裁空致 LLM 0 建议"
+                             "（PR #44 类故障）。请核对是否误填了输出上限而非上下文窗口"))
+            else:
+                rows.append(("LLM 上下文窗口", True, f"{_c} tokens（已按模型卡声明）"))
+        except ValueError:
+            rows.append(("LLM 上下文窗口", False, f"TOUCHSTONE_LLM_CONTEXT_TOKENS={ctx!r} 非整数"))
+
+    # VERIFY_ENABLED 开启但缺 LLM 凭据 → verify 阶段必挂
+    if env.get("VERIFY_ENABLED") == "true" and missing_llm:
+        rows.append(("verify 前置", False,
+                     f"VERIFY_ENABLED=true 但缺 {missing_llm}——verify 的 plan 阶段会因缺凭据失败"))
+
+    # PRAGENT 超时过小 + 慢模型（如 glm）→ 子进程超时（PR #48 类）
+    _to = env.get("TOUCHSTONE_PRAGENT_TIMEOUT")
+    if _to:
+        try:
+            if int(_to) < 180:
+                rows.append(("PR-Agent 超时", False,
+                             f"TOUCHSTONE_PRAGENT_TIMEOUT={_to}s 偏小——慢模型（如 glm）易超时致本轮不可信；"
+                             "建议 ≥ 360s"))
+        except ValueError:
+            rows.append(("PR-Agent 超时", False, f"TOUCHSTONE_PRAGENT_TIMEOUT={_to!r} 非整数"))
     return rows
 
 
