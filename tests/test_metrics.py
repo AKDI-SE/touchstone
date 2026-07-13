@@ -50,3 +50,14 @@ def test_summarize_rates():
 
 def test_summarize_empty():
     assert M.summarize([])["rounds"] == 0
+
+
+def test_build_carries_round_no():
+    """round_no 必须透传到 record['round']。orchestrator 曾因 `round_no=(loop_info and None)`
+    笔误（loop_info 是 tuple、恒返回 None）致该字段恒为 null，可观测性失真——此测试锁死
+    build 不丢 round_no（修复见 orchestrator.py metrics.emit 调用处）。"""
+    r = M.build(42, "deadbeef1234", {"risk_band": "high"}, [],
+                engine_status="ok", review_reliable=True, ai_raw_count=0,
+                loop_decision="converged", gate="2/3", unverified_claims=0,
+                change_class="code", added_lines=10, round_no=7)
+    assert r["round"] == 7

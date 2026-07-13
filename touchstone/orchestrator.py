@@ -511,7 +511,7 @@ def main():
             engine_status=engine_status, review_reliable=reliable,
             ai_raw_count=ai_raw_count, loop_decision=decision, gate=gate,
             unverified_claims=n_unverified, change_class=cls,
-            added_lines=added_lines, round_no=(loop_info and None), invoke_meta=_meta))
+            added_lines=added_lines, round_no=new_state.round, invoke_meta=_meta))
     except Exception:
         pass
 
