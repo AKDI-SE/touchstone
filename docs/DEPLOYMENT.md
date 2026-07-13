@@ -87,6 +87,20 @@ python -m touchstone.metrics touchstone-metrics.json
 
 这是把「LLM 静默故障靠人追问才发现」变成「主动可见、可告警」的抓手——建议把可信率、被拒率接你的监控/告警。
 
+### 告警（可选，默认关）
+
+在 metrics 之上，Touchstone 可把关键信号**主动投递**到你自己的渠道。**默认不外呼**（只保留 metrics artifact）；要开启设 `TOUCHSTONE_ALERT_ENABLED=true`。目标全由你配、进你自己的渠道，**不回传任何第三方**。
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `TOUCHSTONE_ALERT_ENABLED` | 关 | 总开关；非 `true` 则不外呼 |
+| `TOUCHSTONE_ALERT_CHANNELS` | `github-issue,github-pr-comment` | 通道集。GitHub 原生复用同一 `GITHUB_TOKEN`、**不出外网**，内网/断网首选 |
+| `TOUCHSTONE_ALERT_WEBHOOK` | — | 设了则加 webhook 通道，POST 告警 JSON（企业微信/钉钉/自建；该 URL 须从 runner 可达） |
+| `TOUCHSTONE_ALERT_RELIABLE_MIN` | 0.8 | 评审可信率低于此 → 告警 |
+| `TOUCHSTONE_ALERT_SILENT_MAX` | 0 | 静默故障轮数超过此 → 告警 |
+
+触发规则：单轮高危（静默故障 / 引擎降级 / author 自证待核准）→ 贴对应 **PR 评论**；滚动聚合（可信率过低 / 持续静默故障）→ 开或更新一个带 `touchstone-alert` label 的**跟踪 Issue**（去重防刷屏）。告警投递失败**不影响评审**（可观测性不当门禁）。纯内网客户走 GitHub 原生即可，公网 webhook 连不通就别配。
+
 ## 8. 排障（常见坑）
 
 先跑 `touchstone doctor`——下面这些它大多会直接点出来。

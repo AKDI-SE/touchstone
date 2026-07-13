@@ -517,12 +517,24 @@ def main():
             # meta 是 best-effort（partial_tool_failure/repaired_parses 计数）；取不到按 None，
             # 不阻断指标产出——但留痕，不让降级静默（防静默故障约定）。
             print(f"[info] metrics invoke_meta 取数失败（按 None 继续）: {e}", file=sys.stderr)
-        _metrics.emit(_metrics.build(
+        _rec = _metrics.build(
             number, head_sha, risk, findings,
             engine_status=engine_status, review_reliable=reliable,
             ai_raw_count=ai_raw_count, loop_decision=decision, gate=gate,
             unverified_claims=n_unverified, change_class=cls,
-            added_lines=added_lines, round_no=new_state.round, invoke_meta=_meta))
+            added_lines=added_lines, round_no=new_state.round, invoke_meta=_meta)
+        _metrics.emit(_rec)
+        # 告警钩子（可观测性投递）：按 env 选通道，判定并投递到客户自己配置的渠道。
+        # 总开关不开 → 无操作（只保留上面的 metrics artifact）。失败绝不冒泡——不拖垮评审 job；
+        # 但留痕（防静默故障约定）：告警子系统自身故障不许静默（同 ironic-for-observability）。
+        try:
+            from touchstone import alert as _alert
+            _agg = _metrics.summarize(_metrics.load())
+            _alert.run(_rec, _agg, dict(os.environ),
+                       {"owner": owner, "repo": repo, "number": number,
+                        "token": token, "run_url": _run_link()})
+        except Exception as e:
+            print(f"[warn] 告警投递失败（不阻塞评审）: {e}", file=sys.stderr)
     except Exception as e:
         # 指标产出失败不阻塞评审主链——但绝不静默：可观测性子系统自身故障必须留痕
         # （同 learning_loop 2026-07-04 的防静默约定，ironic-for-observability 反模式）。
