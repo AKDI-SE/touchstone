@@ -219,7 +219,9 @@ def no_progress(prev, cur):
 
 
 _STATUS_MARK = {"open": "- [ ]", "done": "- [x]", "waived": "- [x]", "split": "- [x]"}
-_STATUS_LABEL = {"open": "", "done": "✅ 已销项", "waived": "🟡 waived（待人核准）", "split": "🔀 已拆出"}
+# 易读性改版·二：措辞统一，一项一态。done=机器复核过；waived/split=author 自证待人核准。
+_STATUS_LABEL = {"open": "⬜ 待处理", "done": "✅ 已复核销项",
+                 "waived": "🟡 待人核准（author 豁免）", "split": "🟡 待人核准（author 拆出）"}
 
 
 def render(checklist, rounds_left=None, lineage=None):
@@ -229,7 +231,7 @@ def render(checklist, rounds_left=None, lineage=None):
     # 版面铁律（易读性改版）：品牌名只在报告 H2 标题出现一次，本段与③④⑥并列用 H3；
     # 每轮重复的申报方式样板折叠进 <details>，不占屏。
     lines = [f"### 收敛清单（第 {cl['round']} 轮 · 销项率 "
-             f"{int(cl['resolved_rate'] * 100)}%"
+             f"{min(100, max(0, int(round(cl.get('resolved_rate', 0) * 100))))}%"
              + (f" · 剩余轮次 {rounds_left}" if rounds_left is not None else "") + "）"]
     if lineage and lineage.get("lineage"):
         hist = "、".join(f"#{e['number']}（{e['rounds']} 轮）" for e in lineage["lineage"])
@@ -240,19 +242,24 @@ def render(checklist, rounds_left=None, lineage=None):
     for it in cl["items"]:
         mark = _STATUS_MARK.get(it["status"], "- [ ]")
         label = _STATUS_LABEL.get(it["status"], "")
-        head = f"{mark} `{it['sig']}`" + (f" {label}" if label else "")
+        # 主文本改「方向（人话）+ 位置」，sig 降为行尾锚点小字（机器匹配用，人不必读）。
+        direction = it.get("direction") or ""
+        loc = it["sig"].split("@", 1)[-1] if "@" in it["sig"] else it["sig"]
+        title = f"**{direction}**" if direction else "（待补修复方向）"
+        head = f"{mark} {title}" + (f" {label}" if label else "")
         lines.append(head)
-        if it["direction"]:
-            lines.append(f"  - 方向：{it['direction']}")
+        lines.append(f"  - 位置：`{loc}`")
         if it["reasoning"] and it["reasoning"] != it["direction"]:
             lines.append(f"  - 依据：{it['reasoning']}")
         dc = it.get("done_criteria") or {}
         if dc.get("kind") == "deterministic":
             lines.append(f"  - 达成判据：规则 `{dc.get('spec', {}).get('recheck', '?')}` 复检不再命中")
         elif dc.get("kind") == "review":
-            lines.append(f"  - 达成判据：{dc.get('spec', {}).get('question', '定向复核通过')}")
+            q = (dc.get("spec") or {}).get("question", "")
+            lines.append(f"  - 达成判据：需人工复核：{q}" if q else "  - 达成判据：定向复核通过")
         if it["note"]:
-            lines.append(f"  - 状态说明：{it['note']}")
+            lines.append(f"  - 说明：{it['note']}")
+        lines.append(f"  <sub>锚点 `{it['sig']}`</sub>")
     lines.append("")
     lines.append("<details><summary>如何申报销项</summary>")
     lines.append("")
