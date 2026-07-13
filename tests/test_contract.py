@@ -108,6 +108,62 @@ def test_sec001_skips_test_file_fixtures(rule_index):
     assert not any(f["rule_id"] == "SEC-001" for f in finds)
 
 
+# ---------------- DANGER-001：危险代码构造扫描（确定性、离线，关 eval-bypass）----------------
+def test_danger001_detects_each_pattern(rule_index):
+    """eval/exec/shell=True/os.system/pickle.load 五种构造各命中一条，category=security。"""
+    diff = build_diff([("src/x.py", [
+        "    return eval(user_input)",
+        "    exec(user_input)",
+        "    subprocess.run(cmd, shell=True)",
+        "    os.system(user_input)",
+        "    pickle.loads(blob)",
+    ], True)])
+    finds = [f for f in cc.check_contract_consistency(diff, {}, rule_index)
+             if f["rule_id"] == "DANGER-001"]
+    assert len(finds) == 5
+    assert all(f["category"] == "security" for f in finds)
+
+
+def test_danger001_skips_test_file_fixtures(rule_index):
+    """与 SEC-001 一致：测试文件里的危险构造（夹具/演示，不进生产）不据此抬风险。
+    刻意跳过——生产代码（非 test 路径）的 eval 仍由 test_danger001_detects_each_pattern 守。"""
+    diff = build_diff([("tests/test_eval.py", ["    return eval(user_input)"], True)])
+    finds = cc.check_contract_consistency(diff, {}, rule_index)
+    assert not any(f["rule_id"] == "DANGER-001" for f in finds)
+
+
+def test_danger001_no_substring_false_positive(rule_index):
+    """词边界 + 调用括号锚定：executor( / os.execv( / medieval( 不误报；且 shell/pickle
+    模式有前导 \\b——use_shell=True、mypickle.loads(（标识符内子串）不误报。"""
+    diff = build_diff([("src/x.py", [
+        "runner = executor(cmd)",      # executor，非 exec()
+        "os.execv(path, args)",        # 进程替换，非任意 Python 求值
+        "x = medieval(arg)",           # 含 eval 子串但非调用
+        "use_shell = True",            # shell 是 use_shell 的子串，前导 \\b 拦住
+        "blob = mypickle.loads(data)",  # pickle 是 mypickle 的子串，前导 \\b 拦住
+    ], True)])
+    finds = cc.check_contract_consistency(diff, {}, rule_index)
+    assert not any(f["rule_id"] == "DANGER-001" for f in finds)
+
+
+def test_danger001_is_warn_not_block(rule_index):
+    """severity=warn（非 block_candidate——eval/exec 有少量合法用途，只强制 high+full_suite
+    让人复核，不一刀切阻断）；confidence=0.9（>conf_min 进风险路由，<1.0 留余地）。"""
+    diff = build_diff([("src/x.py", ["    return eval(user_input)"], True)])
+    f = next(f for f in cc.check_contract_consistency(diff, {}, rule_index)
+             if f["rule_id"] == "DANGER-001")
+    assert f["severity"] == "warn"
+    assert f["confidence"] == 0.9
+
+
+def test_danger001_respects_machine_checkable_gate(rule_index):
+    """DANGER-001 关掉 machine_checkable → check_danger_patterns 不产出（门控与 SEC-001 同构）。"""
+    ridx_off = dict(rule_index)
+    ridx_off["DANGER-001"] = {**rule_index["DANGER-001"], "machine_checkable": False}
+    out = cc.check_danger_patterns({"src/x.py": [(1, "    return eval(user_input)")]}, ridx_off)
+    assert out == []
+
+
 # ---------------- 内联锚定（删除行/超界行降级）----------------
 _ANCHOR_DIFF = (
     "diff --git a/app/x.py b/app/x.py\n--- a/app/x.py\n+++ b/app/x.py\n"

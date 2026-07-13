@@ -218,25 +218,42 @@ def test_sensitive_path_forces_high_even_when_llm_empty():
     assert out["ai_raw_count"] == 0                       # LLM 确实空回，全靠确定性路径兜住
 
 
-def test_CHARACTERIZES_nonjava_badeval_with_dummy_test_bypasses_to_low_risk():
-    """【刻画当前行为·真实绕过·已知设计限制】.py 的 eval(user_input) + 空壳测试文件 + LLM 空回
-    → risk_band=low、findings=[]、review_reliable=True——坏代码【完全未被确定性规则抓到】。
-    链路：stack_rules 只扫 java/proto（eval 不在内）→ SEC-001 只匹配密钥（eval 不匹配）→
-    空壳测试文件击败 TEST-001 缺测试启发式（该启发式本会把单独坏代码顶到 mid）→ 改动小(<20行)
-    → review_reliable=True。即：确定性规则只覆盖【已知模式】，非常规坏代码的评审完全依赖 LLM；
-    LLM 空回 + 一行空壳测试即可绕到 low-risk 放行。本测试锁死该绕过行为并显式标注为
-    【已知 gap，非契约变更不改】——缓解需扩确定性扫描到非常规危险模式 / 不让空壳测试击败 TEST-001
-    / 小改动也要求 LLM 可靠，均属门禁语义变更，走联审。"""
+def test_danger_pattern_closes_eval_bypass_even_when_llm_empty():
+    """【关上 eval-bypass·确定性兜底】.py 的 eval(user_input) + 空壳测试文件 + LLM 空回
+    → DANGER-001（check_danger_patterns 扫新增行 eval( 构造）命中 → security 类别 →
+    risk_band=high、verification=full_suite、findings 含 DANGER-001。
+    即：此前记录的『eval+空壳测试+LLM空回 绕到 low-risk』绕过【已被 DANGER-001 关上】——
+    即便 glm 空回/误判，eval 构造仍被确定性规则兜住，不全押 LLM（见 test CHARACTERIZES 残余 gap
+    为 eval 落在测试文件这一情形）。"""
     from touchstone import orchestrator as orc
     from touchstone import review_provider as RP
     pr = _pr([("src/utils/eval_helper.py", ["result = eval(user_input)"], True),
-              ("tests/test_eval.py", ["def test_noop(): pass"], True)],   # 空壳测试击败 TEST-001
+              ("tests/test_eval.py", ["def test_noop(): pass"], True)],
              _empty_llm())
     out = orc.review_pr(pr, {}, _standards_full())
-    assert out["risk"]["risk_band"] == "low"             # 刻画：当前确被绕到 low
-    assert out["findings"] == []                         # eval 完全未被任何确定性规则抓到
+    assert out["risk"]["risk_band"] == "high"
+    assert out["risk"]["verification_decision"] == "full_suite"
+    assert any(f["rule_id"] == "DANGER-001" and f["category"] == "security"
+               for f in out["findings"])
+    # 即便 LLM 空回、改动小、reliable=True，security 发现照样把风险抬到 high——确定性优先于 LLM
     assert RP.review_reliable(out["engine_status"], out["ai_raw_count"],
-                              out["added_lines"], out["engaged"]) is True  # 小改动 → 可信（放行窗口）
+                              out["added_lines"], out["engaged"]) is True
+
+
+def test_CHARACTERIZES_eval_in_test_fixture_still_bypasses_danger_skip():
+    """【刻画当前行为·残余设计限制】DANGER-001 与 SEC-001 一致跳过测试文件（_is_test），
+    故 eval 出现在【测试文件】里不被确定性抓到 + LLM 空回 → 仍落 low-risk 放行。
+    刻意保留此跳过：测试文件里的 eval 多为夹具/演示，不进生产；生产代码（非 test 路径）的
+    eval 由 test_danger_pattern_closes_eval_bypass_even_when_llm_empty 守住。本测试锁死残余 gap
+    防回归——若将来放开 test 跳过，此断言会提醒同步评估语义。"""
+    from touchstone import orchestrator as orc
+    from touchstone import review_provider as RP
+    pr = _pr([("tests/test_eval.py", ["result = eval(user_input)"], True)], _empty_llm())
+    out = orc.review_pr(pr, {}, _standards_full())
+    assert out["risk"]["risk_band"] == "low"             # 刻画：eval 落测试文件 → 仍绕到 low
+    assert out["findings"] == []                         # DANGER 跳过测试文件，未抓
+    assert RP.review_reliable(out["engine_status"], out["ai_raw_count"],
+                              out["added_lines"], out["engaged"]) is True
 
 
 def test_low_confidence_security_filtered_on_nonsensitive_path():
