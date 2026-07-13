@@ -192,8 +192,16 @@ def _extract_json(stdout):
     return obj
 
 
+# 非真评审内容的 review 段键：key_issues_to_review（"0 意见"本体）+ runner 注入的内部标志
+# （_engaged/_raw_excerpt）。compute_engaged 计段、extract_review_excerpt 抽段都排除它们——
+# 否则内部标志键（如 _engaged=True、非空 _raw_excerpt）会被当成"评审段"灌水 engaged 计数
+# （test_silent_failure 锁：仅 _engaged=True 无真段 → 旧实现误判 engaged=True → 假 review_reliable）。
+_NONCONTENT_REVIEW_KEYS = ("key_issues_to_review", "_engaged", "_raw_excerpt")
+_EXCERPT_SKIP_KEYS = _NONCONTENT_REVIEW_KEYS   # 同义别名，保持 excerpt 侧引用名
+
+
 def compute_engaged(data):
-    """glm 是否给出实质性多段评审结构：review 段里【排除 key_issues_to_review】后 >=2 个非空段。
+    """glm 是否给出实质性多段评审结构：review 段里【排除非内容键】后 >=2 个非空段。
     单一真源——pr_agent_runner 经 lazy import 复用本函数（防子进程内/外两套 engaged 逻辑漂移，
     见 memory「集成 mock 盲区」教训）。供离线注入路径（无 runner、无 _engaged 标志）按相同口径现算。"""
     if not isinstance(data, dict):
@@ -201,10 +209,7 @@ def compute_engaged(data):
     review = data.get("review")
     review = review if isinstance(review, dict) else {}
     return sum(1 for k, v in review.items()
-               if k != "key_issues_to_review" and v not in (None, "", [], {})) >= 2
-
-
-_EXCERPT_SKIP_KEYS = ("key_issues_to_review", "_engaged", "_raw_excerpt")
+               if k not in _NONCONTENT_REVIEW_KEYS and v not in (None, "", [], {})) >= 2
 
 
 def extract_review_excerpt(data, max_chars=160, max_segments=8):

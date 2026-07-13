@@ -178,3 +178,93 @@ def test_done_still_requires_machine_recheck_not_author_word():
     cur = _ck.reconcile(prev, {sig: {"verb": "done", "note": "我改好了"}}, [_finding("R-1")])
     assert cur["items"][0]["status"] == "open"     # 仍命中 → 不销项
     assert "复核未通过" in cur["items"][0]["note"]
+
+
+# ==================== 红队：试图绕过/骗过质量检查（2026-07-13）====================
+# 模拟恶意/聪明 PR 作者试图让 Touchstone 把坏代码判成干净/低风险。重点验确定性兜底
+# （不依赖会误判的 LLM）能挡住 LLM 空回/误分类；并刻画已知设计限制（非 java 代码评审
+# 完全依赖 LLM），锁死当前行为防回归、显式标注 gap。
+from helpers import build_diff as _build_diff
+
+
+def _standards_full():
+    import yaml
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return yaml.safe_load(open(os.path.join(root, ".touchstone", "standards.yaml"), encoding="utf-8"))
+
+
+def _pr(diff_pairs, pr_agent_output):
+    pr = {"owner": "o", "repo": "r", "number": 1, "sha": "s", "token": "t",
+          "diff": _build_diff(diff_pairs), "pr_agent_output": pr_agent_output}
+    return pr
+
+
+def _empty_llm():        # LLM 空回（无建议、空 review）——攻击者期望它让系统判"干净"
+    return {"code_suggestions": [], "review": {"key_issues_to_review": []}}
+
+
+def test_sensitive_path_forces_high_even_when_llm_empty():
+    """【确定性兜底·关键防御】LLM 空回时，改动触及 migration/schema/.sql 等契约面 →
+    deterministic_blast 命中 cross_module_contract → 风险强制 high → full_suite。
+    风险分流不 全押在会误判/空回的 LLM 上：评审侧漏判，触及契约面的改动照样被拦。
+    （用 .sql 是为隔离确定性兜底——它不触发任何 stack/contract 规则发现，只靠路径。）"""
+    from touchstone import orchestrator as orc
+    # 无密钥、无 java 栈模式 → 无任何确定性规则发现；唯有路径敏感
+    pr = _pr([("db/migrations/0001_init.sql", ["CREATE TABLE users (id INT);"], True)], _empty_llm())
+    out = orc.review_pr(pr, {}, _standards_full())
+    assert out["risk"]["risk_band"] == "high"
+    assert out["risk"]["verification_decision"] == "full_suite"
+    assert "cross_module_contract" in out["risk"]["blast_radius"]
+    assert out["ai_raw_count"] == 0                       # LLM 确实空回，全靠确定性路径兜住
+
+
+def test_CHARACTERIZES_nonjava_badeval_with_dummy_test_bypasses_to_low_risk():
+    """【刻画当前行为·真实绕过·已知设计限制】.py 的 eval(user_input) + 空壳测试文件 + LLM 空回
+    → risk_band=low、findings=[]、review_reliable=True——坏代码【完全未被确定性规则抓到】。
+    链路：stack_rules 只扫 java/proto（eval 不在内）→ SEC-001 只匹配密钥（eval 不匹配）→
+    空壳测试文件击败 TEST-001 缺测试启发式（该启发式本会把单独坏代码顶到 mid）→ 改动小(<20行)
+    → review_reliable=True。即：确定性规则只覆盖【已知模式】，非常规坏代码的评审完全依赖 LLM；
+    LLM 空回 + 一行空壳测试即可绕到 low-risk 放行。本测试锁死该绕过行为并显式标注为
+    【已知 gap，非契约变更不改】——缓解需扩确定性扫描到非常规危险模式 / 不让空壳测试击败 TEST-001
+    / 小改动也要求 LLM 可靠，均属门禁语义变更，走联审。"""
+    from touchstone import orchestrator as orc
+    from touchstone import review_provider as RP
+    pr = _pr([("src/utils/eval_helper.py", ["result = eval(user_input)"], True),
+              ("tests/test_eval.py", ["def test_noop(): pass"], True)],   # 空壳测试击败 TEST-001
+             _empty_llm())
+    out = orc.review_pr(pr, {}, _standards_full())
+    assert out["risk"]["risk_band"] == "low"             # 刻画：当前确被绕到 low
+    assert out["findings"] == []                         # eval 完全未被任何确定性规则抓到
+    assert RP.review_reliable(out["engine_status"], out["ai_raw_count"],
+                              out["added_lines"], out["engaged"]) is True  # 小改动 → 可信（放行窗口）
+
+
+def test_low_confidence_security_filtered_on_nonsensitive_path():
+    """【刻画】security 发现但 confidence < conf_min(0.5) → 被 map_verdict 过滤；非敏感路径无
+    确定性兜底 → 不升高。conf_min 对 security 同样生效（低置信=噪音）。敏感路径的兜底由
+    test_sensitive_path_forces_high_even_when_llm_empty 覆盖（路径确定性，不信 LLM 类别）。"""
+    from touchstone import review_provider as RP
+    kept, risk = RP.map_verdict([{"category": "security", "confidence": 0.4,
+                                  "rationale": "疑似注入但不确定"}])
+    assert kept == []                                     # 低于 conf_min → 过滤
+    assert risk["risk_band"] == "low"
+    # 对照：同 category 高置信 → high
+    _, risk2 = RP.map_verdict([{"category": "security", "confidence": 0.9, "rationale": "注入"}])
+    assert risk2["risk_band"] == "high"
+
+
+def test_CHARACTERIZES_injected_engaged_flag_is_trusted_by_seam():
+    """【刻画当前行为·防御纵深注记】注入 seam 的 _engaged=True 标志被 _extract_engaged 盲信
+    （不交叉校验真评审段）——大改动 + 假 _engaged + 空 review → engaged=True → review_reliable=True。
+    设计：seam 由可信调用方（workflow / dev / 测试）控制，非 PR 作者攻击面；runner 子进程路径
+    的 _engaged 是在 raw review 上预计算后注入，可信。compute_engaged（现算口径）已排除内部键
+    不被灌水（见 test_silent_failure），但 _extract_engaged 对注入标志仍取信。
+    本测试锁死该信任行为；如要加交叉校验（标志 True 但无真段→不信），需评估 runner 路径影响，走联审。"""
+    from touchstone import orchestrator as orc
+    from touchstone import review_provider as RP
+    big = [("src/Big.java", [f"int v{i} = {i};" for i in range(25)], True)]
+    pr = _pr(big, {"code_suggestions": [], "review": {"_engaged": True, "key_issues_to_review": []}})
+    out = orc.review_pr(pr, {}, _standards_full())
+    assert out["engaged"] is True                        # seam 盲信了注入标志
+    assert RP.review_reliable(out["engine_status"], 0, out["added_lines"], out["engaged"]) is True
+
