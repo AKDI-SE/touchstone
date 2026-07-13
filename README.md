@@ -242,6 +242,7 @@ pr-agent **取 PR** 用 workflow 自带的 `GITHUB_TOKEN`——**无需额外配
 ## 设计文档
 
 - `docs/DEPLOYMENT.md` —— 客户版部署指南(从零到上线，区别于 RUNBOOK 的作者自测视角)
+- `docs/incident-runbook.md` —— 运维故障排查手册(症状→诊断→处置，接 doctor/metrics 诊断)
 - `docs/touchstone-design.html` —— 详细设计(自包含离线 HTML,含内联 SVG)
 - `docs/touchstone-arch-4plus1.html` —— 4+1 架构视图
 - `docs/touchstone-index.html` —— 模块与交付物索引
