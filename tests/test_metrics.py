@@ -30,6 +30,17 @@ def test_emit_and_load_roundtrip(tmp_path):
     assert len(recs) == 2
 
 
+def test_emit_catches_serialization_error(tmp_path, capsys):
+    """record 含不可 JSON 序列化对象时，emit 必须【吞成 False 不抛】——契约承诺
+    '失败不阻塞主流程'。旧版只接 OSError，json.dumps 的 TypeError/ValueError 会穿出去
+    违背契约。锁死：返 False、stderr 有留痕（防静默故障）、不写半行坏数据。"""
+    p = tmp_path / "m.json"
+    bad = {"ts": 0, "oops": {1, 2, 3}}            # set 不可 JSON 序列化 → TypeError
+    assert M.emit(bad, path=str(p)) is False       # 不抛、返 False
+    assert "metrics.emit" in capsys.readouterr().err   # 留痕，不静默
+    assert p.read_text(encoding="utf-8") == ""      # dumps 失败先于 write，未落坏数据
+
+
 def test_load_skips_corrupt_lines(tmp_path):
     p = tmp_path / "m.json"
     p.write_text('{"ok":1}\n{bad json\n{"ok":2}\n', encoding="utf-8")

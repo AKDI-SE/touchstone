@@ -15,6 +15,7 @@
 
 import json
 import os
+import sys
 import time
 
 from touchstone import __version__
@@ -57,13 +58,20 @@ def build(pr, sha, risk, findings, *, engine_status, review_reliable,
 
 
 def emit(record, path=None):
-    """把一条指标记录以单行 JSON 追加到 metrics 文件（事件流；失败不阻塞主流程）。"""
+    """把一条指标记录以单行 JSON 追加到 metrics 文件（事件流；失败不阻塞主流程）。
+
+    捕获三类失败并全部吞成 False（契约：失败不阻塞主流程）：
+    ``OSError``（磁盘/权限）、``TypeError``/``ValueError``（record 含不可 JSON 序列化
+    对象——如 invoke_meta 带回非预期类型时 ``json.dumps`` 抛出）。旧版只接 OSError，
+    序列化错会穿出去违背契约。留 stderr 痕迹而非静默返 False——可观测性子系统自身
+    绝不静默故障（同 learning_loop 2026-07-04 的防静默约定）。"""
     p = path or METRICS_PATH
     try:
         with open(p, "a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
         return True
-    except OSError:
+    except (OSError, TypeError, ValueError) as e:
+        print(f"[warn] metrics.emit 失败: {e}", file=sys.stderr)
         return False
 
 
