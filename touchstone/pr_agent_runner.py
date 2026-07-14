@@ -194,6 +194,14 @@ def run(pr_url, mode, extra_instructions=None):
         import litellm
         litellm.suppress_debug_info = True
         litellm.set_verbose = os.environ.get("TOUCHSTONE_LITELLM_VERBOSE", "").lower() in ("1", "true", "yes")
+        # LiteLLM【内部】重试次数（每次 chat_completion）。默认 litellm.num_retries=None → litellm 回退
+        # openai.DEFAULT_MAX_RETRIES=2（litellm/main.py: max_retries = litellm.num_retries or
+        # openai.DEFAULT_MAX_RETRIES）→ 单次调用最多 3 次尝试，每次吃满 ai_timeout(600s)。
+        # improve 工具一次跑 2 次 LLM 调用，glm 抖动时墙钟膨胀到 ~50min（GHA 日志坐实：单调用
+        # litellm 自报 "timeout value=600.0, time taken=1189.44/1494s" ≈ 2-3×600）。
+        # 显式设 1：保留"至少重试一次"（glm 偶发抖动给第二次机会），把单次调用压到最多 2 次尝试。
+        # 注意 litellm 的 `or` 短路语义：设 0 会被当成 falsy 回退成 2，故底线就是 1。
+        litellm.num_retries = int(os.environ.get("TOUCHSTONE_LLM_NUM_RETRIES", "1"))
     except Exception:
         pass
 

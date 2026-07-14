@@ -288,6 +288,53 @@ def test_pr_agent_main(monkeypatch, capsys):
     assert "code_suggestions" in capsys.readouterr().out
 
 
+def _install_fake_litellm(monkeypatch):
+    """装一个可设属性的假 litellm 进 sys.modules，让 runner 的 `import litellm` 拿到它，
+    从而可断言 runner 对 litellm.num_retries 等模块全局的写入（离线测试不引真 litellm）。"""
+    mod = types.ModuleType("litellm")
+    mod.num_retries = None
+    mod.suppress_debug_info = False
+    mod.set_verbose = False
+    monkeypatch.setitem(sys.modules, "litellm", mod)
+    return mod
+
+
+def _noop_cs(monkeypatch):
+    import pr_agent.tools.pr_code_suggestions as cs_mod
+
+    class CS:
+        def __init__(self, url):
+            self.data = {"code_suggestions": []}
+
+        async def run(self):
+            return None
+    cs_mod.PRCodeSuggestions = CS
+
+
+def test_pr_agent_run_sets_litellm_num_retries_default(monkeypatch):
+    # runner 显式设 litellm【内部】重试为 1：默认 litellm.num_retries=None → 回退
+    # openai.DEFAULT_MAX_RETRIES=2 → 单次调用最多 3 attempts × ai_timeout(600s)，是慢轮
+    # 墙钟膨胀到 ~50min 的根因（GHA 日志坐实：litellm 自报 time taken≈1189-1494s ≈ 2-3×600）。
+    # 默认 1 = 保留"至少重试一次"。经 TOUCHSTONE_LLM_NUM_RETRIES env 可调。
+    _install_fake_pr_agent(monkeypatch)
+    _stub_llm(monkeypatch)
+    litellm_mod = _install_fake_litellm(monkeypatch)
+    _noop_cs(monkeypatch)
+    monkeypatch.delenv("TOUCHSTONE_LLM_NUM_RETRIES", raising=False)
+    R.run("https://pr", "improve")
+    assert litellm_mod.num_retries == 1
+
+
+def test_pr_agent_run_sets_litellm_num_retries_env_override(monkeypatch):
+    _install_fake_pr_agent(monkeypatch)
+    _stub_llm(monkeypatch)
+    litellm_mod = _install_fake_litellm(monkeypatch)
+    _noop_cs(monkeypatch)
+    monkeypatch.setenv("TOUCHSTONE_LLM_NUM_RETRIES", "2")
+    R.run("https://pr", "improve")
+    assert litellm_mod.num_retries == 2
+
+
 def test_interaction_log_written_and_redacts_key(monkeypatch, tmp_path):
     # 完整 LLM 交互日志写入 artifact 文件，含 pr-agent 原始输出 + 配置轨迹；api_key 脱敏
     _install_fake_pr_agent(monkeypatch)
