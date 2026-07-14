@@ -60,6 +60,16 @@ def _checkout(repo, head_sha, token):
 
 
 def main():
+    # 子命令分派：touchstone doctor / touchstone preflight（保持 touchstone --repo … --pr … 原状：
+    # 以 -- 开头或直接给 --repo 的调用不受影响，因为它们的 argv[1] 不是子命令名）。
+    if len(sys.argv) > 1 and sys.argv[1] in ("doctor", "preflight"):
+        sub, rest = sys.argv[1], sys.argv[2:]   # 不 pop：避免 mutate 全局 sys.argv（doctor/preflight.main 均接 argv 透传）
+        if sub == "doctor":
+            from touchstone import doctor
+            return doctor.main(rest)
+        from touchstone import preflight
+        return preflight.main(rest)
+
     ap = argparse.ArgumentParser(prog="touchstone.run", description="对任意 PR 跑 Touchstone 评审")
     from touchstone import __version__
     ap.add_argument("--version", action="version", version=f"touchstone {__version__}")

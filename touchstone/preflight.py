@@ -83,6 +83,19 @@ def check_config(env):
     return rows
 
 
+def check_standards(env):
+    """规范可解析自检（从 main 抽出，供 doctor 复用）。返回 [(name, ok, detail)]。"""
+    try:
+        import yaml
+        sp = env.get("TOUCHSTONE_STANDARDS", ".touchstone/standards.yaml")
+        with open(sp, encoding="utf-8") as f:   # context manager：句柄必释放（本函数被 main+doctor 复用，裸 open 会随调用频度泄漏）
+            std = yaml.safe_load(f)
+        return [("standards.yaml", bool(std and std.get("rules")),
+                 f"{len(std.get('rules', []))} 条规则" if std else "解析失败")]
+    except Exception as e:
+        return [("standards.yaml", False, str(e))]
+
+
 def _ping(url, headers=None, data=None, timeout=15):
     try:
         req = urllib.request.Request(url, data=data, headers=headers or {},
@@ -117,18 +130,13 @@ def check_network(env):
     return rows
 
 
-def main():
-    no_net = "--no-net" in sys.argv
+def main(argv=None):
+    # argv 形参供 run.py 子命令分派透传（避免在分派处 mutate 全局 sys.argv）；
+    # `python -m touchstone.preflight` 直接调用时 argv=None 走 sys.argv，行为不变。
+    args = sys.argv if argv is None else argv
+    no_net = "--no-net" in args
     rows = [("— 配置 —", True, "")] + check_config(dict(os.environ))
-    # 规范可解析
-    try:
-        import yaml
-        sp = os.environ.get("TOUCHSTONE_STANDARDS", ".touchstone/standards.yaml")
-        std = yaml.safe_load(open(sp))
-        rows.append(("standards.yaml", bool(std and std.get("rules")),
-                     f"{len(std.get('rules', []))} 条规则" if std else "解析失败"))
-    except Exception as e:
-        rows.append(("standards.yaml", False, str(e)))
+    rows += check_standards(dict(os.environ))    # 规范可解析
     if not no_net:
         rows.append(("— 连通性（从你的网络）—", True, ""))
         rows += check_network(dict(os.environ))

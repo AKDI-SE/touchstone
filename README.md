@@ -63,8 +63,9 @@ pip install -e .                        # 依赖范围见 pyproject.toml
 # 客户环境复现一致版本：pip install -e . -c constraints.txt
 python -m touchstone.run --version      # 查看版本
 
-# 2. 起步自检(配置 / 端点 / 权限)
-python -m touchstone.preflight
+# 2. 部署前自检——上线门(配置 + 连通 + 一次自检评审,红绿报告 + 退出码)
+touchstone doctor                       # 退出 0=可上线；1=有阻断项。--no-net 离线；--json 机读
+python -m touchstone.preflight          # 更轻的子集：只到连通性，不跑自检评审
 
 # 3. 对任意 PR 跑一次评审(默认 dry-run,只打印不回贴)
 python -m touchstone.run --repo owner/name --pr 314
@@ -240,6 +241,7 @@ pr-agent **取 PR** 用 workflow 自带的 `GITHUB_TOKEN`——**无需额外配
 
 ## 设计文档
 
+- `docs/DEPLOYMENT.md` —— 客户版部署指南(从零到上线，区别于 RUNBOOK 的作者自测视角)
 - `docs/touchstone-design.html` —— 详细设计(自包含离线 HTML,含内联 SVG)
 - `docs/touchstone-arch-4plus1.html` —— 4+1 架构视图
 - `docs/touchstone-index.html` —— 模块与交付物索引

@@ -518,6 +518,8 @@ def fetch(pr_ctx, provider=None):
     orchestrator.review_pr 已直连本函数；REVIEW_PROVIDER 留作未来接入其它评审来源的开关。"""
     _LAST_META.update(partial_tool_failure=None, repaired_parses=0,
                        review_engaged=False, raw_review_excerpt=None)
+    if callable(provider):                       # 注入观察源（自检/测试 seam）：直接返回原始 ReviewItem 列表，
+        return list(provider(pr_ctx) or [])      # 不触发 PR-Agent 子进程 → 零网络。见 doctor.smoke_review。
     provider = provider or os.environ.get("REVIEW_PROVIDER", "pr-agent")
     if provider == "pr-agent":
         return PRAgentProvider().fetch(pr_ctx)

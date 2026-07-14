@@ -3,6 +3,14 @@
 本文件记录 Touchstone 的发布版本。设计的逐版迭代历史见 `docs/touchstone-design.html` 的变更历史。
 版本遵循语义化版本（SemVer）。版本号单一来源在 `touchstone/__init__.py` 的 `__version__`。
 
+## [未发布]
+
+**商用化 P1（运维成熟度，第二批）**：
+- **健康度自检 `touchstone doctor`**：新增 `touchstone/doctor.py`——在 preflight（配置+连通）之上补上"评审引擎现在真能跑通产出裁决吗"这一步（引入**自检评审/smoke review** 概念：合成 PR 在进程内跑 `review_pr`、注入空观察源走确定性裁决链、零网络、断言产出合法裁决）。三阶段汇成红绿表（`✓/⚠/✗`）+ **单一退出码**表达能否上线（0=可上线，1=有阻断项）；支持 `--no-net`、`--json`（运维聚合/CI 门）。`touchstone doctor`/`touchstone preflight` 子命令分派接入（`touchstone --repo … --pr …` 原状不变）。
+- **依赖模块增强**：`review_provider.fetch` 增加**可调用注入口**（callable provider），供自检/测试短路 PR-Agent 子进程；`preflight.check_standards` 从 `main` 抽出供复用。
+- **客户版部署指南**：新增 `docs/DEPLOYMENT.md`——从零到上线的落地路径（前提/安装/必配项/部署前自检/CI 接入/可观测/排障/升级纪律），区别于 `RUNBOOK.md` 的作者自测视角。
+- 新增 14 条 doctor/seam 测试；ruff/mypy 全绿。
+
 ## [1.0.0] — 2026-07-10（首个正式版本）
 
 **商用化 P0 加固（本批）**：
