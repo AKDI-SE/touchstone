@@ -12,6 +12,8 @@
 | metrics 聚合 | `python -m touchstone.metrics touchstone-metrics.json` | 评审可信率、静默故障轮数、engine_status 分布、放行率 |
 | 交互日志 | 看 artifact `pr-agent-interaction.log` | 本轮 LLM 真实请求/响应（是否真调了、错在哪） |
 
+**主动告警（可选）**：开了 `TOUCHSTONE_ALERT_ENABLED=true` 后，静默故障/降级/自证待核准会主动贴 PR 评论、可信率过低会开跟踪 Issue（配置见 `docs/DEPLOYMENT.md` §7）——不必等人翻 metrics。
+
 关键判据：metrics 的 `review_reliable_rate < 0.8`、`silent_failure_rounds > 0`、`engine_status` 非 `ok` 占比升高，都是排查信号。
 
 ---
