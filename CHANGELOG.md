@@ -10,6 +10,7 @@
 - **依赖模块增强**：`review_provider.fetch` 增加**可调用注入口**（callable provider），供自检/测试短路 PR-Agent 子进程；`preflight.check_standards` 从 `main` 抽出供复用。
 - **客户版部署指南**：新增 `docs/DEPLOYMENT.md`——从零到上线的落地路径（前提/安装/必配项/部署前自检/CI 接入/可观测/排障/升级纪律），区别于 `RUNBOOK.md` 的作者自测视角。
 - **变异测试基线**：跑完红线四模块（contract_check/stack_rules/loop/checklist）的 mutmut 全量（2049 变异，原始击杀率 57.1%）+ 靶向审计（6/6 行为关键变异全抓），写入 `docs/mutation-baseline.md`。过程中揪出并修复一处真实测试缺口——`loop_step` 非清单路径"无推进升级"未被守住（author 可只加不减拖轮），补 `test_loop_escalate_on_no_progress_legacy` 锁死；并刷新靶向审计过期锚点（`_extract_json` 迁移）。
+- **故障排查 runbook**：新增 `docs/incident-runbook.md`——把散在 CHANGELOG 的踩坑（裁空 PR#44 / 超窗 PR#47 / 超时 PR#48 / LLM 静默故障 / author 欺骗面 / 变异测试缓存假失败）集中为「症状→诊断→处置」运维手册，接上 doctor/metrics/交互日志诊断抓手。
 - 新增 14 条 doctor/seam 测试；ruff/mypy 全绿。
 
 ## [1.0.0] — 2026-07-10（首个正式版本）
