@@ -96,8 +96,21 @@ _WEBHOOK_OPENER = urllib.request.build_opener(_NoRedirectHandler)
 
 
 def _default_gh(method, path, token, data=None):
+    # 走 ghclient 公开 client()（内部已拼 base_url），不伸手进 ghclient 的私有 _base_url()。
+    # ghclient.py 末段明示 client() 是各模块老 gh() wrapper（request()+_base_url() 拼装）的官方
+    # 替代；这里即迁移到公开接口，消除私有方法耦合（alert 属 A 层、ghclient 属 B 层，本函数是
+    # alert 的默认投递器，仅经公开 client() 调用，不跨层触碰 ghclient 内部）。注入式测试用
+    # deliver(..., gh_call=...) 的 seam 直接替换本函数，故本默认实现的内部改造不影响测试。
+    # alert 通道只用 GET/POST（_post_pr_comment / _open_or_update_issue 的评论 + 开 issue），
+    # ghclient session 也只重试 GET/POST（make_session allowed_methods）。故 GET/POST 显式分发，
+    # 其余 method 立即抛 ValueError——不静默当 POST，防调用方误传 PUT/PATCH/DELETE 被吞（PR#69 r1）。
     from touchstone import ghclient
-    return ghclient.request(method, ghclient._base_url() + path, token, data=data)
+    c = ghclient.client(token)
+    if method == "GET":
+        return c.get(path)
+    if method == "POST":
+        return c.post(path, data or {})
+    raise ValueError(f"_default_gh 仅支持 GET/POST，不支持 {method!r}")
 
 
 def _default_http_post(url, payload):

@@ -1,4 +1,6 @@
 """告警钩子测试。全部离线：投递通过注入的假 gh_call / http_post，不触网。"""
+import pytest
+
 from touchstone import alert
 
 
@@ -159,3 +161,42 @@ def test_run_enabled_delivers(monkeypatch):
     env = {"TOUCHSTONE_ALERT_ENABLED": "true", "TOUCHSTONE_ALERT_CHANNELS": "github-pr-comment"}
     res = alert.run(rec, None, env, {"owner": "o", "repo": "r", "number": 5, "token": "t"})
     assert res and any("/issues/5/comments" in p for p in sent)
+
+
+def test_default_gh_routes_through_public_client(monkeypatch):
+    """_default_gh 走 ghclient 公开 client()（get/post），不伸手进私有 _base_url()。
+    锁死迁移：GET→client.get、POST→client.post，路径透传、data 透传、返回值透传、data=None 不崩（post 收到 {}）。
+    其余 deliver() 测试都经注入的假 gh_call 接缝，唯独本测走生产默认实现。"""
+    calls = []
+
+    class FakeClient:
+        def get(self, path):
+            calls.append(("GET", path, None))
+            return {"got": path}
+
+        def post(self, path, data):
+            calls.append(("POST", path, data))
+            return {"posted": path, "data": data}
+
+    import touchstone.ghclient as ghclient_mod
+    monkeypatch.setattr(ghclient_mod, "client", lambda token: FakeClient())
+
+    # GET → client.get(path)，返回值透传
+    assert alert._default_gh("GET", "/repos/o/r/issues/1", "tok") == {"got": "/repos/o/r/issues/1"}
+    # POST（data 为 dict）→ client.post(path, data)
+    assert alert._default_gh("POST", "/repos/o/r/issues", "tok", {"title": "x"}) == {
+        "posted": "/repos/o/r/issues", "data": {"title": "x"}}
+    # POST（data=None）→ 不崩，post 收到 {}
+    assert alert._default_gh("POST", "/repos/o/r/issues", "tok") == {
+        "posted": "/repos/o/r/issues", "data": {}}
+
+    assert calls == [
+        ("GET", "/repos/o/r/issues/1", None),
+        ("POST", "/repos/o/r/issues", {"title": "x"}),
+        ("POST", "/repos/o/r/issues", {}),
+    ]
+
+    # 非 GET/POST 立即抛 ValueError——不静默当 POST（防调用方误传 PUT/PATCH/DELETE 被吞）
+    for bad in ("PUT", "PATCH", "DELETE"):
+        with pytest.raises(ValueError, match="GET/POST"):
+            alert._default_gh(bad, "/repos/o/r/issues", "tok")
