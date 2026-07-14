@@ -101,6 +101,19 @@ python -m touchstone.metrics touchstone-metrics.json
 
 触发规则：单轮高危（静默故障 / 引擎降级 / author 自证待核准）→ 贴对应 **PR 评论**；滚动聚合（可信率过低 / 持续静默故障）→ 开或更新一个带 `touchstone-alert` label 的**跟踪 Issue**（去重防刷屏）。告警投递失败**不影响评审**（可观测性不当门禁）。纯内网客户走 GitHub 原生即可，公网 webhook 连不通就别配。
 
+### 使用遥测（可选，默认关）
+
+可把每轮 metrics 记录**上报到一个你指定的中心汇聚点**（"touchstone 统一的地方"），供跨部署观察健康趋势。**默认不上报**——不配 `TOUCHSTONE_TELEMETRY_ENDPOINT` 就一个字节都不外发。
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `TOUCHSTONE_TELEMETRY_ENDPOINT` | — | 汇聚点 URL。**不配=禁用**。可指向厂商中心 collector，**也可指向你自己的内网聚合点** |
+| `TOUCHSTONE_TELEMETRY_TOKEN` | — | 可选 bearer（collector 鉴权） |
+| `TOUCHSTONE_TELEMETRY_DEPLOYMENT_ID` | `unset` | 部署标识（站点/租户），供中心按部署分桶 |
+| `TOUCHSTONE_TELEMETRY_ANONYMIZE` | 关 | `true` → 连 PR 号/sha 也抹掉，只留健康数值 |
+
+**透明声明——发什么 / 绝不发什么**：上报的只是 metrics 扁平记录（`engine_status`、`review_reliable`、可信率、裁决、风险档、发现计数等健康/裁决**数值**）。**绝不外发代码、diff、PR 正文、凭据、评审内容**（这些本就不在 metrics 记录里，且有字段白名单兜底）。开 `ANONYMIZE` 后连 repo/PR 标识都不发，可"只共享健康趋势、不暴露在审什么"。上报失败不影响评审。**断网/涉密环境不配端点即完全禁用**，或把端点指向内网自有聚合点。
+
 ## 8. 排障（常见坑）
 
 先跑 `touchstone doctor`——下面这些它大多会直接点出来。

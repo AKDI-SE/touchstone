@@ -541,6 +541,14 @@ def main():
                         "token": token, "run_url": _run_link()})
         except Exception as e:
             print(f"[warn] 告警投递失败（不阻塞评审）: {e}", file=sys.stderr)
+        # 使用遥测（可选，默认关）：把本轮 metrics 记录上报到【配置指定】的中心汇聚点。
+        # 未配 TOUCHSTONE_TELEMETRY_ENDPOINT → 无操作（不外发）。失败绝不冒泡——同 alert，
+        # 可观测性子系统自身故障留痕（防静默故障约定），不拖垮评审 job。
+        try:
+            from touchstone import telemetry as _tel
+            _tel.forward([_rec], dict(os.environ), version=_rec.get("version", ""))
+        except Exception as e:
+            print(f"[warn] 遥测上报失败（不阻塞评审）: {e}", file=sys.stderr)
     except Exception as e:
         # 指标产出失败不阻塞评审主链——但绝不静默：可观测性子系统自身故障必须留痕
         # （同 learning_loop 2026-07-04 的防静默约定，ironic-for-observability 反模式）。
