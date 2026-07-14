@@ -117,13 +117,23 @@ def test_deliver_webhook():
     assert posts and posts[0][0] == "https://hook" and posts[0][1]["kind"] == "silent_failure"
 
 
+def test_default_http_post_rejects_non_http_scheme():
+    # SSRF 防护：webhook URL 来自 env，sink 上挡非 http(s) scheme——file/ftp/gopher 一律拒。
+    import pytest
+    for bad in ("file:///etc/passwd", "ftp://x/y", "gopher://x", "/etc/passwd", "x://y"):
+        with pytest.raises(ValueError):
+            alert._default_http_post(bad, {"k": "v"})
+
+
 def test_deliver_failure_never_raises():
     def boom(*a, **k):
         raise RuntimeError("channel down")
     al = {"severity": "high", "kind": "silent_failure", "title": "t", "body": "b", "scope": "pr"}
     res = alert.deliver([al], channels=["github-pr-comment"],
                         ctx={"owner": "o", "repo": "r", "number": 1, "token": "t"}, gh_call=boom)
-    assert res[0][2].startswith("failed:")                      # 记录失败，但不抛
+    # 记录失败但不抛；且带具体消息（可观测性子系统的本分是让故障可见、可定位）。
+    assert res[0][2].startswith("failed:")
+    assert "channel down" in res[0][2]
 
 
 # ---- 编排 ------------------------------------------------------------------

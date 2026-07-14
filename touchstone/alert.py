@@ -24,6 +24,7 @@
 # ============================================================================
 
 import json
+import urllib.parse
 import urllib.request
 
 ISSUE_LABEL = "touchstone-alert"
@@ -89,6 +90,12 @@ def _default_gh(method, path, token, data=None):
 
 
 def _default_http_post(url, payload):
+    # SSRF 防护：webhook URL 来自 env，校验 scheme——只许 http/https，
+    # 拒 file:///ftp:///gopher 等会被 urlopen 当成本地/其它协议读取的端点。
+    # （env 由运维自配；此处只在 sink 上挡非 http(s) scheme，是最小且对齐评审要求的护栏。）
+    scheme = urllib.parse.urlparse(url).scheme.lower()
+    if scheme not in ("http", "https"):
+        raise ValueError(f"webhook URL scheme 不允许: {scheme!r}")
     req = urllib.request.Request(url, data=json.dumps(payload, ensure_ascii=False).encode(),
                                  headers={"Content-Type": "application/json"}, method="POST")
     with urllib.request.urlopen(req, timeout=15) as r:
@@ -140,7 +147,10 @@ def deliver(alerts, *, channels, ctx, gh_call=None, webhook_url=None, http_post=
                     continue
                 results.append((ch, al["kind"], "ok"))
             except Exception as e:                       # noqa: BLE001 —— 告警失败绝不拖垮评审
-                results.append((ch, al["kind"], f"failed: {type(e).__name__}"))
+                # 带上消息（截断）：可观测性子系统的本分就是让故障可见——
+                # 只留 type 名（"failed: HTTPError"）没法定位，运维无从下手。
+                msg = str(e).strip().replace("\n", " ")[:200]
+                results.append((ch, al["kind"], f"failed: {type(e).__name__}: {msg}"))
     return results
 
 
