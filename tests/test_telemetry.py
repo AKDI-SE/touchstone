@@ -91,6 +91,18 @@ def test_forward_failure_includes_error_message():
     assert "collector down" in res
 
 
+def test_forward_envelope_failure_caught(monkeypatch):
+    # envelope 构造在 try 内：build_envelope 抛异常时 forward 仍返回 "failed:" 不向上冒泡
+    # （守住"失败绝不冒泡"承诺——信封构造也是 forward 操作的一部分）。
+    def boom(*a, **k):
+        raise RuntimeError("envelope boom")
+    monkeypatch.setattr(telemetry, "build_envelope", boom)
+    env = {"TOUCHSTONE_TELEMETRY_ENDPOINT": "https://c"}
+    res = telemetry.forward([_REC], env, http_post=lambda *a, **k: 200)
+    assert res.startswith("failed:")
+    assert "envelope boom" in res
+
+
 def test_forward_empty_records_noop():
     env = {"TOUCHSTONE_TELEMETRY_ENDPOINT": "https://c"}
     assert telemetry.forward([], env) == "disabled"

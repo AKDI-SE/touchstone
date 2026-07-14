@@ -97,12 +97,14 @@ def forward(records, env, *, version="", http_post=None):
     if not endpoint or not records:
         return "disabled"
     http_post = http_post or _default_http_post
-    envelope = build_envelope(
-        records,
-        deployment_id=env.get("TOUCHSTONE_TELEMETRY_DEPLOYMENT_ID"),
-        version=version,
-        anonymize=str(env.get("TOUCHSTONE_TELEMETRY_ANONYMIZE", "")).lower() == "true")
     try:
+        # envelope 构造也在 try 内：build_envelope 万一抛（不可序列化值等），forward 仍只返回
+        # "failed:..." 不向上冒泡——守住"失败绝不冒泡"承诺（信封构造是 forward 操作的一部分）。
+        envelope = build_envelope(
+            records,
+            deployment_id=env.get("TOUCHSTONE_TELEMETRY_DEPLOYMENT_ID"),
+            version=version,
+            anonymize=str(env.get("TOUCHSTONE_TELEMETRY_ANONYMIZE", "")).lower() == "true")
         http_post(endpoint, envelope, token=env.get("TOUCHSTONE_TELEMETRY_TOKEN"))
         return "ok"
     except Exception as e:                        # noqa: BLE001 —— 遥测失败不许拖垮评审
