@@ -84,6 +84,17 @@ def channels_from_env(env):
 
 
 # ---- 投递（各通道独立 try/except，绝不冒泡）--------------------------------
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    # SSRF 防护：webhook 端点不许跟随重定向——合法 http(s) 端点也可能 302 到内网
+    # （如云元数据 169.254.169.254），scheme 白名单挡不住重定向后的目标。故用此 handler
+    # 替换默认的 HTTPRedirectHandler：收到 3xx 直接抛，opener.open 不跟随。
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise ValueError(f"webhook 端点 {code} 重定向被拒（SSRF 防护，不跟随到 {newurl}）")
+
+
+_WEBHOOK_OPENER = urllib.request.build_opener(_NoRedirectHandler)
+
+
 def _default_gh(method, path, token, data=None):
     from touchstone import ghclient
     return ghclient.request(method, ghclient._base_url() + path, token, data=data)
@@ -91,14 +102,14 @@ def _default_gh(method, path, token, data=None):
 
 def _default_http_post(url, payload):
     # SSRF 防护：webhook URL 来自 env，校验 scheme——只许 http/https，
-    # 拒 file:///ftp:///gopher 等会被 urlopen 当成本地/其它协议读取的端点。
-    # （env 由运维自配；此处只在 sink 上挡非 http(s) scheme，是最小且对齐评审要求的护栏。）
+    # 拒 file:///ftp:///gopher 等会被当成本地/其它协议读取的端点；
+    # 并用不跟随重定向的 opener——合法 http 端点也可能 302 到内网。
     scheme = urllib.parse.urlparse(url).scheme.lower()
     if scheme not in ("http", "https"):
         raise ValueError(f"webhook URL scheme 不允许: {scheme!r}")
     req = urllib.request.Request(url, data=json.dumps(payload, ensure_ascii=False).encode(),
                                  headers={"Content-Type": "application/json"}, method="POST")
-    with urllib.request.urlopen(req, timeout=15) as r:
+    with _WEBHOOK_OPENER.open(req, timeout=15) as r:
         return r.status
 
 

@@ -529,7 +529,13 @@ def main():
         # 但留痕（防静默故障约定）：告警子系统自身故障不许静默（同 ironic-for-observability）。
         try:
             from touchstone import alert as _alert
-            _agg = _metrics.summarize(_metrics.load())
+            # 聚合取数单独兜底：load/summarize 挂掉（损坏/权限/未来改动）时按 None 继续，
+            # 不能让聚合失败连带吞掉本轮单轮告警（silent_failure 等）——它们只依赖 _rec。
+            try:
+                _agg = _metrics.summarize(_metrics.load())
+            except Exception as e:
+                print(f"[info] alert 聚合取数失败（按 None 继续，单轮告警仍发）: {e}", file=sys.stderr)
+                _agg = None
             _alert.run(_rec, _agg, dict(os.environ),
                        {"owner": owner, "repo": repo, "number": number,
                         "token": token, "run_url": _run_link()})

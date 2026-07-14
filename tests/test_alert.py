@@ -125,6 +125,15 @@ def test_default_http_post_rejects_non_http_scheme():
             alert._default_http_post(bad, {"k": "v"})
 
 
+def test_default_http_post_rejects_redirect():
+    # SSRF 防护：opener 不许跟随重定向——合法 http 端点也可能 302 到内网（如云元数据）。
+    import pytest
+    with pytest.raises(Exception):
+        alert._NoRedirectHandler().redirect_request(
+            None, None, 302, "Found", {"Location": "http://169.254.169.254/"},
+            "http://169.254.169.254/")
+
+
 def test_deliver_failure_never_raises():
     def boom(*a, **k):
         raise RuntimeError("channel down")
