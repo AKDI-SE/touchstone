@@ -181,8 +181,9 @@ def summarize_llm_failure(stderr):
 
     本函数抽：
       • 哪个工具挂了（improve / review，按 _IMPROVE_FAIL_SIGS / _REVIEW_FAIL_SIGS）；
-      • 最后一条 `Error during LLM inference: <具体异常 … timeout value=X, time taken=Y>` 行——litellm
+      • `Error during LLM inference: <具体异常 … timeout value=X, time taken=Y>` 行——litellm
         超时 / 连接错误 / 限流 的真实原因，及"timeout 没在配置值生效"的时序证据。
+        与归因工具对齐：improve 取首条（先跑）、review 取末条（后跑），双失败时不串台。
     返回 (tool, detail)：tool ∈ {"improve","review",None}，detail 为具体错误串（无则 ""）。纯函数。"""
     err = stderr or ""
     tool = None
@@ -191,7 +192,13 @@ def summarize_llm_failure(stderr):
     elif any(sig in err for sig in _REVIEW_FAIL_SIGS):
         tool = "review"
     errs = re.findall(r"Error during LLM inference: (.+)", err)
-    detail = errs[-1].strip() if errs else ""
+    if errs:
+        # 与归因到的工具对齐：improve 先跑（错误在前→errs[0]），review 后跑（错误在后→errs[-1]）。
+        # 双失败时若 tool=improve 却贴 errs[-1](review 的错误) 会自相矛盾——caution 说 improve 挂却报 review 的异常。
+        # 无归因（tool=None）取最后一条作最佳猜测（保持原行为）。
+        detail = (errs[0] if tool == "improve" else errs[-1]).strip()
+    else:
+        detail = ""
     return tool, detail
 
 
@@ -210,7 +217,7 @@ def failure_stderr_tail(stderr, limit=800):
                  or ln.lstrip().startswith("[runner]"))]
     if lines:
         return "\n".join(lines)[-limit:]
-    return err.strip()[-600:]
+    return err.strip()[-limit:]
 
 
 # 哨兵常量须与 pr_agent_runner._JSON_BEGIN/_JSON_END 字面一致（plumbing 协议）。

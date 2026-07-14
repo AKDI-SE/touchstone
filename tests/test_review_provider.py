@@ -852,3 +852,40 @@ def test_invoke_endpoint_swallowed_caution_excludes_success_log_noise(monkeypatc
     with pytest.raises(RP.ReviewEngineDegraded) as ei:
         RP.fetch({"owner": "o", "repo": "r", "number": 3})
     assert "async_success_handler" not in ei.value.reason
+
+
+def test_summarize_llm_failure_dual_failure_aligns_detail_to_improve():
+    """双失败（improve+review 都挂）：improve 先跑、review 后跑，errs=[improve 的错, review 的错]。
+    tool 归因为 improve（_IMPROVE_FAIL_SIGS 先命中），detail 必须取 errs[0]（improve 的真因），
+    而非 errs[-1]（review 的）——否则 caution 会"说 improve 挂、却贴 review 的异常"，
+    自相矛盾、误导运维。锁死本轮修复（详情与归因工具对齐）。"""
+    stderr = (
+        "Generating code suggestions for PR...\n"
+        "WARNING Error during LLM inference: litellm.Timeout: APITimeoutError - "
+        "timeout value=600.0, time taken=1189.44 seconds\n"        # improve 的错（先跑 → errs[0]）
+        "Failed to generate code suggestions for PR, error: boom\n"  # _IMPROVE_FAIL_SIGS
+        "Generating review prediction...\n"
+        "Error during LLM inference: litellm.InternalServerError: Connection error.\n"  # review 的错（后跑 → errs[-1]）
+        "Failed to review PR: boom\n")                               # _REVIEW_FAIL_SIGS
+    tool, detail = RP.summarize_llm_failure(stderr)
+    assert tool == "improve"
+    assert "litellm.Timeout" in detail               # improve 的真因
+    assert "time taken=1189.44 seconds" in detail
+    assert "Connection error" not in detail          # review 的错被排除（不串台）
+
+
+def test_summarize_llm_failure_dual_failure_review_takes_last():
+    """对偶：review 单侧失败（无 improve 签名）→ 取 errs[-1]。补全对齐矩阵的另一支。"""
+    stderr = ("Error during LLM inference: litellm.Timeout: APITimeoutError\n"
+              "Failed to review PR: boom")
+    tool, detail = RP.summarize_llm_failure(stderr)
+    assert tool == "review"
+    assert "litellm.Timeout" in detail
+
+
+def test_failure_stderr_tail_fallback_honors_limit():
+    """回退路径（无失败行）也尊重 limit 参数，而非硬编码 -600。
+    传超长纯噪音 stderr + 小 limit，断言返回长度 ≤ limit。锁死本轮修复（两分支用同一 limit）。"""
+    noise = "x" * 2000   # 远超默认 limit=800
+    assert len(RP.failure_stderr_tail(noise, limit=100)) <= 100   # limit=100 生效（旧代码会返回 600）
+    assert len(RP.failure_stderr_tail(noise)) <= 800              # 默认 limit=800 生效
