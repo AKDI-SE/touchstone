@@ -171,6 +171,55 @@ def prediction_swallowed_failure(data, stderr):
     return not cs and not ki
 
 
+def summarize_llm_failure(stderr):
+    """从 pr-agent stderr 抽 LLM 失败的【具体原因】，供 llm_failed caution 领头（替代误导性的 stderr 尾部）。
+
+    背景：llm_failed caution 原先只附 stderr[-600:]，但末尾常是【另一侧成功工具】的 success 日志——
+    典型如 improve 挂、review 成：stderr 尾部是 review 的 "Async Wrapper ... async_success_handler"，
+    把真因（improve 的 `litellm.Timeout ... time taken=1189s`）截在前面、运维看不到 → caution 一边说
+    llm_failed、一边贴 success 日志，自相矛盾、零诊断价值。
+
+    本函数抽：
+      • 哪个工具挂了（improve / review，按 _IMPROVE_FAIL_SIGS / _REVIEW_FAIL_SIGS）；
+      • `Error during LLM inference: <具体异常 … timeout value=X, time taken=Y>` 行——litellm
+        超时 / 连接错误 / 限流 的真实原因，及"timeout 没在配置值生效"的时序证据。
+        与归因工具对齐：improve 取首条（先跑）、review 取末条（后跑），双失败时不串台。
+    返回 (tool, detail)：tool ∈ {"improve","review",None}，detail 为具体错误串（无则 ""）。纯函数。"""
+    err = stderr or ""
+    tool = None
+    if any(sig in err for sig in _IMPROVE_FAIL_SIGS):
+        tool = "improve"
+    elif any(sig in err for sig in _REVIEW_FAIL_SIGS):
+        tool = "review"
+    errs = re.findall(r"Error during LLM inference: (.+)", err)
+    if errs:
+        # 与归因到的工具对齐：improve 先跑（错误在前→errs[0]），review 后跑（错误在后→errs[-1]）。
+        # 双失败时若 tool=improve 却贴 errs[-1](review 的错误) 会自相矛盾——caution 说 improve 挂却报 review 的异常。
+        # 无归因（tool=None）取最后一条作最佳猜测（保持原行为）。
+        detail = (errs[0] if tool == "improve" else errs[-1]).strip()
+    else:
+        detail = ""
+    return tool, detail
+
+
+def failure_stderr_tail(stderr, limit=800):
+    """stderr 中【失败相关】的行，替代误导性的原始尾部 [-600:]。
+
+    原始尾部常落进另一侧成功工具的日志（见 summarize_llm_failure 背景）。这里只挑失败签名行
+    （Error during LLM inference / Failed to generate|parse|review … / runner 外化标记），
+    让 caution 贴的是真因而非 success 日志。无任何失败行时回退原始尾部（保留诊断、不丢）。纯函数。"""
+    err = stderr or ""
+    lines = [ln.strip() for ln in err.splitlines()
+             if ("Error during LLM inference" in ln
+                 or "Failed to generate" in ln
+                 or "Failed to parse" in ln
+                 or "Failed to review" in ln
+                 or ln.lstrip().startswith("[runner]"))]
+    if lines:
+        return "\n".join(lines)[-limit:]
+    return err.strip()[-limit:]
+
+
 # 哨兵常量须与 pr_agent_runner._JSON_BEGIN/_JSON_END 字面一致（plumbing 协议）。
 _JSON_BEGIN = "\n<<<TOUCHSTONE_JSON_BEGIN>>>\n"
 _JSON_END = "\n<<<TOUCHSTONE_JSON_END>>>\n"
@@ -478,11 +527,17 @@ class PRAgentProvider:
             # 置 llm_failed -> review_reliable 主分支触发，不再依赖"大改动+0建议"启发式近似。
             # 这正是 PR #44 round-3 / PR #46 "0 建议假收敛"的真根因（glm-5.2 间歇空 content 被吞）。
             if prediction_swallowed_failure(data, proc.stderr):
+                # caution 领头给【具体原因】（哪个工具 + litellm 真实异常 + 时序），而非误导性的
+                # stderr 尾部（那常是另一侧成功工具的 success 日志，见 summarize_llm_failure）。
+                _fail_tool, _fail_detail = summarize_llm_failure(proc.stderr)
+                _lead = f"{_fail_tool + ' 工具' if _fail_tool else '某工具'} LLM 调用失败"
+                if _fail_detail:
+                    _lead += f"：{_fail_detail}"
                 raise ReviewEngineDegraded(
                     "llm_failed",
-                    "PR-Agent 把 LLM 预测失败（stderr 含分层失败串，见 _PRED_FAILURE_SIGS）吞成 0 建议"
-                    "（退出码 0、无 _degraded）--0 建议是 LLM 失败而非审完无问题。stderr 末尾：\n"
-                    + (proc.stderr or "").strip()[-600:])
+                    _lead + "——PR-Agent 把该失败吞成 0 建议（退出码 0、无 _degraded），"
+                    "故 0 建议是 LLM 失败而非审完无问题。stderr 失败相关行：\n"
+                    + failure_stderr_tail(proc.stderr))
             # 非致命诊断元信息（部分降级/修复解析计数）——供 orchestrator 在报告中透明化：
             #   partial：单工具失败但另一侧仍有产出（整轮仍可信，不触发降级，但必须可见）；
             #   repaired：预测经 try_fix_yaml 修复解析的次数——输出截断（finish_reason=length）

@@ -732,3 +732,160 @@ def test_invoke_meta_repaired_parses_counted(monkeypatch):
     items = rp.fetch({"pr_url": "https://github.com/o/r/pull/1"})
     assert items and rp.invoke_meta()["repaired_parses"] == 2
     assert rp.invoke_meta()["partial_tool_failure"] is None
+
+
+# ---------------- caution 信息具体化（2026-07-14）：llm_failed 给具体原因，不贴误导性 stderr 尾部 ----------------
+# 真场景：improve 流式超时挂、review 正常返回——stderr 尾部是 review 的 success 日志，真因
+# （improve 的 `litellm.Timeout ... time taken=1189s`）被截在前面。caution 必须领头给具体原因。
+def test_summarize_llm_failure_timeout_evidence():
+    """PR#65 真场景：improve 超时，litellm 自记 timeout value=600 实测 time taken=1189s。
+    caution 必须抽出这条（含"超时没在 600s 生效"铁证），而非埋进 success 日志尾部。
+    stderr 按真实 run 29304939828 顺序复原（pr_code_suggestions run:189 的 improve 专用串在场）。"""
+    stderr = (
+        "Generating code suggestions for PR...\n"
+        "WARNING Error during LLM inference: litellm.Timeout: APITimeoutError - Request timed out. "
+        "Error_str: Request timed out. - timeout value=600.0, time taken=1189.44 seconds\n"
+        "Failed to generate prediction with openai/glm-5.2\n"
+        "Failed to generate code suggestions for PR, error: Failed to generate prediction with any model of ['openai/glm-5.2']\n"
+        "Async Wrapper: Completed Call, calling async_success_handler ...\n")  # review 成功日志（尾部）
+    tool, detail = RP.summarize_llm_failure(stderr)
+    assert tool == "improve"
+    assert "litellm.Timeout" in detail
+    assert "time taken=1189.44 seconds" in detail
+    assert "timeout value=600.0" in detail
+
+
+def test_summarize_llm_failure_connection_error():
+    """PR#66 真场景：improve Connection error（非超时）。stderr 按真实 run 29316278645 复原。"""
+    stderr = ("Error during LLM inference: litellm.InternalServerError: InternalServerError: "
+              "OpenAIException - Connection error.\n"
+              "Failed to generate prediction with openai/glm-5.2\n"
+              "Failed to generate code suggestions for PR, error: Failed to generate prediction with any model of ['openai/glm-5.2']")
+    tool, detail = RP.summarize_llm_failure(stderr)
+    assert tool == "improve"
+    assert "Connection error" in detail
+
+
+def test_summarize_llm_failure_review_tool():
+    """归因到 review（另一侧）：review 工具自身挂时不应错记成 improve。"""
+    stderr = ("Error during LLM inference: litellm.Timeout: APITimeoutError\n"
+              "Failed to review PR: boom")
+    tool, detail = RP.summarize_llm_failure(stderr)
+    assert tool == "review"
+    assert "litellm.Timeout" in detail
+
+
+def test_summarize_llm_failure_no_error_line():
+    """无 'Error during LLM inference' 行（仅 runner 外化标记）→ detail 空、tool 仍命中，不崩。"""
+    tool, detail = RP.summarize_llm_failure("[runner] improve produced no data（run() 内部已吞异常）")
+    assert tool == "improve"
+    assert detail == ""
+
+
+def test_summarize_llm_failure_unknown_tool():
+    """无任何工具签名时 tool=None（纯噪音 stderr 不强行归因）。"""
+    tool, detail = RP.summarize_llm_failure("Error during LLM inference: litellm.Timeout: boom")
+    assert tool is None
+    assert "litellm.Timeout" in detail
+
+
+def test_failure_stderr_tail_skips_success_logs():
+    """尾部优先取失败行，不取另一侧成功工具的 async_success_handler 日志。"""
+    stderr = (
+        "Error during LLM inference: litellm.Timeout: ... time taken=1189s\n"
+        "Failed to generate prediction with openai/glm-5.2\n"
+        "key_issues_to_review: []\n"
+        "Async Wrapper: Completed Call, calling async_success_handler\n")
+    tail = RP.failure_stderr_tail(stderr)
+    assert "litellm.Timeout" in tail
+    assert "Failed to generate prediction" in tail
+    assert "async_success_handler" not in tail      # 成功日志被排除
+
+
+def test_failure_stderr_tail_includes_runner_markers():
+    """runner 外化标记行（[runner] ...）也属失败相关行，纳入尾部。"""
+    stderr = ("[runner] improve produced no data（...）\nAsync Wrapper ... async_success_handler")
+    tail = RP.failure_stderr_tail(stderr)
+    assert "improve produced no data" in tail
+    assert "async_success_handler" not in tail
+
+
+def test_failure_stderr_tail_falls_back_when_no_failure_lines():
+    """无失败行时回退原始尾部（不丢诊断）。"""
+    tail = RP.failure_stderr_tail("nothing relevant here at all, just noise")
+    assert "noise" in tail
+
+
+def test_invoke_endpoint_swallowed_caution_surfaces_specific_error(monkeypatch):
+    """端到端：llm_failed caution 的 reason 【领头】含具体 litellm 异常 + time taken/timeout，
+    而非只贴另一侧 review 的 success 日志。这是'caution 该给具体原因'的回归锁。"""
+    stderr = (
+        "WARNING Error during LLM inference: litellm.Timeout: APITimeoutError - Request timed out. "
+        "Error_str: Request timed out. - timeout value=600.0, time taken=1189.44 seconds\n"
+        "Failed to generate prediction with openai/glm-5.2\n"
+        "Failed to generate code suggestions for PR, error: Failed to generate prediction with any model of ['openai/glm-5.2']\n"
+        "Async Wrapper: Completed Call, calling async_success_handler\n")
+    monkeypatch.setattr(RP.subprocess, "run", lambda a, **k: _Proc(
+        0, out=json.dumps({"code_suggestions": [], "review": {"key_issues_to_review": []}}), err=stderr))
+    monkeypatch.setattr(RP, "_experience_injection", lambda d: "")
+    with pytest.raises(RP.ReviewEngineDegraded) as ei:
+        RP.fetch({"owner": "o", "repo": "r", "number": 3})
+    assert ei.value.degraded == "llm_failed"
+    reason = ei.value.reason
+    assert "improve" in reason                       # 归因到工具
+    assert "litellm.Timeout" in reason               # 具体异常
+    assert "time taken=1189.44" in reason            # 时序证据（timeout 没在 600s 生效）
+    # 具体原因在"吞成 0 建议"之前（领头），而非埋进尾部
+    assert reason.index("litellm.Timeout") < reason.index("吞成")
+
+
+def test_invoke_endpoint_swallowed_caution_excludes_success_log_noise(monkeypatch):
+    """caution 的 reason 不含另一侧 review 的 success 日志（async_success_handler）——
+    锁死修复目标：消除"一边说 llm_failed、一边贴 success 日志"的自相矛盾。"""
+    stderr = (
+        "Error during LLM inference: litellm.Timeout: APITimeoutError - time taken=1189s\n"
+        "Failed to generate prediction with openai/glm-5.2\n"
+        "Async Wrapper: Completed Call, calling async_success_handler\n")
+    monkeypatch.setattr(RP.subprocess, "run", lambda a, **k: _Proc(
+        0, out=json.dumps({"code_suggestions": [], "review": {"key_issues_to_review": []}}), err=stderr))
+    monkeypatch.setattr(RP, "_experience_injection", lambda d: "")
+    with pytest.raises(RP.ReviewEngineDegraded) as ei:
+        RP.fetch({"owner": "o", "repo": "r", "number": 3})
+    assert "async_success_handler" not in ei.value.reason
+
+
+def test_summarize_llm_failure_dual_failure_aligns_detail_to_improve():
+    """双失败（improve+review 都挂）：improve 先跑、review 后跑，errs=[improve 的错, review 的错]。
+    tool 归因为 improve（_IMPROVE_FAIL_SIGS 先命中），detail 必须取 errs[0]（improve 的真因），
+    而非 errs[-1]（review 的）——否则 caution 会"说 improve 挂、却贴 review 的异常"，
+    自相矛盾、误导运维。锁死本轮修复（详情与归因工具对齐）。"""
+    stderr = (
+        "Generating code suggestions for PR...\n"
+        "WARNING Error during LLM inference: litellm.Timeout: APITimeoutError - "
+        "timeout value=600.0, time taken=1189.44 seconds\n"        # improve 的错（先跑 → errs[0]）
+        "Failed to generate code suggestions for PR, error: boom\n"  # _IMPROVE_FAIL_SIGS
+        "Generating review prediction...\n"
+        "Error during LLM inference: litellm.InternalServerError: Connection error.\n"  # review 的错（后跑 → errs[-1]）
+        "Failed to review PR: boom\n")                               # _REVIEW_FAIL_SIGS
+    tool, detail = RP.summarize_llm_failure(stderr)
+    assert tool == "improve"
+    assert "litellm.Timeout" in detail               # improve 的真因
+    assert "time taken=1189.44 seconds" in detail
+    assert "Connection error" not in detail          # review 的错被排除（不串台）
+
+
+def test_summarize_llm_failure_dual_failure_review_takes_last():
+    """对偶：review 单侧失败（无 improve 签名）→ 取 errs[-1]。补全对齐矩阵的另一支。"""
+    stderr = ("Error during LLM inference: litellm.Timeout: APITimeoutError\n"
+              "Failed to review PR: boom")
+    tool, detail = RP.summarize_llm_failure(stderr)
+    assert tool == "review"
+    assert "litellm.Timeout" in detail
+
+
+def test_failure_stderr_tail_fallback_honors_limit():
+    """回退路径（无失败行）也尊重 limit 参数，而非硬编码 -600。
+    传超长纯噪音 stderr + 小 limit，断言返回长度 ≤ limit。锁死本轮修复（两分支用同一 limit）。"""
+    noise = "x" * 2000   # 远超默认 limit=800
+    assert len(RP.failure_stderr_tail(noise, limit=100)) <= 100   # limit=100 生效（旧代码会返回 600）
+    assert len(RP.failure_stderr_tail(noise)) <= 800              # 默认 limit=800 生效
