@@ -79,6 +79,18 @@ def test_forward_failure_never_raises():
     assert telemetry.forward([_REC], env, http_post=boom).startswith("failed:")
 
 
+def test_forward_failure_includes_error_message():
+    # 可观测性本分：失败返回要带具体消息（不只 type 名），运维才能定位。
+    # 同 alert.py:142（cross-patch 一致）。
+    def boom(*a, **k):
+        raise RuntimeError("collector down")
+    env = {"TOUCHSTONE_TELEMETRY_ENDPOINT": "https://c"}
+    res = telemetry.forward([_REC], env, http_post=boom)
+    assert res.startswith("failed:")
+    assert "RuntimeError" in res
+    assert "collector down" in res
+
+
 def test_forward_empty_records_noop():
     env = {"TOUCHSTONE_TELEMETRY_ENDPOINT": "https://c"}
     assert telemetry.forward([], env) == "disabled"

@@ -106,4 +106,7 @@ def forward(records, env, *, version="", http_post=None):
         http_post(endpoint, envelope, token=env.get("TOUCHSTONE_TELEMETRY_TOKEN"))
         return "ok"
     except Exception as e:                        # noqa: BLE001 —— 遥测失败不许拖垮评审
-        return f"failed: {type(e).__name__}"
+        # 带消息（截断、单行化）：可观测性子系统的本分是让故障可见、可定位——
+        # 只留 type 名（"failed: HTTPError"）没法定位，运维无从下手。同 alert.py:142。
+        _msg = str(e).strip().replace("\n", " ")[:200]
+        return f"failed: {type(e).__name__}: {_msg}"
