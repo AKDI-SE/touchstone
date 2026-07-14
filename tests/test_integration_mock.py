@@ -308,7 +308,8 @@ def _noop_cs(monkeypatch):
 
         async def run(self):
             return None
-    cs_mod.PRCodeSuggestions = CS
+    # 用 monkeypatch.setattr 而非直接赋值：保证测试后自动还原，即便 cs_mod 是真模块也不污染后续用例。
+    monkeypatch.setattr(cs_mod, "PRCodeSuggestions", CS)
 
 
 def test_pr_agent_run_sets_litellm_num_retries_default(monkeypatch):
@@ -333,6 +334,29 @@ def test_pr_agent_run_sets_litellm_num_retries_env_override(monkeypatch):
     monkeypatch.setenv("TOUCHSTONE_LLM_NUM_RETRIES", "2")
     R.run("https://pr", "improve")
     assert litellm_mod.num_retries == 2
+
+
+def test_pr_agent_run_num_retries_invalid_env_falls_back(monkeypatch):
+    # 非法 TOUCHSTONE_LLM_NUM_RETRIES 不能让 int() 的 ValueError 被外层 except 吞成静默回退
+    # 到 None（→litellm 回退 2，正是本 PR 修的 bug）——嵌套 try 兜底默认 1 且记 stderr（防静默故障）。
+    _install_fake_pr_agent(monkeypatch)
+    _stub_llm(monkeypatch)
+    litellm_mod = _install_fake_litellm(monkeypatch)
+    _noop_cs(monkeypatch)
+    monkeypatch.setenv("TOUCHSTONE_LLM_NUM_RETRIES", "abc")
+    R.run("https://pr", "improve")
+    assert litellm_mod.num_retries == 1
+
+
+def test_pr_agent_run_num_retries_clamps_zero(monkeypatch):
+    # litellm 的 `or` 短路让 num_retries=0 被当 falsy 回退成 2；max(1,..) 把 0/负数归 1。
+    _install_fake_pr_agent(monkeypatch)
+    _stub_llm(monkeypatch)
+    litellm_mod = _install_fake_litellm(monkeypatch)
+    _noop_cs(monkeypatch)
+    monkeypatch.setenv("TOUCHSTONE_LLM_NUM_RETRIES", "0")
+    R.run("https://pr", "improve")
+    assert litellm_mod.num_retries == 1
 
 
 def test_interaction_log_written_and_redacts_key(monkeypatch, tmp_path):
