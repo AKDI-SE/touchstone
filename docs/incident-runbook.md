@@ -40,7 +40,7 @@
 
 **诊断**：`TOUCHSTONE_LLM_CONTEXT_TOKENS` 设得**大于**模型真实窗口 → 输入超窗被端点拒。
 
-**处置**：按模型真实窗口设 context tokens。对确实过大的 PR，设 `TOUCHSTONE_MAX_DIFF_LINES` 触发 SIZE-001（`engine_status=skipped_large_diff`），让系统输出"请拆分 PR"的 advisory 而非硬失败。
+**处置**：按模型真实窗口设 context tokens。对确实过大的 PR（默认超 `1000` 行），SIZE-001 体量门禁自动触发（`engine_status=skipped_large_diff`），让系统输出"请拆分 PR"的 advisory 而非硬失败；`TOUCHSTONE_MAX_DIFF_LINES` 可调阈值（设 `0` 关闭）。
 
 ## 4. 慢模型子进程超时（PR#48 glm 类）
 

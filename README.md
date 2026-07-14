@@ -162,7 +162,7 @@ jobs:
 
 | Variable 名 | 默认 | 说明 |
 |---|---|---|
-| `TOUCHSTONE_MAX_DIFF_LINES` | `0`（关） | 单 PR 行数上限，超限不调 LLM 直接 block 并提示拆分。建议 `500`–`2000` |
+| `TOUCHSTONE_MAX_DIFF_LINES` | `1000` | 单 PR 行数上限，超限不调 LLM 直接 block 并提示拆分。设 `0` 关闭；建议 `500`–`2000` |
 
 **Step 4**：分支保护（Settings → Branches → Branch protection rules）:
 - 把 `touchstone/gate` 设为 **Required status check**——确定性检查不过就拦。
