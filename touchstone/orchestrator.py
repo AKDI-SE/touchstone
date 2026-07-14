@@ -546,7 +546,12 @@ def main():
         # 可观测性子系统自身故障留痕（防静默故障约定），不拖垮评审 job。
         try:
             from touchstone import telemetry as _tel
-            _tel.forward([_rec], dict(os.environ), version=_rec.get("version", ""))
+            # forward 失败时【返回】"failed: ..."（内部已 catch、不抛）——下面的 except 只兜底
+            # forward 自身抛异常的罕见情形。故须显式看返回值：返回失败串时留痕，否则 forward 的
+            # 常见失败路径被静默吞（防静默故障：可观测性子系统自身故障不许静默，同 alert 约定）。
+            _tel_res = _tel.forward([_rec], dict(os.environ), version=_rec.get("version", ""))
+            if isinstance(_tel_res, str) and _tel_res.startswith("failed:"):
+                print(f"[warn] 遥测上报失败（不阻塞评审）: {_tel_res}", file=sys.stderr)
         except Exception as e:
             print(f"[warn] 遥测上报失败（不阻塞评审）: {e}", file=sys.stderr)
     except Exception as e:
