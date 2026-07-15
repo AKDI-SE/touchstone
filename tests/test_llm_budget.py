@@ -146,3 +146,35 @@ def test_size_gate_default_1000_over_limit_blocks(monkeypatch):
     assert size and size[0]["severity"] == "block_candidate"      # block 级
     assert out["engine_status"] == "skipped_large_diff"           # LLM 被跳过
     assert out["ai_raw_count"] == 0                               # 没调 pr-agent
+
+
+def test_size_gate_boundary_is_strict_gt_against_configured_limit(monkeypatch):
+    """锁 SIZE-001 门禁边界：以【TOUCHSTONE_MAX_DIFF_LINES 配置值】为界、严格大于（>，非 >=）。
+    设上限 N，则正好 N 行 → 放行、N+1 行 → 拦截。
+
+    用非默认值 N=100（非 1000）一并钉死两点，弥补既有测试只在 200/1200 远离边界的覆盖缺口：
+      1. 严格 >：若误写成 >=，则 N 行（== 上限）会被拦截 → 第一处断言失败。
+      2. 读 env 而非硬编码常量：若实现误把 1000 写死，则 N+1=101 行不会拦截（101 不超 1000）
+         → 第二处断言失败。off-by-one 与"写死常量"是阈值门禁最易错的两点。
+    """
+    from touchstone import orchestrator as orc
+    N = 100
+    monkeypatch.setenv("TOUCHSTONE_MAX_DIFF_LINES", str(N))
+
+    def _diff(n):   # n 个干净 + 新增行（每行带 + 前缀，unidiff 严格计数）
+        return ("diff --git a/big.py b/big.py\n--- a/big.py\n+++ b/big.py\n"
+                f"@@ -0,0 +1,{n} @@\n" + "".join(f"+l{i}\n" for i in range(n)))
+
+    # 正好 N 行（== 配置上限）→ 放行（严格 >：等于不算超）
+    out = orc.review_pr(
+        {"diff": _diff(N),
+         "pr_agent_output": {"code_suggestions": [], "review": {"key_issues_to_review": []}}}, {}, {})
+    assert out["engine_status"] == "ok"
+    assert not any(f.get("rule_id") == "SIZE-001" for f in out["findings"])
+
+    # N+1 行 → 拦截（SIZE-001 block + 跳过 LLM）
+    out2 = orc.review_pr({"diff": _diff(N + 1), "pr_agent_output": {"SHOULD_NOT_BE_USED": True}}, {}, {})
+    size = [f for f in out2["findings"] if f.get("rule_id") == "SIZE-001"]
+    assert size and size[0]["severity"] == "block_candidate"        # block 级
+    assert out2["engine_status"] == "skipped_large_diff"            # LLM 被跳过
+    assert out2["ai_raw_count"] == 0                                # 没调 pr-agent
