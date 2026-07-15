@@ -45,8 +45,9 @@ class _Proc:
 
 @pytest.fixture(autouse=True)
 def _no_diff_limit(monkeypatch):
-    """默认不启用 SIZE-001（防 skipped_large_diff 干扰引擎降级断言）。"""
-    monkeypatch.delenv("TOUCHSTONE_MAX_DIFF_LINES", raising=False)
+    """显式关闭 SIZE-001 体量门禁（防 skipped_large_diff 干扰引擎降级断言）。
+    默认值已是 1000（size-gate-default-1000），这里 setenv 0 强制关，与默认值解耦、稳定隔离。"""
+    monkeypatch.setenv("TOUCHSTONE_MAX_DIFF_LINES", "0")
 
 
 # ============================================================================
