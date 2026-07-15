@@ -12,12 +12,19 @@
 # ============================================================================
 
 import json
+import os
 from dataclasses import dataclass, field
 from typing import Optional
 
 from touchstone import checklist as _checklist   # 单一签名构造源（_sig 委派 sig_of，保持同构）
 
-MAX_ROUNDS = int(__import__("os").environ.get("TOUCHSTONE_MAX_ROUNDS", "9"))
+try:
+    MAX_ROUNDS = max(1, int(os.environ.get("TOUCHSTONE_MAX_ROUNDS", "9")))
+except (TypeError, ValueError):
+    # 坏值（空串/非数字）→ 默认 9，绝不在 import 时崩整链。对齐 num_retries/max_lines 的 env 兜底
+    # 风格——独此常量原本无兜底：env="" 或 "abc" 在导入时 ValueError → touchstone.loop import
+    # 失败 → orchestrator 链崩（CI 里 vars 未设常被插成空串）。max(1,…) 顺带挡 0/负数。
+    MAX_ROUNDS = 9
 _OPEN = "<!-- touchstone-loop:"
 _CLOSE = "-->"
 

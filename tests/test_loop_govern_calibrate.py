@@ -9,6 +9,27 @@ def _f(rid, file="f", line=1, fix="改这里"):
     return {"rule_id": rid, "file": file, "line": line, "suggested_fix": fix}
 
 
+def test_max_rounds_bad_env_falls_back_without_import_crash(monkeypatch):
+    """坏 env（空串/非数字）不能在 import 时崩整链——应兜底默认 9，且夹到 >=1。
+    回归锁：原 `int(env.get(...,'9'))` 对 env=''/'abc' 在【导入时】ValueError → touchstone.loop
+    import 失败 → orchestrator 链崩（CI 里 vars 未设常被插成空串）。同批 num_retries/max_lines 都有
+    兜底，独此常量没有。"""
+    import importlib
+    for bad in ("", "abc", "  ", "1.5x", "nine"):
+        monkeypatch.setenv("TOUCHSTONE_MAX_ROUNDS", bad)
+        assert importlib.reload(loop).MAX_ROUNDS == 9, f"env={bad!r} 应兜底 9"
+    # 合法值仍生效；0/负数被夹到 1
+    monkeypatch.setenv("TOUCHSTONE_MAX_ROUNDS", "5")
+    assert importlib.reload(loop).MAX_ROUNDS == 5
+    for clamp in ("0", "-3"):
+        monkeypatch.setenv("TOUCHSTONE_MAX_ROUNDS", clamp)
+        assert importlib.reload(loop).MAX_ROUNDS == 1, f"env={clamp!r} 应夹到 1"
+    # 还原模块默认状态（删 env 后 reload 回 9），避免污染后续测试
+    monkeypatch.delenv("TOUCHSTONE_MAX_ROUNDS", raising=False)
+    importlib.reload(loop)
+    assert loop.MAX_ROUNDS == 9
+
+
 def test_loop_converged_when_no_actionable(rule_index):
     dec, _, st = loop.loop_step([], rule_index, loop.LoopState())
     assert dec == "converged" and st.round == 1
