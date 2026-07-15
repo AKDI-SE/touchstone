@@ -17,6 +17,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import urllib.request
 import urllib.error
@@ -33,11 +34,11 @@ from typing import Optional
 # Runner 内部调用（tests 已相应迁移）。
 # ============================================================================
 from verify.runners import (  # noqa: F401
-    TEST_TIMEOUT, _extract_interface, _run_tests, _run_coverage_subprocess,
+    TEST_TIMEOUT, MutationRunError, _extract_interface, _run_tests, _run_coverage_subprocess,
     _coverage_ratio, _changed_file_coverage, _parse_mutation_output,
     external_mutation_score, _mutation_sites, _ast_mutants, _mutation_check,
     _run, PythonRunner, MavenRunner, select_runner,
-    _jacoco_changed_coverage, _pit_score, _extract_java_signatures,
+    _jacoco_changed_coverage, _pit_score, _pit_has_report, _extract_java_signatures,
     _suite_coverage_python, _coverage_json_line_ratio, _basename_lines,
     _jacoco_line_ratio, _jacoco_changed_line_coverage, _place_junit)
 
@@ -210,7 +211,18 @@ def check_adequacy(runner, test_code, changed_files, changed_lines, base_dir, he
     base_pass, _ = runner.run_generated(base_dir, test_code)
     sentinel = (base_pass is False)
     cov = runner.cover_generated(head_dir, test_code, changed_files, changed_lines)
-    mut = runner.mutation(head_dir, changed_files, test_code) if mode == "full_suite" else None
+    if mode != "full_suite":
+        return _grade(cov, sentinel, None)
+    try:
+        mut = runner.mutation(head_dir, changed_files, test_code)
+    except MutationRunError as e:
+        # 变异【跑了但失败】≠ 未跑(None)：无变异证据可证明测试充分 → 保守判 inadequate
+        # （不掩盖成 adequate——这正是 B1 要堵的静默放过弱测试的口子）
+        print(f"[verify] 变异测试运行失败，按不充分处理（不掩盖）：{e}", file=sys.stderr)
+        adq = AdequacyResult(changed_file_coverage=cov, sentinel_passed=sentinel,
+                             mutation_score=None)
+        adq.verdict = "inadequate"
+        return adq
     return _grade(cov, sentinel, mut)
 
 
@@ -344,16 +356,25 @@ def _verify_regression(repo_dir, runner, changed_files, base_ref, head_ref, mode
         changed = _changed_lines(repo_dir, base_ref, head_ref)
         cov = runner.changed_coverage(head_dir, changed_files, changed)
         adq = AdequacyResult(changed_file_coverage=cov, sentinel_passed=None)
+        mut_failed = ""
         if mode == "full_suite":
-            adq.mutation_score = runner.mutation(head_dir, changed_files)
-        mut_ok = (adq.mutation_score is None) or (adq.mutation_score >= MUT_MIN)
-        adq.verdict = "adequate" if (cov >= COV_MIN and mut_ok) else "inadequate"
-        # 判过：改后套件绿(不破坏行为) ∧ 改动被覆盖。改前非绿则归因不清，提示但不据此判过
+            try:
+                adq.mutation_score = runner.mutation(head_dir, changed_files)
+            except MutationRunError as e:
+                # 变异【跑了但失败】≠ 未跑(None)：不掩盖成 adequate，保守判 inadequate，原因进 evidence
+                mut_failed = str(e)
+        if mut_failed:
+            adq.verdict = "inadequate"
+        else:
+            mut_ok = (adq.mutation_score is None) or (adq.mutation_score >= MUT_MIN)
+            adq.verdict = "adequate" if (cov >= COV_MIN and mut_ok) else "inadequate"
+        # 判过：改后套件绿 ∧ 改动被覆盖 ∧ [高风险]变异未失败。改前非绿则归因不清，提示但不据此判过
         passed = bool(head_pass) and adq.verdict == "adequate"
         attr = "" if base_pass else "  ⚠ 改前套件即非绿，无法干净归因"
+        mutattr = f"  ⚠ 变异测试运行失败（按不充分处理，不掩盖）：{mut_failed}" if mut_failed else ""
         evidence = (f"[regression_only/{runner.lang}] head_suite={head_pass} "
                     f"base_suite={base_pass} changed_cov={cov:.2f} "
-                    f"mut={adq.mutation_score}{attr}\n{head_out}")
+                    f"mut={adq.mutation_score}{attr}{mutattr}\n{head_out}")
         return VerificationResult(passed, "regression_only", head_pass, adq, evidence)
     finally:
         _rm_worktree(repo_dir, base_dir)
