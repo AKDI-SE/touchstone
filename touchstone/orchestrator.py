@@ -174,7 +174,7 @@ def post_results(owner, repo, number, head_sha, token, risk, findings, loop_info
                  change_class=None, diff=None, injected_types=None, injected_experience_ids=None,
                  engine_status="ok", det_warning="", ai_raw_count=0, added_lines=0, n_changed=0,
                  scope_facts=None, checklist_md="", ledger=None, review_reliable=True,
-                 llm_notes=None, raw_excerpt=None, unverified_claims=0):
+                 llm_notes=None, raw_excerpt=None, unverified_claims=0, telemetry_status="disabled"):
     # (1) 摘要评论——总是成功；按七段版面模板组装（修订设计 §3 意见 4）：
     #     ①横幅(降级说明/0-发现溯源/循环状态) ②总结 ③确定性事实 ④逐条发现 ⑤收敛清单 ⑥验证 ⑦机器 marker
     # 评审不可信时，降级说明/0-发现溯源统一并入 render 层的 [!CAUTION] 置顶告警
@@ -194,6 +194,16 @@ def post_results(owner, repo, number, head_sha, token, risk, findings, loop_info
         banner = (banner + "\n\n" if banner else "") + (
             f"🟡 **{unverified_claims} 条 waived/split 系 author 自证、机器未验证**："
             "这些豁免/拆分需人核准，不计入机器可验证收敛，也不触发自动放行。")
+    # 遥测上报状态进横幅（防静默故障：可观测性子系统自身状态对运维可见，不只进 stderr）。
+    # 仅在启用遥测时显示——默认关（disabled）时不加行，免噪声。failed 时附原因，让人能定位。
+    if telemetry_status and telemetry_status != "disabled":
+        if telemetry_status == "ok":
+            _tel_line = "📡 **遥测**：已上报本轮指标"
+        else:
+            _reason = (telemetry_status[len("failed:"):].strip()
+                       if telemetry_status.startswith("failed:") else telemetry_status)
+            _tel_line = f"📡 **遥测**：上报失败（不阻塞评审）— {_reason}"
+        banner = (banner + "\n\n" if banner else "") + _tel_line
     markers = []
     if loop_info:
         decision, reason, marker = loop_info
@@ -458,17 +468,12 @@ def main():
         except OSError as e:
             print(f"[warn] RDJSON 写出失败: {e}", file=sys.stderr)
 
-    post_results(owner, repo, number, head_sha, token, risk, findings, loop_info, cls, diff,
-                 injected_types=injected_types, injected_experience_ids=injected_experience_ids,
-                 engine_status=engine_status, det_warning=det_warning,
-                 ai_raw_count=ai_raw_count, added_lines=added_lines, n_changed=n_changed,
-                 scope_facts=scope_facts, checklist_md=checklist_md, ledger=ledger,
-                 review_reliable=reliable, llm_notes=llm_notes,
-                 raw_excerpt=raw_excerpt, unverified_claims=n_unverified)
-
     # 可插拔检查 → 对外发【一个】总闸状态（策略全在 .touchstone/checks.yaml）。
     # CI 中由独立 gate job 在(可选)verify 之后聚合并发布，此处置 TOUCHSTONE_SKIP_GATE 跳过自发、
     # 避免重复发；本地/dry-run（未设该环境变量）则就地计算并发布，行为不变。
+    # 【顺序】gate 上移到 post_results 之前：可观测性块（metrics/告警/遥测）需 gate（_metrics.build
+    # 的 gate= 参数），而遥测上报结果 _tel_res 要进评审报告横幅——故 gate + 可观测性须先于回贴评论
+    # 跑完。gate 仍只在非 SKIP 时计算并外发，行为不变。
     gate = None
     if os.environ.get("TOUCHSTONE_SKIP_GATE", "").lower() not in ("1", "true", "yes", "on"):
         try:
@@ -480,38 +485,21 @@ def main():
             pr_ctx = {"owner": owner, "repo": repo, "sha": head_sha, "token": token,
                       "files": sorted(changed_files), "contract_findings": det_findings}
             gate, _ = checks.post_gate(pr_ctx, chk_cfg, checks.run_checks(chk_cfg, pr_ctx))
-        except requests.exceptions.RequestException as e:
-            print(f"[info] 总闸跳过: {e}", file=sys.stderr)
-
-    # 升级到人：打标签（best-effort）
-    if decision == "escalate":
-        try:
-            gh("POST", f"/repos/{owner}/{repo}/issues/{number}/labels", token,
-               {"labels": ["touchstone:needs-human"]})
-        except requests.exceptions.RequestException:
-            pass
-
-    # 校准 + 自治决策入口：落盘供下游 join / auto_merge 组装
-    with open("touchstone-findings.json", "w", encoding="utf-8") as f:
-        json.dump({"pr": number, "sha": head_sha, "risk": risk, "findings": findings,
-                   "changed_files": sorted(changed_files), "loop_decision": decision,
-                   "contract_clean": contract_clean, "change_class": cls,
-                   "gate": gate,
-                   # 引擎健康度（供 autonomy 决策）：engine_status/ai_raw_count/added_lines +
-                   # 预算 review_reliable。review_reliable=False 时 autonomy 不自动放行
-                   # （防假收敛放行未评审代码，见 review_provider.review_reliable）。
-                   "engine_status": engine_status, "ai_raw_count": ai_raw_count,
-                   "added_lines": added_lines, "review_reliable": reliable,
-                   "review_engaged": engaged,
-                   # LLM 原始 review 段快照（0 原始建议时的"真审过"证据，见 _clean_review_trace）
-                   "raw_review_excerpt": raw_excerpt,
-                   # author 自证但未经人核准的销项数（waived/split）——autonomy 独立闸据此
-                   # 拒放行（多层：即便 loop_decision 被虚报，本计数由 touchstone 侧写入）。
-                   "unverified_claims": n_unverified},
-                  f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            # 总闸是旁路增强（独立 check-run 状态），不是评审交付本身。catch 宽到 Exception：
+            # gate 块上移到 post_results 之前（本 PR），若只 catch RequestException，则 checks.*
+            # 抛任意非网络异常（如 checks.py 未来改动引入的编程错误、插件聚合异常）会向上冒泡、
+            # post_results 永不执行——评审评论被静默吞掉。原本 gate 在 post_results 之后，崩溃也只是
+            # 评论已发之后再炸 job；顺序上移后必须拓宽 except 才能守住「总闸崩溃不阻断评审交付」
+            # 的既有契约（gate 维持 None，真因进 stderr，防静默故障）。
+            print(f"[info] 总闸跳过（不阻断评审）: {type(e).__name__}: {e}", file=sys.stderr)
 
     # 运行指标（运维可观测性）：每轮追加一条扁平指标到事件流，供 CI 聚合成 dashboard/告警。
     # 与 findings.json（autonomy 决策用的完整状态）分开——本条只含可累加的健康数值。失败不阻塞。
+    # 【顺序】整块上移到 post_results 之前：遥测 forward 的结果 _tel_res（ok/disabled/failed）要进
+    # 评审报告横幅（防静默故障：可观测性子系统自身状态对运维可见，不只进 stderr），须在回贴评论前
+    # 算出。附带好处——回贴评论失败时指标/遥测仍落盘（可观测性不依赖评论投递成功，契合防静默约定）。
+    _tel_res = "disabled"   # 默认：未配端点 / 指标产出整体失败时保持（报告里不显示遥测行，免噪声）
     try:
         from touchstone import metrics as _metrics
         _meta = None
@@ -557,11 +545,51 @@ def main():
             if isinstance(_tel_res, str) and _tel_res.startswith("failed:"):
                 print(f"[warn] 遥测上报失败（不阻塞评审）: {_tel_res}", file=sys.stderr)
         except Exception as e:
+            # forward 自身抛异常（罕见）→ 显式置 failed: 串，让报告横幅也显示失败（防静默故障：
+            # 异常路径同样可见），并 stderr 留痕。_tel_res 此前未赋值，此处兜底。
+            _tel_res = f"failed: {e}"
             print(f"[warn] 遥测上报失败（不阻塞评审）: {e}", file=sys.stderr)
     except Exception as e:
         # 指标产出失败不阻塞评审主链——但绝不静默：可观测性子系统自身故障必须留痕
         # （同 learning_loop 2026-07-04 的防静默约定，ironic-for-observability 反模式）。
+        # _tel_res 保持 "disabled"：指标整体失败时报告不显示遥测行（避免误导），真因在 stderr。
         print(f"[warn] 运行指标产出失败: {e}", file=sys.stderr)
+
+    post_results(owner, repo, number, head_sha, token, risk, findings, loop_info, cls, diff,
+                 injected_types=injected_types, injected_experience_ids=injected_experience_ids,
+                 engine_status=engine_status, det_warning=det_warning,
+                 ai_raw_count=ai_raw_count, added_lines=added_lines, n_changed=n_changed,
+                 scope_facts=scope_facts, checklist_md=checklist_md, ledger=ledger,
+                 review_reliable=reliable, llm_notes=llm_notes,
+                 raw_excerpt=raw_excerpt, unverified_claims=n_unverified,
+                 telemetry_status=_tel_res)
+
+    # 升级到人：打标签（best-effort）
+    if decision == "escalate":
+        try:
+            gh("POST", f"/repos/{owner}/{repo}/issues/{number}/labels", token,
+               {"labels": ["touchstone:needs-human"]})
+        except requests.exceptions.RequestException:
+            pass
+
+    # 校准 + 自治决策入口：落盘供下游 join / auto_merge 组装
+    with open("touchstone-findings.json", "w", encoding="utf-8") as f:
+        json.dump({"pr": number, "sha": head_sha, "risk": risk, "findings": findings,
+                   "changed_files": sorted(changed_files), "loop_decision": decision,
+                   "contract_clean": contract_clean, "change_class": cls,
+                   "gate": gate,
+                   # 引擎健康度（供 autonomy 决策）：engine_status/ai_raw_count/added_lines +
+                   # 预算 review_reliable。review_reliable=False 时 autonomy 不自动放行
+                   # （防假收敛放行未评审代码，见 review_provider.review_reliable）。
+                   "engine_status": engine_status, "ai_raw_count": ai_raw_count,
+                   "added_lines": added_lines, "review_reliable": reliable,
+                   "review_engaged": engaged,
+                   # LLM 原始 review 段快照（0 原始建议时的"真审过"证据，见 _clean_review_trace）
+                   "raw_review_excerpt": raw_excerpt,
+                   # author 自证但未经人核准的销项数（waived/split）——autonomy 独立闸据此
+                   # 拒放行（多层：即便 loop_decision 被虚报，本计数由 touchstone 侧写入）。
+                   "unverified_claims": n_unverified},
+                  f, ensure_ascii=False, indent=2)
 
     # 风险分流的 job 输出：供下游 verify job 决定是否触发验证
     gho = os.environ.get("GITHUB_OUTPUT")
