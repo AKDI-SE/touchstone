@@ -44,8 +44,13 @@ def evaluate(record, agg=None, *, reliable_min=0.8, silent_max=0):
     alerts = []
     # —— 单轮即时（scope=pr）——
     if (record.get("review_reliable") is False
-            and record.get("engine_status") in ("ok", "llm_failed")
+            and record.get("engine_status") == "ok"
             and (record.get("ai_raw_count") or 0) == 0):
+        # 静默故障 =「看着正常其实没审」——仅 engine_status=='ok' 才算（与 metrics.summarize 的
+        # silent_failure_rounds 口径一致：那里 :108-110 同样只数 ok）。
+        # llm_failed/no_engine/provider_failed 是【已被检测且大声上报】的降级，不是静默——
+        # 它们由下面 engine_degraded 告警负责；把 llm_failed 也算静默会与 metrics 定义打架、
+        # 且对同一事件双发（high 静默 + warn 降级），污染客户告警渠道。
         alerts.append(_alert("high", "silent_failure",
                              "LLM 静默故障：本轮评审不可信且 0 建议（不该被当绿灯）", record, "pr",
                              "排障见 docs/incident-runbook.md §1。"))
