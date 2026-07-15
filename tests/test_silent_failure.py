@@ -127,7 +127,20 @@ def test_e2e_degraded_field_self_report_degrades(monkeypatch):
     pr = _pr([("src/Main.java", ["public class Main { int x; }"], True)])
     out = orc.review_pr(pr, {}, _standards())
     assert out["engine_status"] == "llm_failed"
+    assert "AuthError" in out["engine_detail"]      # 具体原因被留进返回，供渲染层详列
     assert RP.review_reliable(out["engine_status"], 0, out["added_lines"], out["engaged"]) is False
+
+
+def test_unreliable_callout_concise_names_stage():
+    """CAUTION 精简（两行）：点明失败环节 + 指向验证与日志；原始 dump 不进本框。"""
+    from touchstone import render
+    detail = "improve 工具 LLM 调用失败：litellm.Timeout——stderr 失败相关行：\nError during LLM inference: ..."
+    box = render.render_unreliable_callout("llm_failed", ai_raw_count=0, added_lines=50,
+                                           engine_detail=detail)
+    assert "本轮 AI 评审不可信" in box and "LLM 调用失败" in box   # 点明环节
+    assert "验证与日志" in box                                    # 指向详列原始错误处
+    assert "litellm.Timeout" not in box and "Error during LLM inference" not in box  # 原始 dump 不塞进精简框
+    assert box.count("\n") <= 3                                   # 两行正文（含 [!CAUTION] 头）
 
 
 def test_e2e_swallowed_failure_degrades(monkeypatch):

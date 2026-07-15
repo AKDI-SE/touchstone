@@ -230,7 +230,7 @@ def render(checklist, rounds_left=None, lineage=None):
     cl = checklist or {"round": 0, "items": [], "resolved_rate": 1.0}
     # 版面铁律（易读性改版）：品牌名只在报告 H2 标题出现一次，本段与③④⑥并列用 H3；
     # 每轮重复的申报方式样板折叠进 <details>，不占屏。
-    lines = [f"### 收敛清单（第 {cl['round']} 轮 · 销项率 "
+    lines = [f"### 待解决问题清单（第 {cl['round']} 轮 · 销项率 "
              f"{min(100, max(0, int(round(cl.get('resolved_rate', 0) * 100))))}%"
              + (f" · 剩余轮次 {rounds_left}" if rounds_left is not None else "") + "）"]
     if lineage and lineage.get("lineage"):
@@ -239,24 +239,20 @@ def render(checklist, rounds_left=None, lineage=None):
                      f"未销项 {len(lineage.get('inherited_open_items', []))} 条已并入本清单，"
                      f"剩余轮次按台账计。人工重置请打 `rounds-reset` label。")
     lines.append("")
+    if cl["items"]:
+        # 去重：本清单是「销项状态跟踪」，不重复「静态检查 / AI 评审」的详情——每条只给
+        # 状态 + 方向 + 位置 + 销项备注；问题依据与达成判据见上方评审各段。
+        lines.append("<sub>销项跟踪：每条的问题依据与达成判据见上方「静态检查 / AI 评审」，此处只跟踪状态。</sub>")
+        lines.append("")
     for it in cl["items"]:
         mark = _STATUS_MARK.get(it["status"], "- [ ]")
         label = _STATUS_LABEL.get(it["status"], "")
-        # 主文本改「方向（人话）+ 位置」，sig 降为行尾锚点小字（机器匹配用，人不必读）。
         direction = it.get("direction") or ""
         loc = it["sig"].split("@", 1)[-1] if "@" in it["sig"] else it["sig"]
         title = f"**{direction}**" if direction else "（待补修复方向）"
         head = f"{mark} {title}" + (f" {label}" if label else "")
         lines.append(head)
         lines.append(f"  - 位置：`{loc}`")
-        if it["reasoning"] and it["reasoning"] != it["direction"]:
-            lines.append(f"  - 依据：{it['reasoning']}")
-        dc = it.get("done_criteria") or {}
-        if dc.get("kind") == "deterministic":
-            lines.append(f"  - 达成判据：规则 `{dc.get('spec', {}).get('recheck', '?')}` 复检不再命中")
-        elif dc.get("kind") == "review":
-            q = (dc.get("spec") or {}).get("question", "")
-            lines.append(f"  - 达成判据：需人工复核：{q}" if q else "  - 达成判据：定向复核通过")
         if it["note"]:
             lines.append(f"  - 说明：{it['note']}")
         lines.append(f"  <sub>锚点 `{it['sig']}`</sub>")

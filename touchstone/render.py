@@ -31,76 +31,101 @@ def _load_template():
         return "{{banner}}\n\n{{summary_line}}\n\n{{facts}}\n\n{{findings}}\n\n{{checklist}}\n\n{{verification}}\n\n{{markers}}"
 
 
-def render_unreliable_callout(engine_status, ai_raw_count=0, added_lines=0):
-    """本轮评审不可信时的置顶告警——版面铁律：不可信必须以 GitHub 原生 [!CAUTION]
-    红色警示框置于标题正下方，替代（而非并存于）常规溯源/降级横幅。
-    背景（PR #44/#46 实测教训）：旧版只在横幅里给一句加粗的"改动不小却 0 建议——
-    建议人工扫一眼"，而态势表照常显示 LOW·可跳过/skip——评审失败反而呈现最低风险，
-    是主动误导。判定层（销项/收敛/放行）已由 review_reliable 挡住，本函数把同一信号
-    接到呈现层：0 发现 ≠ 审过没问题，必须让人一眼看到。"""
-    _CAUSE = {
-        "no_engine": "PR-Agent 未安装或不可用（引擎没跑）",
-        "provider_failed": "PR-Agent 无法获取该 PR（git provider/凭据/网络）",
-        "llm_failed": "LLM 端点未成功响应（含空响应被 pr-agent 吞没，退出码仍为 0 的情形）",
+def render_unreliable_callout(engine_status, ai_raw_count=0, added_lines=0, engine_detail=""):
+    """本轮评审不可信时的置顶告警——[!CAUTION] 红框置顶，替代常规溯源/降级横幅。精简到两行：
+    点明【失败环节】+ 后果 + 指向。具体可靠的原始错误详列在「验证与日志」段（本框不塞原始
+    dump）。判定层（销项/收敛/放行）已由 review_reliable 挡住；本函数把同一信号接到呈现层。"""
+    _WHERE = {
+        "no_engine": "评审引擎未启动",
+        "provider_failed": "取 PR 失败",
+        "llm_failed": "LLM 调用失败",
         "skipped_large_diff": "diff 超预算被跳过",
     }
-    cause = _CAUSE.get(engine_status)
-    if cause is None:      # engine ok 但可疑空收敛（唯启发式能抓：diff 被裁空/空响应漏检）
-        cause = (f"引擎状态正常，但改动约 {added_lines} 新增行却 {ai_raw_count} 条原始建议"
-                 "——疑似 diff 被裁空或 LLM 空响应未被检出")
+    where = _WHERE.get(engine_status) or f"疑似空收敛（约 {added_lines} 行改动却 {ai_raw_count} 建议）"
+    tail = "；原始错误见下方「验证与日志」" if (engine_status != "ok" and engine_detail) else ""
     return "\n".join([
         "> [!CAUTION]",
-        "> **本轮 AI 评审不可信 —— 0 发现 ≠ 审过没问题。**",
-        f"> 原因：{cause}。",
-        "> 本轮评审结果不作数：收敛清单不销项、反馈循环不收敛、自治不放行。",
-        "> 请人工评审本 PR，或排除故障后重新触发评审（详见下方「验证与日志」）。",
+        f"> **本轮 AI 评审不可信**：{where}。",
+        f"> 请人工评审{tail}。",
     ])
 
 
-def render_facts(scope_facts, gate_line="", lineage=None):
-    """③ 确定性事实区：范围事实摘要（机器实测的修改范围，给人第一眼）+ 门禁状态 + 同源提示。
-    与 author 的提交契约声明并排对照——声明是索引，这里是事实。
-    易读性铁律：与④⑤⑥并列的段落用同级 H3（此前只有收敛清单是 H3，
-    渲染后像整条评论的总标题，其余段落反像它的下级）。"""
-    if not scope_facts:
-        return ""
-    lines = ["### 确定性事实（机器实测，不经模型）", ""]
-    if not scope_facts.get("parse_ok", True):
-        lines.append(f"- ⚠️ {scope_facts.get('parse_warning', 'diff 解析失败：范围事实未生效')}")
-        return "\n".join(lines)
-    t = scope_facts.get("totals", {})
-    lines.append(f"- 修改范围：{t.get('files', 0)} 个文件（+{t.get('added', 0)} / −{t.get('deleted', 0)} 行）")
-    hits = scope_facts.get("sensitive_hits", [])
-    if hits:
-        by_rule = {}
-        for h in hits:
-            by_rule.setdefault(h["rule"], []).append(h["path"])
-        for rule, paths in sorted(by_rule.items()):
-            shown = ", ".join(f"`{p}`" for p in paths[:5]) + ("…" if len(paths) > 5 else "")
-            lines.append(f"- 敏感路径命中（{rule}）：{shown}")
+def _finding_entry(i, f):
+    """单条发现的渲染（规则命中与 AI 建议共用）：位置 — 问题 + 修复方向/依据/达成判据 + 行尾元数据。"""
+    direction = f.get("fix_direction") or f.get("suggested_fix") or ""
+    reasoning = f.get("fix_reasoning") or ""
+    dc = f.get("done_criteria") or {}
+    _spec = dc.get("spec") or {}
+    if dc.get("kind") == "deterministic":
+        dc_line = f"规则 `{_spec.get('recheck', '?')}` 复检不再命中"
+    elif dc.get("kind") == "review":
+        q = _spec.get("question", "")
+        dc_line = f"需人工复核：{q}" if q else "定向复核通过"
     else:
-        lines.append("- 敏感路径命中：无")
-    if gate_line:
-        lines.append(f"- 门禁状态：{gate_line}")
-    if lineage and lineage.get("lineage"):
-        entries = [e for e in lineage.get("lineage", []) if isinstance(e, dict) and "number" in e]
-        if entries:
-            hist = "、".join(f"#{e['number']}" for e in entries)
-            lines.append(f"- ⚠️ 同源提示：与已关闭的 {hist} 内容同源，历史已消耗 "
-                     f"{lineage.get('rounds_spent', 0)} 轮、继承未销项 "
-                     f"{len(lineage.get('inherited_open_items', []))} 条，剩余轮次 "
-                     f"{lineage.get('rounds_left', '?')}（重置需 `rounds-reset` label）")
+        dc_line = ""
+    e = (f"{i}. **`{f.get('file','?')}:{f.get('line','?')}`** — {f.get('rationale','')}\n"
+         f"   - 修复方向：{direction}")
+    if reasoning and reasoning != f.get("rationale"):
+        e += f"\n   - 依据：{reasoning}"
+    if dc_line:
+        e += f"\n   - 达成判据：{dc_line}"
+    e += (f"\n   - <sub>`{f['rule_id']}` · {f.get('severity','')} · "
+          f"置信 {f['confidence']:.2f} · 来源 {f['agent']}</sub>")
+    return e
+
+
+def render_facts(scope_facts, gate_line="", lineage=None, rule_findings=None):
+    """③ 静态检查区：不经 LLM 的确定性输出——修改范围 + 敏感路径命中 + 门禁 + 同源提示，
+    以及确定性【规则命中的逐条发现】（contract/stack/size，可复现）。与「AI 评审」段并列同级
+    H3，构成「确定性 vs LLM」两层视图。"""
+    if not scope_facts and not rule_findings:
+        return ""
+    lines = ["### 静态检查", ""]
+    if scope_facts and not scope_facts.get("parse_ok", True):
+        lines.append(f"- ⚠️ {scope_facts.get('parse_warning', 'diff 解析失败：范围事实未生效')}")
+        scope_facts = None      # 解析失败：跳过范围行，但仍渲染下方规则命中
+    if scope_facts:
+        t = scope_facts.get("totals", {})
+        lines.append(f"- 修改范围：{t.get('files', 0)} 个文件（+{t.get('added', 0)} / −{t.get('deleted', 0)} 行）")
+        hits = scope_facts.get("sensitive_hits", [])
+        if hits:
+            by_rule = {}
+            for h in hits:
+                by_rule.setdefault(h["rule"], []).append(h["path"])
+            for rule, paths in sorted(by_rule.items()):
+                shown = ", ".join(f"`{p}`" for p in paths[:5]) + ("…" if len(paths) > 5 else "")
+                lines.append(f"- 敏感路径命中（{rule}）：{shown}")
+        else:
+            lines.append("- 敏感路径命中：无")
+        if gate_line:
+            lines.append(f"- 门禁状态：{gate_line}")
+        if lineage and lineage.get("lineage"):
+            entries = [e for e in lineage.get("lineage", []) if isinstance(e, dict) and "number" in e]
+            if entries:
+                hist = "、".join(f"#{e['number']}" for e in entries)
+                lines.append(f"- ⚠️ 同源提示：与已关闭的 {hist} 内容同源，历史已消耗 "
+                         f"{lineage.get('rounds_spent', 0)} 轮、继承未销项 "
+                         f"{len(lineage.get('inherited_open_items', []))} 条，剩余轮次 "
+                         f"{lineage.get('rounds_left', '?')}（重置需 `rounds-reset` label）")
+    if rule_findings:
+        shown = rule_findings[:MAX_FINDINGS_IN_SUMMARY]
+        lines.append("")
+        lines.append("#### 规则命中（可复现）")
+        lines.append("")
+        for i, f in enumerate(shown, 1):
+            lines.append(_finding_entry(i, f))
+        if len(rule_findings) > MAX_FINDINGS_IN_SUMMARY:
+            lines.append("")
+            lines.append(f"……另有 {len(rule_findings) - MAX_FINDINGS_IN_SUMMARY} 条（确定性核对已覆盖全文，见 check 标题/总闸）。")
     return "\n".join(lines)
 
 
 def render_findings(risk, findings, review_reliable=True):
-    """②态势区 + ④逐条发现（2026-07-10 易读性改版·二）。
-    态势区：放弃四列枚举表格，改「标签 + 人话」陈述行——只呈现人真正要关心的两件事，
-      风险等级（含"该怎么办"）与触发因子；枚举值译成中文、英文原名括注。
-      verification_decision 是机器路由信号（决定 CI 跑哪档验证，非给人的待办），
-      已移出态势区、降级到「验证与日志」段（render_report 处理）。
-    逐条发现：按来源分组——规则检查命中（rule-based，可复现）/ AI 评审建议（LLM，含置信度），
-      呼应系统"确定性 vs 概率性"核心；「位置 — 问题」前置，审计元数据降 <sub> 行尾。"""
+    """②态势区 + ④「AI 评审」（仅 LLM 发现）。
+    态势区：「标签 + 人话」陈述行——风险等级（含"该怎么办"）与触发因子；verification_decision
+      机器路由字段不入此区，降到「验证与日志」。
+    AI 评审：仅 LLM（pr-agent）发现；确定性规则命中的逐条发现归「静态检查」段（render_facts）。
+      `findings` 入参此处即为全部发现，函数内按来源过滤只渲染 LLM 部分。"""
     _RISK = {"high": "高", "mid": "中", "low": "低"}
     _ACTION = {"read+arbitrate": "需人工评审后合入", "read": "建议人工过目",
                "skip": "无需人工介入"}
@@ -113,73 +138,31 @@ def render_findings(risk, findings, review_reliable=True):
     else:
         head = [f"> **风险等级：{band}** <sub>（仅确定性信号，LLM 评审不可信）</sub>"
                 " — 需人工评审，原 AI 建议不采信"]
-    if factors:                       # 无触发因子时不显「触发因子：无」——去冗余（有因子时照常显）
+    if factors:                       # 无触发因子时不显「触发因子：无」——去冗余
         head.append(f"> **触发因子：** {factors}")
 
-    body = []
-    if not findings:
-        body.append("### 评审发现")
-        body.append("")
-        body.append("本次未发现规则范围内的问题。")
-        return "\n".join(head), "\n".join(body)
-
-    rule_based = [f for f in findings if f.get("agent") != "pr-agent"]
-    ai_based = [f for f in findings if f.get("agent") == "pr-agent"]
-
-    def _entry(i, f):
-        direction = f.get("fix_direction") or f.get("suggested_fix") or ""
-        reasoning = f.get("fix_reasoning") or ""
-        dc = f.get("done_criteria") or {}
-        _spec = dc.get("spec") or {}
-        if dc.get("kind") == "deterministic":
-            dc_line = f"规则 `{_spec.get('recheck', '?')}` 复检不再命中"
-        elif dc.get("kind") == "review":
-            q = _spec.get("question", "")
-            dc_line = f"需人工复核：{q}" if q else "定向复核通过"
-        else:
-            dc_line = ""
-        e = (f"{i}. **`{f.get('file','?')}:{f.get('line','?')}`** — {f.get('rationale','')}\n"
-             f"   - 修复方向：{direction}")
-        if reasoning and reasoning != f.get("rationale"):
-            e += f"\n   - 依据：{reasoning}"
-        if dc_line:
-            e += f"\n   - 达成判据：{dc_line}"
-        e += (f"\n   - <sub>`{f['rule_id']}` · {f.get('severity','')} · "
-              f"置信 {f['confidence']:.2f} · 来源 {f['agent']}</sub>")
-        return e
-
-    total = len(findings)
+    ai_based = [f for f in (findings or []) if str(f.get("agent", "")).startswith("pr-agent")]
+    total = len(ai_based)
+    if not ai_based:
+        return "\n".join(head), "### AI 评审\n\n本次 LLM 未提出建议。"
     cap = (f"，仅列前 {MAX_FINDINGS_IN_SUMMARY} 条" if total > MAX_FINDINGS_IN_SUMMARY else "")
-    body.append(f"### 评审发现（共 {total} 条{cap}）")
-    body.append("")
-    n = 0
-    budget = MAX_FINDINGS_IN_SUMMARY
-    if rule_based:
-        body.append("#### 规则检查命中（rule-based，可复现）")
-        body.append("")
-        for f in rule_based[:budget]:
-            n += 1
-            body.append(_entry(n, f))
-        budget -= len(rule_based[:budget])
-        body.append("")
-    if ai_based and budget > 0:
-        body.append("#### AI 评审建议（LLM，含置信度）")
-        body.append("")
-        for f in sorted(ai_based, key=lambda x: -x.get("confidence", 0))[:budget]:
-            n += 1
-            body.append(_entry(n, f))
+    body = [f"### AI 评审（共 {total} 条{cap}）", ""]
+    for i, f in enumerate(sorted(ai_based, key=lambda x: -x.get("confidence", 0))[:MAX_FINDINGS_IN_SUMMARY], 1):
+        body.append(_finding_entry(i, f))
     if total > MAX_FINDINGS_IN_SUMMARY:
         body.append("")
-        body.append(f"……另有 {total - MAX_FINDINGS_IN_SUMMARY} 条（确定性核对已覆盖全文，见 check 标题/总闸）。")
+        body.append(f"……另有 {total - MAX_FINDINGS_IN_SUMMARY} 条（超列表上限）。")
     return "\n".join(head), "\n".join(body)
 
 
 def render_report(risk, findings, banner="", scope_facts=None, checklist_md="",
                   verification_md="", markers="", gate_line="", lineage=None,
-                  review_reliable=True, engine_status="ok", ai_raw_count=0, added_lines=0):
+                  review_reliable=True, engine_status="ok", ai_raw_count=0, added_lines=0,
+                  engine_detail=""):
     """按七段版面模板填充评审报告（修订设计 §3 意见 4）。版面由模板唯一定义。"""
     head, findings_md = render_findings(risk, findings, review_reliable=review_reliable)
     summary_line = head          # ② 态势表：风险与建议动作一眼扫读
+    rule_findings = [f for f in (findings or []) if not str(f.get("agent", "")).startswith("pr-agent")]
     # ① 状态横幅（降级说明/循环状态/0-发现溯源）统一 blockquote——与正文视觉区隔；
     #    评审不可信时 [!CAUTION] 告警置顶【替代】常规横幅的降级/溯源部分（原因已并入
     #    告警，避免同一信息两处重复），循环状态行仍保留在告警之后。
@@ -194,7 +177,7 @@ def render_report(risk, findings, banner="", scope_facts=None, checklist_md="",
                 if not ln.strip():
                     continue
                 kept.append(ln)
-        banner = render_unreliable_callout(engine_status, ai_raw_count, added_lines)
+        banner = render_unreliable_callout(engine_status, ai_raw_count, added_lines, engine_detail)
         if kept:
             banner += "\n\n" + "\n".join(("> " + ln if not ln.startswith(">") else ln) for ln in kept)
     elif banner:
@@ -202,7 +185,7 @@ def render_report(risk, findings, banner="", scope_facts=None, checklist_md="",
     parts = {
         "banner": banner or "",
         "summary_line": summary_line,
-        "facts": render_facts(scope_facts, gate_line, lineage) if scope_facts else "",
+        "facts": render_facts(scope_facts, gate_line, lineage, rule_findings=rule_findings) if (scope_facts or rule_findings) else "",
         "findings": findings_md,
         "checklist": checklist_md or "",
         "verification": verification_md or "",
