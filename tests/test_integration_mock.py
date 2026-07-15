@@ -496,6 +496,37 @@ def test_post_results_calls_three_endpoints(monkeypatch):
     assert "/issues/5/comments" in paths and "/pulls/5/reviews" in paths and "/check-runs" in paths
 
 
+def test_post_results_banner_shows_telemetry_status(monkeypatch):
+    """遥测状态进报告横幅（防静默故障）：enabled(ok/failed) → 横幅含遥测行；disabled → 不含（免噪声）。
+    失败原因须可见——可观测性子系统自身故障不许静默（同 alert/ironic-for-observability 约定）。"""
+    captured = {}
+
+    def fake_gh(method, path, token, data=None, accept=""):
+        # 只抓摘要评论体（POST /issues/{n}/comments），其余 POST（review/check-run）忽略
+        if method == "POST" and path.endswith("/comments") and isinstance(data, dict):
+            captured["body"] = data.get("body", "")
+        return {}
+
+    monkeypatch.setattr(ORC, "gh", fake_gh)
+    diff = "--- a/x.py\n+++ b/x.py\n@@ -0,0 +1,1 @@\n+a\n"
+    f = [{"rule_id": "R1", "confidence": 0.9, "agent": "pr-agent:review",
+          "file": "x.py", "line": 1, "rationale": "r", "suggested_fix": "fix"}]
+    kw = dict(loop_info=("converged", "ok", "<!-- m -->"),
+              change_class="low|code|none|none", diff=diff)
+    # ok → 已上报
+    ORC.post_results("o", "r", 5, "sha", "tok", _RISK, f, telemetry_status="ok", **kw)
+    assert "遥测" in captured["body"] and "已上报" in captured["body"]
+    # failed:<reason> → 上报失败 + 原因可见；"failed:" 前缀已剥（不重复）
+    ORC.post_results("o", "r", 5, "sha", "tok", _RISK, f,
+                     telemetry_status="failed: ConnectionError: boom", **kw)
+    assert "遥测" in captured["body"] and "上报失败" in captured["body"]
+    assert "boom" in captured["body"]            # 失败原因可见（防静默故障）
+    assert "failed:" not in captured["body"]     # 前缀已剥
+    # disabled（默认）→ 不含遥测行（免噪声）
+    ORC.post_results("o", "r", 5, "sha", "tok", _RISK, f, **kw)
+    assert "遥测" not in captured["body"]
+
+
 def test_orchestrator_main_end_to_end(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     event = tmp_path / "event.json"
@@ -588,6 +619,28 @@ def test_main_post_results_fail_swallowed(monkeypatch, tmp_path):
     monkeypatch.setenv("TOUCHSTONE_SKIP_GATE", "1")
     ORC.main()                       # 各 POST 失败被吞，落盘仍完成
     assert (tmp_path / "touchstone-findings.json").exists()
+
+
+def test_main_telemetry_status_flows_into_report(monkeypatch, tmp_path):
+    """main() 全链：遥测启用且 forward 返回 ok → 评审报告横幅含遥测行（防静默故障：状态不只进 stderr）。
+    锁 gate+可观测性上移到 post_results 之前、_tel_res 贯通到横幅的重构——若顺序回退或 _tel_res 未传，
+    此处断言失败。"""
+    import touchstone.telemetry as _tel_mod
+    posted = {}
+
+    def fgh(method, path, token, data=None, accept="application/vnd.github+json"):
+        if accept.endswith("diff"):
+            return "--- a/x.py\n+++ b/x.py\n@@ -0,0 +1,1 @@\n+x\n"
+        if method == "POST" and path.endswith("/comments") and isinstance(data, dict):
+            posted["body"] = data.get("body", "")
+        return [] if (path.endswith("/comments") and method == "GET") else {}
+
+    _setup_main(monkeypatch, tmp_path, fgh)
+    monkeypatch.setenv("TOUCHSTONE_SKIP_GATE", "1")
+    monkeypatch.setenv("TOUCHSTONE_TELEMETRY_ENDPOINT", "https://sink.example/api")
+    monkeypatch.setattr(_tel_mod, "forward", lambda records, env, **kw: "ok")
+    ORC.main()
+    assert "遥测" in posted["body"] and "已上报" in posted["body"]
 
 
 # ============================ govern.main ============================
