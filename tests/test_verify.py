@@ -113,6 +113,51 @@ def test_regression_fail_when_coverage_low(stub_worktree):
     assert not r.passed and r.adequacy.verdict == "inadequate"
 
 
+# ---------------- B1：变异【跑了但失败】不许掩盖成 adequate ----------------
+class _MutFailsRunner:
+    """变异运行失败的桩 runner：套件绿、覆盖高，唯独 mutation 抛 MutationRunError。
+    用于锁 B1——失败曾被 return None 吞 → mut_ok=True → verdict adequate。"""
+    lang = "maven"
+    supports_spec_blind = False
+
+    def run_suite(self, wd):
+        return (True, "suite-out")
+
+    def changed_coverage(self, wd, cf, changed_lines=None):
+        return 0.95
+
+    def mutation(self, wd, cf, test_code=None):
+        raise V.MutationRunError("PIT boom（桩：targetClasses 未命中）")
+
+    def extract_interface(self, wd, cf):
+        return "iface"
+
+    def run_generated(self, wd, code):
+        return (True, "gen-out")
+
+    def cover_generated(self, wd, code, cf, changed_lines=None):
+        return 0.95
+
+
+def test_verify_regression_mutation_failure_is_inadequate(stub_worktree):
+    """B1: full_suite 下变异运行失败 → verdict inadequate + passed False + 原因进 evidence
+    （曾失败被 None 吞 → mut_ok=True → adequate → 静默放过弱测试）。"""
+    r = V._verify_regression(".", _MutFailsRunner(), ["a/Foo.java"], "b", "h", "full_suite")
+    assert r.adequacy.verdict == "inadequate"
+    assert r.passed is False
+    assert "PIT boom" in r.evidence and "不掩盖" in r.evidence
+
+
+def test_check_adequacy_mutation_failure_is_inadequate(monkeypatch, tmp_path):
+    """B1: spec_blind 路径(check_adequacy)同样——变异失败 → inadequate（即便覆盖达标+哨兵成立）。
+    未修时 mutation 抛出穿透 check_adequacy（未捕获 → 测试 ERROR）；本断言锁捕获后判 inadequate。"""
+    runner = _MutFailsRunner()
+    runner.run_generated = lambda wd, code: (False, "base-fail")   # 改前挂 = 哨兵成立
+    adq = V.check_adequacy(runner, "code", ["a/Foo.java"], {}, str(tmp_path), str(tmp_path), "full_suite")
+    assert adq.verdict == "inadequate"
+    assert adq.mutation_score is None
+
+
 # ---------------- 分发：重构 PR → regression_only ----------------
 def test_dispatch_refactor_routes_to_regression(monkeypatch, tmp_path):
     hit = {}
@@ -537,12 +582,30 @@ def test_maven_runner_run_suite_and_mutation(monkeypatch, tmp_path):
     monkeypatch.setattr(R, "_run", lambda cmd, wd, timeout=None: (True, "ok"))
     r = V.MavenRunner()
     assert r.run_suite(str(tmp_path)) == (True, "ok")
-    # mutation：mvn 成功 → _pit_score
+    # mutation：mvn 成功 + 有分数 → _pit_score
     monkeypatch.setattr(R, "_pit_score", lambda wd: 0.55)
     assert r.mutation(str(tmp_path), ["A.java"]) == 0.55
-    # mvn 失败 → None
-    monkeypatch.setattr(R, "_run", lambda cmd, wd, timeout=None: (False, "fail"))
-    assert r.mutation(str(tmp_path), ["A.java"]) is None
+    # mvn 失败 → MutationRunError（B1：曾 return None → _grade 当 mut_ok=True → 掩盖成 adequate）
+    monkeypatch.setattr(R, "_run", lambda cmd, wd, timeout=None: (False, "boom-detail"))
+    with pytest.raises(V.MutationRunError):
+        r.mutation(str(tmp_path), ["A.java"])
+
+
+def test_maven_runner_mutation_no_report_raises(monkeypatch, tmp_path):
+    """B1: PIT 退出码 0 但未产出 mutations.xml → MutationRunError（曾 _pit_score None → 掩盖 adequate）。"""
+    monkeypatch.setattr(R, "_run", lambda cmd, wd, timeout=None: (True, "ok"))
+    monkeypatch.setattr(R, "_pit_score", lambda wd: None)
+    monkeypatch.setattr(R, "_pit_has_report", lambda wd: False)
+    with pytest.raises(V.MutationRunError):
+        V.MavenRunner().mutation(str(tmp_path), ["A.java"])
+
+
+def test_maven_runner_mutation_zero_mutants_with_report_returns_one(monkeypatch, tmp_path):
+    """对照：PIT 退出码 0 + 报告在但零变异点 = 无可变异 → 1.0（与 Python _mutation_check applied==0→1.0 对齐）。"""
+    monkeypatch.setattr(R, "_run", lambda cmd, wd, timeout=None: (True, "ok"))
+    monkeypatch.setattr(R, "_pit_score", lambda wd: None)
+    monkeypatch.setattr(R, "_pit_has_report", lambda wd: True)
+    assert V.MavenRunner().mutation(str(tmp_path), ["A.java"]) == 1.0
 
 
 def test_maven_runner_changed_coverage(monkeypatch, tmp_path):

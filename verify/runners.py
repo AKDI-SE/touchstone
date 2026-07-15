@@ -17,6 +17,17 @@ import subprocess
 
 TEST_TIMEOUT = 300
 
+
+class MutationRunError(RuntimeError):
+    """变异测试【跑了但未产出可用分数】——调用失败 / 未产出报告。
+
+    与 mutation() 返回 None（=未跑：非高风险 / 非 full_suite）严格区分：None 表示
+    "压根没跑变异"，下游 mut_ok 视作放行（不据此判不过）；本异常表示"跑了但失败"，
+    没有变异证据可证明测试充分——下游必须保守判 inadequate，**不许掩盖成 adequate**。
+    （B1：PIT 调用失败 / 空 mutations.xml 报告 曾被 return None 吞掉 → 被 _grade 当
+    mut_ok=True → verdict adequate，静默放过弱测试。此异常是那道闸。）"""
+
+
 # --- 接口抽取：只取公共签名、去实现（LANG RUNNER）----------------------------
 def _extract_interface(work_dir, changed_files):
     """给独立验收测试作者'调什么'，不给'怎么实现'。"""
@@ -312,8 +323,21 @@ class MavenRunner:
                 if changed_lines else _jacoco_changed_coverage(work_dir, changed_files))
 
     def mutation(self, work_dir, changed_files, test_code=None):
-        ok, _ = self._mvn(work_dir, ["org.pitest:pitest-maven:mutationCoverage"])
-        return _pit_score(work_dir) if ok else None
+        ok, detail = self._mvn(work_dir, ["org.pitest:pitest-maven:mutationCoverage"])
+        if not ok:
+            # PIT 调用本身失败（mvn 非零退出/超时/mvn 不在）→ 绝不当"未跑"掩盖成 adequate
+            raise MutationRunError(
+                "PIT mutationCoverage 调用失败（mvn 非零退出/超时）："
+                + (detail or "").strip()[-400:])
+        score = _pit_score(work_dir)
+        if score is not None:
+            return score
+        # PIT 退出码 0 但 _pit_score 取不到分数：区分"未产出报告"(失败) 与"报告零变异"(无可变异→通过)
+        if _pit_has_report(work_dir):
+            return 1.0   # 报告在、零变异点 = 无可变异（与 Python _mutation_check applied==0→1.0 对齐）
+        raise MutationRunError(
+            "PIT 退出码 0 但未产出 mutations.xml 报告（变异未实际执行："
+            "疑似 targetClasses 未命中 / PIT 跳过被测模块）")
 
     def extract_interface(self, work_dir, changed_files):
         return _extract_java_signatures(work_dir, changed_files)
@@ -363,6 +387,14 @@ def _jacoco_changed_coverage(work_dir, changed_files):
                         missed += int(ctr.get("missed", 0))
     total = covered + missed
     return (covered / total) if total else 0.0
+
+
+def _pit_has_report(work_dir):
+    """PIT 是否产出了 mutations.xml 报告（只判"在不在"，不解析分数）。
+    用于把 _pit_score 的 None 一分为二：报告在但零变异(=无可变异→通过) vs 报告不在(=失败)。"""
+    import glob
+    return bool(glob.glob(
+        os.path.join(work_dir, "**/target/pit-reports/**/mutations.xml"), recursive=True))
 
 
 def _pit_score(work_dir):
