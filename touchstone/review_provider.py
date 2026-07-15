@@ -345,6 +345,15 @@ def load_nmap(repo_dir="."):
 
 # ---- 解析 PR-Agent 原始输出 → ReviewItem -----------------------------------
 # ReviewItem（dict）: {kind, file, line_start, line_end, summary, body, label, tool}
+def _clean_str(v):
+    """剥 pr-agent 字符串字段的尾换行/首尾空白——防显示污染：relevant_file/summary/reason
+    带 \\n 尾时，会致 `file\\n:line` 换行、逐条发现子项间多余空行、达成判据「方向\\n」断行
+    （PR #59 真实样例肉眼可见）。仅 strip 首尾，不动内部换行（保留多行 reasoning 语义）；
+    非字符串原样返回（line_start 是 int、file 可能 None）。sig 归一化（PR #53 _norm_sig）
+    只用于 ack 匹配，显示层在此一并清源。"""
+    return v.strip() if isinstance(v, str) else v
+
+
 def parse_pr_agent(raw):
     """把 PR-Agent improve（code_suggestions）与 review（key_issues_to_review）输出解析为 ReviewItem 列表。
     raw 形如 {'code_suggestions': [...], 'review': {'key_issues_to_review': [...], ...}}。
@@ -359,14 +368,14 @@ def parse_pr_agent(raw):
             continue
         items.append({
             "kind": "suggestion",
-            "file": s.get("relevant_file"),
+            "file": _clean_str(s.get("relevant_file")),
             "line_start": s.get("relevant_lines_start"),
             "line_end": s.get("relevant_lines_end"),
-            "summary": s.get("one_sentence_summary") or s.get("suggestion_content"),
-            "body": s.get("improved_code") or s.get("suggestion_content"),
+            "summary": _clean_str(s.get("one_sentence_summary") or s.get("suggestion_content")),
+            "body": _clean_str(s.get("improved_code") or s.get("suggestion_content")),
             # reason 与 body 分开：body 可能是 improved_code（补丁），按评审意见 2 不得进
             # 模型来源发现的建议字段；reason 保留文字说明供 fix_reasoning。
-            "reason": s.get("suggestion_content"),
+            "reason": _clean_str(s.get("suggestion_content")),
             "label": (s.get("label") or "").strip(),
             "tool": "improve",
         })
@@ -377,12 +386,12 @@ def parse_pr_agent(raw):
             continue
         items.append({
             "kind": "review",
-            "file": k.get("relevant_file"),
+            "file": _clean_str(k.get("relevant_file")),
             "line_start": k.get("start_line"),
             "line_end": k.get("end_line"),
-            "summary": k.get("issue_header"),
-            "body": k.get("issue_content"),
-            "reason": k.get("issue_content"),
+            "summary": _clean_str(k.get("issue_header")),
+            "body": _clean_str(k.get("issue_content")),
+            "reason": _clean_str(k.get("issue_content")),
             "label": (k.get("label") or "review").strip(),
             "tool": "review",
         })

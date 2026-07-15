@@ -261,14 +261,17 @@ def render(checklist, rounds_left=None, lineage=None):
             lines.append(f"  - 说明：{it['note']}")
         lines.append(f"  <sub>锚点 `{it['sig']}`</sub>")
     lines.append("")
-    lines.append("<details><summary>如何申报销项</summary>")
-    lines.append("")
-    lines.append("发评论，内容为 ```touchstone-ack``` 代码块，每行 "
-                 "`<签名>: done|waived: 理由|split: 链接`。勾选/申报是输入信号，"
-                 "以评审方按达成判据复核后的本清单为准。")
-    lines.append("")
-    lines.append("</details>")
-    lines.append("")
+    if cl["items"]:
+        # 空清单（0 发现即收敛，如 PR #70）无项可申报——折叠样板此时纯噪声，省去。
+        # 有项时仍显申报指引（test_report_layout_invariants 锁非空情形）。
+        lines.append("<details><summary>如何申报销项</summary>")
+        lines.append("")
+        lines.append("发评论，内容为 ```touchstone-ack``` 代码块，每行 "
+                     "`<签名>: done|waived: 理由|split: 链接`。勾选/申报是输入信号，"
+                     "以评审方按达成判据复核后的本清单为准。")
+        lines.append("")
+        lines.append("</details>")
+        lines.append("")
     lines.append(_OPEN + json.dumps(cl, ensure_ascii=False) + _CLOSE)
     return "\n".join(lines)
 

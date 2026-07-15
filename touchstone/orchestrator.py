@@ -155,10 +155,13 @@ def _clean_review_trace(engine_status, ai_raw_count, added_lines, n_changed, raw
     suspicious = added_lines >= 20 and ai_raw_count == 0   # 改动不小却 0 原始建议
     head = "🟢 **AI 评审已端到端运行**（PR-Agent + LLM 已调用，非模板空回）。"
     detail = f"PR-Agent 返回 **{ai_raw_count} 条原始建议**（归一后 0 条进入评审）；确定性契约/栈核对 0 命中。"
-    scope = f"改动：{n_changed} 文件 / 约 {added_lines} 新增行。"
     tail = ("**改动不小却 0 建议——建议人工扫一眼**（LLM 可能未实质产出）。" if suspicious
             else "改动规模小，0 建议合理。")
-    trace = f"{head}　{detail}　{scope}　{tail}"
+    # 拆行（替代旧全角空格连写的一长句）——render_report 把横幅包成逐行 blockquote，更可扫读；
+    # 去掉「改动：N 文件/N 行」行——与「确定性事实」段的"修改范围"重复（去冗余）。定性提示
+    # （"改动不小却 0 建议"）保留，足够承载防静默故障信号。n_changed 不再进文本，保留入参以稳
+    # 签名（调用方与测试按位置传 added_lines/n_changed）。
+    trace = f"{head}\n{detail}\n{tail}"
     # 无实质意见时贴 LLM 原始 review 段，证明"审过"而非"空回"。raw_excerpt 已单行化+截断（extract_review_excerpt）。
     if ai_raw_count == 0 and raw_excerpt:
         segs = "\n".join(f"- `{k}`: {v}" for k, v in raw_excerpt.items())
