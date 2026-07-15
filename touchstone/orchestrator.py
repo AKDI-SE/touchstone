@@ -14,6 +14,7 @@
 
 import json
 import os
+import re
 import sys
 
 import requests
@@ -170,6 +171,42 @@ def _clean_review_trace(engine_status, ai_raw_count, added_lines, n_changed, raw
     return trace
 
 
+# 凭据脱敏：engine_detail（来自 ReviewEngineDegraded.reason / 过滤后 stderr）在降级场景被原样贴进
+# 【公开 PR 评论】。litellm 详错 / verbose 轨迹可能夹带 Authorization 头或 api key（开
+# TOUCHSTONE_LITELLM_VERBOSE 尤甚）；review_provider 仅抽取错误正文、不做脱敏。故在【呈现边界】
+# 补这层防御——尽力而为，只抹凭据形子串，错误正文/traceback 保留可读（PRA-REVIEW 安全发现，PR #74）。
+_SECRET_PATTERNS = (
+    re.compile(r"(?i)\bBearer\s+[A-Za-z0-9_\-\.=]+"),          # Authorization: Bearer xxx
+    re.compile(r"(?i)\bAuthorization\b['\"\s]*[:=]\s*['\"]?[A-Za-z0-9_\-\.=]+"),
+    re.compile(r"\bsk-[A-Za-z0-9\-_]{20,}"),                    # OpenAI / Anthropic 风格 key
+    re.compile(r"\bgh[pousr]_[A-Za-z0-9]{30,}"),                # GitHub PAT（ghp_/ghs_/gho_/ghu_/ghr_）
+    re.compile(r"(?i)(api[_-]?key|access[_-]?token)\b['\"\s]*[:=]\s*['\"]?[A-Za-z0-9_\-\.=]{16,}"),
+)
+
+
+def _redact_secrets(text):
+    """抹掉凭据形子串（Bearer / Authorization / sk- / gh_ / api_key=…）→ ***REDACTED***。纯函数、可测。"""
+    out = text or ""
+    for pat in _SECRET_PATTERNS:
+        out = pat.sub("***REDACTED***", out)
+    return out
+
+
+def _render_engine_detail(engine_status, engine_detail):
+    """降级时把 engine_detail 渲染成「验证与日志」段里的原始错误块；engine 正常或无 detail → 空串。
+    进公开 PR 评论前三连：①_redact_secrets 脱敏凭据 ②超 1500 字符加截断标记（不静默砍尾）
+    ③四反引号围栏（raw error 自身含 ``` 不再撑破版面）。纯函数、可测（PRA-* PR #74）。"""
+    if engine_status == "ok" or not engine_detail:
+        return ""
+    detail = _redact_secrets(engine_detail.strip())
+    shown = detail[:1500] + (
+        "\n[…]（已截断：原始错误超 1500 字符，完整内容见 `pr-agent-interaction.log`）"
+        if len(detail) > 1500 else "")
+    return (f"**评审引擎降级（`{engine_status}`）——原始错误：**\n\n"
+            f"````\n{shown}\n````\n"
+            "更完整的 litellm 调用轨迹 / 真实 HTTP 错误见交互日志 artifact `pr-agent-interaction.log`。")
+
+
 def post_results(owner, repo, number, head_sha, token, risk, findings, loop_info=None,
                  change_class=None, diff=None, injected_types=None, injected_experience_ids=None,
                  engine_status="ok", det_warning="", ai_raw_count=0, added_lines=0, n_changed=0,
@@ -177,7 +214,7 @@ def post_results(owner, repo, number, head_sha, token, risk, findings, loop_info
                  llm_notes=None, raw_excerpt=None, unverified_claims=0, telemetry_status="disabled",
                  engine_detail=""):
     # (1) 摘要评论——总是成功；按七段版面模板组装（修订设计 §3 意见 4）：
-    #     ①横幅(降级说明/0-发现溯源/循环状态) ②总结 ③确定性事实 ④逐条发现 ⑤收敛清单 ⑥验证 ⑦机器 marker
+    #     ①横幅 ②态势表 ③静态检查区 ④AI 评审 ⑤待解决问题清单 ⑥验证与日志 ⑦机器 marker
     # 评审不可信时，降级说明/0-发现溯源统一并入 render 层的 [!CAUTION] 置顶告警
     # （见 render.render_unreliable_callout；判定层的 review_reliable 信号在此接到呈现层）；
     # 可信时保持原横幅逻辑。det_warning（确定性侧警告）与可信度无关，两种情形都保留。
@@ -224,11 +261,9 @@ def post_results(owner, repo, number, head_sha, token, risk, findings, loop_info
     if run_link:
         _vd_note = (f" <sub>（本轮验证档：{_VD.get(_vd, _vd or '—')}）</sub>" if _vd else "")
         _vblocks.append(f"📄 完整验证运行与 LLM 交互日志：{run_link}{_vd_note}")
-    if engine_status != "ok" and engine_detail:
-        _vblocks.append(
-            f"**评审引擎降级（`{engine_status}`）——原始错误：**\n\n"
-            f"```\n{engine_detail.strip()[:1500]}\n```\n"
-            "更完整的 litellm 调用轨迹 / 真实 HTTP 错误见交互日志 artifact `pr-agent-interaction.log`。")
+    _ed_block = _render_engine_detail(engine_status, engine_detail)
+    if _ed_block:
+        _vblocks.append(_ed_block)
     verification_md = ("### 验证与日志\n\n" + "\n\n".join(_vblocks)) if _vblocks else ""
     body = render_report(risk, findings, banner=banner, scope_facts=scope_facts,
                          checklist_md=checklist_md, verification_md=verification_md,
