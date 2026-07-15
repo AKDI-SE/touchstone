@@ -47,7 +47,8 @@ from touchstone.distill import (  # noqa: F401
     _counting_distiller, _tfgrpo_distiller, _DISTILLERS, register_distiller,
     distill, _flagship_configured)
 from touchstone.ground_truth import (  # noqa: F401
-    GT_WINDOW, GT_DIFF_BUDGET, _gh_get, _stack_of, make_gt_entry, build_ground_truth)
+    GT_WINDOW, GT_DIFF_BUDGET, _gh_get, _stack_of, aggregate_ab,
+    make_gt_entry, build_ground_truth)
 
 def _parse_cli(argv):
     import argparse
@@ -160,6 +161,9 @@ def main(argv=None):
             ab = json.load(open(ab_path, encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             ab = None
+    if ab is None and ground_truth:
+        ab = aggregate_ab(ground_truth)            # 按每 PR 的 injected_types 切 with/without 两臂
+        report["steps"].append(f"aggregate_ab: 从 {len(ground_truth)} 条真值切 A/B（注入臂需积累才有效）")
     if ab:
         grad = graduate(store, ab)
         report["graduated"] = grad

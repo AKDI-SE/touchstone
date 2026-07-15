@@ -427,6 +427,76 @@ def test_build_ground_truth_from_human_verdicts(tmp_path, monkeypatch):
     assert entry["merged"] is True and entry["human_state"] == "APPROVED"
 
 
+# ---------------- aggregate_ab + 自动 graduate（恢复 injected_types→A/B 分臂接线）----------------
+def test_build_ground_truth_carries_injected_types_from_marker(tmp_path, monkeypatch):
+    """result marker 的 injected_types 必须透传进真值条目——这是 graduate 自动分臂的数据来源，
+    曾在 ground_truth 拆分时被丢（本 PR 恢复）。锁此透传链，防再次回归。"""
+    from touchstone import calibrate as C
+    marker = ("<!-- touchstone-result: " + json.dumps(
+        {"findings": [{"rule_id": "PRA-X"}], "injected_types": ["PRA-SEED", "PRA-X"]}) + " -->")
+
+    def fake_gh(path, token, accept="application/vnd.github+json"):
+        if "state=closed" in path:
+            return [{"number": 1, "title": "t", "merged_at": "2026-01-01"}]
+        if "issues/1/comments" in path:
+            return [{"body": marker}]
+        if "pulls/1/reviews" in path:
+            return [{"state": "APPROVED", "user": {"login": "alice"}}]
+        if "pulls/1/files" in path:
+            return [{"filename": "a.py"}]
+        if path.endswith("/pulls/1") and accept.endswith("diff"):
+            return "diff --git a.py"
+        return []
+    monkeypatch.setattr(GT, "_gh_get", fake_gh)
+    monkeypatch.setattr(C, "gql", lambda q, v, t: {"data": {}})
+    entry = L.build_ground_truth("o", "r", "tok")[0]
+    assert entry["raised_types"] == ["PRA-X"]                  # touchstone 挑过的
+    assert entry["injected_types"] == ["PRA-SEED", "PRA-X"]    # marker 的注入类型透传
+
+
+def test_make_gt_entry_carries_injected_and_raised():
+    ts = [{"rule_id": "PRA-A"}, {"rule_id": "PRA-B"}]
+    e = L.make_gt_entry(1, "o/r", "python", "t", "d", ts, {"PRA-A"}, "APPROVED", True,
+                        injected_types=["PRA-A", "PRA-C"])
+    assert e["raised_types"] == ["PRA-A", "PRA-B"]
+    assert e["injected_types"] == ["PRA-A", "PRA-C"]
+
+
+def test_aggregate_ab_splits_by_injection():
+    gt = [
+        {"raised_types": ["PRA-A"], "injected_types": ["PRA-A"], "human_adopted": ["PRA-A"]},
+        {"raised_types": ["PRA-A"], "injected_types": [], "human_adopted": []},
+        {"raised_types": ["PRA-B"], "injected_types": [], "human_adopted": []},
+    ]
+    ab = L.aggregate_ab(gt)
+    assert ab["PRA-A"] == {"with_seen": 1, "with_adopted": 1,
+                           "without_seen": 1, "without_adopted": 0}
+    assert ab["PRA-B"] == {"with_seen": 0, "with_adopted": 0,
+                           "without_seen": 1, "without_adopted": 0}
+    assert L.aggregate_ab([]) == {}
+
+
+def test_main_auto_graduates_from_ground_truth(tmp_path, monkeypatch):
+    """无 --ab-results 时，main 自动从 ground_truth 的 injected_types 算 A/B → graduate。"""
+    store_path = tmp_path / "exp.json"
+    store_path.write_text(json.dumps({"experiences": [
+        {"id": "emphasize:PRA-X", "finding_type": "PRA-X", "kind": "emphasize",
+         "status": "candidate", "locked": False, "source_prs": [], "evidence": {}}]}),
+        encoding="utf-8")
+    gt_path = tmp_path / "gt.json"
+    gt = ([{"pr_id": str(i), "raised_types": ["PRA-X"], "injected_types": ["PRA-X"],
+            "human_adopted": ["PRA-X"]} for i in range(25)] +                 # 注入臂：全采纳
+          [{"pr_id": str(100 + i), "raised_types": ["PRA-X"], "injected_types": [],
+            "human_adopted": []} for i in range(25)])                          # 对照臂：全未采纳
+    gt_path.write_text(json.dumps(gt), encoding="utf-8")
+    monkeypatch.delenv("TOUCHSTONE_DISTILLER", raising=False)
+    monkeypatch.delenv("LLM_BASE_URL", raising=False)
+    report = L.main(["--store", str(store_path), "--ground-truth", str(gt_path)])
+    e = next(x for x in L.load_store(str(store_path))["experiences"] if x["finding_type"] == "PRA-X")
+    assert e["status"] == "active"                                            # 自动 A/B → 达标激活
+    assert any("aggregate_ab" in s for s in report["steps"])
+
+
 # ---------------- main() 的 CLI 路径（learn.yml 走这里）----------------
 def test_main_cli_path_counting_then_graduate(tmp_path, monkeypatch):
     store_path = tmp_path / "exp.json"
