@@ -16,6 +16,7 @@
 
 import os
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
 import yaml
@@ -25,6 +26,9 @@ from touchstone import ghclient
 DEFAULT_GATE = "touchstone/gate"
 _RELAY_OK = {"success", "neutral", "skipped"}
 _BUILTINS: dict = {}  # name -> fn(pr_ctx, cfg) -> (passed: bool|None, summary: str)
+# service 类检查慢（HTTP POST 到外部服务）、彼此独立、且不抢 GitHub token 限流 → 并行跑。
+# 并发上限避免一堆 service 同时打爆外部端点；builtin（瞬时）/relay（吃 token）仍串行。
+_MAX_SERVICE_WORKERS = 8
 
 
 def builtin(name):
@@ -109,23 +113,42 @@ _RUNNERS = {"builtin": _run_builtin, "relay": _run_relay, "service": _run_servic
 
 
 # ---- 编排：跑检查 → 汇总总闸 → 发一个状态 -----------------------------------
+def _run_one(pr, cfg):
+    """跑单个 check 配置 → CheckResult。
+    插件隔离：runner 抛任何异常都记中性（passed=None），不拖垮总闸计算。抽出来是为了让
+    service 类能在线程池里并行复用同一段隔离逻辑（单检查失败不波及其余）。"""
+    name = cfg.get("name", "?")
+    required = bool(cfg.get("required", False))
+    runner = _RUNNERS.get(cfg.get("type", "builtin"))
+    if runner is None:
+        return CheckResult(name, None, f"未知插件类型 {cfg.get('type')}", required)
+    try:
+        passed, summary = runner(pr, cfg)
+    except Exception as e:        # 插件隔离：单个插件失败不拖垮总闸计算，记为中性
+        passed, summary = None, f"插件异常: {e}"
+    return CheckResult(name, passed, summary, required)
+
+
 def run_checks(config, pr):
-    results = []
-    for cfg in config.get("checks", []):
-        if not cfg.get("enabled", True):
-            continue
-        name = cfg.get("name", "?")
-        required = bool(cfg.get("required", False))
-        runner = _RUNNERS.get(cfg.get("type", "builtin"))
-        if runner is None:
-            results.append(CheckResult(name, None, f"未知插件类型 {cfg.get('type')}", required))
-            continue
-        try:
-            passed, summary = runner(pr, cfg)
-        except Exception as e:        # 插件隔离：单个插件失败不拖垮总闸计算，记为中性
-            passed, summary = None, f"插件异常: {e}"
-        results.append(CheckResult(name, passed, summary, required))
-    return results
+    """跑所有启用的检查 → 按 checks.yaml 的【配置顺序】返回 CheckResult 列表。
+    service 类（慢、打外部服务、彼此独立、不抢 GitHub token 限流）并行；builtin（瞬时）
+    /relay（吃 token 限流）保持串行。结果一律按配置顺序回填（非执行顺序），故 post_gate 的
+    summary 行序与 aggregate_gate 的判定与旧串行实现完全一致——并行只压墙钟、不改可观测行为。"""
+    cfgs = [c for c in config.get("checks", []) if c.get("enabled", True)]
+    by_idx: dict[int, CheckResult] = {}
+    service_idx: list[int] = []
+    for i, cfg in enumerate(cfgs):
+        if cfg.get("type") == "service":
+            service_idx.append(i)            # 慢 + 打外部服务 → 攒一批并行
+        else:
+            by_idx[i] = _run_one(pr, cfg)    # builtin 瞬时 / relay 吃 token 限流 → 串行
+    if service_idx:
+        max_workers = min(len(service_idx), _MAX_SERVICE_WORKERS)
+        with ThreadPoolExecutor(max_workers=max_workers) as ex:
+            fut_to_idx = {ex.submit(_run_one, pr, cfgs[i]): i for i in service_idx}
+            for fut in as_completed(fut_to_idx):
+                by_idx[fut_to_idx[fut]] = fut.result()   # _run_one 内已 catch 全部异常 → 不抛
+    return [by_idx[i] for i in range(len(cfgs))]          # 配置顺序回填
 
 
 def aggregate_gate(results):

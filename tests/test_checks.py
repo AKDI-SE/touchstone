@@ -1,6 +1,10 @@
 """可插拔检查框架 checks.py 的离线测试（无网络：转达/发布用打桩）。"""
 import copy
 import os
+import threading
+import time
+
+import requests
 
 from touchstone import checks
 from touchstone import stack_rules
@@ -277,3 +281,102 @@ def test_gate_cli_missing_findings_posts_failure(tmp_path, monkeypatch):
     assert posted.get("conclusion") == "failure"
     assert posted.get("head_sha") == "deadbee"
     assert "未产出结果" in posted["output"]["summary"]
+
+
+# ============ service 类检查并行编排（慢检查并行；builtin/relay 仍串行）============
+_PR = {"owner": "o", "repo": "r", "sha": "s", "token": "t", "files": []}
+
+
+class _FakeResp:
+    """假 requests.Response：只实现 _run_service 用到的 raise_for_status / json。"""
+    def __init__(self, payload):
+        self._p = payload
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return self._p
+
+
+def _concurrent_post(active, payload=None, sleep=0.05):
+    """造一个会记并发数 + sleep 的 requests.post 打桩，用于证真并行 / 测上限。"""
+    lock = threading.Lock()
+
+    def fake_post(url, json=None, timeout=None, **k):
+        with lock:
+            active["n"] += 1
+            active["max"] = max(active["max"], active["n"])
+        time.sleep(sleep)                 # 拉长到足以让另一个线程同时进入
+        with lock:
+            active["n"] -= 1
+        return _FakeResp(payload if payload is not None else {"passed": True, "summary": url})
+    return fake_post
+
+
+def test_service_checks_run_in_parallel(monkeypatch):
+    """两个 service 检查并行（峰值并发==2）；串行实现会是 1。结果仍按配置顺序。"""
+    active = {"n": 0, "max": 0}
+    monkeypatch.setattr(checks.requests, "post", _concurrent_post(active))
+    cfg = {"checks": [
+        {"name": "s1", "type": "service", "url": "http://a", "required": True},
+        {"name": "s2", "type": "service", "url": "http://b", "required": True}]}
+    results = checks.run_checks(cfg, _PR)
+    assert active["max"] == 2                       # 铁证：两 service 真并行（串行会是 1）
+    assert [r.name for r in results] == ["s1", "s2"]   # 顺序 = 配置顺序
+    assert all(r.passed is True for r in results)
+
+
+def test_service_failure_isolated_under_parallelism(monkeypatch):
+    """一个 service 抛异常 → 记中性（插件隔离），不拖垮另一个 service、不波及总闸对其余的判定。"""
+    def fake_post(url, json=None, timeout=None, **k):
+        if "crash" in url:
+            raise requests.ConnectionError("boom")
+        return _FakeResp({"passed": True, "summary": "ok"})
+    monkeypatch.setattr(checks.requests, "post", fake_post)
+    cfg = {"checks": [
+        {"name": "crash", "type": "service", "url": "http://crash", "required": True},
+        {"name": "ok", "type": "service", "url": "http://ok", "required": True}]}
+    results = checks.run_checks(cfg, _PR)
+    by = {r.name: r for r in results}
+    assert by["crash"].passed is None and "插件异常" in by["crash"].summary
+    assert by["ok"].passed is True                  # crash 没连累 ok
+    assert checks.aggregate_gate(results) == "failure"   # required crash 中性 → 总闸 fail
+
+
+def test_service_order_preserved_when_interleaved_with_builtin(monkeypatch):
+    """config = [builtin, service, builtin]：service 结果按配置位置回填，顺序不被并行打乱。"""
+    monkeypatch.setattr(checks.requests, "post", _concurrent_post({"n": 0, "max": 0}, sleep=0.01))
+    cfg = {"checks": [
+        {"name": "b1", "type": "builtin", "plugin": "touchstone-rules", "required": True},
+        {"name": "svc", "type": "service", "url": "http://x", "required": False},
+        {"name": "b2", "type": "builtin", "plugin": "touchstone-rules", "required": True}]}
+    results = checks.run_checks(cfg, dict(_PR, contract_findings=[]))
+    assert [r.name for r in results] == ["b1", "svc", "b2"]
+    assert results[1].passed is True                # service 在中间位、结果正确回填
+
+
+def test_service_concurrency_capped(monkeypatch):
+    """超过 _MAX_SERVICE_WORKERS 个 service：并发被上限压住（不无限起线程），但仍并行。"""
+    active = {"n": 0, "max": 0}
+    monkeypatch.setattr(checks.requests, "post", _concurrent_post(active, sleep=0.03))
+    n = checks._MAX_SERVICE_WORKERS + 4
+    cfg = {"checks": [{"name": f"s{i}", "type": "service", "url": f"http://x{i}", "required": True}
+                      for i in range(n)]}
+    results = checks.run_checks(cfg, _PR)
+    assert 2 <= active["max"] <= checks._MAX_SERVICE_WORKERS   # 并行了且有上限
+    assert len(results) == n
+    assert all(r.passed is True for r in results)
+
+
+def test_disabled_service_skipped(monkeypatch):
+    """enabled=False 的 service 不进线程池、不产结果（与 builtin 跳过同语义）。"""
+    active = {"n": 0, "max": 0}
+    monkeypatch.setattr(checks.requests, "post", _concurrent_post(active))
+    cfg = {"checks": [
+        {"name": "on", "type": "service", "url": "http://a", "required": True},
+        {"name": "off", "type": "service", "url": "http://b", "enabled": False, "required": True},
+        {"name": "on2", "type": "service", "url": "http://c", "required": True}]}
+    results = checks.run_checks(cfg, _PR)
+    assert [r.name for r in results] == ["on", "on2"]   # off 被跳过、不进结果
+    assert active["max"] <= 2                            # 没把 disabled 也并发进去
