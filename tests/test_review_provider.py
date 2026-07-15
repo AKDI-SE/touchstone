@@ -668,7 +668,7 @@ def test_invoke_endpoint_sentinel_absent_raw_decode_fallback(monkeypatch):
 
 
 def test_extract_json_unit():
-    # 纯函数直接测 _extract_json 三分支：哨兵提取 / raw_decode 兜底 / 纯噪音抛。
+    # 纯函数直接测 _extract_json 四分支：哨兵提取 / raw_decode 兜底 / 纯噪音抛 / 非 dict 抛。
     payload = {"code_suggestions": [], "review": {"key_issues_to_review": []}}
     raw = json.dumps(payload)
     assert RP._extract_json(RP._JSON_BEGIN + raw + RP._JSON_END + "trailing") == payload
@@ -676,6 +676,26 @@ def test_extract_json_unit():
     assert RP._extract_json(raw + " trailing noise") == payload          # raw_decode 兜底
     with pytest.raises(json.JSONDecodeError):
         RP._extract_json("not json at all")                              # 纯噪音无 JSON → 抛
+    # 合法 JSON 但非 dict（int/list/null/str——如 litellm 噪音恰以数字或 '[' 开头）：非合法评审负载 → 抛，
+    # 否则旧实现返回非 dict → _invoke_endpoint 当成功数据 → parse 空 → 假 engine_status=ok。
+    for nondict in ("123", "[1, 2, 3]", "null", "\"str\""):
+        with pytest.raises(json.JSONDecodeError):
+            RP._extract_json(nondict)
+    # 哨兵内包非 dict 同样抛（runner 本应总出 dict；这是契约守卫，非现实路径）
+    with pytest.raises(json.JSONDecodeError):
+        RP._extract_json(RP._JSON_BEGIN + "123" + RP._JSON_END)
+
+
+def test_invoke_endpoint_nondict_json_raises_not_fake_ok(monkeypatch):
+    # stdout 是合法 JSON 但【非 dict】（哨兵缺失的老/自定义 runner + litellm 噪音以数字/'[' 开头）。
+    # 回归锁：旧 raw_decode 兜底返回 int/list → 不抛 JSONDecodeError → _invoke_endpoint 当成功数据返回
+    # → parse_pr_agent 空 → 假 engine_status=ok。修复后：非 dict 抛 → ReviewEngineDegraded("no_engine")。
+    for nondict in ("123", "[1, 2, 3]", "null", "\"oops\""):
+        monkeypatch.setattr(RP.subprocess, "run", lambda a, _out=nondict, **kw: _Proc(0, out=_out))
+        monkeypatch.setattr(RP, "_experience_injection", lambda d: "")
+        with pytest.raises(RP.ReviewEngineDegraded) as ei:
+            RP.fetch({"owner": "o", "repo": "r", "number": 3})
+        assert ei.value.degraded == "no_engine"
 
 
 def test_swallowed_failure_ignores_litellm_success_log():

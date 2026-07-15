@@ -229,15 +229,17 @@ def _extract_json(stdout):
     """从 runner 子进程 stdout 提取结构化 JSON，容忍第三方库（litellm/pr-agent）延迟 print 的噪音。
 
     runner（pr_agent_runner._emit_json）用 _JSON_BEGIN/_JSON_END 哨兵包裹 JSON，本函数按哨兵精确提取；
-    无哨兵（老协议/哨兵缺失）时退化为 raw_decode 取首个 JSON 对象，容忍前后噪音。都失败则抛
-    json.JSONDecodeError（_invoke_endpoint 据此判 no_engine——纯噪音无 JSON 仍正确降级）。
+    无哨兵（老协议/哨签缺失）时退化为 raw_decode 取首个 JSON 对象，容忍前后噪音。失败或解出的不是
+    dict 则抛 json.JSONDecodeError（_invoke_endpoint 据此判 no_engine——纯噪音/非合法负载仍正确降级）。
 
     背景：litellm 1.84 async 成功回调会延迟把 "Logging Details LiteLLM-Async Success Call" 打到 stdout
-    （晚于 runner 的 fd 级 dup2 重定向恢复），曾致 json.loads "Extra data" → 误判 no_engine（PR #49）。"""
+    （晚于 runner 的 fd 级 dup2 重定向恢复），曾致 json.loads "Extra data" → 误判 no_engine（PR #49）。
+    非 dict 守卫：raw_decode 兜底可返回任意合法 JSON 值（int/null/list/str——如 litellm 噪音恰以数字
+    或 '[' 开头）；非 dict 不是合法评审负载，旧实现会把它当成功数据返回 → parse 空 → 假 engine_status=ok。"""
     m = re.search(re.escape(_JSON_BEGIN) + r"(.*?)" + re.escape(_JSON_END), stdout or "", re.S)
-    if m:
-        return json.loads(m.group(1))
-    obj, _end = json.JSONDecoder().raw_decode((stdout or "").lstrip())
+    obj = json.loads(m.group(1)) if m else json.JSONDecoder().raw_decode((stdout or "").lstrip())[0]
+    if not isinstance(obj, dict):
+        raise json.JSONDecodeError("提取到的 JSON 非 dict（非合法评审负载）", stdout or "", 0)
     return obj
 
 
