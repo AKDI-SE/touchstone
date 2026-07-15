@@ -604,6 +604,35 @@ def test_main_gate_path(monkeypatch, tmp_path):
     assert out["gate"] == "success"
 
 
+def test_main_gate_crash_does_not_suppress_review(monkeypatch, tmp_path):
+    """总闸块抛【非 RequestException】（如 checks.py 未来改动引入的编程错误 / 插件聚合异常）时，
+    post_results 仍须执行、评审评论仍须投递。gate 块上移到 post_results 之前（PR #71）后，gate 的
+    except 必须 catch 到 Exception——否则非网络异常向上冒泡、post_results 永不执行，评审评论被
+    静默吞（PRA-REVIEW:orchestrator.py:473 行为回归）。锁既有契约：总闸崩溃不阻断评审交付。"""
+    posted = {}
+
+    def fgh(method, path, token, data=None, accept="application/vnd.github+json"):
+        if accept.endswith("diff"):
+            return "--- a/x.py\n+++ b/x.py\n@@ -0,0 +1,1 @@\n+x\n"
+        if method == "POST" and path.endswith("/comments") and isinstance(data, dict):
+            posted["body"] = data.get("body", "")
+        return [] if (path.endswith("/comments") and method == "GET") else {}
+
+    _setup_main(monkeypatch, tmp_path, fgh)
+    monkeypatch.delenv("TOUCHSTONE_SKIP_GATE", raising=False)   # 走 gate 路径
+    # run_checks 抛非网络异常（模拟 checks.py 编程错误）——作为 post_gate 的实参先求值，
+    # gate 块的 except 必须兜住它，否则冒泡越过 post_results。
+    def _boom(cfg, pr):
+        raise RuntimeError("checks.py 内部错误（非网络）")
+    monkeypatch.setattr(ORC.checks, "run_checks", _boom)
+    ORC.main()                       # gate 崩溃被宽 except 吞，post_results 仍执行
+    # 评审评论已投递（未被静默吞）+ 落盘完成（证明越过 gate 走到 main 尾部）
+    assert posted.get("body"), "总闸崩溃不应静默吞掉评审评论"
+    assert (tmp_path / "touchstone-findings.json").exists()
+    out = json.loads((tmp_path / "touchstone-findings.json").read_text(encoding="utf-8"))
+    assert out["gate"] is None       # gate 崩溃 → 保持 None（未算出）
+
+
 def test_main_post_results_fail_swallowed(monkeypatch, tmp_path):
     # 摘要评论/内联/check-run POST 失败 → 走 warn/info 分支，main 不崩
     import requests

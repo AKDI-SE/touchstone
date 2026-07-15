@@ -481,8 +481,14 @@ def main():
             pr_ctx = {"owner": owner, "repo": repo, "sha": head_sha, "token": token,
                       "files": sorted(changed_files), "contract_findings": det_findings}
             gate, _ = checks.post_gate(pr_ctx, chk_cfg, checks.run_checks(chk_cfg, pr_ctx))
-        except requests.exceptions.RequestException as e:
-            print(f"[info] 总闸跳过: {e}", file=sys.stderr)
+        except Exception as e:
+            # 总闸是旁路增强（独立 check-run 状态），不是评审交付本身。catch 宽到 Exception：
+            # gate 块上移到 post_results 之前（本 PR），若只 catch RequestException，则 checks.*
+            # 抛任意非网络异常（如 checks.py 未来改动引入的编程错误、插件聚合异常）会向上冒泡、
+            # post_results 永不执行——评审评论被静默吞掉。原本 gate 在 post_results 之后，崩溃也只是
+            # 评论已发之后再炸 job；顺序上移后必须拓宽 except 才能守住「总闸崩溃不阻断评审交付」
+            # 的既有契约（gate 维持 None，真因进 stderr，防静默故障）。
+            print(f"[info] 总闸跳过（不阻断评审）: {type(e).__name__}: {e}", file=sys.stderr)
 
     # 运行指标（运维可观测性）：每轮追加一条扁平指标到事件流，供 CI 聚合成 dashboard/告警。
     # 与 findings.json（autonomy 决策用的完整状态）分开——本条只含可累加的健康数值。失败不阻塞。
