@@ -21,6 +21,16 @@ def test_evaluate_engine_degraded():
     assert "engine_degraded" in kinds
 
 
+def test_evaluate_llm_failed_not_silent_only_degraded():
+    """llm_failed 是【已被检测、大声上报】的降级，不是静默故障。
+    它不该触发 silent_failure（与 metrics.summarize :108-110 的 silent 口径一致——
+    那里只数 engine_status=='ok'）；只该触发 engine_degraded。否则同一事件双发且与 metrics 打架。"""
+    rec = {**_HEALTHY, "engine_status": "llm_failed", "review_reliable": False, "ai_raw_count": 0}
+    kinds = [a["kind"] for a in alert.evaluate(rec)]
+    assert "engine_degraded" in kinds
+    assert "silent_failure" not in kinds
+
+
 def test_evaluate_unverified_claims():
     rec = {**_HEALTHY, "unverified_claims": 2}
     kinds = [a["kind"] for a in alert.evaluate(rec)]
