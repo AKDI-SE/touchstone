@@ -168,7 +168,7 @@ jobs:
 - 把 `touchstone/gate` 设为 **Required status check**——确定性检查不过就拦。
 
 **Step 5**：验证——开一个测试 PR，应看到：
-- PR 评论里出现 **Touchstone · ADVISORY** 评审（含 AI 意见 + 确定性事实）。
+- PR 评论里出现 **Touchstone · AI Committer 代码检视** 评审（含「AI 评审」+「静态检查」分段）。
 - check `touchstone/gate` 为 success（无 block 级发现时）。
 - 若 LLM 未配通，评论顶部会出现 `⚠️ AI 评审...` 横幅（不静默）。
 

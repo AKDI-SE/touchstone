@@ -14,6 +14,7 @@
 
 import json
 import os
+import re
 import sys
 
 import requests
@@ -170,13 +171,50 @@ def _clean_review_trace(engine_status, ai_raw_count, added_lines, n_changed, raw
     return trace
 
 
+# 凭据脱敏：engine_detail（来自 ReviewEngineDegraded.reason / 过滤后 stderr）在降级场景被原样贴进
+# 【公开 PR 评论】。litellm 详错 / verbose 轨迹可能夹带 Authorization 头或 api key（开
+# TOUCHSTONE_LITELLM_VERBOSE 尤甚）；review_provider 仅抽取错误正文、不做脱敏。故在【呈现边界】
+# 补这层防御——尽力而为，只抹凭据形子串，错误正文/traceback 保留可读（PRA-REVIEW 安全发现，PR #74）。
+_SECRET_PATTERNS = (
+    re.compile(r"(?i)\bBearer\s+[A-Za-z0-9_\-\.=]+"),          # Authorization: Bearer xxx
+    re.compile(r"(?i)\bAuthorization\b['\"\s]*[:=]\s*['\"]?[A-Za-z0-9_\-\.=]+"),
+    re.compile(r"\bsk-[A-Za-z0-9\-_]{20,}"),                    # OpenAI / Anthropic 风格 key
+    re.compile(r"\bgh[pousr]_[A-Za-z0-9]{30,}"),                # GitHub PAT（ghp_/ghs_/gho_/ghu_/ghr_）
+    re.compile(r"(?i)(api[_-]?key|access[_-]?token)\b['\"\s]*[:=]\s*['\"]?[A-Za-z0-9_\-\.=]{16,}"),
+)
+
+
+def _redact_secrets(text):
+    """抹掉凭据形子串（Bearer / Authorization / sk- / gh_ / api_key=…）→ ***REDACTED***。纯函数、可测。"""
+    out = text or ""
+    for pat in _SECRET_PATTERNS:
+        out = pat.sub("***REDACTED***", out)
+    return out
+
+
+def _render_engine_detail(engine_status, engine_detail):
+    """降级时把 engine_detail 渲染成「验证与日志」段里的原始错误块；engine 正常或无 detail → 空串。
+    进公开 PR 评论前三连：①_redact_secrets 脱敏凭据 ②超 1500 字符加截断标记（不静默砍尾）
+    ③四反引号围栏（raw error 自身含 ``` 不再撑破版面）。纯函数、可测（PRA-* PR #74）。"""
+    if engine_status == "ok" or not engine_detail:
+        return ""
+    detail = _redact_secrets(engine_detail.strip())
+    shown = detail[:1500] + (
+        "\n[…]（已截断：原始错误超 1500 字符，完整内容见 `pr-agent-interaction.log`）"
+        if len(detail) > 1500 else "")
+    return (f"**评审引擎降级（`{engine_status}`）——原始错误：**\n\n"
+            f"````\n{shown}\n````\n"
+            "更完整的 litellm 调用轨迹 / 真实 HTTP 错误见交互日志 artifact `pr-agent-interaction.log`。")
+
+
 def post_results(owner, repo, number, head_sha, token, risk, findings, loop_info=None,
                  change_class=None, diff=None, injected_types=None, injected_experience_ids=None,
                  engine_status="ok", det_warning="", ai_raw_count=0, added_lines=0, n_changed=0,
                  scope_facts=None, checklist_md="", ledger=None, review_reliable=True,
-                 llm_notes=None, raw_excerpt=None, unverified_claims=0, telemetry_status="disabled"):
+                 llm_notes=None, raw_excerpt=None, unverified_claims=0, telemetry_status="disabled",
+                 engine_detail=""):
     # (1) 摘要评论——总是成功；按七段版面模板组装（修订设计 §3 意见 4）：
-    #     ①横幅(降级说明/0-发现溯源/循环状态) ②总结 ③确定性事实 ④逐条发现 ⑤收敛清单 ⑥验证 ⑦机器 marker
+    #     ①横幅 ②态势表 ③静态检查区 ④AI 评审 ⑤待解决问题清单 ⑥验证与日志 ⑦机器 marker
     # 评审不可信时，降级说明/0-发现溯源统一并入 render 层的 [!CAUTION] 置顶告警
     # （见 render.render_unreliable_callout；判定层的 review_reliable 信号在此接到呈现层）；
     # 可信时保持原横幅逻辑。det_warning（确定性侧警告）与可信度无关，两种情形都保留。
@@ -211,26 +249,27 @@ def post_results(owner, repo, number, head_sha, token, risk, findings, loop_info
                 "escalate": "⬆️ 升级到人"}[decision]
         banner = f"**反馈循环：{head}** — {reason}" + ("\n\n" + banner if banner else "")
         markers.append(marker)
-    verification_md = ""
-    # 验证档（verification_decision）是机器路由信号——决定 CI 跑哪档验证，非给人的待办。
-    # 易读性改版·二（方案 3）：从态势区移除，降级到本段作一行小字，与验证结果同处（因果一体）。
+    # 验证档（verification_decision）是机器路由信号——决定 CI 跑哪档验证，非给人的待办；降为行尾小字。
     _VD = {"cheap_only": "仅基础检查（不额外跑验证）",
            "targeted_tests": "针对性验收测试",
            "full_suite": "完整验证（针对性测试 + 变异测试）"}
     _vd = risk.get("verification_decision")
-    _vd_line = f"本轮验证档：{_VD.get(_vd, _vd or '—')}（`{_vd}`）" if _vd else ""
     run_link = _run_link()
-    if run_link or _vd_line:
-        verification_md = "### 验证与日志\n"
-        if _vd_line:
-            verification_md += f"\n{_vd_line}"
-        if run_link:
-            verification_md += f"\n\n📄 完整 LLM 交互日志：{run_link}"
+    # 本段只在有真有用信息时才出现——链接为主、验证档降小字；LLM 失败时把具体可靠的
+    # 原始错误（PR#68 做准的 reason）详列在此（CAUTION 只给精简指向）。
+    _vblocks = []
+    if run_link:
+        _vd_note = (f" <sub>（本轮验证档：{_VD.get(_vd, _vd or '—')}）</sub>" if _vd else "")
+        _vblocks.append(f"📄 完整验证运行与 LLM 交互日志：{run_link}{_vd_note}")
+    _ed_block = _render_engine_detail(engine_status, engine_detail)
+    if _ed_block:
+        _vblocks.append(_ed_block)
+    verification_md = ("### 验证与日志\n\n" + "\n\n".join(_vblocks)) if _vblocks else ""
     body = render_report(risk, findings, banner=banner, scope_facts=scope_facts,
                          checklist_md=checklist_md, verification_md=verification_md,
                          markers="\n".join(markers), lineage=ledger,
                          review_reliable=review_reliable, engine_status=engine_status,
-                         ai_raw_count=ai_raw_count, added_lines=added_lines)
+                         ai_raw_count=ai_raw_count, added_lines=added_lines, engine_detail=engine_detail)
     # 机读 result marker（隐藏）——校准/自治经验从 API 重建数据的入口
     result_marker = "<!-- touchstone-result: " + json.dumps({
         "risk_band": risk["risk_band"],
@@ -297,6 +336,7 @@ def review_pr(pr, contract, standards, provider=None):
     engaged = False         # glm 是否给出实质性多段评审（runner 经 _LAST_META 透出，见 review_provider）
     raw_excerpt = {}        # LLM 原始 review 段快照（0 原始建议时贴横幅，打消"是否真审过"疑虑）
     llm_notes = []          # LLM 侧非致命注记（部分降级/截断修复），进报告横幅
+    engine_detail = ""      # 降级/失败时的具体原始错误（PR#68 做准的 reason）——留给渲染层
     max_lines = int(os.environ.get("TOUCHSTONE_MAX_DIFF_LINES", "1000") or 0)
     size_findings = []
     if max_lines > 0 and added_lines > max_lines:
@@ -336,10 +376,12 @@ def review_pr(pr, contract, standards, provider=None):
                                  "（输出截断/畸形的弱信号，条目可能被修复丢弃），原文见交互日志。")
         except review_provider.ReviewEngineDegraded as e:
             engine_status = e.degraded
+            engine_detail = e.reason or ""      # PR#68 做准的具体原因（工具 + litellm 真实异常 + 过滤后 stderr）
             print(f"[review_pr] 评审引擎降级（{e.degraded}）：{e.reason}", file=sys.stderr)
             review_findings = []
         except RuntimeError as e:
             engine_status = "no_engine"
+            engine_detail = str(e)
             print(f"[review_pr] PR-Agent 不可用：{e}", file=sys.stderr)
             review_findings = []
     contract_findings = contract_check.check_contract_consistency(diff, contract or {}, rule_index)
@@ -355,7 +397,7 @@ def review_pr(pr, contract, standards, provider=None):
             "det_warning": det_warning, "ai_raw_count": ai_raw_count,
             "added_lines": added_lines, "changed_files": changed_files,
             "scope_facts": sf, "llm_notes": llm_notes, "engaged": engaged,
-            "raw_excerpt": raw_excerpt}
+            "raw_excerpt": raw_excerpt, "engine_detail": engine_detail}
 
 
 def main():
@@ -387,6 +429,7 @@ def main():
     det_warning = _out.get("det_warning", "")
     ai_raw_count = _out.get("ai_raw_count", 0)
     llm_notes = _out.get("llm_notes") or []
+    engine_detail = _out.get("engine_detail", "")   # 降级原始错误 → CAUTION 精简指向 + 验证与日志详列
     added_lines = _out.get("added_lines", 0)
     n_changed = len(_out.get("changed_files") or [])
     engaged = _out.get("engaged", False)
@@ -562,7 +605,7 @@ def main():
                  scope_facts=scope_facts, checklist_md=checklist_md, ledger=ledger,
                  review_reliable=reliable, llm_notes=llm_notes,
                  raw_excerpt=raw_excerpt, unverified_claims=n_unverified,
-                 telemetry_status=_tel_res)
+                 telemetry_status=_tel_res, engine_detail=engine_detail)
 
     # 升级到人：打标签（best-effort）
     if decision == "escalate":

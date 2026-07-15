@@ -88,7 +88,7 @@ def test_render_summary_caps_findings_to_avoid_comment_overflow():
     from touchstone import orchestrator as orc
     risk = {"risk_band": "low", "human_action": "skip", "verification_decision": "cheap_only",
             "blast_radius": []}
-    findings = [{"rule_id": f"R{i}", "agent": "a", "severity": "warn", "confidence": 0.5,
+    findings = [{"rule_id": f"R{i}", "agent": "pr-agent", "severity": "warn", "confidence": 0.5,
                  "file": "a.py", "line": i, "rationale": "x", "suggested_fix": "y"}
                 for i in range(500)]
     _head, body = orc.render_findings(risk, findings)

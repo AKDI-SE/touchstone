@@ -127,7 +127,50 @@ def test_e2e_degraded_field_self_report_degrades(monkeypatch):
     pr = _pr([("src/Main.java", ["public class Main { int x; }"], True)])
     out = orc.review_pr(pr, {}, _standards())
     assert out["engine_status"] == "llm_failed"
+    assert "AuthError" in out["engine_detail"]      # 具体原因被留进返回，供渲染层详列
     assert RP.review_reliable(out["engine_status"], 0, out["added_lines"], out["engaged"]) is False
+
+
+def test_unreliable_callout_concise_names_stage():
+    """CAUTION 精简（两行）：点明失败环节 + 指向验证与日志；原始 dump 不进本框。"""
+    from touchstone import render
+    detail = "improve 工具 LLM 调用失败：litellm.Timeout——stderr 失败相关行：\nError during LLM inference: ..."
+    box = render.render_unreliable_callout("llm_failed", ai_raw_count=0, added_lines=50,
+                                           engine_detail=detail)
+    assert "本轮 AI 评审不可信" in box and "LLM 调用失败" in box   # 点明环节
+    assert "验证与日志" in box                                    # 指向详列原始错误处
+    assert "litellm.Timeout" not in box and "Error during LLM inference" not in box  # 原始 dump 不塞进精简框
+    assert box.count("\n") <= 3                                   # 两行正文（含 [!CAUTION] 头）
+
+
+# ---------------- engine_detail 进公开 PR 评论前的脱敏/围栏/截断（PRA-* PR #74）----------------
+def test_redact_secrets_strips_credentials_unit():
+    """_redact_secrets 抹凭据形子串（Bearer/sk-/gh_/api_key），保留错误正文/traceback 可读。"""
+    raw = ("请求失败：Authorization: Bearer sk-abcdef0123456789abcdefXYZ，"
+           "ghp_0123456789abcdef0123456789abcdef0123，api_key=AKIAIOSFODNN7EXAMPLE0123，"
+           "Error during LLM inference: ConnectionError（正文，应保留）")
+    red = orc._redact_secrets(raw)
+    assert "sk-abcdef" not in red and "ghp_0123" not in red and "AKIAIOSF" not in red
+    assert "***REDACTED***" in red
+    assert "Error during LLM inference" in red and "ConnectionError" in red   # 正文/traceback 保留
+
+
+def test_render_engine_detail_redacts_fences_truncates():
+    """engine_detail 渲染进公开 PR 评论前三连：脱敏 + 四反引号围栏 + 超长截断标记（PR #74）。"""
+    secret = "Bearer sk-" + "a" * 30
+    # raw error 自身含三反引号（旧三反引号围栏会被它提前闭合）+ 超长
+    blob = secret + "\n```python\nTraceback (most recent call last):\n```\n" + "x" * 2000
+    block = orc._render_engine_detail("llm_failed", blob)
+    assert block                                                  # 降级 + 有 detail → 出块
+    assert "sk-" + "a" * 30 not in block and "***REDACTED***" in block   # #3 脱敏
+    assert "````\n" in block                                      # #1 四反引号围栏
+    assert "已截断" in block                                       # #2 截断标记
+    # engine 正常 / 无 detail → 不出块
+    assert orc._render_engine_detail("ok", blob) == ""
+    assert orc._render_engine_detail("llm_failed", "") == ""
+    # 短 detail 不加截断标记、内容保留
+    short = orc._render_engine_detail("provider_failed", "短错误：连接超时")
+    assert "已截断" not in short and "短错误" in short
 
 
 def test_e2e_swallowed_failure_degrades(monkeypatch):

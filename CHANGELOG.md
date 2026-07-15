@@ -5,6 +5,12 @@
 
 ## [未发布]
 
+**评审报告改版（report-pr66-improvements-v2）**：
+- **重分层「确定性 vs LLM」两视图**：③「确定性事实」→「静态检查」（修改范围/敏感路径/门禁/同源 + **确定性规则命中逐条**，不经 LLM）与 ④「评审发现」→「AI 评审」（**仅** pr-agent 的 LLM 发现）并列同级 H3。规则命中与 AI 建议各自独立 `MAX_FINDINGS_IN_SUMMARY` 上限；逐条发现渲染抽 `_finding_entry` 共用。
+- **「收敛清单」→「待解决问题清单」并瘦身**：每条只留 状态/方向/位置/销项备注，依据与达成判据移到上方评审段（顶部加一行销项跟踪说明）；机读 JSON marker 字段不变 → ack/reconcile 机制不受影响。
+- **品牌行** `Touchstone · ADVISORY` → `Touchstone · AI Committer 代码检视`（templates/review_report.md 唯一 H2）。
+- **降级原始错误贯通**：`review_pr` 捕获 `ReviewEngineDegraded.reason`/`RuntimeError` 入新字段 `engine_detail` → main → post_results → 「验证与日志」段详列原始错误（截 1500 字符、指向交互日志 artifact）；置顶 `[!CAUTION]` 精简为两行（失败环节 + 指向验证与日志），不再塞原始 dump。
+
 **商用化 P1（运维成熟度，第二批）**：
 - **健康度自检 `touchstone doctor`**：新增 `touchstone/doctor.py`——在 preflight（配置+连通）之上补上"评审引擎现在真能跑通产出裁决吗"这一步（引入**自检评审/smoke review** 概念：合成 PR 在进程内跑 `review_pr`、注入空观察源走确定性裁决链、零网络、断言产出合法裁决）。三阶段汇成红绿表（`✓/⚠/✗`）+ **单一退出码**表达能否上线（0=可上线，1=有阻断项）；支持 `--no-net`、`--json`（运维聚合/CI 门）。`touchstone doctor`/`touchstone preflight` 子命令分派接入（`touchstone --repo … --pr …` 原状不变）。
 - **依赖模块增强**：`review_provider.fetch` 增加**可调用注入口**（callable provider），供自检/测试短路 PR-Agent 子进程；`preflight.check_standards` 从 `main` 抽出供复用。

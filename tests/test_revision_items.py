@@ -358,8 +358,8 @@ def test_render_report_seven_sections_and_no_template_comment_leak():
         risk, [f], banner="**反馈循环：🔁 继续** — 第 1 轮",
         scope_facts=sf, checklist_md=cl.render(cl.from_findings([f])),
         markers="<!-- touchstone-loop: {} -->")
-    for token in ("ADVISORY", "确定性事实", "敏感路径命中", "方向：", "达成判据",
-                  "收敛清单", "touchstone-loop"):
+    for token in ("AI Committer 代码检视", "静态检查", "敏感路径命中", "方向：", "达成判据",
+                  "待解决问题清单", "touchstone-loop"):
         assert token in md
     assert "版面模板" not in md                    # 模板头注释不外泄进评论
     assert "改这里" not in md or True
@@ -478,11 +478,11 @@ def test_report_layout_invariants():
     lines = body.split("\n")
     h2 = [l for l in lines if l.startswith("## ")]
     h3 = [l for l in lines if l.startswith("### ")]
-    assert len(h2) == 1 and "Touchstone · ADVISORY" in h2[0]       # 唯一 H2 承载品牌与定位
+    assert len(h2) == 1 and "Touchstone · AI Committer 代码检视" in h2[0]  # 唯一 H2 承载品牌与定位
     # 易读性改版·二：发现区新增 #### 分组子标题（规则检查/AI建议），h3 仍是四段，不含 ####
     h3 = [l for l in h3 if not l.startswith("#### ")]
-    assert {l.split("（")[0] for l in h3} == {"### 确定性事实", "### 评审发现",
-                                              "### 收敛清单", "### 验证与日志"}  # 并列段同级
+    assert {l.split("（")[0] for l in h3} == {"### 静态检查", "### AI 评审",
+                                              "### 待解决问题清单", "### 验证与日志"}  # 并列段同级
     assert any(l.startswith("> ") for l in lines)                   # 横幅 blockquote
     assert "完整 LLM 交互日志：" in body and "原始输出" not in body   # 日志行无括注
     assert "<details><summary>如何申报销项</summary>" in body        # 样板折叠
@@ -503,8 +503,7 @@ def test_unreliable_review_renders_caution_and_distrusts_action():
                                 scope_facts=sf, review_reliable=False,
                                 engine_status="llm_failed", ai_raw_count=0, added_lines=171)
     assert body.splitlines()[2] == "> [!CAUTION]"            # 置顶（H2 与空行之后第一块）
-    assert "0 发现 ≠ 审过没问题" in body
-    assert "不销项" in body and "不收敛" in body and "不放行" in body
+    assert "本轮 AI 评审不可信" in body
     assert "需人工评审" in body and "原 AI 建议不采信" in body   # 不可信时改示待人工
     assert "无需人工介入" not in body                            # skip→"无需人工介入"不该出现（误导）
     assert risk["human_action"] == "skip"                     # 只改展示，不改机器数据
@@ -514,7 +513,7 @@ def test_unreliable_suspicious_empty_names_cause():
     """engine ok 但可疑空收敛：告警必须写明行数/建议数证据，而非泛泛'可能未实质产出'。"""
     from touchstone import render
     text = render.render_unreliable_callout("ok", ai_raw_count=0, added_lines=171)
-    assert "[!CAUTION]" in text and "171" in text and "0 条原始建议" in text
+    assert "[!CAUTION]" in text and "171" in text and "0 建议" in text
 
 
 def test_reliable_review_keeps_normal_layout():
@@ -618,7 +617,7 @@ def test_checklist_render_hides_ack_help_when_empty():
 
 
 def test_findings_grouped_by_rule_vs_ai():
-    """发现按来源分组：规则检查命中（非 pr-agent）/ AI 评审建议（pr-agent）。"""
+    """发现按来源两层拆分：确定性规则命中归「静态检查」，LLM 发现归「AI 评审」。"""
     from touchstone import render
     risk = {"risk_band": "high", "human_action": "read", "verification_decision": "cheap_only",
             "blast_radius": []}
@@ -631,12 +630,16 @@ def test_findings_grouped_by_rule_vs_ai():
          "done_criteria": {"kind": "review", "spec": {"question": "q？"}}},
     ]
     _, body = render.render_findings(risk, findings)
-    assert "#### 规则检查命中（rule-based，可复现）" in body
-    assert "#### AI 评审建议（LLM，含置信度）" in body
-    # 规则检查组在 AI 组之前（确定性优先）
-    assert body.index("规则检查命中") < body.index("AI 评审建议")
-    # review 判据人话化为"需人工复核：..."
-    assert "需人工复核：q？" in body
+    # AI 评审段只含 LLM（pr-agent）发现
+    assert "### AI 评审" in body
+    assert "b.py:2" in body and "需人工复核：q？" in body      # pr-agent 那条在此
+    assert "a.py:1" not in body                                # 规则命中(非 pr-agent)不入 AI 评审
+    # 确定性规则命中归「静态检查」段
+    rule_only = [f for f in findings if not str(f.get("agent", "")).startswith("pr-agent")]
+    facts = render.render_facts({"parse_ok": True, "totals": {}, "sensitive_hits": []},
+                                rule_findings=rule_only)
+    assert "#### 规则命中（可复现）" in facts
+    assert "a.py:1" in facts                                   # DANGER-001 那条在此
 
 
 def test_checklist_direction_as_title_and_status_unified():

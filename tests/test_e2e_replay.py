@@ -53,7 +53,7 @@ def test_e2e_replay_produces_stable_comment_structure(monkeypatch):
 
     body = posted["body"]
     # —— 人可读结构稳定 ——
-    assert "Touchstone · ADVISORY" in body
+    assert "Touchstone · AI Committer 代码检视" in body
     assert "风险等级" in body and "风险等级：高" in body   # 含 security → high，中文"高"
     assert "触发因子" in body                                # blast（原"影响面"→"触发因子"）
     # 发现逐条带关键字段
