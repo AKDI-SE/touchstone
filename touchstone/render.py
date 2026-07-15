@@ -107,14 +107,14 @@ def render_findings(risk, findings, review_reliable=True):
     _BLAST = {"cross_module_contract": "跨模块契约变更", "security_surface": "涉及安全面"}
     band = _RISK.get(risk.get("risk_band"), "未定")
     action = _ACTION.get(risk.get("human_action"), "建议人工过目")
-    factors = "、".join(_BLAST.get(b, b) for b in (risk.get("blast_radius") or [])) or "无"
+    factors = "、".join(_BLAST.get(b, b) for b in (risk.get("blast_radius") or []))
     if review_reliable:
-        head = [f"> **风险等级：{band}** — {action}",
-                f"> **触发因子：** {factors}"]
+        head = [f"> **风险等级：{band}** — {action}"]
     else:
         head = [f"> **风险等级：{band}** <sub>（仅确定性信号，LLM 评审不可信）</sub>"
-                " — 需人工评审，原 AI 建议不采信",
-                f"> **触发因子：** {factors}"]
+                " — 需人工评审，原 AI 建议不采信"]
+    if factors:                       # 无触发因子时不显「触发因子：无」——去冗余（有因子时照常显）
+        head.append(f"> **触发因子：** {factors}")
 
     body = []
     if not findings:

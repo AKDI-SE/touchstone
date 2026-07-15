@@ -590,6 +590,33 @@ def test_situation_block_is_prose_not_table():
     assert "read+arbitrate" not in head                     # 枚举名不外露
 
 
+def test_situation_block_omits_trigger_line_when_no_factors():
+    """去冗余：无触发因子（blast_radius 空）时态势区不显「触发因子：无」。有因子时照常显。"""
+    from touchstone import render
+    risk_none = {"risk_band": "low", "human_action": "skip",
+                 "verification_decision": "cheap_only", "blast_radius": []}
+    head, _ = render.render_findings(risk_none, [])
+    assert "触发因子" not in head                     # 无因子 → 省行（不再显「触发因子：无」）
+    assert "风险等级：低" in head
+    # 对照：有因子 → 照常显
+    head2, _ = render.render_findings(dict(risk_none, blast_radius=["security_surface"]), [])
+    assert "触发因子" in head2 and "涉及安全面" in head2
+
+
+def test_checklist_render_hides_ack_help_when_empty():
+    """去冗余：空清单（0 发现即收敛，如 PR #70）无项可申报——「如何申报销项」折叠省去。
+    marker 仍在（机读状态不丢）；有项时照常显申报指引。"""
+    from touchstone import checklist as cl
+    body_empty = cl.render({"round": 1, "items": [], "resolved_rate": 1.0})
+    assert "如何申报销项" not in body_empty           # 空清单 → 省折叠
+    assert "touchstone-checklist" in body_empty       # marker 仍在（机读状态不丢）
+    # 对照：有项 → 照常显申报指引
+    f = {"rule_id": "R1", "severity": "warn", "confidence": 0.9, "agent": "pr-agent",
+         "file": "a.py", "line": 1, "rationale": "r", "fix_direction": "d",
+         "done_criteria": {"kind": "deterministic", "spec": {"recheck": "R1"}}}
+    assert "如何申报销项" in cl.render(cl.from_findings([f]))
+
+
 def test_findings_grouped_by_rule_vs_ai():
     """发现按来源分组：规则检查命中（非 pr-agent）/ AI 评审建议（pr-agent）。"""
     from touchstone import render

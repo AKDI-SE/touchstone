@@ -45,6 +45,34 @@ def test_parse_empty_is_empty():
     assert RP.parse_pr_agent(None) == []
 
 
+def test_parse_pr_agent_strips_trailing_newlines_from_fields():
+    """pr-agent 返回的 relevant_file/summary/reason 带尾换行 → 显示污染（`file\\n:line` 换行、
+    逐条发现子项间空行、判据「方向\\n」断行，PR #59 真实样例肉眼可见）。parse_pr_agent 在清源
+    处 strip 首尾空白，两路（code_suggestions / key_issues）都覆盖。"""
+    raw = {"code_suggestions": [{
+        "relevant_file": "src/auth.py\n",
+        "relevant_lines_start": 12,
+        "one_sentence_summary": "Token 未校验即用\n",
+        "suggestion_content": "if not token: raise\n",
+    }]}
+    items = RP.parse_pr_agent(raw)
+    assert items[0]["file"] == "src/auth.py"            # 尾 \n 已剥
+    assert items[0]["summary"] == "Token 未校验即用"
+    assert items[0]["reason"] == "if not token: raise"
+    # key_issues 路径同样剥
+    raw2 = {"review": {"key_issues_to_review": [{
+        "relevant_file": "src/util.py\n", "start_line": 30,
+        "issue_header": "边界 off-by-one\n", "issue_content": "循环越界\n"}]}}
+    it2 = RP.parse_pr_agent(raw2)[0]
+    assert it2["file"] == "src/util.py" and it2["summary"] == "边界 off-by-one"
+    # 贯通到 findings：file:line 不再换行、判据 question 不带尾 \n
+    f = RP.normalize(items)[0]
+    assert f["file"] == "src/auth.py" and "\n" not in f["file"]
+    q = f["done_criteria"]["spec"]["question"]
+    assert q.endswith("是否已按方向解决？")              # direction 尾 \n 已剥 → 不断行
+    assert "\n" not in q
+
+
 # ---------------- 归一 ----------------
 def test_normalize_maps_label_to_category_and_agent():
     findings = RP.normalize(RP.parse_pr_agent(_RAW))
@@ -545,6 +573,16 @@ def test_clean_review_trace_appends_llm_excerpt_when_zero_raw():
         "ok", ai_raw_count=0, added_lines=3, n_changed=1, raw_excerpt={})
     # 降级 → 溯源整体不输出（由 _engine_banner 负责）
     assert orc._clean_review_trace("llm_failed", 0, 0, 0, raw_excerpt=excerpt) == ""
+
+
+def test_clean_review_trace_no_scope_dedup_and_line_broken():
+    """横幅精简（B）+ 去冗余（C）：_clean_review_trace 不再含与「确定性事实」段重复的
+    「改动：N 文件」统计行；改拆行（非全角空格连写的一长句）。溯源实质（head/detail/tail）保留。"""
+    from touchstone import orchestrator as orc
+    t = orc._clean_review_trace("ok", ai_raw_count=0, added_lines=120, n_changed=8)
+    assert "已端到端运行" in t and "0 条原始建议" in t and "人工扫一眼" in t   # 溯源实质保留
+    assert "改动：" not in t                             # 去掉与事实区重复的统计行（去冗余）
+    assert "　" not in t                                 # 拆行，非全角空格连写
 
 
 # ---------------- prediction_swallowed_failure：pr-agent 吞掉的 LLM 失败检测 ----------------
