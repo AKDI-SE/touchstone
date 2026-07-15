@@ -16,6 +16,11 @@ permissions:
   contents: read
   pull-requests: write
   checks: write
+  # actions:write 供 touchstone job 写 actions 缓存（.pragent-venv 复用，省 ~60s/轮，见 Set up PR-Agent）。
+  # 仅【touchstone job】未自带 permissions 故继承本项；verify_*/gate/auto_merge 各自 downscope 不受影响。
+  # touchstone job 跑 base 代码（checkout ref:base.ref），授予低风险。fork PR 受 GitHub 防缓存投毒限制
+  # 仍只读（不写）；此时本步退化为"每次重建"=今天的速度，import 兜底检查保证不崩、日志可观测是否命中。
+  actions: write
 
 jobs:
   # ---- 判断层：评审（advisory，不拦截；不在此发总闸，交给 gate job）----
@@ -30,21 +35,43 @@ jobs:
           ref: ${{ github.event.pull_request.base.ref }}
           fetch-depth: 0
       - uses: actions/setup-python@v5
+        id: py
         with:
           # 钉 3.13：pr-agent 的原生依赖（tiktoken 经 PyO3 0.22.6）暂不支持 3.14，会源码编译失败。
           python-version: "3.13"
       - name: Install deps
         run: pip install -e .
         # 自托管 runner 若经代理访问公网：按需设置/清理 *_PROXY；可选用私有/就近 PyPI 镜像加速 pip install
+      - name: Restore PR-Agent venv (cache)
+        # 缓存装好的 .pragent-venv（pr-agent + 130+ 依赖），省掉每次 ~64s 的 venv 创建 + pip install
+        # （实测每轮 GHA 日志：venv 步骤稳定 ~64s，是 LLM 调用之外最大固定开销）。
+        # 键含 OS + Python【补丁号】(steps.py.outputs.python-version，如 3.13.14) + pr-agent 版本：
+        # 解释器补丁升级 / OS / pr-agent 版本任一变即 miss→重建并重新持久化（自愈，不靠手动 bump key）。
+        id: pragent-venv
+        uses: actions/cache@v4
+        with:
+          path: .pragent-venv
+          key: pragent-venv-${{ runner.os }}-py${{ steps.py.outputs.python-version }}-pragent0.39.0-v1
       - name: Set up PR-Agent (independent venv)
         # PR-Agent 是评审引擎（Apache-2.0 pip 包），按"不进本仓依赖"原则装在独立 venv。
         # continue-on-error：装失败不让整个评审 job 崩（那样连评审都不发）；orchestrator 会优雅降级、
         # 在 PR 评审里显式标注"AI 评审未运行"（防静默故障，见 README）。
+        #
+        # 缓存命中且 import 可用 → 直接复用（省 ~60s）；否则（首次 / 缓存失效 / runner 镜像内部变更致
+        # venv 绝对路径失效）重建。import 兜底检查防"命中缓存却跑崩"的静默故障——venv 含绝对路径，
+        # 即便 key 匹配，镜像内部工具链变更仍可能让缓存"在"但"不可导入"；此检查确保可用才复用。
+        # 钉 pr-agent==0.39.0：让缓存键精确、可复现（升版时改本行 + 上方 key 的版本号即刷新）。
         continue-on-error: true
         run: |
-          python -m venv .pragent-venv
-          .pragent-venv/bin/pip install -U pip
-          .pragent-venv/bin/pip install pr-agent
+          if [ -x .pragent-venv/bin/python ] && .pragent-venv/bin/python -c 'import pr_agent' 2>/dev/null; then
+            echo "[pragent-venv] 缓存命中且可用，复用（跳过创建）"
+          else
+            echo "[pragent-venv] 缓存未命中或失效，创建中"
+            rm -rf .pragent-venv
+            python -m venv .pragent-venv
+            .pragent-venv/bin/pip install -U pip
+            .pragent-venv/bin/pip install pr-agent==0.39.0
+          fi
       - name: Run review
         id: run
         env:
