@@ -84,6 +84,13 @@ def client(token):
     def post(path, data):
         return _req("POST", path, data=data)
 
+    def patch(path, data):
+        # 对称于 get/post：编辑既有资源（如 PATCH /repos/.../issues/{n} 改 body）。
+        # make_session 的 allowed_methods 只含 GET/POST——PATCH 非幂等、不自动重试（issue
+        # 编辑语义本就不该重放），但 sess.request 仍正常发送 PATCH（allowed_methods 仅约束
+        # 【重试】，不约束可发 method）；403+Retry-After 的二级限流兜底在 _req 内仍生效。
+        return _req("PATCH", path, data=data)
+
     def paginate(path, per_page=100, max_pages=20):
         sep = "&" if "?" in path else "?"
         out = []
@@ -110,7 +117,7 @@ def client(token):
         return {"check_runs": all_runs, "total_count": len(all_runs)}
 
     return type("GHClient", (), {
-        "get": staticmethod(get), "post": staticmethod(post),
+        "get": staticmethod(get), "post": staticmethod(post), "patch": staticmethod(patch),
         "paginate": staticmethod(paginate), "paginate_check_runs": staticmethod(paginate_check_runs),
         "_req": staticmethod(_req),
         "base_url": base, "token": token,

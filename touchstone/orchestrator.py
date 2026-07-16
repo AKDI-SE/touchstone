@@ -592,6 +592,19 @@ def main():
             # 异常路径同样可见），并 stderr 留痕。_tel_res 此前未赋值，此处兜底。
             _tel_res = f"failed: {e}"
             print(f"[warn] 遥测上报失败（不阻塞评审）: {e}", file=sys.stderr)
+        # 评审健康度看板（可选，默认关）：每轮把健康度写成一个"活"的本仓 issue（重写 body，
+        # 静默刷新——GitHub 不为 issue body 编辑发通知），仅显著事件追加评论。未配
+        # TOUCHSTONE_METRICS_ISSUE=true → 无操作。失败绝不冒泡——同 alert/telemetry，
+        # 可观测性子系统故障只留痕、不拖垮评审 job（run 内部已 catch，此处 except 仅兜底罕见抛出）。
+        try:
+            from touchstone import metrics_issue as _mi
+            _mi_res = _mi.run(_rec, dict(os.environ),
+                              {"owner": owner, "repo": repo, "number": number,
+                               "token": token, "run_url": _run_link()})
+            if isinstance(_mi_res, str) and _mi_res.startswith("failed:"):
+                print(f"[warn] metrics-issue 看板更新失败（不阻塞评审）: {_mi_res}", file=sys.stderr)
+        except Exception as e:
+            print(f"[warn] metrics-issue 钩子异常（不阻塞评审）: {type(e).__name__}: {e}", file=sys.stderr)
     except Exception as e:
         # 指标产出失败不阻塞评审主链——但绝不静默：可观测性子系统自身故障必须留痕
         # （同 learning_loop 2026-07-04 的防静默约定，ironic-for-observability 反模式）。
