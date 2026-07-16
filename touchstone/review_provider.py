@@ -509,6 +509,14 @@ def _collect_subprocess(args, mode, timeout, log_path=None):
         return _SubResult(mode, _MISSING,
                           reason=f"找不到 PR-Agent 适配命令：请 `pip install pr-agent` 并确保 "
                                  f"touchstone.pr_agent_runner 可运行，或用 TOUCHSTONE_PRAGENT_CMD 指定。原始：{e}")
+    except Exception as e:        # 兜底：兑现 docstring「绝不抛」承诺——subprocess.run 其他异常
+                                  # （PermissionError/OSError/SubprocessError 等）也归 _CRASHED（下游
+                                  # _aggregate_failure → no_engine），不击穿到 ThreadPoolExecutor future
+                                  # 再炸整条评审链路（fan-out 下单子进程故障本就不该拖垮另一侧）。
+        return _SubResult(mode, _CRASHED,
+                          stderr=f"[runner] {mode} subprocess crashed（{type(e).__name__}: {e}）",
+                          reason=f"{mode} 子进程异常（{type(e).__name__}: {e}）——"
+                                 f"非超时、非命令缺失的执行故障。")
     rc = proc.returncode
     raw_err = proc.stderr or ""
     if rc != 0:

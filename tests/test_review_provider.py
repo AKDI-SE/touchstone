@@ -1031,7 +1031,19 @@ def test_collect_timeout_status(monkeypatch):
     r = RP._collect_subprocess(["x"], "review", 600)
     assert r.status == RP._TIMED_OUT and r.timeout == 600
     assert "[runner] review subprocess timed out" in r.stderr
-    assert "llm_failed" not in r.stderr or True   # 状态归 _TIMED_OUT；降级类型由 _aggregate_failure 定
+    assert "llm_failed" not in r.stderr           # collect 只记原始失败；降级类型由 _aggregate_failure 定（不在此预烤）
+
+
+def test_collect_catchall_exception_does_not_raise(monkeypatch):
+    """subprocess.run 抛 Timeout/FileNotFound 之外的异常（PermissionError 等）→ 兑现「绝不抛」：
+    归 _CRASHED（带异常类型），不击穿出去（fan-out 下会炸整条链路）。"""
+    def boom(a, **k):
+        raise PermissionError("exec format error")
+    monkeypatch.setattr(RP.subprocess, "run", boom)
+    r = RP._collect_subprocess(["x"], "improve", 60)   # 不抛
+    assert r.status == RP._CRASHED
+    assert "[runner] improve subprocess crashed" in r.stderr
+    assert "PermissionError" in r.stderr and "PermissionError" in r.reason   # 异常类型可见
 
 
 def test_collect_missing_status_has_install_hint(monkeypatch):
