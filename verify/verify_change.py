@@ -20,6 +20,8 @@ import subprocess
 import sys
 import tempfile
 import urllib.request
+
+from touchstone.artifacts import artifact_path
 import urllib.error
 import openai
 import yaml
@@ -444,7 +446,7 @@ def main(argv=None):
                "head_tests_pass": res.head_tests_pass,
                "adequacy": adq.__dict__ if adq else None}
     print(json.dumps(summary, ensure_ascii=False, indent=2))
-    with open("verify-result.json", "w", encoding="utf-8") as f:
+    with open(artifact_path("verify-result.json"), "w", encoding="utf-8") as f:
         json.dump(summary, f, ensure_ascii=False, indent=2)
 
     # 回贴 GitHub：评论 + check run（success/failure —— 质量门禁级判决，非 neutral）。

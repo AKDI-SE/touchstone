@@ -14,13 +14,15 @@
 # ============================================================================
 
 import json
-import os
 import sys
 import time
 
 from touchstone import __version__
+from touchstone.artifacts import artifact_path
 
-METRICS_PATH = os.environ.get("TOUCHSTONE_METRICS_PATH", "touchstone-metrics.json")
+# TOUCHSTONE_METRICS_PATH 显式覆盖优先（兼容既有部署）；未设则 OUTPUT_DIR/touchstone-metrics.json。
+# 模块级求值：CI/进程启动时 env 已就绪。运行中动态改 OUTPUT_DIR 的场景请显式传 path 参数。
+METRICS_PATH = artifact_path("touchstone-metrics.json", override_env="TOUCHSTONE_METRICS_PATH")
 
 
 def build(pr, sha, risk, findings, *, engine_status, review_reliable,

@@ -22,6 +22,7 @@ import yaml
 
 from touchstone import ghclient
 from touchstone.atomicio import atomic_write_json
+from touchstone.artifacts import artifact_path
 
 DEFAULT_GATE = "touchstone/gate"
 _RELAY_OK = {"success", "neutral", "skipped"}
@@ -194,11 +195,12 @@ def _check_verify(pr, cfg):
 
 # ---- CLI：独立发总闸（CI 的 gate job 在 touchstone(+ 可选 verify) 之后聚合并发布）----
 def main():
-    """读 cwd 的 touchstone-findings.json（+ 若 verify 跑过则有 verify-result.json）→ 跑检查
-    → 发对外那【一个】总闸 → 把最终结论写回 touchstone-findings.json（供 autonomy 读到含 verify 的总闸）。"""
+    """读 touchstone-findings.json（+ 若 verify 跑过则有 verify-result.json）→ 跑检查
+    → 发对外那【一个】总闸 → 把最终结论写回 touchstone-findings.json（供 autonomy 读到含 verify 的总闸）。
+    产物路径经 artifact_path 解析：默认 CWD（Action 场景），设 TOUCHSTONE_OUTPUT_DIR 时落隔离目录。"""
     import json
     try:
-        co = json.load(open("touchstone-findings.json", encoding="utf-8"))
+        co = json.load(open(artifact_path("touchstone-findings.json"), encoding="utf-8"))
     except (OSError, ValueError):
         # findings 缺失 = touchstone job 没产出结果（崩溃/被取消/artifact 下载失败）。
         # 不能静默 no-op：否则 PR 要么看起来"没事"，要么 required 总闸凭空消失且无说明。
@@ -233,7 +235,7 @@ def main():
     gate, _ = post_gate(pr, cfg, run_checks(cfg, pr))
     co["gate"] = gate
     # 原子：这份含总闸结论的 findings 是 autonomy decide_auto_merge 的直接入参，半文件不可接受
-    atomic_write_json("touchstone-findings.json", co)
+    atomic_write_json(artifact_path("touchstone-findings.json"), co)
     print(f"[gate] 总闸={gate}（已写回 touchstone-findings.json）")
 
 
