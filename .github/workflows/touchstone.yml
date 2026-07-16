@@ -134,10 +134,13 @@ jobs:
         #   （见 README「Saving cache」节示例）；同时也避免 actions/cache/save@v4 在 key 已存在时报
         #   "Cache already exists" 把整条 job 染红（否则首轮 save 落盘后，往后每轮 restore 命中→save 仍跑→报错→job 失败）。
         # 降级轮 job 仍判 success（orchestrator 优雅降级 exit 0，已实证 run 29463635695），故不损命中率；只真崩溃才跳 save。
-        # 边界：两 run 并发同 key 竞态（restore miss、save 前 rival 刚落盘同 key）会让 save@v4 报 existing-key 错——
-        #   罕见、自愈（下轮 cache-hit=true 跳 save）、缓存本 best-effort，接受偶发一轮 save 失败（同 PR#80 stale-cache 取舍）。
-        # key 必须与 restore 步完全一致（同 key 命中→此处 if 跳过；miss→此处落盘）。
+        # 边界：两 run 并发同 key 竞态（restore miss、save 前 rival 刚落盘同 key）会让 save@v4 报 existing-key 错。
+        #   缓存是 best-effort 性能优化，绝不该让一次瞬态 save 错（竞态/缓存服务抖）把整条 job 染红、卡住 PR——
+        #   故 continue-on-error: true（闭环 round-2 finding「Prevent transient cache save errors from failing the job」）：
+        #   save 失败只留黄警告、job 仍 success。罕见、自愈（下轮 cache-hit=true 跳 save），同 PR#80 stale-cache 取舍。
+        # key 必须与 restore 步完全一致（同 key 命中→此处 if 跳过；miss→此处 落盘）。
         if: success() && steps.pragent-venv.outputs.cache-hit != 'true'
+        continue-on-error: true     # 缓存 best-effort：save 失败（竞态/瞬态）不染红 job、不卡 PR
         uses: actions/cache/save@v4
         with:
           path: .pragent-venv
