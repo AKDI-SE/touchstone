@@ -30,6 +30,10 @@ import json
 import os
 import sys
 
+from touchstone.logging_setup import get_logger
+
+_log = get_logger("pr_agent")   # 诊断日志：默认 stderr，可经 TOUCHSTONE_LOG_* 接管
+
 # review 解析用的 keys_fix_yaml，与 pr-agent PRReviewer._prepare_pr_review 一致
 _REVIEW_KEYS_FIX = ["key_issues_to_review:", "relevant_file:", "relevant_line:", "suggestion:"]
 
@@ -75,7 +79,7 @@ def _write_interaction_log(out):
             f.write("\n".join(parts))
     except Exception as e:
         try:
-            print(f"[pr-agent] 交互日志写入失败: {e}", file=sys.stderr)
+            _log.warning("交互日志写入失败: %s", e)
         except Exception:
             pass
 
@@ -183,8 +187,8 @@ def run(pr_url, mode, extra_instructions=None):
         # 每轮崩（fetch_sub_issues）+ 污染 prompt，无此告警则静默退化（防静默故障，同 review_provider
         # 哲学）。记交互日志 + 落 stderr（CI 日志直见，免下 artifact）。
         _ix(f"关 require_ticket_analysis_review 失败：{type(e).__name__}: {e}")
-        print(f"[pr-agent] 关 require_ticket_analysis_review 失败，ticket 分析将继续："
-              f"{type(e).__name__}: {e}", file=sys.stderr)
+        _log.warning("关 require_ticket_analysis_review 失败，ticket 分析将继续：%s: %s",
+                     type(e).__name__, e)
     if extra_instructions:
         s.pr_code_suggestions.extra_instructions = extra_instructions
         s.pr_reviewer.extra_instructions = extra_instructions
@@ -207,7 +211,7 @@ def run(pr_url, mode, extra_instructions=None):
         try:
             _num_retries = int(os.environ.get("TOUCHSTONE_LLM_NUM_RETRIES", "1"))
         except (ValueError, TypeError):
-            print("[pr-agent] TOUCHSTONE_LLM_NUM_RETRIES 非法，回退默认 1", file=sys.stderr)
+            _log.warning("TOUCHSTONE_LLM_NUM_RETRIES 非法，回退默认 1")
             _num_retries = 1
         litellm.num_retries = max(1, _num_retries)
     except Exception:
@@ -219,8 +223,8 @@ def run(pr_url, mode, extra_instructions=None):
     _base = os.environ.get("OPENAI_API_BASE") or os.environ.get("LLM_BASE_URL")
     _key = os.environ.get("OPENAI_API_KEY") or os.environ.get("LLM_API_KEY")
     _ix(f"LLM 配置: model={model_override!r} base_url={_base!r} api_key={'已设' if _key else '缺失'}")
-    print(f"[pr-agent] LLM 配置：model={model_override!r} base_url={_base!r} "
-          f"api_key={'已设' if _key else '缺失'}", file=sys.stderr)
+    _log.info("LLM 配置：model=%r base_url=%r api_key=%s",
+              model_override, _base, "已设" if _key else "缺失")
     if not (_base and _key and model_override):
         _ix("阶段=LLM 配置不全 → llm_failed")
         return {"_degraded": "llm_failed",
@@ -230,7 +234,7 @@ def run(pr_url, mode, extra_instructions=None):
     try:
         _ping_llm(_base, _key, model_override)
         _ix("LLM 预检 ping: 成功（端点可达、凭据有效）")
-        print("[pr-agent] LLM 预检 ping 成功（端点可达、凭据有效）", file=sys.stderr)
+        _log.info("LLM 预检 ping 成功（端点可达、凭据有效）")
     except Exception as e:
         _ix(f"LLM 预检 ping: 失败 → llm_failed ({type(e).__name__}: {e})")
         return {"_degraded": "llm_failed",

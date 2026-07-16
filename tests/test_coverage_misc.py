@@ -82,10 +82,12 @@ def test_ping_llm_success(monkeypatch):
     assert called["model"] == "m" and called["max_tokens"] == 1
 
 
-def test_write_interaction_log_failure(monkeypatch, capsys):
+def test_write_interaction_log_failure(monkeypatch, caplog):
+    import logging
     monkeypatch.setenv("TOUCHSTONE_INTERACTION_LOG", "/no/such/dir/ix.log")
-    R._write_interaction_log({"x": 1})           # open 失败 → 走 except，不抛
-    assert "交互日志写入失败" in capsys.readouterr().err
+    with caplog.at_level(logging.WARNING, logger="touchstone.pr_agent"):
+        R._write_interaction_log({"x": 1})       # open 失败 → 走 except，不抛
+    assert "交互日志写入失败" in caplog.text      # 留痕到日志，不静默
 
 
 # ---------------- preflight ----------------
