@@ -666,3 +666,37 @@ def test_checklist_resolved_rate_never_exceeds_100():
     from touchstone import checklist as cl
     md = cl.render({"round": 1, "resolved_rate": 33, "items": []})   # 误传 33 而非 0.33
     assert "销项率 100%" in md                               # min(100,...) 兜底
+
+
+# ---------------- 变异体回归锁：waived 收敛门的轮次耗尽边界 ----------------
+def test_loop_waived_claims_escalate_exactly_at_max_rounds(rule_index):
+    """存活变异体回归锁（loop.py `nr >= max_rounds`）。
+
+    场景：清单表面全销项，但唯一销项是 author 自证的 waived（未经机器核准）、
+    且本轮发现清零。此时是否 escalate 严格取决于轮次是否耗尽：
+      - nr == max_rounds       → escalate（轮次已耗尽，交人裁决）
+      - nr == max_rounds - 1   → continue（还有一轮，点名待核准项）
+    区分这两者的正是 `>=` 与 `>` 的边界：把 `>=` 变异成 `>` 会让恰好 == max_rounds
+    的这一轮误判为 continue，等于凭空多给一轮、延后人工介入。此前无测试打到该
+    边界，变异体存活；本测试锁死之。
+    """
+    prev = cl.from_findings([_finding("R-1")])
+    sig = prev["items"][0]["sig"]
+    # author 用 waived 单方申报销项（带理由方受理），机器未验证
+    cur = cl.reconcile(prev, {sig: {"verb": "waived", "note": "测试夹具，非真实凭据"}}, [])
+    assert cl.all_resolved(cur) and not cl.all_verified(cur)
+    assert cl.has_unverified_claims(cur)
+
+    mr = 9
+    # nr == max_rounds：state.round = mr-1 → loop 内 nr = round+1 = mr
+    dec_at, reason_at, _ = loop.loop_step(
+        [], rule_index, loop.LoopState(round=mr - 1),
+        max_rounds=mr, checklist_pair=(prev, cur))
+    assert dec_at == "escalate", "轮次耗尽(nr==max_rounds)时 waived 未核准应 escalate 交人"
+    assert "轮次耗尽" in reason_at
+
+    # nr == max_rounds - 1：仍应 continue（尚有一轮）——守住边界另一侧
+    dec_before, _, _ = loop.loop_step(
+        [], rule_index, loop.LoopState(round=mr - 2),
+        max_rounds=mr, checklist_pair=(prev, cur))
+    assert dec_before == "continue", "未耗尽(nr==max_rounds-1)时应 continue 点名待核准项"
