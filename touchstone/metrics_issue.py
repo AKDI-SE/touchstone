@@ -68,14 +68,17 @@ def _stamp_marker(history):
 def _parse_marker(body):
     """从 issue body 提取 marker 内的滚动历史；无 marker / 损坏 → []。
 
-    取最后一个 marker（rfind），与 loop.parse_latest_state 一致——正常情况下 body
-    只含一个 marker（每轮整段重写），rfind 是稳健兜底。"""
+    取最后一个 marker（OPEN/CLOSE 均 rfind），与 loop.parse_latest_state 一致——正常
+    情况下 body 只含一个 marker（每轮整段重写）。CLOSE 用 rfind 是关键：marker 内的
+    JSON 是任意 record（含可演进字段），json.dumps 不转义 `-->`，若某字段含 `-->`，
+    find(_CLOSE) 会误中 JSON 内部那个 `-->` 而截断载荷 → 历史静默丢失；rfind 锁定真正
+    的收尾 `-->`（它在 JSON 内容之后）。"""
     if not body:
         return []
     i = body.rfind(_OPEN)
     if i == -1:
         return []
-    j = body.find(_CLOSE, i)
+    j = body.rfind(_CLOSE, i)
     if j == -1:
         return []
     try:
@@ -219,7 +222,9 @@ def run(record, env, ctx, *, gh_call=None):
         # 跨 run 滚动历史：从存量 marker 取出 → 追加本轮 → bounded FIFO。
         history = _parse_marker(existing_body)
         history.append(record)
-        history = history[-window:]
+        # window<=0 时 [-window:]==[:] 会保留全部（FIFO 失效）；0 是合法 int 不被上面的
+        # except 捕获，须显式守：WINDOW=0 的字面义是「不留历史」→ 空。
+        history = history[-window:] if window > 0 else []
         agg = _metrics.summarize(history)
         body = _render_dashboard(record, history, agg, ctx, label)
         if number is None:

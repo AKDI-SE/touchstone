@@ -116,6 +116,26 @@ def test_history_bounded_fifo():
     assert [h["pr"] for h in history] == [2, 3, 4]             # FIFO：丢最早的
 
 
+def test_window_zero_keeps_no_history():
+    # window<=0 时 [-0:]==[:] 会保留全部（FIFO 失效）；守为空。summarize([]) 须安全不崩。
+    gh = _FakeGH()
+    env = _env(TOUCHSTONE_METRICS_ISSUE_WINDOW="0")
+    for i in range(3):
+        MI.run(_rec(pr=i, round_no=i), env, _ctx(), gh_call=gh)
+    history = MI._parse_marker(_one_body(gh))
+    assert history == []                                         # 0 = 不留历史（非全部）
+
+
+def test_dashboard_renders_round_number():
+    # 锁 round 键契约：metrics.build 存键 "round"（参数名 round_no），看板读 record.get('round')。
+    # 评审曾疑 key 不对称（round_no vs round）致渲染 "round —"；此断言杀该变异：读错键 → "round —"。
+    gh = _FakeGH()
+    MI.run(_rec(round_no=7), _env(), _ctx(), gh_call=gh)
+    body = _one_body(gh)
+    assert "round 7" in body
+    assert "round —" not in body
+
+
 def test_trend_uses_metrics_summarize():
     gh = _FakeGH()
     for r in [_rec(reliable=True, pr=1),
@@ -179,6 +199,15 @@ def test_marker_stamp_parse_roundtrip():
     assert MI._parse_marker("no marker here") == []
     assert MI._parse_marker("") == []
     assert MI._parse_marker(MI._OPEN + " 损坏的 json " + MI._CLOSE) == []   # 损坏 → []
+
+
+def test_marker_survives_close_token_in_content():
+    # marker 内 JSON 是任意 record；json.dumps 不转义 `-->`。若某字段含 ` -->`（与 _CLOSE 同形），
+    # find(_CLOSE) 会误中 JSON 内部那个而截断 → 历史静默丢失；rfind(_CLOSE) 锁定真收尾。
+    history = [{"pr": 1, "note": "A --> B 迁移", "round": 1},
+               {"pr": 2, "round": 2}]
+    parsed = MI._parse_marker(MI._stamp_marker(history))
+    assert parsed == history                                    # 含 ` -->` 字段不丢
 
 
 # ---- _default_gh 路由（生产默认实现，走公开 client()）-----------------------
