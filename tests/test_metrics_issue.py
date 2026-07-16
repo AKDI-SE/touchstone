@@ -201,6 +201,22 @@ def test_marker_stamp_parse_roundtrip():
     assert MI._parse_marker(MI._OPEN + " 损坏的 json " + MI._CLOSE) == []   # 损坏 → []
 
 
+def test_label_with_space_is_url_encoded():
+    # 自定义 label 含空格 → GET 查询串须 URL-encode（quote），否则 malformed URL 静默失败。
+    # 默认 label "touchstone-metrics" 无特殊字符 → quote 后不变（零默认行为变化）。
+    gh = _FakeGH()
+    MI.run(_rec(), _env(TOUCHSTONE_METRICS_ISSUE_LABEL="my metrics"), _ctx(), gh_call=gh)
+    gets = [c for c in gh.calls if c[0] == "GET"]
+    assert gets and "labels=my%20metrics" in gets[0][1]      # 编码进 URL
+    assert "labels=my metrics" not in gets[0][1]             # 原样空格不进 URL
+
+
+def test_default_label_unchanged_by_quote():
+    # 默认 label 经 quote 后与原样一致（dash 在 always-safe 集，不编码）。
+    from urllib.parse import quote
+    assert quote(MI.ISSUE_LABEL, safe="") == MI.ISSUE_LABEL
+
+
 def test_marker_survives_close_token_in_content():
     # marker 内 JSON 是任意 record；json.dumps 不转义 `-->`。若某字段含 ` -->`（与 _CLOSE 同形），
     # find(_CLOSE) 会误中 JSON 内部那个而截断 → 历史静默丢失；rfind(_CLOSE) 锁定真收尾。

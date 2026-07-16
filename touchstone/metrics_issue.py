@@ -31,6 +31,7 @@
 # ============================================================================
 
 import json
+from urllib.parse import quote
 
 from touchstone import metrics as _metrics
 
@@ -195,7 +196,11 @@ def _maybe_comment(record, ctx, env, gh_call, number):
 def _find_issue(ctx, label, gh_call):
     """返回 (number, body) 或 (None, "")。按 label 列已开 issue，命中 marker 的那个即看板。"""
     owner, repo, token = ctx["owner"], ctx["repo"], ctx["token"]
-    found = gh_call("GET", f"/repos/{owner}/{repo}/issues?state=open&labels={label}", token) or []
+    # label 来自 env（可含空格/特殊字符，如自定义 "my metrics"）；须 URL-encode，否则
+    # 查询串 malformed → GET 失败被 run() 的 try/except 吞成 "failed:..." → 看板静默失败。
+    found = gh_call("GET",
+                    f"/repos/{owner}/{repo}/issues?state=open&labels={quote(label, safe='')}",
+                    token) or []
     for i in found:
         body = i.get("body") or ""
         if _OPEN in body:
