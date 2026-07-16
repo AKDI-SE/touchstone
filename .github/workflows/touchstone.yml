@@ -125,12 +125,19 @@ jobs:
           TOUCHSTONE_EXPERIENCE_ENABLED: "true"
           TOUCHSTONE_EXPERIENCE_REF: "origin/${{ github.event.pull_request.base.ref || github.event.repository.default_branch }}"  # 从受信 base ref 读经验库（防 PR 篡改工作树投毒）         # 评审路径注入开关（review_provider._experience_injection 认）
         run: python -m touchstone.orchestrator
-      - name: Save PR-Agent venv (only on success)
-        # 闭环 round-5 finding：仅整条 touchstone job 成功时持久化 venv 缓存。restore 在上方总会跑（命中即复用）；
-        # 这里 if: success() = checkout→…→Run review 全成功才 save（不从失败 run 持久化状态）。
-        # 降级轮 job=success 仍缓存（不损命中率），真崩溃才跳过。save 仅在 miss 时写（命中不重写）。
-        # key 必须与 restore 步完全一致（同 key 命中→save 跳过；miss→此处落盘）。
-        if: success()
+      - name: Save PR-Agent venv (only on success + cache miss)
+        # 闭环 round-5 finding「Persist cache even when job fails downstream」+ round-1 finding「Skip cache save on
+        # exact match」：本步仅当【整条 touchstone job 成功 且 restore 未命中】时跑。
+        # success() = checkout→…→Run review 全成功（不从失败 run 持久化状态）；
+        # steps.pragent-venv.outputs.cache-hit != 'true' = 仅 miss 时才 save——exact-match 命中时 restore 已复用
+        #   整套 venv、无新内容可写，跳过 save。此乃 actions/cache 文档 restore/save 拆分的 canonical pattern
+        #   （见 README「Saving cache」节示例）；同时也避免 actions/cache/save@v4 在 key 已存在时报
+        #   "Cache already exists" 把整条 job 染红（否则首轮 save 落盘后，往后每轮 restore 命中→save 仍跑→报错→job 失败）。
+        # 降级轮 job 仍判 success（orchestrator 优雅降级 exit 0，已实证 run 29463635695），故不损命中率；只真崩溃才跳 save。
+        # 边界：两 run 并发同 key 竞态（restore miss、save 前 rival 刚落盘同 key）会让 save@v4 报 existing-key 错——
+        #   罕见、自愈（下轮 cache-hit=true 跳 save）、缓存本 best-effort，接受偶发一轮 save 失败（同 PR#80 stale-cache 取舍）。
+        # key 必须与 restore 步完全一致（同 key 命中→此处 if 跳过；miss→此处落盘）。
+        if: success() && steps.pragent-venv.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: .pragent-venv
