@@ -368,6 +368,17 @@ def test_external_mutation_cmd_used_when_set(monkeypatch, tmp_path):
     assert V.external_mutation_score(str(tmp_path), ["a.py"]) is None   # 未设 → 回退内置
 
 
+def test_external_mutation_cmd_hostile_filename_not_executed(monkeypatch, tmp_path):
+    """注入面回归锁：changed_files 的文件名是 PR author 可控输入。名为 `x; 命令;` 的
+    文件不得在 shell 里逃逸执行——quote 后它只是 `true` 的一个普通参数。若逃逸，
+    ① work_dir 会出现 INJECTED 文件，② 击杀率会被注入的 `echo 0.99` 篡改为 0.99。"""
+    from verify import verify_change as V
+    hostile = "x.py; touch INJECTED; echo 0.99;"
+    monkeypatch.setenv("TOUCHSTONE_MUTATION_CMD", "true {files}; echo 0.5")
+    assert V.external_mutation_score(str(tmp_path), [hostile]) == 0.5
+    assert not (tmp_path / "INJECTED").exists()
+
+
 # ---------------- 纯函数补测 ----------------
 
 

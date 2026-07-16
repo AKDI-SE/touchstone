@@ -13,6 +13,7 @@
 import ast
 import os
 import re
+import shlex
 import subprocess
 
 TEST_TIMEOUT = 300
@@ -166,12 +167,17 @@ def _parse_mutation_output(out):
 def external_mutation_score(work_dir, changed_files):
     """成熟工具接缝（对照 mutmut/cosmic-ray/PIT）：设 TOUCHSTONE_MUTATION_CMD 时改用外部命令
     算击杀率——命令在 work_dir 运行，{files} 占位替换为改动文件列表，stdout 里最后一个
-    百分数/小数被当作击杀率。未设、命令失败或解析不出 → 返回 None，回退内置 AST 变异。"""
+    百分数/小数被当作击杀率。未设、命令失败或解析不出 → 返回 None，回退内置 AST 变异。
+    注入面收口：changed_files 来自被检 PR 的 diff——文件名是【PR author 可控输入】。命令模板
+    本身走 shell=True 是刻意的（部署方要写管道/重定向），但替换进 {files} 的每个文件名必须
+    shlex.quote：否则 author 提交名为 `x;恶意命令;.py` 的文件即可在 verify 进程注入执行
+    （恰是本仓 DANGER-001 规则点名的构造——门禁自身先过自己的门）。"""
     cmd = os.environ.get("TOUCHSTONE_MUTATION_CMD")
     if not cmd:
         return None
     try:
-        full = cmd.replace("{files}", " ".join(changed_files or []))
+        full = cmd.replace("{files}",
+                           " ".join(shlex.quote(f) for f in changed_files or []))
         r = subprocess.run(full, shell=True, cwd=work_dir, capture_output=True,
                            text=True, timeout=int(os.environ.get("TOUCHSTONE_MUTATION_TIMEOUT", "900")))
         return _parse_mutation_output(r.stdout)
