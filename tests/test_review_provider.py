@@ -1063,6 +1063,18 @@ def test_collect_bad_json_status(monkeypatch):
     assert "JSON" in r.reason
 
 
+def test_collect_json_parse_non_decode_error_does_not_raise(monkeypatch):
+    # PR#81 fix1：_collect_subprocess 兑现「绝不抛」契约。_extract_json 当前只抛 JSONDecodeError，
+    # 但若未来改动引入其他异常（如 KeyError/TypeError），catch-all 须归 _BAD_JSON 而非击穿。
+    # 模拟未来回归：让 _extract_json 抛非 JSONDecodeError → 断言不抛、归 _BAD_JSON、异常类型入诊断。
+    monkeypatch.setattr(RP.subprocess, "run", lambda a, **k: _Proc(0, out='{"code_suggestions": []}'))
+    monkeypatch.setattr(RP, "_extract_json", lambda s: (_ for _ in ()).throw(ValueError("synthetic future regression")))
+    r = RP._collect_subprocess(["x"], "review", 60)
+    assert r.status == RP._BAD_JSON                       # 不抛，归 _BAD_JSON（输出解析不可用）
+    assert "ValueError" in r.stderr and "synthetic future regression" in r.stderr
+    assert "ValueError" in r.reason
+
+
 def test_collect_degraded_status_carries_value(monkeypatch):
     monkeypatch.setattr(RP.subprocess, "run", lambda a, **k:
                         _Proc(0, out=json.dumps({"_degraded": "llm_failed", "reason": "AuthError: 401"})))
@@ -1196,6 +1208,26 @@ def test_merge_mixed_degraded_llm_failed_and_crash_prefers_llm_failed():
     assert failure[0] == "llm_failed"
 
 
+def test_merge_both_degraded_mixed_values_picks_llm_failed():
+    # PR#81 fix2：两侧都 _degraded 但【值混合】（improve=no_engine、review=llm_failed）→ 就高归因 llm_failed。
+    # 旧序（all(_DEGRADED) 分支先于 any(llm_failed) 分支）会落到 failed[0]=improve 的值=no_engine，漏掉就高。
+    # improve 在 (imp, rev) 元组里居首即 failed[0]，故此用例恰好命中旧 bug 的取错侧。
+    imp = _res("improve", RP._DEGRADED, degraded="no_engine", reason="improve 引擎缺失")
+    rev = _res("review", RP._DEGRADED, degraded="llm_failed", reason="review 401")
+    _, _, failure = RP._merge_results(imp, rev)
+    assert failure[0] == "llm_failed"                        # 就高：llm_failed 盖过 no_engine
+    assert "improve 引擎缺失" in failure[1] and "review 401" in failure[1]   # 两侧 reason 都进汇总
+
+
+def test_merge_both_degraded_all_no_engine_stays_no_engine():
+    # fix2 回归锁：两侧都 _degraded 且无一 llm_failed → all 分支仍取 failed[0].degraded=no_engine
+    # （调换分支顺序后这条路径不可被破坏）。
+    imp = _res("improve", RP._DEGRADED, degraded="no_engine", reason="imp 缺失")
+    rev = _res("review", RP._DEGRADED, degraded="no_engine", reason="rev 缺失")
+    _, _, failure = RP._merge_results(imp, rev)
+    assert failure[0] == "no_engine"
+
+
 def test_merge_improve_failed_review_ok_is_partial_not_failure():
     # 部分降级：improve 挂、review 成 → 不抛（保留 review 发现），交下游 partial 元信息处理
     imp = _res("improve", RP._CRASHED, stderr="[runner] improve subprocess crashed（rc=2）")
@@ -1287,6 +1319,21 @@ def test_fanout_improve_crash_review_ok_partial(monkeypatch):
     items = RP.fetch({"owner": "o", "repo": "r", "number": 3})
     assert len(items) == 1
     assert RP.invoke_meta()["partial_tool_failure"] == "improve"
+
+
+def test_fanout_improve_crash_review_empty_not_swallowed(monkeypatch):
+    # PR#81 fix3：fan-out 下 improve 硬失败（rc=2、stderr 带 pred-failure 串）、review 正常却空建议。
+    # 合并后 data 正好空 + stderr 带失败串 → 旧 swallowed 兜底会误把整轮判 llm_failed、丢掉 review 的真发现。
+    # fix3：_status_partial_failure 命中（=improve）→ 豁免 swallowed 检查；整轮保 partial、不降级、不抛。
+    monkeypatch.setattr(RP.subprocess, "run",
+                        _fanout_mock(
+                            _Proc(2, err="Failed to generate prediction with openai/glm-5.2"),
+                            _Proc(0, out=json.dumps({"code_suggestions": [],
+                                                     "review": {"key_issues_to_review": []}}))))
+    monkeypatch.setattr(RP, "_experience_injection", lambda d: "")
+    items = RP.fetch({"owner": "o", "repo": "r", "number": 3})
+    assert items == []                                        # review 空建议=真没意见，不抛
+    assert RP.invoke_meta()["partial_tool_failure"] == "improve"   # 失败仍可见，整轮可信
 
 
 def test_fanout_both_degraded_raises(monkeypatch):

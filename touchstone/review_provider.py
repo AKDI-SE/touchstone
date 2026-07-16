@@ -529,6 +529,12 @@ def _collect_subprocess(args, mode, timeout, log_path=None):
         return _SubResult(mode, _BAD_JSON,
                           stderr=f"[runner] {mode} subprocess non-JSON output（{e}）\n{raw_err}".rstrip(),
                           reason=f"{mode} 适配输出非合法 JSON：{e}；stdout 末尾：\n{(proc.stdout or '').strip()[-300:]}")
+    except Exception as e:        # 兜底：兑现「绝不抛」——_extract_json 当前实现只抛 JSONDecodeError，
+                                  # 此处防未来改动引入其他异常（同 subprocess.run 的 catch-all 一致）。
+                                  # 归 _BAD_JSON（输出解析不可用），异常类型进 stderr/reason 供诊断。
+        return _SubResult(mode, _BAD_JSON,
+                          stderr=f"[runner] {mode} subprocess output parse crashed（{type(e).__name__}: {e}）\n{raw_err}".rstrip(),
+                          reason=f"{mode} 输出解析异常（{type(e).__name__}: {e}）。")
     if isinstance(data, dict) and data.get("_degraded"):
         # _degraded 是结构化降级（pr-agent 没装 / LLM 调用失败）——data 自带信号，无需注入标记；
         # 部分降级归因由 _status_partial_failure 按状态精确给出（不靠 stderr 扫描，避免 _degraded 串不在
@@ -570,15 +576,18 @@ def _merge_results(imp, rev):
 
 
 def _aggregate_failure(failed):
-    """所有已跑工具都硬失败时，定整体降级类型 + 汇总 reason。优先级：
-      超时 → llm_failed（LLM 调用太慢，而非引擎没装）；全是 _degraded → 取其自带 degraded 值；
-      含 _degraded=llm_failed 的混合 → llm_failed（就高归因）；其余(crashed/bad_json/混合) → no_engine。"""
+    """所有已跑工具都硬失败时，定整体降级类型 + 汇总 reason。优先级（就高归因，llm_failed > no_engine）：
+      超时 → llm_failed（LLM 调用太慢，而非引擎没装）；
+      任一 _degraded 且自带 llm_failed → llm_failed（**含「全是 _degraded 但值混合」的情况**——
+          必须先于下方 all-分支判定，否则会落到 failed[0] 的值而漏掉就高）；
+      全是 _degraded 且无一是 llm_failed → 取 failed[0].degraded（此时只剩 no_engine 之类）；
+      其余(crashed/bad_json/无 degraded 的混合) → no_engine。"""
     if any(r.status == _TIMED_OUT for r in failed):
+        deg = "llm_failed"
+    elif any(r.status == _DEGRADED and r.degraded == "llm_failed" for r in failed):
         deg = "llm_failed"
     elif all(r.status == _DEGRADED for r in failed):
         deg = failed[0].degraded or "no_engine"
-    elif any(r.status == _DEGRADED and r.degraded == "llm_failed" for r in failed):
-        deg = "llm_failed"
     else:
         deg = "no_engine"
     reason = "\n".join(r.reason for r in failed if r.reason)
@@ -711,11 +720,17 @@ class PRAgentProvider:
             # 已由 _collect_subprocess 归一到 _SubResult，_merge_results 汇总成 (degraded, reason)。
             if failure:
                 raise ReviewEngineDegraded(*failure)
+            # 部分降级归因（按子进程状态精确知哪个工具挂了）。提前算，既用于下方 swallowed 兜底的豁免，
+            # 又复用进 _LAST_META.partial_tool_failure（DRY）。fanout-off（imp is rev）→ None。
+            _partial_side = _status_partial_failure(imp_res, rev_res)
             # pr-agent 把 LLM 预测失败（返回空 content -> 解析抛异常）吞成 0 建议的第二道兜底：
             # 退出码 0、无 _degraded 时各子进程 _collect 漏过。合并后 stderr 的失败串 + 本轮 0 原始建议
             # → llm_failed（见 prediction_swallowed_failure）。这正是 PR #44/#46 "0 建议假收敛"真根因。
-            # 部分降级场景（一侧挂、另一侧有产出）data 非空 → 不命中，保留 OK 侧发现（见下 partial 元信息）。
-            if prediction_swallowed_failure(data, stderr):
+            # **但仅在非部分降级时适用**：fan-out 下若 improve 硬失败（退出码≠0、stderr 带失败串）而 review
+            # 正常却空建议，data 合并后正好空 + stderr 带失败串 → 会误命中这条 swallowed 兜底、误把整轮判
+            # llm_failed、丢掉 review 的真发现。故 _partial_side 命中时豁免：空是「失败侧没产出」的预期，
+            # 不是「吞没式失败」；该失败已由 partial_tool_failure 标记可见，整轮仍可信、不降级。
+            if not _partial_side and prediction_swallowed_failure(data, stderr):
                 # caution 领头给【具体原因】（哪个工具 + litellm 真实异常 + 时序），而非误导性的 stderr 尾部
                 # （那常是另一侧成功工具的 success 日志，见 summarize_llm_failure）。
                 _fail_tool, _fail_detail = summarize_llm_failure(stderr)
@@ -752,7 +767,7 @@ class PRAgentProvider:
             #   repaired：预测经 try_fix_yaml 修复解析的次数——输出截断（finish_reason=length）或轻度畸形的
             #             弱信号，条目可能被静默修丢（排查盲区 S3）。
             _LAST_META.update(
-                partial_tool_failure=(_status_partial_failure(imp_res, rev_res)
+                partial_tool_failure=(_partial_side
                                       or partial_tool_failure(data, stderr)),
                 repaired_parses=stderr.count(_REPAIRED_PARSE_SIG))
             # review_engaged 统一在 PRAgentProvider.fetch 出口经 _extract_engaged(data) 设置
