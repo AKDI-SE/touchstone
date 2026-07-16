@@ -78,17 +78,19 @@ jobs:
           else
             echo "[pragent-venv] 缓存未命中或失效，创建中"
             rm -rf .pragent-venv
-            python -m venv .pragent-venv
-            .pragent-venv/bin/pip install -U pip
-            if .pragent-venv/bin/pip install pr-agent==${{ env.PRA_VERSION }}; then
+            # 三步装 venv 全部纳入守护（venv 创建 / pip 升级 / pip 装 pr-agent）：bash -eo pipefail 下
+            # 任一步失败若裸写会 set -e 立即 abort、绕过下方清理 → 留 partial .pragent-venv 在盘 →
+            # actions/cache post 步把它持久化成"key 命中却 import 不了"的脏条目（continue-on-error 让本步
+            # 照常过、cache 照常 save）。放进 if 条件（set -e 不作用于 if/until/while 的条件命令）→ 任一失败
+            # 走 else 的 rm -rf 清理，cache post 见 path 不存在→跳过 save，下次 key miss 重建干净的。
+            # 评审结论不受影响：venv 没了→runner import 失败→orchestrator 优雅降级标注"AI 评审未运行"
+            # （与留着破损 venv 走 import 失败→降级同路）。纯缓存卫生修复，零行为变化。
+            if python -m venv .pragent-venv \
+               && .pragent-venv/bin/pip install -U pip \
+               && .pragent-venv/bin/pip install pr-agent==${{ env.PRA_VERSION }}; then
               echo "[pragent-venv] 安装成功"
             else
-              # pip 安装失败（网络/PyPI 瞬时/版本不存在）→ 清理【破损 venv】，否则 actions/cache 的
-              # post 步会把它持久化成"key 命中却 import 不了"的脏条目（continue-on-error 让本步照常过、
-              # cache 照常 save）。清掉后 post 步见 path 不存在→跳过 save，下次 key miss 重建干净的。
-              # 评审结论不受影响：venv 没了→runner import 失败→orchestrator 优雅降级标注"AI 评审未运行"
-              # （与留着破损 venv 走 import 失败→降级是同一条路）。故这是纯缓存卫生修复，零行为变化。
-              echo "[pragent-venv] pip 安装失败——清理破损 venv，避免被缓存污染"
+              echo "[pragent-venv] 安装失败——清理破损 venv，避免被缓存污染"
               rm -rf .pragent-venv
             fi
           fi
