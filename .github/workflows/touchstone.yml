@@ -16,6 +16,9 @@ permissions:
   contents: read
   pull-requests: write
   checks: write
+  # actions:write 下沉到 touchstone job（写 actions 缓存用）——见该 job 的 permissions 块。
+  # fork PR 受 GitHub 防缓存投毒限制仍只读（不写）→ 该步退化为"每次重建"=今天的速度，
+  # import 兜底检查保证不崩、日志可观测是否命中。
 
 jobs:
   # ---- 判断层：评审（advisory，不拦截；不在此发总闸，交给 gate job）----
@@ -24,27 +27,73 @@ jobs:
     outputs:
       decision: ${{ steps.run.outputs.verification_decision }}
       risk_band: ${{ steps.run.outputs.risk_band }}
+    permissions:
+      contents: read
+      pull-requests: write      # orchestrator 发评审评论
+      checks: write             # 默认 SKIP_GATE=true 由 gate job 发总闸；保留以兼容关 SKIP_GATE 的部署
+      actions: write            # 写 .pragent-venv 的 actions 缓存（从 workflow 级下沉到 job 级=最小特权显式化）
+    env:
+      # pr-agent 版本单一来源：下方 cache key 与 pip install 同引此变量，升版只改这一行（两处自动同步刷新）。
+      PRA_VERSION: "0.39.0"
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.base.ref }}
           fetch-depth: 0
       - uses: actions/setup-python@v5
+        id: py
         with:
           # 钉 3.13：pr-agent 的原生依赖（tiktoken 经 PyO3 0.22.6）暂不支持 3.14，会源码编译失败。
           python-version: "3.13"
       - name: Install deps
         run: pip install -e .
         # 自托管 runner 若经代理访问公网：按需设置/清理 *_PROXY；可选用私有/就近 PyPI 镜像加速 pip install
+      - name: Restore PR-Agent venv (cache)
+        # 缓存装好的 .pragent-venv（pr-agent + 130+ 依赖），省掉每次 ~64s 的 venv 创建 + pip install
+        # （实测每轮 GHA 日志：venv 步骤稳定 ~64s，是 LLM 调用之外最大固定开销）。
+        # 键含 OS + Python【补丁号】(steps.py.outputs.python-version，如 3.13.14) + pr-agent 版本：
+        # 解释器补丁升级 / OS / pr-agent 版本任一变即 miss→重建并重新持久化（自愈）。
+        # 边界：actions/cache 仅在【miss】时写回——key 匹配但内容失效（罕见：镜像内部变更未带补丁号变）
+        # 时缓存条目不会自动刷新。此时靠下方 import 兜底检查【每轮】重建保证可用（正确性不失），
+        # 要永久刷新该条目需手动 bump key 后缀（-v1→-v2）。
+        id: pragent-venv
+        uses: actions/cache@v4
+        with:
+          path: .pragent-venv
+          key: pragent-venv-${{ runner.os }}-py${{ steps.py.outputs.python-version }}-pragent${{ env.PRA_VERSION }}-v1
       - name: Set up PR-Agent (independent venv)
         # PR-Agent 是评审引擎（Apache-2.0 pip 包），按"不进本仓依赖"原则装在独立 venv。
         # continue-on-error：装失败不让整个评审 job 崩（那样连评审都不发）；orchestrator 会优雅降级、
         # 在 PR 评审里显式标注"AI 评审未运行"（防静默故障，见 README）。
+        #
+        # 缓存命中且 import 可用 → 直接复用（省 ~60s）；否则（首次 / 缓存失效 / runner 镜像内部变更致
+        # venv 绝对路径失效）重建。import 兜底检查防"命中缓存却跑崩"的静默故障——venv 含绝对路径，
+        # 即便 key 匹配，镜像内部工具链变更仍可能让缓存"在"但"不可导入"；此检查确保可用才复用。
+        # 钉 pr-agent 版本：让缓存键精确、可复现。版本号统一取上方 env.PRA_VERSION——升版只改那一行，
+        # 本处的 pip pin 与 cache key 两处自动同步刷新（不再需要手动改两行）。
         continue-on-error: true
         run: |
-          python -m venv .pragent-venv
-          .pragent-venv/bin/pip install -U pip
-          .pragent-venv/bin/pip install pr-agent
+          if [ -x .pragent-venv/bin/python ] && .pragent-venv/bin/python -c 'import pr_agent' 2>/dev/null; then
+            echo "[pragent-venv] 缓存命中且可用，复用（跳过创建）"
+          else
+            echo "[pragent-venv] 缓存未命中或失效，创建中"
+            rm -rf .pragent-venv
+            # 三步装 venv 全部纳入守护（venv 创建 / pip 升级 / pip 装 pr-agent）：bash -eo pipefail 下
+            # 任一步失败若裸写会 set -e 立即 abort、绕过下方清理 → 留 partial .pragent-venv 在盘 →
+            # actions/cache post 步把它持久化成"key 命中却 import 不了"的脏条目（continue-on-error 让本步
+            # 照常过、cache 照常 save）。放进 if 条件（set -e 不作用于 if/until/while 的条件命令）→ 任一失败
+            # 走 else 的 rm -rf 清理，cache post 见 path 不存在→跳过 save，下次 key miss 重建干净的。
+            # 评审结论不受影响：venv 没了→runner import 失败→orchestrator 优雅降级标注"AI 评审未运行"
+            # （与留着破损 venv 走 import 失败→降级同路）。纯缓存卫生修复，零行为变化。
+            if python -m venv .pragent-venv \
+               && .pragent-venv/bin/pip install -U pip \
+               && .pragent-venv/bin/pip install pr-agent==${{ env.PRA_VERSION }}; then
+              echo "[pragent-venv] 安装成功"
+            else
+              echo "[pragent-venv] 安装失败——清理破损 venv，避免被缓存污染"
+              rm -rf .pragent-venv
+            fi
+          fi
       - name: Run review
         id: run
         env:
