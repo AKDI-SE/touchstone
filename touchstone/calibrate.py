@@ -18,6 +18,7 @@ import re
 import sys
 
 from touchstone import ghclient            # GitHub HTTP 客户端(requests + 退避)
+from touchstone.atomicio import atomic_write_json   # 状态文件原子写
 import requests
 
 WINDOW = int(os.environ.get("CALIBRATE_WINDOW", "50"))   # 取最近 N 个已关闭 PR
@@ -322,8 +323,8 @@ def main():
     print(report)
     with open("calibration-report.md", "w", encoding="utf-8") as f:
         f.write(report)
-    with open("calibration.json", "w", encoding="utf-8") as f:
-        json.dump({"aggregate": agg, "records": records}, f, ensure_ascii=False, indent=2)
+    # 原子：calibration.json 喂 autonomy graduate 与 govern 固化判据，半文件会污染毕业类
+    atomic_write_json("calibration.json", {"aggregate": agg, "records": records})
 
 
 if __name__ == "__main__":

@@ -16,6 +16,8 @@ import re
 import subprocess
 import sys
 
+from touchstone.atomicio import atomic_write_json
+
 PROMOTE_MIN_FIRES = int(os.environ.get("PROMOTE_MIN_FIRES", "5"))
 PROMOTE_MIN_ADOPTION = float(os.environ.get("PROMOTE_MIN_ADOPTION", "0.5"))
 REVERT_THRESH = float(os.environ.get("REVERT_THRESH", "0.10"))
@@ -149,8 +151,8 @@ def main():
         except (json.JSONDecodeError, KeyError):
             prior = None
     state = update_autonomy(merge_records, prior_approval_rate=prior)
-    json.dump(state, open("autonomy-state.json", "w", encoding="utf-8"),
-              ensure_ascii=False, indent=2)
+    # 原子：熔断/自治状态被下一轮 govern 读作 prior，半文件会污染熔断判据
+    atomic_write_json("autonomy-state.json", state)
 
     print("=== 固化提案 ===")
     print("\n".join(prop))

@@ -21,6 +21,7 @@ import requests
 import yaml
 
 from touchstone import ghclient
+from touchstone.atomicio import atomic_write_json
 
 DEFAULT_GATE = "touchstone/gate"
 _RELAY_OK = {"success", "neutral", "skipped"}
@@ -231,8 +232,8 @@ def main():
     cfg = load_config(os.environ.get("REPO_DIR", "."))
     gate, _ = post_gate(pr, cfg, run_checks(cfg, pr))
     co["gate"] = gate
-    with open("touchstone-findings.json", "w", encoding="utf-8") as f:
-        json.dump(co, f, ensure_ascii=False, indent=2)
+    # 原子：这份含总闸结论的 findings 是 autonomy decide_auto_merge 的直接入参，半文件不可接受
+    atomic_write_json("touchstone-findings.json", co)
     print(f"[gate] 总闸={gate}（已写回 touchstone-findings.json）")
 
 

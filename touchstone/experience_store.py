@@ -15,6 +15,8 @@ import json
 import os
 import time
 
+from touchstone.atomicio import atomic_write_json
+
 # --- 阈值（保守：宁可慢些演进，不轻易注入/退役）---------------------------------
 SUPPRESS_ADOPT_MAX  = 0.20   # 采纳率低于此 → "别挑"（suppress）；蒸馏入池与退役镜像判据共用
 EMPHASIZE_ADOPT_MIN = 0.80   # 采纳率高于此 → "该挑"（emphasize）；蒸馏入池与退役镜像判据共用
@@ -53,8 +55,7 @@ def load_store(path=None):
 
 def save_store(store, path=None):
     path = path or STORE_PATH
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    json.dump(store, open(path, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+    atomic_write_json(path, store)        # 原子：喂经验回路的库不留半文件
     return store
 
 

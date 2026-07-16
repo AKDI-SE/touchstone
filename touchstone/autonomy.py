@@ -17,6 +17,7 @@ import sys
 
 from touchstone import ghclient   # GitHub HTTP 统一入口（连接池+退避）
 from touchstone import review_provider  # review_reliable（引擎健康度判据）
+from touchstone.atomicio import atomic_write_json
 
 
 def _envbool(k):
@@ -275,8 +276,8 @@ def main():
     if args.graduate:
         cal = _load("calibration.json") or {}
         grad = sorted(graduate_from_calibration(cal.get("records", [])))
-        with open("graduated-classes.json", "w", encoding="utf-8") as f:
-            json.dump({"graduated_classes": grad}, f, ensure_ascii=False, indent=2)
+        # 原子：这份毕业类清单直接决定哪些 change_class 可被自动放行，半文件不可接受
+        atomic_write_json("graduated-classes.json", {"graduated_classes": grad})
         print(f"[autonomy] 达标变更分类 {len(grad)}：{grad}")
         return
 
