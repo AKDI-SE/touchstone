@@ -35,7 +35,7 @@ def test_external_mutation_cmd_timeout_returns_none(monkeypatch, tmp_path):
     # 真跑 sleep 会等 1s 超时；改用直接打桩 TimeoutExpired 更快更稳
     monkeypatch.setattr(V.subprocess, "run",
                         lambda *a, **k: (_ for _ in ()).throw(sp.TimeoutExpired(cmd="x", timeout=1)))
-    assert V.external_mutation_score(str(tmp_path), ["a.py"]) is None
+    assert V.external_mutation_score(str(tmp_path), ["a.py"]) == (None, False)
 
 
 def test_changed_lines_git_failure_returns_empty(monkeypatch):

@@ -11,10 +11,12 @@
 # ============================================================================
 
 import ast
+import json
 import os
 import re
 import shlex
 import subprocess
+import tempfile
 
 TEST_TIMEOUT = 300
 
@@ -164,25 +166,77 @@ def _parse_mutation_output(out):
     return None
 
 
+def _read_mutation_result_file(path):
+    """从工具写出的独立结果文件读击杀率。支持两种模式：
+      {"killed": N, "total": M}  → N/M（更可信：可复核分子分母）
+      {"score": 0.83}            → 直接取（0~1）
+    读不到 / 格式非法 → None（交回退处理）。"""
+    try:
+        with open(path, encoding="utf-8") as f:
+            doc = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if isinstance(doc, dict):
+        if "killed" in doc and "total" in doc:
+            try:
+                k, t = float(doc["killed"]), float(doc["total"])
+                return min(1.0, max(0.0, k / t)) if t > 0 else None
+            except (TypeError, ValueError, ZeroDivisionError):
+                return None
+        if "score" in doc:
+            try:
+                return min(1.0, max(0.0, float(doc["score"])))
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
 def external_mutation_score(work_dir, changed_files):
     """成熟工具接缝（对照 mutmut/cosmic-ray/PIT）：设 TOUCHSTONE_MUTATION_CMD 时改用外部命令
-    算击杀率——命令在 work_dir 运行，{files} 占位替换为改动文件列表，stdout 里最后一个
-    百分数/小数被当作击杀率。未设、命令失败或解析不出 → 返回 None，回退内置 AST 变异。
-    注入面收口：changed_files 来自被检 PR 的 diff——文件名是【PR author 可控输入】。命令模板
-    本身走 shell=True 是刻意的（部署方要写管道/重定向），但替换进 {files} 的每个文件名必须
-    shlex.quote：否则 author 提交名为 `x;恶意命令;.py` 的文件即可在 verify 进程注入执行
-    （恰是本仓 DANGER-001 规则点名的构造——门禁自身先过自己的门）。"""
+    算击杀率。命令在 work_dir 运行，{files} 占位替换为改动文件列表。
+
+    ⚠ 防伪造（安全关键）：击杀率【优先】从 touchstone 指定的独立结果文件读取，不再 grep
+    被检仓库的 stdout。威胁模型是"跑不可信代码"——若靠 stdout 里最后一个百分数，PR author
+    在自己的测试里 print("kill rate: 100%") 即可把击杀率顶到 1.0、骗过 verify_change 的
+    mut_ok 门（mutation_score 直接决定 MUT_MIN 判决）。协议：
+      • touchstone 生成随机路径经 TOUCHSTONE_MUTATION_RESULT 注入命令环境，并支持 {result}
+        占位（命令可用它定位写出位置）；该路径在 work_dir 之外的临时目录，被检代码不可预知。
+      • 工具把结果写成 JSON：{"killed":N,"total":M} 或 {"score":0.83}。
+      • touchstone 只信这个文件。文件缺失时才回退 stdout 解析，且【标记为不可信回退】——
+        回退路径下即便解析出高分也不足采信（调用方 mutation() 会据此判是否降级）。
+
+    注入面收口（承前）：{files} 每个文件名 shlex.quote——author 提交名为 `x;恶意命令;.py`
+    的文件本会在 shell=True 下注入执行（本仓 DANGER-001 点名构造）。命令模板本身走
+    shell=True 是刻意的（部署方要写管道/重定向），只在不可信数据入模板处收口。
+
+    返回 (score, trusted)：score 为 0~1 或 None；trusted=True 表示来自结果文件、
+    False 表示来自 stdout 回退（不可信）。未设命令 / 全失败 → (None, False)。"""
     cmd = os.environ.get("TOUCHSTONE_MUTATION_CMD")
     if not cmd:
-        return None
+        return (None, False)
+    result_dir = tempfile.mkdtemp(prefix=".ts_mut_")   # work_dir 之外，被检代码不可污染
+    result_path = os.path.join(result_dir, "mutation-result.json")
     try:
-        full = cmd.replace("{files}",
-                           " ".join(shlex.quote(f) for f in changed_files or []))
-        r = subprocess.run(full, shell=True, cwd=work_dir, capture_output=True,
+        quoted_files = " ".join(shlex.quote(f) for f in changed_files or [])
+        full = cmd.replace("{files}", quoted_files).replace("{result}", shlex.quote(result_path))
+        env = dict(os.environ, TOUCHSTONE_MUTATION_RESULT=result_path)
+        r = subprocess.run(full, shell=True, cwd=work_dir, capture_output=True, env=env,
                            text=True, timeout=int(os.environ.get("TOUCHSTONE_MUTATION_TIMEOUT", "900")))
-        return _parse_mutation_output(r.stdout)
+        # 优先：独立结果文件（防伪）
+        score = _read_mutation_result_file(result_path)
+        if score is not None:
+            return (score, True)
+        # 回退：stdout 解析——标记不可信（被检 stdout 可被 author 污染）
+        return (_parse_mutation_output(r.stdout), False)
     except Exception:
-        return None
+        return (None, False)
+    finally:
+        try:
+            if os.path.exists(result_path):
+                os.unlink(result_path)
+            os.rmdir(result_dir)
+        except OSError:
+            pass
 
 
 _MUT_CMP = {ast.Eq: ast.NotEq, ast.NotEq: ast.Eq, ast.Lt: ast.GtE,
@@ -298,8 +352,13 @@ class PythonRunner:
         return _suite_coverage_python(work_dir, changed_files, changed_lines)
 
     def mutation(self, work_dir, changed_files, test_code=None):
-        ext = external_mutation_score(work_dir, changed_files)
-        if ext is not None:
+        ext, trusted = external_mutation_score(work_dir, changed_files)
+        # 只采信来自独立结果文件的分数（trusted）。stdout 回退分数默认不信——被检 stdout
+        # 可被 PR author 污染（print 假百分数骗过 mut_ok）。部署方确认工具只输出到 stdout
+        # 且环境可信时，设 TOUCHSTONE_MUTATION_TRUST_STDOUT=1 显式恢复旧行为。
+        if ext is not None and (trusted or
+                                os.environ.get("TOUCHSTONE_MUTATION_TRUST_STDOUT", "").lower()
+                                in ("1", "true", "yes")):
             return ext
         return _mutation_check(work_dir, test_code, changed_files) if test_code else None
 
