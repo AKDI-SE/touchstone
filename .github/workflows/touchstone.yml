@@ -53,11 +53,14 @@ jobs:
         # （实测每轮 GHA 日志：venv 步骤稳定 ~64s，是 LLM 调用之外最大固定开销）。
         # 键含 OS + Python【补丁号】(steps.py.outputs.python-version，如 3.13.14) + pr-agent 版本：
         # 解释器补丁升级 / OS / pr-agent 版本任一变即 miss→重建并重新持久化（自愈）。
-        # 边界：actions/cache 仅在【miss】时写回——key 匹配但内容失效（罕见：镜像内部变更未带补丁号变）
-        # 时缓存条目不会自动刷新。此时靠下方 import 兜底检查【每轮】重建保证可用（正确性不失），
-        # 要永久刷新该条目需手动 bump key 后缀（-v1→-v2）。
+        # 拆 restore/save（闭环 round-5 finding「Persist cache even when job fails downstream」）：
+        # 本步只 restore（命中即复用）；save 下移到独立步、if: success()——仅整条 touchstone job 成功
+        # （含 Run review）才持久化，避免从失败 run 把状态写进缓存。降级轮 job 仍判 success
+        # （orchestrator 优雅降级 exit 0，已实证 run 29463635695），故不损命中率；只真崩溃才跳 save（正是期望）。
+        # 边界：save 仍仅在【miss】时写回——key 匹配但内容失效（罕见镜像内部变更未带补丁号变）时不自动刷新，
+        # 靠下方 import 兜底检查【每轮】重建保证可用（正确性不失）；要永久刷新该条目需手动 bump key 后缀（-v1→-v2）。
         id: pragent-venv
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: .pragent-venv
           key: pragent-venv-${{ runner.os }}-py${{ steps.py.outputs.python-version }}-pragent${{ env.PRA_VERSION }}-v1
@@ -122,6 +125,16 @@ jobs:
           TOUCHSTONE_EXPERIENCE_ENABLED: "true"
           TOUCHSTONE_EXPERIENCE_REF: "origin/${{ github.event.pull_request.base.ref || github.event.repository.default_branch }}"  # 从受信 base ref 读经验库（防 PR 篡改工作树投毒）         # 评审路径注入开关（review_provider._experience_injection 认）
         run: python -m touchstone.orchestrator
+      - name: Save PR-Agent venv (only on success)
+        # 闭环 round-5 finding：仅整条 touchstone job 成功时持久化 venv 缓存。restore 在上方总会跑（命中即复用）；
+        # 这里 if: success() = checkout→…→Run review 全成功才 save（不从失败 run 持久化状态）。
+        # 降级轮 job=success 仍缓存（不损命中率），真崩溃才跳过。save 仅在 miss 时写（命中不重写）。
+        # key 必须与 restore 步完全一致（同 key 命中→save 跳过；miss→此处落盘）。
+        if: success()
+        uses: actions/cache/save@v4
+        with:
+          path: .pragent-venv
+          key: pragent-venv-${{ runner.os }}-py${{ steps.py.outputs.python-version }}-pragent${{ env.PRA_VERSION }}-v1
       - name: Upload LLM interaction log
         if: always()
         uses: actions/upload-artifact@v4
