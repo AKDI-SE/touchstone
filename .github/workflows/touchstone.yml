@@ -16,11 +16,9 @@ permissions:
   contents: read
   pull-requests: write
   checks: write
-  # actions:write 供 touchstone job 写 actions 缓存（.pragent-venv 复用，省 ~60s/轮，见 Set up PR-Agent）。
-  # 仅【touchstone job】未自带 permissions 故继承本项；verify_*/gate/auto_merge 各自 downscope 不受影响。
-  # touchstone job 跑 base 代码（checkout ref:base.ref），授予低风险。fork PR 受 GitHub 防缓存投毒限制
-  # 仍只读（不写）；此时本步退化为"每次重建"=今天的速度，import 兜底检查保证不崩、日志可观测是否命中。
-  actions: write
+  # actions:write 下沉到 touchstone job（写 actions 缓存用）——见该 job 的 permissions 块。
+  # fork PR 受 GitHub 防缓存投毒限制仍只读（不写）→ 该步退化为"每次重建"=今天的速度，
+  # import 兜底检查保证不崩、日志可观测是否命中。
 
 jobs:
   # ---- 判断层：评审（advisory，不拦截；不在此发总闸，交给 gate job）----
@@ -29,6 +27,11 @@ jobs:
     outputs:
       decision: ${{ steps.run.outputs.verification_decision }}
       risk_band: ${{ steps.run.outputs.risk_band }}
+    permissions:
+      contents: read
+      pull-requests: write      # orchestrator 发评审评论
+      checks: write             # 默认 SKIP_GATE=true 由 gate job 发总闸；保留以兼容关 SKIP_GATE 的部署
+      actions: write            # 写 .pragent-venv 的 actions 缓存（从 workflow 级下沉到 job 级=最小特权显式化）
     steps:
       - uses: actions/checkout@v4
         with:
@@ -46,7 +49,10 @@ jobs:
         # 缓存装好的 .pragent-venv（pr-agent + 130+ 依赖），省掉每次 ~64s 的 venv 创建 + pip install
         # （实测每轮 GHA 日志：venv 步骤稳定 ~64s，是 LLM 调用之外最大固定开销）。
         # 键含 OS + Python【补丁号】(steps.py.outputs.python-version，如 3.13.14) + pr-agent 版本：
-        # 解释器补丁升级 / OS / pr-agent 版本任一变即 miss→重建并重新持久化（自愈，不靠手动 bump key）。
+        # 解释器补丁升级 / OS / pr-agent 版本任一变即 miss→重建并重新持久化（自愈）。
+        # 边界：actions/cache 仅在【miss】时写回——key 匹配但内容失效（罕见：镜像内部变更未带补丁号变）
+        # 时缓存条目不会自动刷新。此时靠下方 import 兜底检查【每轮】重建保证可用（正确性不失），
+        # 要永久刷新该条目需手动 bump key 后缀（-v1→-v2）。
         id: pragent-venv
         uses: actions/cache@v4
         with:
