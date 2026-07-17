@@ -1414,6 +1414,38 @@ def test_fanout_improve_crash_review_empty_not_swallowed(monkeypatch):
     assert RP.invoke_meta()["partial_tool_failure"] == "improve"   # 失败仍可见，整轮可信
 
 
+def test_fanout_improve_crash_review_swallowed_raises(monkeypatch):
+    # fan-out 假收敛：improve 硬失败（rc=2）+ review【也吞没式失败】（rc=0、空建议、但 stderr 带 review
+    # 失败串）。_status_partial_failure 只看子进程状态 → review 侧 _OK.failed=False → 命中 partial=improve。
+    # 旧豁免（_partial_side 命中即整段跳过 swallowed 检查）会把这轮【两工具都挂】当可信空评审 → 假收敛。
+    # 修：豁免前再查非失败侧(review)自身 stderr 是否带 _REVIEW_FAIL_SIGS → 带则不豁免、判 llm_failed。
+    monkeypatch.setattr(RP.subprocess, "run",
+                        _fanout_mock(
+                            _Proc(2, err="Failed to generate prediction with openai/glm-5.2"),
+                            _Proc(0, out=json.dumps({"code_suggestions": [],
+                                                     "review": {"key_issues_to_review": []}}),
+                                  err="Failed to review PR: Error during LLM inference: connection error")))
+    monkeypatch.setattr(RP, "_experience_injection", lambda d: "")
+    with pytest.raises(RP.ReviewEngineDegraded) as ei:
+        RP.fetch({"owner": "o", "repo": "r", "number": 3})
+    assert ei.value.degraded == "llm_failed"
+
+
+def test_fanout_review_crash_improve_swallowed_raises(monkeypatch):
+    # 对称：review 硬失败（rc=2、带 review 子进程失败串）+ improve【也吞没式失败】（rc=0、空、stderr 带
+    # improve 失败串）→ 同样两工具都挂，须判 llm_failed（豁免不应掩盖非失败侧的吞没式失败）。
+    monkeypatch.setattr(RP.subprocess, "run",
+                        _fanout_mock(
+                            _Proc(0, out=json.dumps({"code_suggestions": [],
+                                                     "review": {"key_issues_to_review": []}}),
+                                  err="Failed to generate code suggestions for PR: Error during LLM inference: timeout"),
+                            _Proc(2, err="Failed to review PR: boom")))
+    monkeypatch.setattr(RP, "_experience_injection", lambda d: "")
+    with pytest.raises(RP.ReviewEngineDegraded) as ei:
+        RP.fetch({"owner": "o", "repo": "r", "number": 3})
+    assert ei.value.degraded == "llm_failed"
+
+
 def test_fanout_both_degraded_raises(monkeypatch):
     monkeypatch.setattr(RP.subprocess, "run",
                         _fanout_mock(_Proc(0, out=json.dumps({"_degraded": "llm_failed", "reason": "401"})),
