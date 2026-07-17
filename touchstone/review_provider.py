@@ -815,11 +815,25 @@ def normalize(items, nmap=None):
     # 大小写不一的形式（'Security'/'Possible Bug' 等）；nmap 键多为小写，若直接 l2c.get(label) 则
     # 大写标签落 default_category='convention'——安全/正确性发现被错误降级、永不到 high（风险误路由，
     # 甚至被自动合并）。键与输入双双归一为小写查表（nmap 自身亦大小写不一，如 'Organization best practice'）。
-    l2c = {str(k).lower(): v for k, v in nmap.get("label_to_category", {}).items()}
+    # 键归一为小写查表（见上方注释）。大小写归一会把仅大小写不同的键合并——若它们映射到【不同】
+    # 类别，后者静默覆盖前者（配置笔误会把发现路由到错误类别=防静默故障）。对真冲突 fail-loud；
+    # 同类别冗余键无害（保留首个）。默认 nmap 无冲突故不受影响。
+    l2c: dict[str, str] = {}
+    for k, v in nmap.get("label_to_category", {}).items():
+        lk = str(k).lower()
+        prior = l2c.get(lk)
+        if prior is not None and prior != v:
+            raise ValueError(
+                f"nmap.label_to_category 大小写归一后键冲突：'{k}' 与既有键（→ {prior}）映射到不同"
+                f"类别（{v}）——会静默把发现路由到错误类别，请统一大小写或类别")
+        if prior is None:
+            l2c[lk] = v
     discard = {str(d).lower() for d in nmap.get("discard_labels", [])}
     findings = []
     for it in items or []:
-        label = it.get("label") or ""
+        # 输入侧与键侧同样防御：非字符串 label（上游解析出的数字等）直接 .lower() 会 AttributeError，
+        # 应落 default_category 而非崩（与键侧 str(k).lower() 对称）。
+        label = str(it.get("label") or "")
         if label.lower() in discard:
             continue
         cat = l2c.get(label.lower(), nmap.get("default_category", "convention"))

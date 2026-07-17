@@ -122,6 +122,33 @@ def test_normalize_label_case_insensitive():
     assert risk["risk_band"] == "high"
 
 
+def test_normalize_non_string_label_falls_to_default_not_crash():
+    """输入侧与键侧同样防御：非字符串 label（上游解析出的数字等）直接 .lower() 会 AttributeError
+    崩在 normalize 里。应像键侧 str(k).lower() 一样 str() 归一后落 default_category。"""
+    # 数字 label（truthy、非 str）：旧实现 (7).lower() -> AttributeError
+    out = RP.normalize([{"kind": "suggestion", "file": "a.py", "line_start": 1, "label": 7, "summary": "s"}])
+    assert out[0]["category"] == "convention"            # 落默认，不崩
+    # None label 同样安全
+    out = RP.normalize([{"kind": "suggestion", "file": "a.py", "line_start": 1, "label": None, "summary": "s"}])
+    assert out[0]["category"] == "convention"
+
+
+def test_normalize_raises_on_case_collision_in_nmap():
+    """大小写归一把仅大小写不同的键合并；若映射到【不同】类别，后者静默覆盖前者（配置笔误把发现
+    路由到错误类别=防静默故障）。对真冲突 fail-loud；同类别冗余键无害不报。默认 nmap 无冲突。"""
+    import pytest
+    bad = {"label_to_category": {"Security": "security", "security": "convention"},
+           "default_category": "convention"}
+    with pytest.raises(ValueError, match="大小写归一后键冲突"):
+        RP.normalize([{"label": "x"}], nmap=bad)
+    # 同类别冗余键无害（不报、保留首个）
+    ok = {"label_to_category": {"Security": "security", "security": "security"},
+          "default_category": "convention"}
+    out = RP.normalize([{"label": "security", "summary": "s", "kind": "suggestion",
+                         "file": "a", "line_start": 1}], nmap=ok)
+    assert out[0]["category"] == "security"
+
+
 # ---------------- 裁决映射 ----------------
 def test_map_verdict_security_is_high():
     _, risk = RP.map_verdict(RP.normalize(RP.parse_pr_agent(_RAW)))
