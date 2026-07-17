@@ -46,7 +46,7 @@ Touchstone 把一个 PR 上要回答的问题分成三类,各用各的依据:
 - **评审(默认开)** —— 顾问式,只产建议与发现,不阻断。
 - **确定性门禁(默认开)** —— 契约与栈规则 + SEC-001 密钥扫描 + DANGER-001 危险代码构造(`eval`/`exec`/`os.system`/`pickle`、subprocess 启用 shell)扫描,机器可检。`severity=block_candidate` 的规则(CTR-001/SPR-TX-001/JAVA-EQ-001/SEC-001/DANGER-001)命中即阻断;`warn` 规则经校准固化(`enforced`)后升级为阻断。SEC-002(注入)依赖外部 SAST。
 - **独立验证 verify(默认关)** —— 用**异于评审的模型**、盲于实现地生成验收测试,在 git worktree 上对改动前/改动后两版分别执行,要求"改后通过 ∧ 改前失败 ∧ 覆盖/变异达标 ∧ 回归绿"才判正确。是 Touchstone 的核心,分量也最重。
-- **渐进自治 autonomy(默认关)** —— 仅对经校准证明"放行靠谱"的变更类,才开自动合并,且有熔断保障。自主边界严格等于验证边界。
+- **渐进自治 autonomy(默认关)** —— 仅对经校准证明"放行靠谱"的变更类,才开自动合并,且有熔断保障;自动放行另有**作者信任闸**(仅 OWNER/MEMBER/COLLABORATOR 或显式白名单,fork 陌生作者不进自动合并,fail-closed)。自主边界严格等于验证边界。
 - **学习回路 learning_loop(离线,Touchstone 的差异化核心)** —— 评审引擎复用的是开源 PR-Agent,所以真正属于 Touchstone 的创造,是这条让评审越用越准的回路:统计"人最终采纳了哪些发现、忽略了哪些",把规律写成自然语言经验,加进给 PR-Agent 的提示词里。它分两档:当前实际跑的是**计数式做法**(不训练模型、不改权重,只统计采纳率,已实现);更强的 **TF-GRPO**(取自 arXiv 2510.08191)**也已实现、离线可测**(机制见 `docs/learning-loop-design.html` 第 3 节;生产需一个参数固定的旗舰模型端点)。整条回路都离线跑、和评审分开(它出问题不影响评审);经验只用来调建议,绝不参与合入判定;新经验还要先用真实 PR 做 shadow A/B 对照,达标了才正式启用。
 
 无论开关如何,所有检查都**聚合成一道总闸**对外暴露,分支保护只认这一个状态。
@@ -156,6 +156,7 @@ jobs:
 | `TOUCHSTONE_LLM_CONTEXT_TOKENS` | 推荐 | 模型上下文窗口（token）。2000 行 diff 约需 64K（含 prompt 开销 + 输出预留）；GLM-5.2 支持 128K | `131072` |
 | `TOUCHSTONE_LLM_OUTPUT_TOKENS` | 推荐 | 模型最大输出（token）。2000 行 PR 的建议产出上限 ~7.5K，8192 覆盖不截断 | `8192` |
 | `TOUCHSTONE_LLM_REFLECT_MODEL` | 可选 | improve 自评（self-reflection 打分，第二次 LLM 调用）专用的小模型；不设则沿用主模型。`touchstone.yml` 已默认 `glm-4.5-air`（自评是浅任务，小模型即可，improve 健康路径耗时近乎减半） | `glm-4.5-air` |
+| `TOUCHSTONE_LLM_THINKING` | 可选 | 思考模式开关：`disabled`/`enabled`，逐调用注入请求体 `{"thinking":{"type":...}}`（GLM 方言）。思考型端点默认开思考时每调用先烧数千 reasoning token（大 diff 单调用 10min+ 的头号成因）；优先在网关侧对 key 默认关（治本），网关不可改时配 `disabled`。`touchstone.yml` 仅透传此 secret、不预置默认值，故未设=随端点默认（思考型端点须显式配 `disabled` 才关） | `disabled` |
 
 > `GITHUB_TOKEN` 由 GitHub Actions 自动提供，无需手动配。
 
@@ -187,7 +188,7 @@ jobs:
 
 pr-agent **取 PR** 用 workflow 自带的 `GITHUB_TOKEN`——**无需额外配置**。其它(GitLab/Bitbucket 等)git provider 未适配,本仓面向 GitHub。
 
-**LLM 调用调优**:`pr_agent_runner` 在子进程内对 LiteLLM 做了三件事——① 主模型与自评模型(`TOUCHSTONE_LLM_REFLECT_MODEL`,默认 `glm-4.5-air`)双双启用**流式**,把单次调用的墙钟超时语义校准为「真死等必杀、持续出字不误杀」;② tenacity 重试层数由 `TOUCHSTONE_LLM_NUM_RETRIES` 控制(默认 0=不重试——基于全量 run 实证:真实失败全发生在 600s+ 后、轮内重试救回率 0);③ 仅对秒级抖动类失败(快速 5xx/瞬断)在快窗内自动 N+1。三者都在子进程内自洽,不进本仓依赖。
+**LLM 调用调优**:`pr_agent_runner` 在子进程内对 LiteLLM 做了四件事——① 主模型与自评模型(`TOUCHSTONE_LLM_REFLECT_MODEL`,默认 `glm-4.5-air`)双双启用**流式**,把单次调用的墙钟超时语义校准为「真死等必杀、持续出字不误杀」;② tenacity 重试层数由 `TOUCHSTONE_LLM_NUM_RETRIES` 控制(默认 0=不重试——基于全量 run 实证:真实失败全发生在 600s+ 后、轮内重试救回率 0);③ 仅对秒级抖动类失败(快速 5xx/瞬断)在快窗(`TOUCHSTONE_LLM_RETRY_FAST_WINDOW`,默认 120s,0=纯单次)内自动 N+1;④ 经 `TOUCHSTONE_LLM_THINKING` 可逐调用下发思考模式开关(pr-agent 对 GLM 无思考控制路径,由 runner 的 acompletion 围栏注入)。流式有 `TOUCHSTONE_LLM_STREAM` 回退开关(默认 `true`)。四者都在子进程内自洽,不进本仓依赖。
 
 **反静默故障**:若 pr-agent 没装好、取 PR 失败、或 LLM 端点没调通,Touchstone **不会**静默降级成"0 条发现"——它会把降级说明写在贴到 PR 的评审评论顶部、并反映在 check 标题里:
 
