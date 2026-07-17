@@ -286,39 +286,17 @@ def render(checklist, rounds_left=None, lineage=None):
     return "\n".join(lines)
 
 
-def _scan_json_object(s, start):
-    """从 s[start]（须为 '{'）起按 JSON 语义扫到匹配的闭合 '}'，返回其索引；字符串字面量
-    内的括号不计入深度。未闭合 / 起点非 '{' → 返回 -1。供 parse_latest 取完整 JSON 对象，
-    不被内容里偶然出现的字面 '-->' 截断。"""
-    if start >= len(s) or s[start] != '{':
-        return -1
-    depth = 0
-    in_str = False
-    esc = False
-    for k in range(start, len(s)):
-        c = s[k]
-        if in_str:
-            if esc:
-                esc = False
-            elif c == '\\':
-                esc = True
-            elif c == '"':
-                in_str = False
-            continue
-        if c == '"':
-            in_str = True
-        elif c == '{':
-            depth += 1
-        elif c == '}':
-            depth -= 1
-            if depth == 0:
-                return k
-    return -1
-
-
 def parse_latest(bodies):
     """从（受信的）评论正文序列中取最新一份权威清单（marker 解析失败则跳过该条）。
     调用方须先用 loop.trusted_bodies 过滤——清单权威状态只信机器人自己发的评论。"""
+    # marker = _OPEN + json.dumps(obj) + _CLOSE，内容是单个 JSON 对象。json.dumps 不转义
+    # '>'，故某项的 note/direction/reasoning 含字面 '-->'（评审方向提到 HTML 注释语法、或
+    # author 的 waived note 带 -->）时，定位首个 _CLOSE 会命中内容里那个 '-->' 而非真正收尾
+    # → JSON 截断 → 整条 marker 被跳过（权威清单丢失、收敛跟踪断）。用 stdlib
+    # JSONDecoder.raw_decode 从首个 '{' 起解析：它按 JSON 结构停在对象边界（字符串字面量内的
+    # 括号/箭头不干扰），一步既扫又析，不依赖首个 '-->'（与 #53 修 sig 脏空白同一类"author/
+    # 评审可控内容渗入 marker"加固；弃手写括号深度扫描器，复用成熟 stdlib 解析）。
+    decoder = json.JSONDecoder()
     latest = None
     for body in bodies or []:
         start = 0
@@ -326,22 +304,16 @@ def parse_latest(bodies):
             i = (body or "").find(_OPEN, start)
             if i < 0:
                 break
-            # marker = _OPEN + json.dumps(obj) + _CLOSE，内容是单个 JSON 对象。json.dumps 不转义
-            # '>'，故某项的 note/direction/reasoning 含字面 '-->'（评审方向提到 HTML 注释语法、
-            # 或 author 的 waived note 带 -->）时，旧实现 body.find(_CLOSE, i) 会命中内容里那个
-            # '-->' 而非真正的收尾 → JSON 被截断 → json.loads 失败 → 整条 marker 被跳过（权威
-            # 清单丢失、收敛跟踪断）。改从 _OPEN 后首个 '{' 起按括号/字符串感知扫到匹配 '}'，
-            # 拿完整对象再解析（与 #53 修 sig 脏空白同一类"author 可控内容渗入 marker"加固）。
             brace = (body or "").find("{", i + len(_OPEN))
-            end = _scan_json_object(body or "", brace) if brace >= 0 else -1
-            if end >= 0:
-                try:
-                    latest = json.loads(body[brace:end + 1])
-                except (json.JSONDecodeError, ValueError):
-                    pass
-                start = end + 1
-            else:
+            if brace < 0:
                 start = i + len(_OPEN)
+                continue
+            try:
+                obj, end = decoder.raw_decode(body or "", brace)
+                latest = obj
+                start = end
+            except (json.JSONDecodeError, ValueError):
+                start = brace + 1
     return latest
 
 
