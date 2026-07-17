@@ -643,6 +643,36 @@ def test_pit_score_partial_corrupt_uses_parseable(tmp_path):
     assert abs(V._pit_score(str(tmp_path)) - 0.5) < 1e-9    # 用可解析那份：1 killed / 2 total
 
 
+def test_pit_score_corrupt_masked_by_empty_report_raises(tmp_path):
+    """#98 续：损坏同胞 + 一份【可解析但零变异】(total=0) 的报告 → 必抛 MutationRunError，不能返回 None。
+    场景：多模块构建，模块 A 改动无变异点（合法零变异报告）、模块 B PIT 崩溃写出截断 xml。
+    旧守卫只 `corrupt and not parseable`：parseable=True 把它压下 → total=0 → 返回 None
+    → 上游 MavenRunner.mutation 经 _pit_has_report=True 路径顶满成 1.0 → 模块 B 的崩溃被无视、弱测试骗过门。
+    锁 `corrupt and (not parseable or total == 0)` 的 total==0 半段。"""
+    bad = tmp_path / "mod/target/pit-reports/202606"
+    bad.mkdir(parents=True)
+    (bad / "mutations.xml").write_text('<mutations><mutation status="KILLED"')      # 损坏（模块 B 崩溃）
+    empty = tmp_path / "mod2/target/pit-reports/202607"
+    empty.mkdir(parents=True)
+    (empty / "mutations.xml").write_text('<mutations></mutations>')                 # 可解析、零变异点
+    with pytest.raises(V.MutationRunError):
+        V._pit_score(str(tmp_path))
+
+
+def test_maven_runner_mutation_corrupt_masked_by_empty_raises(monkeypatch, tmp_path):
+    """#98 端到端：损坏报告 + 可解析零变异报告 → MavenRunner.mutation 抛 MutationRunError，绝不返回 1.0。
+    不桩 _pit_score/_pit_has_report——走真实解析路径，证"空报告掩护损坏报告"的假过口子已堵。"""
+    monkeypatch.setattr(R, "_run", lambda cmd, wd, timeout=None: (True, "ok"))   # PIT 退出码 0
+    bad = tmp_path / "mod/target/pit-reports/202606"
+    bad.mkdir(parents=True)
+    (bad / "mutations.xml").write_text('<mutations><mutation status="KILLED"')      # 损坏
+    empty = tmp_path / "mod2/target/pit-reports/202607"
+    empty.mkdir(parents=True)
+    (empty / "mutations.xml").write_text('<mutations></mutations>')                 # 可解析、零变异
+    with pytest.raises(V.MutationRunError):
+        V.MavenRunner().mutation(str(tmp_path), ["A.java"])
+
+
 def test_maven_runner_mutation_corrupt_report_raises(monkeypatch, tmp_path):
     """A5-F1 端到端：mvn 退出码 0 但产出的 mutations.xml 损坏 → MavenRunner.mutation 抛
     MutationRunError（→ check_adequacy/_verify_regression 据此判 inadequate），绝不返回 1.0 假过。
