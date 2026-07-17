@@ -133,6 +133,16 @@ def test_normalize_non_string_label_falls_to_default_not_crash():
     assert out[0]["category"] == "convention"
 
 
+def test_normalize_preserves_falsy_label_zero_not_swallowed():
+    """round-2 finding PRA-GENERAL:review_provider.py:836「Avoid silently dropping falsy label values」：
+    `str(label or "")` 会吞掉 falsy 但有效的 label——`0 or ""` 得 ""，于是 label=0 与缺失不可区分，
+    rule_id 退回 kind 兜底（PRA-SUGGESTION）而非 PRA-0，与本 PR「防御非字符串 label」自相矛盾
+    （上测试盖了 7，0 亦须正解）。修：只把 None 当空，0→"0" 经 str() 保留。"""
+    out = RP.normalize([{"kind": "suggestion", "file": "a.py", "line_start": 1, "label": 0, "summary": "s"}])
+    assert out[0]["category"] == "convention"            # 0 不在 nmap → 默认（语义正确）
+    assert out[0]["rule_id"] == "PRA-0"                  # 0 被保留成 "0"，未被 or "" 吞成空→kind 兜底
+
+
 def test_normalize_raises_on_case_collision_in_nmap():
     """大小写归一把仅大小写不同的键合并；若映射到【不同】类别，后者静默覆盖前者（配置笔误把发现
     路由到错误类别=防静默故障）。对真冲突 fail-loud；同类别冗余键无害不报。默认 nmap 无冲突。"""

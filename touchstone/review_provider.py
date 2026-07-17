@@ -833,7 +833,11 @@ def normalize(items, nmap=None):
     for it in items or []:
         # 输入侧与键侧同样防御：非字符串 label（上游解析出的数字等）直接 .lower() 会 AttributeError，
         # 应落 default_category 而非崩（与键侧 str(k).lower() 对称）。
-        label = str(it.get("label") or "")
+        # 显式 None 检查（round-2 finding）：`or ""` 会吞掉 falsy 但有效的 label——`0 or ""` 得 ""，
+        # 于是 label=0 与缺失不可区分、rule_id 退回 kind 兜底，与本 PR「防御非字符串 label」自相矛盾
+        # （测试盖了 7，0 反被错处理）。只把 None/缺失当空；其余（含 0/False）经 str() 保留原值。
+        raw_label = it.get("label")
+        label = "" if raw_label is None else str(raw_label)
         if label.lower() in discard:
             continue
         cat = l2c.get(label.lower(), nmap.get("default_category", "convention"))
