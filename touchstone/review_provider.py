@@ -51,6 +51,37 @@ _DEFAULT_NMAP = {
 }
 
 
+def _build_label_maps(nmap):
+    """把 nmap 的 label_to_category / discard_labels 预归一为小写查表结构，并对大小写归一后的
+    键冲突 fail-loud（防静默路由错误）。
+
+    标签→类别映射大小写无关：pr-agent 的 label schema 明确「也接受其它相关标签」，LLM 实际会发
+    大小写不一的形式（'Security'/'Possible Bug' 等）；nmap 键多为小写，若直接查表则大写标签落
+    default_category='convention'——安全/正确性发现被错误降级、永不到 high（风险误路由，甚至被自动
+    合并）。故键与输入双双归一为小写查表。大小写归一会把仅大小写不同的键合并——若它们映射到【不同】
+    类别，后者静默覆盖前者（配置笔误把发现路由到错误类别=防静默故障），故对真冲突 fail-loud；
+    同类别冗余键无害（保留首个）。"""
+    l2c: dict[str, str] = {}
+    for k, v in nmap.get("label_to_category", {}).items():
+        lk = str(k).lower()
+        prior = l2c.get(lk)
+        if prior is not None and prior != v:
+            raise ValueError(
+                f"nmap.label_to_category 大小写归一后键冲突：'{k}' 与既有键（→ {prior}）映射到不同"
+                f"类别（{v}）——会静默把发现路由到错误类别，请统一大小写或类别")
+        if prior is None:
+            l2c[lk] = v
+    discard = {str(d).lower() for d in nmap.get("discard_labels", [])}
+    return l2c, discard
+
+
+# 默认 nmap 不可变且模块级——import 时预计算一次（round-3 finding PRA-GENERAL:821「Precompute
+# normalized label map once」）：坏默认配置（键冲突）在此即 fail-fast 暴露，而非拖到首次评审才崩；
+# normalize 默认路径直接复用、per-call 成本只与 items 成比例。自定义 nmap 仍每次重建（不能假设传入
+# dict 不可变）。
+_DEFAULT_L2C, _DEFAULT_DISCARD = _build_label_maps(_DEFAULT_NMAP)
+
+
 class ReviewEngineDegraded(RuntimeError):
     """PR-Agent 评审引擎降级信号（防静默故障）。
 
@@ -811,24 +842,13 @@ def normalize(items, nmap=None):
     """把 PR-Agent 的 ReviewItem 按 nmap 映射成本系统 Finding（与 contract_check 同构，
     供下游裁决映射/总闸/校准直接复用）。agent 记来源（pr-agent:suggestion / pr-agent:review）。"""
     nmap = nmap or _DEFAULT_NMAP
-    # 标签→类别映射大小写无关：pr-agent 的 label schema 明确「也接受其它相关标签」，LLM 实际会发
-    # 大小写不一的形式（'Security'/'Possible Bug' 等）；nmap 键多为小写，若直接 l2c.get(label) 则
-    # 大写标签落 default_category='convention'——安全/正确性发现被错误降级、永不到 high（风险误路由，
-    # 甚至被自动合并）。键与输入双双归一为小写查表（nmap 自身亦大小写不一，如 'Organization best practice'）。
-    # 键归一为小写查表（见上方注释）。大小写归一会把仅大小写不同的键合并——若它们映射到【不同】
-    # 类别，后者静默覆盖前者（配置笔误会把发现路由到错误类别=防静默故障）。对真冲突 fail-loud；
-    # 同类别冗余键无害（保留首个）。默认 nmap 无冲突故不受影响。
-    l2c: dict[str, str] = {}
-    for k, v in nmap.get("label_to_category", {}).items():
-        lk = str(k).lower()
-        prior = l2c.get(lk)
-        if prior is not None and prior != v:
-            raise ValueError(
-                f"nmap.label_to_category 大小写归一后键冲突：'{k}' 与既有键（→ {prior}）映射到不同"
-                f"类别（{v}）——会静默把发现路由到错误类别，请统一大小写或类别")
-        if prior is None:
-            l2c[lk] = v
-    discard = {str(d).lower() for d in nmap.get("discard_labels", [])}
+    # 标签→类别的大小写归一 + 冲突 fail-loud 见 _build_label_maps（机制与理由集中在此）。默认 nmap 已
+    # 在 import 时预计算（_DEFAULT_L2C/_DEFAULT_DISCARD）——复用、免每轮重算不可变映射；仅自定义
+    # nmap 每次重建（不能假设传入 dict 不可变）。
+    if nmap is _DEFAULT_NMAP:
+        l2c, discard = _DEFAULT_L2C, _DEFAULT_DISCARD
+    else:
+        l2c, discard = _build_label_maps(nmap)
     findings = []
     for it in items or []:
         # 输入侧与键侧同样防御：非字符串 label（上游解析出的数字等）直接 .lower() 会 AttributeError，

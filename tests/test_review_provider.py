@@ -143,6 +143,26 @@ def test_normalize_preserves_falsy_label_zero_not_swallowed():
     assert out[0]["rule_id"] == "PRA-0"                  # 0 被保留成 "0"，未被 or "" 吞成空→kind 兜底
 
 
+def test_default_label_maps_precomputed_once():
+    """round-3 finding PRA-GENERAL:review_provider.py:821「Precompute normalized label map once」：
+    默认 nmap（模块级、不可变）的大小写归一+冲突校验原本每轮 normalize() 重算——冗余。改为 import 时
+    预计算一次（_DEFAULT_L2C/_DEFAULT_DISCARD），既让坏默认配置在 import 即 fail-fast，又让默认路径
+    per-call 成本只与 items 成比例。自定义 nmap 仍每次重建（不沿用预计算、不能假设传入 dict 不可变）。"""
+    import pytest
+    import touchstone.review_provider as rp
+    # 预计算结果存在且正确（键全小写、大写键已归一命中）
+    assert rp._DEFAULT_L2C, "默认标签映射应在 import 时预计算（非空）"
+    assert rp._DEFAULT_L2C["security"] == "security"
+    assert rp._DEFAULT_L2C["organization best practice"] == "convention"   # 大写键归一为小写
+    assert rp._DEFAULT_DISCARD == set()                                    # discard_labels 默认空
+    # 预计算 == 逐次重建（行为不变，只是不每轮重算）
+    assert (rp._DEFAULT_L2C, rp._DEFAULT_DISCARD) == rp._build_label_maps(rp._DEFAULT_NMAP)
+    # 自定义 nmap（有冲突）仍每次重建并 fail-loud——不沿用预计算
+    bad = {"label_to_category": {"Security": "security", "security": "convention"}}
+    with pytest.raises(ValueError, match="大小写归一后键冲突"):
+        rp.normalize([{"label": "x"}], nmap=bad)
+
+
 def test_normalize_raises_on_case_collision_in_nmap():
     """大小写归一把仅大小写不同的键合并；若映射到【不同】类别，后者静默覆盖前者（配置笔误把发现
     路由到错误类别=防静默故障）。对真冲突 fail-loud；同类别冗余键无害不报。默认 nmap 无冲突。"""
