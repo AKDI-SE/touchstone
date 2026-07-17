@@ -33,7 +33,14 @@ def _fsync_dir(path):
     except OSError:
         pass
     finally:
-        os.close(fd)
+        # os.close 失败不得上抛：调用方此时 os.replace 已完成、数据已落盘，
+        # 是【成功的原子写】的尾收尾。若目录 fd 关闭失败（NFS EIO 等罕见但真实）
+        # 被向上传播，一次成功落盘会被误判为写失败——破坏"成功不冒失败"契约。
+        # 仍尝试 close（防 fd 泄漏），但吞掉 OSError（与上面 fsync 同纪律）。
+        try:
+            os.close(fd)
+        except OSError:
+            pass
 
 
 def atomic_write_text(path, text, encoding="utf-8"):

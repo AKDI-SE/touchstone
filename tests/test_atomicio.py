@@ -94,6 +94,24 @@ def test_atomic_write_fsyncs_parent_directory(tmp_path, monkeypatch):
     assert os.path.samefile(seen[0], str(tmp_path))   # fsync 的是父目录，非别处
 
 
+def test_fsync_dir_swallows_close_oserror(monkeypatch, tmp_path):
+    """round-4 闭环（#86 finding atomicio.py:36）：_fsync_dir 的 finally 里 os.close(fd)
+    失败不得上抛。此时 os.replace 已完成、数据已落盘，是【成功的原子写】的尾收尾——
+    若目录 fd 关闭失败（NFS EIO 等罕见但真实）向上传播，成功落盘会被误判为写失败。
+    monkeypatch os.close 抛 OSError：裸 finally 上抛（杀红）；包 try/except 则吞掉且
+    仍尝试 close（防 fd 泄漏——断言 close 确被调）。"""
+    import touchstone.atomicio as aio
+    closed = []
+
+    def boom(fd):
+        closed.append(fd)
+        raise OSError("simulated close EIO (e.g. NFS)")
+
+    monkeypatch.setattr(os, "close", boom)
+    aio._fsync_dir(str(tmp_path))   # 绝不上抛——否则成功的原子写被误判为失败
+    assert closed, "未调用 os.close（fd 泄漏）"
+
+
 def test_atomic_write_sets_mode_before_fsync(tmp_path, monkeypatch):
     """round-3 闭环（#86 finding atomicio.py:55）：权限须在 fsync【前】经 fchmod 写到 fd。
     fsync 只持久化调用前已写入的元数据——若先 fsync（落盘 0o600）再 chmod，chmod 的元数据
