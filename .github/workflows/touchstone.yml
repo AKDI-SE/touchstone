@@ -150,9 +150,12 @@ jobs:
           TOUCHSTONE_EXPERIENCE_REF: "origin/${{ github.event.pull_request.base.ref || github.event.repository.default_branch }}"  # 从受信 base ref 读经验库（防 PR 篡改工作树投毒）         # 评审路径注入开关（review_provider._experience_injection 认）
           # 评审健康度看板（可选，默认关）：置 true 后，每轮在本仓开/重写一个带 label 的 issue
           # 成"活"看板（本轮快照 + 滚动趋势；body 重写不发通知，仅显著事件追加评论）。
-          # 默认 false = 零行为变化。部署方按需开。env 经 dict(os.environ) 自动透传给 orchestrator。
-          TOUCHSTONE_METRICS_ISSUE: "false"
-          # TOUCHSTONE_METRICS_ISSUE_LABEL: "touchstone-metrics"   # 看板 issue 的 label
+          # 经 repo variable 配（Settings → Secrets and variables → Actions → Variables，
+          # 建 TOUCHSTONE_METRICS_ISSUE=true）——不设/空 = 关（默认，零行为变化），设 'true' 开。
+          # 用 bare vars.（与上方 AUTONOMY_* 同 convention）：空值经 dict(os.environ) 透传给
+          # orchestrator → metrics_issue.run 第一道 `!= "true"` 判 disabled（Python 拥有默认/fail-closed）。
+          TOUCHSTONE_METRICS_ISSUE: ${{ vars.TOUCHSTONE_METRICS_ISSUE }}
+          # TOUCHSTONE_METRICS_ISSUE_LABEL: "touchstone-metrics"   # 看板 issue 的 label（若改 vars. 须在 Python 侧处理空串，勿直接 uncomment）
           # TOUCHSTONE_METRICS_ISSUE_WINDOW: "50"                   # 滚动历史保留轮数（bounded FIFO）
         run: python -m touchstone.orchestrator
       - name: Save PR-Agent venv (only on success + cache miss)
