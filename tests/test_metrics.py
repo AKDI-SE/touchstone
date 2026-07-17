@@ -93,3 +93,14 @@ def test_build_carries_round_no():
                 loop_decision="converged", gate="2/3", unverified_claims=0,
                 change_class="code", added_lines=10, round_no=7)
     assert r["round"] == 7
+
+
+def test_telemetry_read_oserror_warns_missing_silent(tmp_path, capsys):
+    # P2-1：遥测文件【缺失】= 未开遥测常态静默；【在但读不动】= 聚合缺数据必须可见
+    import touchstone.metrics as M
+    assert M.load(str(tmp_path / "nope.jsonl")) == []
+    assert "遥测文件读取失败" not in capsys.readouterr().err
+    unreadable = tmp_path / "dir-as-file.jsonl"
+    unreadable.mkdir()                                   # 目录冒充文件 → IsADirectoryError ⊂ OSError
+    assert M.load(str(unreadable)) == []
+    assert "遥测文件读取失败" in capsys.readouterr().err

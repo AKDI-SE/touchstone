@@ -626,8 +626,10 @@ def main():
         try:
             gh("POST", f"/repos/{owner}/{repo}/issues/{number}/labels", token,
                {"labels": ["touchstone:needs-human"]})
-        except requests.exceptions.RequestException:
-            pass
+        except requests.exceptions.RequestException as e:
+            # needs-human 标签打不上 = 人工升级信号丢失——escalate 本身已定，标签只是
+            # 传达渠道，失败必须可见（否则升级悄悄变没人接）。
+            print(f"[warn] escalate 标签添加失败（人工升级信号未传达）: {e}", file=sys.stderr)
 
     # 校准 + 自治决策入口：落盘供下游 join / auto_merge 组装
     # 原子：这份 findings 是 verify join 与 autonomy auto_merge 的组装依据，进程被杀

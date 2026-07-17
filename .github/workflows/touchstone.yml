@@ -9,7 +9,10 @@ on:
     types: [opened, synchronize, reopened]
 
 concurrency:
-  group: touchstone-pr-${{ github.event.pull_request.head.sha }}
+  # 按 PR 号而非 head.sha 分组：同 PR 快速连推时，新轮自动取消旧 SHA 的在途轮——
+  # 否则两轮并发跑，旧轮可能在新轮之后回贴过期评论（轮序错乱）。取消掉的旧轮
+  # 无副作用：回贴/产物尚未发生，lineage 按内容指纹记账不受缺轮影响。
+  group: touchstone-pr-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 permissions:

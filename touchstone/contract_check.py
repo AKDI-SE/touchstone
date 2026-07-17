@@ -13,6 +13,7 @@
 import fnmatch
 import os
 import re
+import sys
 
 from unidiff import PatchSet
 
@@ -295,8 +296,12 @@ def load_scope_rules(repo_dir="."):
         for factor, pats in (data.get("factors") or {}).items():
             if isinstance(pats, list) and pats:
                 rules[str(factor)] = [str(p) for p in pats]
-    except (OSError, yaml.YAMLError):
-        pass
+    except FileNotFoundError:
+        pass    # 静默豁免：可选配置，缺省用内置默认是常态（见 docstring），非故障
+    except (OSError, yaml.YAMLError) as e:
+        # 文件【在】但读不动/YAML 损坏 → 回落内置默认。必须可见：静默回落会让
+        # blast radius 分级在配置损坏时不知不觉变粗（防静默故障）。
+        print(f"[contract_check] scope-rules 加载失败，回落内置默认: {e}", file=sys.stderr)
     return rules
 
 

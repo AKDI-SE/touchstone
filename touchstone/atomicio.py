@@ -31,7 +31,8 @@ def _fsync_dir(path):
     try:
         os.fsync(fd)
     except OSError:
-        pass
+        pass    # 静默豁免：目录 fsync 是崩溃持久性加固（best-effort），失败不影响数据
+                # 正确性；本模块是无日志依赖的底层库，且不能让加固失败冒充写失败。
     finally:
         # os.close 失败不得上抛：调用方此时 os.replace 已完成、数据已落盘，
         # 是【成功的原子写】的尾收尾。若目录 fd 关闭失败（NFS EIO 等罕见但真实）
@@ -40,7 +41,7 @@ def _fsync_dir(path):
         try:
             os.close(fd)
         except OSError:
-            pass
+            pass    # 静默豁免：见上方注释——close 失败不得冒充写失败，fd 泄漏由进程退出兜底。
 
 
 def atomic_write_text(path, text, encoding="utf-8"):
@@ -76,7 +77,7 @@ def atomic_write_text(path, text, encoding="utf-8"):
             try:
                 os.unlink(tmp)            # 写/replace 失败 → 清理临时文件，不留垃圾
             except OSError:
-                pass
+                pass    # 静默豁免：清理是 best-effort，主错误已在上方传播/记录。
 
 
 def atomic_write_json(path, obj, *, ensure_ascii=False, indent=2):
