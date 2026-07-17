@@ -414,8 +414,8 @@ def _pit_score(work_dir):
     for rep in reps:
         try:
             root = ET.parse(rep).getroot()
-        except ET.ParseError:
-            corrupt.append(rep)
+        except ET.ParseError as e:
+            corrupt.append((rep, str(e)))      # 带解析异常细节（行/列/原因），否则只留路径无法定位截断点
             continue
         parseable = True
         for m in root.iter("mutation"):
@@ -433,9 +433,13 @@ def _pit_score(work_dir):
     #     _pit_has_report=True 路径顶满成 1.0 —— 等于让崩溃模块的弱测试骗过门，故同样必抛。
     #     （无 corrupt 的零变异仍走 None→1.0，那是真正的"无可变异→通过"。）
     if corrupt and (not parseable or total == 0):
+        # 报错带【每份损坏报告的解析异常细节】（路径 + 行/列/原因）—— #98 二轮评审建议：
+        # 旧版只列路径，运维拿到"PIT 报告损坏"却不知截断在哪/为何坏，难定位。异常细节使该
+        # 失败路径（正是 #98 要从静默里拽出来的）真正可诊断。
+        detail = ", ".join(f"{rep} ({msg[:120]})" for rep, msg in corrupt)
         raise MutationRunError("mutations.xml 存在但解析失败或零变异且有同胞损坏报告"
                                "（疑 PIT 崩溃截断，不能当通过）："
-                               + ", ".join(corrupt)[:300])
+                               + detail[:400])
     return (killed / total) if total else None
 
 

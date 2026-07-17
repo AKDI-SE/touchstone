@@ -630,6 +630,20 @@ def test_pit_score_corrupt_report_raises(tmp_path):
         V._pit_score(str(tmp_path))
 
 
+def test_pit_score_corrupt_report_message_has_parse_detail(tmp_path):
+    """#98 二轮评审建议（PRA-GENERAL）：损坏报告的报错须带解析异常细节（行/列/原因），否则运维只
+    知"报告损坏"却不知截断点、无法定位。锁 except ET.ParseError `as e` 与报错拼接：把 `as e`/
+    细节拼接去掉 → 报错只剩路径、无 column N → 杀红。"""
+    pd = tmp_path / "mod/target/pit-reports/202606"
+    pd.mkdir(parents=True)
+    (pd / "mutations.xml").write_text('<mutations><mutation status="KILLED"')   # 截断
+    with pytest.raises(V.MutationRunError) as exc:
+        V._pit_score(str(tmp_path))
+    msg = str(exc.value)
+    assert "mutations.xml" in msg                     # 仍带损坏报告路径
+    assert "column" in msg                            # 带解析异常定位（仅来自捕获的 ParseError）
+
+
 def test_pit_score_partial_corrupt_uses_parseable(tmp_path):
     """对照：同胞报告中至少一份可解析 → 以它为准、不抛（损坏同胞不阻塞，分数仍可信）。
     锁 `corrupt and not parseable` 的 not-parseable 半段——避免误把"有可用报告"当全坏。"""
