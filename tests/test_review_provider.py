@@ -774,19 +774,28 @@ def test_runner_markers_included_in_swallowed_sigs():
 
 
 def test_invoke_meta_repaired_parses_counted(monkeypatch):
-    """S3：截断/畸形被 try_fix_yaml 修复的次数经 meta 通道透出。"""
+    """S3：截断/畸形被 try_fix_yaml 修复的次数经 meta 通道透出。
+    fan-out 下 improve/review 各自独立解析；repaired_parse 信号只出现在【出问题的那一侧】子进程 stderr
+    里（此处 improve 的 code_suggestions 解析被修了 2 次，review 侧干净）。mock 按工具分流，合并后
+    计数=2（验证不是双子进程翻倍成 4）——锁住"合并 stderr 的计数=各子进程真实总和"。"""
     import json as _j
     import subprocess
     from touchstone import review_provider as rp
-    out = _j.dumps({"code_suggestions": [{"suggestion_content": "x", "relevant_file": "a.py",
-                                          "language": "python", "existing_code": "",
-                                          "improved_code": "", "one_sentence_summary": "s",
-                                          "label": "possible bug"}],
-                    "review": {"key_issues_to_review": []}})
+    imp_out = _j.dumps({"code_suggestions": [{"suggestion_content": "x", "relevant_file": "a.py",
+                                              "language": "python", "existing_code": "",
+                                              "improved_code": "", "one_sentence_summary": "s",
+                                              "label": "possible bug"}],
+                        "review": {"key_issues_to_review": []}})
+    rev_out = _j.dumps({"code_suggestions": [], "review": {"key_issues_to_review": []}})
     err = ("WARNING Initial failure to parse AI prediction: bad yaml\n"
            "WARNING Initial failure to parse AI prediction: bad yaml again\n")
-    monkeypatch.setattr(rp.subprocess, "run",
-                        lambda *a, **k: subprocess.CompletedProcess(a[0], 0, stdout=out, stderr=err))
+
+    def fake_run(args, **k):
+        mode = args[args.index("--mode") + 1] if "--mode" in args else "improve+review"
+        if mode == "improve":
+            return subprocess.CompletedProcess(args, 0, stdout=imp_out, stderr=err)
+        return subprocess.CompletedProcess(args, 0, stdout=rev_out, stderr="")
+    monkeypatch.setattr(rp.subprocess, "run", fake_run)
     items = rp.fetch({"pr_url": "https://github.com/o/r/pull/1"})
     assert items and rp.invoke_meta()["repaired_parses"] == 2
     assert rp.invoke_meta()["partial_tool_failure"] is None
@@ -947,3 +956,480 @@ def test_failure_stderr_tail_fallback_honors_limit():
     noise = "x" * 2000   # 远超默认 limit=800
     assert len(RP.failure_stderr_tail(noise, limit=100)) <= 100   # limit=100 生效（旧代码会返回 600）
     assert len(RP.failure_stderr_tail(noise)) <= 800              # 默认 limit=800 生效
+
+
+# ============================================================================
+# fan-out：improve / review 两子进程并行（_collect_subprocess / _merge_results / 融合路径）
+# 用户要求：测多进程的多种极限/边界场景——两成功合并、部分降级（一挂一成）、全挂各类型、
+# 超时、单 mode、日志合并、fanout-off 回退、以及【真并行】（非串行）的铁证。
+# ============================================================================
+_SUG = {"relevant_file": "a.py", "relevant_lines_start": 1, "relevant_lines_end": 1,
+        "one_sentence_summary": "validate token", "label": "security"}
+_KI = {"relevant_file": "b.py", "start_line": 2, "end_line": 2,
+       "issue_header": "Edge case", "issue_content": "n=0", "label": "possible issue"}
+_IMP_OUT = {"code_suggestions": [_SUG], "review": {"key_issues_to_review": []}}
+_REV_OUT = {"code_suggestions": [], "review": {"key_issues_to_review": [_KI]}}
+
+
+def _mode_of(args):
+    """从 subprocess.run 的 args 列表取 --mode 值（fan-out 时为 improve / review）。"""
+    return args[args.index("--mode") + 1] if "--mode" in args else "improve+review"
+
+
+def _fanout_mock(imp_proc, rev_proc, *, record=None):
+    """造一个按 --mode 分流的 subprocess.run mock：improve 子进程返回 imp_proc，review 返回 rev_proc。
+    record（可选）收集每次调用的 (mode, kwargs) 用于断言 env/调用次数。"""
+    def fake(args, **k):
+        mode = _mode_of(args)
+        if record is not None:
+            record.append((mode, k))
+        return imp_proc if mode == "improve" else rev_proc
+    return fake
+
+
+# ---------------- _fanout_enabled ----------------
+def test_fanout_enabled_default_for_improve_review(monkeypatch):
+    monkeypatch.delenv("TOUCHSTONE_PRAGENT_FANOUT", raising=False)
+    assert RP._fanout_enabled("improve+review") is True
+
+
+def test_fanout_disabled_by_env(monkeypatch):
+    for off in ("false", "0", "no", "off", "FALSE"):
+        monkeypatch.setenv("TOUCHSTONE_PRAGENT_FANOUT", off)
+        assert RP._fanout_enabled("improve+review") is False, off
+    monkeypatch.setenv("TOUCHSTONE_PRAGENT_FANOUT", "true")
+    assert RP._fanout_enabled("improve+review") is True
+
+
+def test_fanout_disabled_for_single_mode():
+    assert RP._fanout_enabled("improve") is False      # 无可并行对象
+    assert RP._fanout_enabled("review") is False
+
+
+# ---------------- _collect_subprocess：六种状态归一 ----------------
+def test_collect_ok_parses_data(monkeypatch):
+    monkeypatch.setattr(RP.subprocess, "run", lambda a, **k: _Proc(0, out=json.dumps(_IMP_OUT), err="litellm noise"))
+    r = RP._collect_subprocess(["x", "--mode", "improve"], "improve", 60)
+    assert r.status == RP._OK and r.data == _IMP_OUT
+    assert r.stderr == "litellm noise"               # 原始 stderr 保留（供诊断）
+
+
+def test_collect_crashed_injects_marker_keeps_stderr(monkeypatch):
+    monkeypatch.setattr(RP.subprocess, "run", lambda a, **k: _Proc(2, err="boom-detail"))
+    r = RP._collect_subprocess(["x"], "improve", 60)
+    assert r.status == RP._CRASHED
+    assert "[runner] improve subprocess crashed" in r.stderr   # 归因标记（检测契约）
+    assert "boom-detail" in r.stderr                            # 原始 stderr 原样保留
+    assert "boom-detail" in r.reason
+
+
+def test_collect_timeout_status(monkeypatch):
+    import subprocess as sp
+    def boom(a, **k):
+        raise sp.TimeoutExpired(cmd=a, timeout=600)
+    monkeypatch.setattr(RP.subprocess, "run", boom)
+    r = RP._collect_subprocess(["x"], "review", 600)
+    assert r.status == RP._TIMED_OUT and r.timeout == 600
+    assert "[runner] review subprocess timed out" in r.stderr
+    assert "llm_failed" not in r.stderr           # collect 只记原始失败；降级类型由 _aggregate_failure 定（不在此预烤）
+
+
+def test_collect_catchall_exception_does_not_raise(monkeypatch):
+    """subprocess.run 抛 Timeout/FileNotFound 之外的异常（PermissionError 等）→ 兑现「绝不抛」：
+    归 _CRASHED（带异常类型），不击穿出去（fan-out 下会炸整条链路）。"""
+    def boom(a, **k):
+        raise PermissionError("exec format error")
+    monkeypatch.setattr(RP.subprocess, "run", boom)
+    r = RP._collect_subprocess(["x"], "improve", 60)   # 不抛
+    assert r.status == RP._CRASHED
+    assert "[runner] improve subprocess crashed" in r.stderr
+    assert "PermissionError" in r.stderr and "PermissionError" in r.reason   # 异常类型可见
+
+
+def test_collect_missing_status_has_install_hint(monkeypatch):
+    def boom(a, **k):
+        raise FileNotFoundError("no such cmd")
+    monkeypatch.setattr(RP.subprocess, "run", boom)
+    r = RP._collect_subprocess(["x"], "improve", 60)
+    assert r.status == RP._MISSING
+    assert "pip install pr-agent" in r.reason
+
+
+def test_collect_bad_json_status(monkeypatch):
+    monkeypatch.setattr(RP.subprocess, "run", lambda a, **k: _Proc(0, out="not json"))
+    r = RP._collect_subprocess(["x"], "improve", 60)
+    assert r.status == RP._BAD_JSON
+    assert "[runner] improve subprocess non-JSON output" in r.stderr
+    assert "JSON" in r.reason
+
+
+def test_collect_json_parse_non_decode_error_does_not_raise(monkeypatch):
+    # PR#81 fix1：_collect_subprocess 兑现「绝不抛」契约。_extract_json 当前只抛 JSONDecodeError，
+    # 但若未来改动引入其他异常（如 KeyError/TypeError），catch-all 须归 _BAD_JSON 而非击穿。
+    # 模拟未来回归：让 _extract_json 抛非 JSONDecodeError → 断言不抛、归 _BAD_JSON、异常类型入诊断。
+    monkeypatch.setattr(RP.subprocess, "run", lambda a, **k: _Proc(0, out='{"code_suggestions": []}'))
+    monkeypatch.setattr(RP, "_extract_json", lambda s: (_ for _ in ()).throw(ValueError("synthetic future regression")))
+    r = RP._collect_subprocess(["x"], "review", 60)
+    assert r.status == RP._BAD_JSON                       # 不抛，归 _BAD_JSON（输出解析不可用）
+    assert "ValueError" in r.stderr and "synthetic future regression" in r.stderr
+    assert "ValueError" in r.reason
+
+
+def test_collect_degraded_status_carries_value(monkeypatch):
+    monkeypatch.setattr(RP.subprocess, "run", lambda a, **k:
+                        _Proc(0, out=json.dumps({"_degraded": "llm_failed", "reason": "AuthError: 401"})))
+    r = RP._collect_subprocess(["x"], "review", 60)
+    assert r.status == RP._DEGRADED and r.degraded == "llm_failed"
+    assert r.reason == "AuthError: 401"
+
+
+def test_collect_degraded_only_when_truthy(monkeypatch):
+    # _degraded 为空串/None（边界：误带的假标志）→ 不当降级，按 _OK 处理
+    for fake_deg in ("", None):
+        monkeypatch.setattr(RP.subprocess, "run", lambda a, _d=fake_deg, **k:
+                            _Proc(0, out=json.dumps({"_degraded": _d, "code_suggestions": [_SUG]})))
+        r = RP._collect_subprocess(["x"], "improve", 60)
+        assert r.status == RP._OK, fake_deg
+
+
+def test_collect_passes_distinct_log_env(monkeypatch):
+    """fan-out：每子进程经 env 收到独立 TOUCHSTONE_INTERACTION_LOG（防并发写覆盖）。"""
+    seen = {}
+    def fake(args, **k):
+        seen[_mode_of(args)] = k.get("env", {}).get("TOUCHSTONE_INTERACTION_LOG")
+        return _Proc(0, out=json.dumps(_IMP_OUT if _mode_of(args) == "improve" else _REV_OUT))
+    monkeypatch.setattr(RP.subprocess, "run", fake)
+    monkeypatch.setattr(RP, "_experience_injection", lambda d: "")
+    monkeypatch.setenv("TOUCHSTONE_INTERACTION_LOG", "/tmp/base.log")
+    RP.fetch({"owner": "o", "repo": "r", "number": 3})
+    assert seen["improve"].endswith(".improve") and seen["review"].endswith(".review")
+    assert seen["improve"] != seen["review"]
+
+
+# ---------------- _merge_results：纯函数边界矩阵 ----------------
+def _res(mode, status, data=None, stderr="", reason="", degraded=None):
+    return RP._SubResult(mode, status, data=data, stderr=stderr, reason=reason, degraded=degraded)
+
+
+def test_merge_both_ok_combines_cs_from_improve_review_from_review():
+    imp = _res("improve", RP._OK, _IMP_OUT)
+    rev = _res("review", RP._OK, _REV_OUT)
+    data, stderr, failure = RP._merge_results(imp, rev)
+    assert failure is None
+    assert data["code_suggestions"] == [_SUG]          # cs 取自 improve
+    assert data["review"]["key_issues_to_review"] == [_KI]   # review 取自 review
+    # 跨侧数据被忽略：improve 的 review 占位、review 的 cs 占位都不进合并
+    assert len(data["code_suggestions"]) == 1 and len(data["review"]["key_issues_to_review"]) == 1
+
+
+def test_merge_takes_correct_side_ignores_cross():
+    # improve 恰好带了 review 数据、review 恰好带了 cs —— 合并必须各取【本侧】，不串台
+    imp = _res("improve", RP._OK, {"code_suggestions": [_SUG], "review": {"key_issues_to_review": [_KI]}})
+    rev = _res("review", RP._OK, {"code_suggestions": [_SUG], "review": {"key_issues_to_review": []}})
+    data, _, failure = RP._merge_results(imp, rev)
+    assert failure is None
+    assert data["code_suggestions"] == [_SUG]                      # improve 的 cs
+    assert data["review"]["key_issues_to_review"] == []            # review 的（空）review，非 improve 带过来的
+
+
+def test_merge_same_subprocess_no_stderr_duplication():
+    # fanout-off：imp is rev（同对象）→ stderr 不重复、data 原样
+    single = _res("improve+review", RP._OK, _IMP_OUT, stderr="once\n")
+    data, stderr, failure = RP._merge_results(single, single)
+    assert failure is None and stderr == "once\n"      # 不是 "once\n\nonce"
+    assert data is single.data                          # 同对象直接用
+
+
+def test_merge_improve_not_run_single_mode():
+    imp = _res("improve", RP._NOT_RUN)
+    rev = _res("review", RP._OK, _REV_OUT)
+    data, _, failure = RP._merge_results(imp, rev)
+    assert failure is None                              # 只跑了一侧且成功
+    assert data["code_suggestions"] == [] and data["review"]["key_issues_to_review"] == [_KI]
+
+
+def test_merge_review_not_run_single_mode():
+    imp = _res("improve", RP._OK, _IMP_OUT)
+    rev = _res("review", RP._NOT_RUN)
+    data, _, failure = RP._merge_results(imp, rev)
+    assert failure is None
+    assert data["code_suggestions"] == [_SUG] and data["review"] == {}
+
+
+def test_merge_missing_is_fatal_no_engine():
+    # 引擎没装：哪怕另一侧成功，整体仍 no_engine（救不了"装不上"）
+    imp = _res("improve", RP._MISSING, reason="pip install pr-agent …")
+    rev = _res("review", RP._OK, _REV_OUT)
+    data, _, failure = RP._merge_results(imp, rev)
+    assert failure == ("no_engine", "pip install pr-agent …")
+
+
+def test_merge_both_crashed_no_engine():
+    imp = _res("improve", RP._CRASHED, stderr="[runner] improve subprocess crashed（rc=2）\nboom",
+               reason="improve rc=2")
+    rev = _res("review", RP._CRASHED, reason="review rc=2")
+    _, stderr, failure = RP._merge_results(imp, rev)
+    assert failure[0] == "no_engine"
+    assert "boom" in stderr                              # 原始诊断保留
+
+
+def test_merge_both_timed_out_llm_failed():
+    imp = _res("improve", RP._TIMED_OUT, reason="improve timeout")
+    rev = _res("review", RP._TIMED_OUT, reason="review timeout")
+    _, _, failure = RP._merge_results(imp, rev)
+    assert failure[0] == "llm_failed"                    # 超时=LLM 调用太慢，非引擎没装
+
+
+def test_merge_both_bad_json_no_engine():
+    imp = _res("improve", RP._BAD_JSON, reason="improve bad json")
+    rev = _res("review", RP._BAD_JSON, reason="review bad json")
+    _, _, failure = RP._merge_results(imp, rev)
+    assert failure[0] == "no_engine"
+
+
+def test_merge_both_degraded_uses_value():
+    imp = _res("improve", RP._DEGRADED, degraded="llm_failed", reason="401")
+    rev = _res("review", RP._DEGRADED, degraded="llm_failed", reason="401")
+    _, _, failure = RP._merge_results(imp, rev)
+    assert failure == ("llm_failed", "401\n401")
+
+
+def test_merge_mixed_timeout_and_crash_prefers_llm_failed():
+    imp = _res("improve", RP._TIMED_OUT, reason="imp timeout")
+    rev = _res("review", RP._CRASHED, reason="rev crash")
+    _, _, failure = RP._merge_results(imp, rev)
+    assert failure[0] == "llm_failed"                    # 有超时→就高归因 llm_failed
+
+
+def test_merge_mixed_degraded_llm_failed_and_crash_prefers_llm_failed():
+    imp = _res("improve", RP._DEGRADED, degraded="llm_failed", reason="401")
+    rev = _res("review", RP._CRASHED, reason="rev crash")
+    _, _, failure = RP._merge_results(imp, rev)
+    assert failure[0] == "llm_failed"
+
+
+def test_merge_both_degraded_mixed_values_picks_llm_failed():
+    # PR#81 fix2：两侧都 _degraded 但【值混合】（improve=no_engine、review=llm_failed）→ 就高归因 llm_failed。
+    # 旧序（all(_DEGRADED) 分支先于 any(llm_failed) 分支）会落到 failed[0]=improve 的值=no_engine，漏掉就高。
+    # improve 在 (imp, rev) 元组里居首即 failed[0]，故此用例恰好命中旧 bug 的取错侧。
+    imp = _res("improve", RP._DEGRADED, degraded="no_engine", reason="improve 引擎缺失")
+    rev = _res("review", RP._DEGRADED, degraded="llm_failed", reason="review 401")
+    _, _, failure = RP._merge_results(imp, rev)
+    assert failure[0] == "llm_failed"                        # 就高：llm_failed 盖过 no_engine
+    assert "improve 引擎缺失" in failure[1] and "review 401" in failure[1]   # 两侧 reason 都进汇总
+
+
+def test_merge_both_degraded_all_no_engine_stays_no_engine():
+    # fix2 回归锁：两侧都 _degraded 且无一 llm_failed → all 分支仍取 failed[0].degraded=no_engine
+    # （调换分支顺序后这条路径不可被破坏）。
+    imp = _res("improve", RP._DEGRADED, degraded="no_engine", reason="imp 缺失")
+    rev = _res("review", RP._DEGRADED, degraded="no_engine", reason="rev 缺失")
+    _, _, failure = RP._merge_results(imp, rev)
+    assert failure[0] == "no_engine"
+
+
+def test_merge_improve_failed_review_ok_is_partial_not_failure():
+    # 部分降级：improve 挂、review 成 → 不抛（保留 review 发现），交下游 partial 元信息处理
+    imp = _res("improve", RP._CRASHED, stderr="[runner] improve subprocess crashed（rc=2）")
+    rev = _res("review", RP._OK, _REV_OUT)
+    data, _, failure = RP._merge_results(imp, rev)
+    assert failure is None                               # 不整轮降级
+    assert data["review"]["key_issues_to_review"] == [_KI]   # review 发现照常在
+
+
+def test_merge_improve_degraded_review_ok_is_partial():
+    imp = _res("improve", RP._DEGRADED, degraded="llm_failed", reason="401")
+    rev = _res("review", RP._OK, _REV_OUT)
+    data, _, failure = RP._merge_results(imp, rev)
+    assert failure is None
+
+
+# ---------------- _status_partial_failure：精确归因 ----------------
+def test_status_partial_failure_attributes():
+    assert RP._status_partial_failure(_res("improve", RP._CRASHED), _res("review", RP._OK)) == "improve"
+    assert RP._status_partial_failure(_res("improve", RP._OK), _res("review", RP._TIMED_OUT)) == "review"
+    assert RP._status_partial_failure(_res("improve", RP._OK), _res("review", RP._OK)) is None
+    assert RP._status_partial_failure(_res("improve", RP._CRASHED), _res("review", RP._CRASHED)) is None  # 双挂不归单侧
+    single = _res("improve+review", RP._OK)
+    assert RP._status_partial_failure(single, single) is None    # fanout-off：交 partial_tool_failure
+
+
+# ---------------- 融合路径（fetch + 模式感知 mock）----------------
+def test_fanout_both_success_merges_four_items(monkeypatch):
+    monkeypatch.setattr(RP.subprocess, "run",
+                        _fanout_mock(_Proc(0, out=json.dumps({
+                            "code_suggestions": _RAW["code_suggestions"], "review": {"key_issues_to_review": []}})),
+                                     _Proc(0, out=json.dumps({
+                            "code_suggestions": [], "review": _RAW["review"]}))))
+    monkeypatch.setattr(RP, "_experience_injection", lambda d: "")
+    assert len(RP.fetch({"owner": "o", "repo": "r", "number": 3})) == 4   # 3 cs(improve) + 1 ki(review)
+
+
+def test_fanout_invokes_two_subprocesses_improve_and_review(monkeypatch):
+    record = []
+    monkeypatch.setattr(RP.subprocess, "run",
+                        _fanout_mock(_Proc(0, out=json.dumps(_IMP_OUT)), _Proc(0, out=json.dumps(_REV_OUT)),
+                                     record=record))
+    monkeypatch.setattr(RP, "_experience_injection", lambda d: "")
+    RP.fetch({"owner": "o", "repo": "r", "number": 3})
+    modes = sorted(m for m, _ in record)
+    assert modes == ["improve", "review"]                # 确实起了两个子进程
+    assert len(record) == 2
+
+
+def test_fanout_improve_degraded_review_ok_returns_review_findings(monkeypatch):
+    """核心行为变化：improve 挂（_degraded llm_failed）但 review 成 → 不整轮降级，返回 review 发现、
+    标 partial=improve。旧单子进程下任一 _degraded 即整轮失败；fan-out 下部分降级更保真。"""
+    monkeypatch.setattr(RP.subprocess, "run",
+                        _fanout_mock(_Proc(0, out=json.dumps({"_degraded": "llm_failed", "reason": "401"})),
+                                     _Proc(0, out=json.dumps(_REV_OUT))))
+    monkeypatch.setattr(RP, "_experience_injection", lambda d: "")
+    items = RP.fetch({"owner": "o", "repo": "r", "number": 3})
+    assert len(items) == 1 and items[0]["tool"] == "review"   # review 的意见照常返回
+    assert RP.invoke_meta()["partial_tool_failure"] == "improve"
+
+
+def test_fanout_review_degraded_improve_ok_returns_suggestions(monkeypatch):
+    monkeypatch.setattr(RP.subprocess, "run",
+                        _fanout_mock(_Proc(0, out=json.dumps(_IMP_OUT)),
+                                     _Proc(0, out=json.dumps({"_degraded": "llm_failed", "reason": "401"}))))
+    monkeypatch.setattr(RP, "_experience_injection", lambda d: "")
+    items = RP.fetch({"owner": "o", "repo": "r", "number": 3})
+    assert len(items) == 1 and items[0]["tool"] == "improve"
+    assert RP.invoke_meta()["partial_tool_failure"] == "review"
+
+
+def test_fanout_improve_timeout_review_ok_partial(monkeypatch):
+    import subprocess as sp
+    def fake(args, **k):
+        if _mode_of(args) == "improve":
+            raise sp.TimeoutExpired(cmd=args, timeout=600)
+        return _Proc(0, out=json.dumps(_REV_OUT))
+    monkeypatch.setattr(RP.subprocess, "run", fake)
+    monkeypatch.setattr(RP, "_experience_injection", lambda d: "")
+    items = RP.fetch({"owner": "o", "repo": "r", "number": 3})
+    assert len(items) == 1                                  # 超时侧丢弃，review 发现保留
+    assert RP.invoke_meta()["partial_tool_failure"] == "improve"
+
+
+def test_fanout_improve_crash_review_ok_partial(monkeypatch):
+    monkeypatch.setattr(RP.subprocess, "run",
+                        _fanout_mock(_Proc(2, err="improve crashed"), _Proc(0, out=json.dumps(_REV_OUT))))
+    monkeypatch.setattr(RP, "_experience_injection", lambda d: "")
+    items = RP.fetch({"owner": "o", "repo": "r", "number": 3})
+    assert len(items) == 1
+    assert RP.invoke_meta()["partial_tool_failure"] == "improve"
+
+
+def test_fanout_improve_crash_review_empty_not_swallowed(monkeypatch):
+    # PR#81 fix3：fan-out 下 improve 硬失败（rc=2、stderr 带 pred-failure 串）、review 正常却空建议。
+    # 合并后 data 正好空 + stderr 带失败串 → 旧 swallowed 兜底会误把整轮判 llm_failed、丢掉 review 的真发现。
+    # fix3：_status_partial_failure 命中（=improve）→ 豁免 swallowed 检查；整轮保 partial、不降级、不抛。
+    monkeypatch.setattr(RP.subprocess, "run",
+                        _fanout_mock(
+                            _Proc(2, err="Failed to generate prediction with openai/glm-5.2"),
+                            _Proc(0, out=json.dumps({"code_suggestions": [],
+                                                     "review": {"key_issues_to_review": []}}))))
+    monkeypatch.setattr(RP, "_experience_injection", lambda d: "")
+    items = RP.fetch({"owner": "o", "repo": "r", "number": 3})
+    assert items == []                                        # review 空建议=真没意见，不抛
+    assert RP.invoke_meta()["partial_tool_failure"] == "improve"   # 失败仍可见，整轮可信
+
+
+def test_fanout_both_degraded_raises(monkeypatch):
+    monkeypatch.setattr(RP.subprocess, "run",
+                        _fanout_mock(_Proc(0, out=json.dumps({"_degraded": "llm_failed", "reason": "401"})),
+                                     _Proc(0, out=json.dumps({"_degraded": "llm_failed", "reason": "401"}))))
+    monkeypatch.setattr(RP, "_experience_injection", lambda d: "")
+    with pytest.raises(RP.ReviewEngineDegraded) as ei:
+        RP.fetch({"owner": "o", "repo": "r", "number": 3})
+    assert ei.value.degraded == "llm_failed"
+
+
+def test_fanout_both_timeout_raises_llm_failed(monkeypatch):
+    import subprocess as sp
+    def fake(args, **k):
+        raise sp.TimeoutExpired(cmd=args, timeout=600)
+    monkeypatch.setattr(RP.subprocess, "run", fake)
+    monkeypatch.setattr(RP, "_experience_injection", lambda d: "")
+    with pytest.raises(RP.ReviewEngineDegraded) as ei:
+        RP.fetch({"owner": "o", "repo": "r", "number": 3})
+    assert ei.value.degraded == "llm_failed"
+
+
+def test_fanout_both_empty_clean_not_swallowed(monkeypatch):
+    # 干净的小 PR：两侧都 0 原始建议、无失败串 → 不误判吞没，engine ok、0 发现
+    monkeypatch.setattr(RP.subprocess, "run",
+                        _fanout_mock(_Proc(0, out=json.dumps({"code_suggestions": [], "review": {"key_issues_to_review": []}}),
+                                            err="LiteLLM-Async Success Call"),
+                                     _Proc(0, out=json.dumps({"code_suggestions": [], "review": {"key_issues_to_review": []}}),
+                                            err="LiteLLM-Async Success Call")))
+    monkeypatch.setattr(RP, "_experience_injection", lambda d: "")
+    assert RP.fetch({"owner": "o", "repo": "r", "number": 3}) == []
+
+
+def test_fanout_interaction_logs_merged_into_base(monkeypatch, tmp_path):
+    """两子进程写各自交互日志（.improve/.review），跑完合并进 base 并删子文件——不丢任一侧、无并发覆盖。"""
+    base_log = tmp_path / "ix.log"
+    monkeypatch.setenv("TOUCHSTONE_INTERACTION_LOG", str(base_log))
+
+    def fake(args, **k):
+        mode = _mode_of(args)
+        log_path = k.get("env", {}).get("TOUCHSTONE_INTERACTION_LOG")
+        if log_path:
+            with open(log_path, "w", encoding="utf-8") as fh:
+                fh.write(f"[{mode}] request/response trace\n")
+        return _Proc(0, out=json.dumps(_IMP_OUT if mode == "improve" else _REV_OUT))
+    monkeypatch.setattr(RP.subprocess, "run", fake)
+    monkeypatch.setattr(RP, "_experience_injection", lambda d: "")
+    RP.fetch({"owner": "o", "repo": "r", "number": 3})
+    merged = base_log.read_text(encoding="utf-8")
+    assert "[improve] request/response trace" in merged
+    assert "[review] request/response trace" in merged
+    assert not (tmp_path / "ix.log.improve").exists()      # 子文件已清理
+    assert not (tmp_path / "ix.log.review").exists()
+
+
+def test_fanout_disabled_runs_single_subprocess(monkeypatch):
+    """TOUCHSTONE_PRAGENT_FANOUT=false → 回落单子进程（improve+review 合并），向后兼容旧行为。"""
+    calls = []
+
+    def fake(args, **k):
+        calls.append(_mode_of(args))
+        return _Proc(0, out=json.dumps(_RAW))              # 单子进程返回完整 improve+review
+    monkeypatch.setattr(RP.subprocess, "run", fake)
+    monkeypatch.setattr(RP, "_experience_injection", lambda d: "")
+    monkeypatch.setenv("TOUCHSTONE_PRAGENT_FANOUT", "false")
+    assert len(RP.fetch({"owner": "o", "repo": "r", "number": 3})) == 4
+    assert calls == ["improve+review"]                     # 只调一次、合并 mode
+
+
+def test_single_mode_improve_runs_one_subprocess(monkeypatch):
+    """mode=improve（只跑建议侧）→ 单子进程、review 占位 _NOT_RUN。"""
+    monkeypatch.setattr(RP.subprocess, "run", lambda a, **k: _Proc(0, out=json.dumps(_IMP_OUT)))
+    monkeypatch.setattr(RP, "_experience_injection", lambda d: "")
+    monkeypatch.setattr(RP, "_provider_mode", lambda ctx: "improve")   # 强制单一 mode
+    assert len(RP.fetch({"owner": "o", "repo": "r", "number": 3})) == 1
+
+
+def test_fanout_subprocesses_run_in_parallel(monkeypatch):
+    """铁证：fan-out 真并行（两子进程并发执行），非串行——否则慢轮省时假设不成立。
+    用并发计数器：两 subprocess.run 调用有重叠 → max_active==2（串行会是 1）。"""
+    import threading
+    import time as _time
+    state = {"active": 0, "max_active": 0}
+    lock = threading.Lock()
+
+    def fake(args, **k):
+        with lock:
+            state["active"] += 1
+            state["max_active"] = max(state["max_active"], state["active"])
+        _time.sleep(0.08)                                  # 放大重叠窗口，让两调用并发
+        with lock:
+            state["active"] -= 1
+        out = _IMP_OUT if _mode_of(args) == "improve" else _REV_OUT
+        return _Proc(0, out=json.dumps(out))
+    monkeypatch.setattr(RP.subprocess, "run", fake)
+    monkeypatch.setattr(RP, "_experience_injection", lambda d: "")
+    RP.fetch({"owner": "o", "repo": "r", "number": 3})
+    assert state["max_active"] == 2                        # 两子进程并发（串行=1 → 断言失败）
