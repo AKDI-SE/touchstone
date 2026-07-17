@@ -84,6 +84,150 @@ def _write_interaction_log(out):
             pass
 
 
+# ---------------------------------------------------------------------------
+# LLM 调用调优：重试语义收敛 + glm 系列流式化。要点全部实证（183 runs / 96 PRs 全量分析
+# + 缩尺受控实验），勿凭 litellm 文档或历史注释想当然：
+#   • 真实失败两个种——hard timeout（PR#86 两次尝试 1221.2s/1515.22s 全超时）与长生成断连
+#     （PR#81/#88/#83 降级轮，"glm 长生成路径负载下断连、短调用正常"）；全部发生在调用
+#     600s+ 之后，轮内重试救回率 0/8；轮级转移 slow→slow 18:7 且变快间隔为小时级——慢是
+#     端点×时段×规模的状态，不随重试消失。故默认不重试（N=0），唯一保留的是秒级快失败
+#     （快窗内 TLS 瞬断/网关快速 5xx：成本低、真抖动概率高）的 +1 次。
+#   • 重试只放 tenacity 层（每次重试是全新 litellm 调用，流式/日志语义干净）；litellm 包装层
+#     与 openai client 内层一律 0——否则 client 默认 max_retries=2 在底下偷偷乘（缩尺实验：
+#     一次工具调用全超时路径端点收到 7 个 HTTP 请求）。
+#   • ai_timeout 是 httpx per-read 超时不是墙钟（滴流实验 4s/字节击穿 6s 超时 120s+）；
+#     流式化让该语义恰好变正确：持续出字不误杀、真死等 600s 必杀。
+# ---------------------------------------------------------------------------
+
+
+def _llm_num_retries():
+    """N：tenacity 层重试次数（secret env 控制）。默认 0 = 不重试；非法 env fail-loud 回 0。"""
+    _raw = os.environ.get("TOUCHSTONE_LLM_NUM_RETRIES", "0")
+    try:
+        return max(0, int(_raw or 0))
+    except (ValueError, TypeError):
+        print(f"[runner] TOUCHSTONE_LLM_NUM_RETRIES 非法（{_raw!r}），回退默认 0", file=sys.stderr)
+        return 0
+
+
+def _retry_fast_window():
+    """快窗（秒）。默认 120；0 = 关闭快失败加成（纯 N 次语义）；非法 env fail-loud 回默认。"""
+    _raw = os.environ.get("TOUCHSTONE_LLM_RETRY_FAST_WINDOW", "120")
+    try:
+        return max(0, int(_raw or 0))
+    except (ValueError, TypeError):
+        print(f"[runner] TOUCHSTONE_LLM_RETRY_FAST_WINDOW 非法（{_raw!r}），回退默认 120", file=sys.stderr)
+        return 120
+
+
+def _is_jitter_error(exc):
+    """抖动类判定（纯函数，供单测）：APIError 中排除超时（litellm.Timeout ⊂ openai.APITimeoutError，
+    与长生成同源）与限流（沿用 pr-agent 原判定永不重试）。"""
+    import openai
+    return (isinstance(exc, openai.APIError)
+            and not isinstance(exc, (openai.RateLimitError, openai.APITimeoutError)))
+
+
+def _make_retry_policy(n_retries, fast_window):
+    """tenacity 重试谓词工厂（纯函数，供单测）：
+      允许重试次数 = N + (1 若 抖动类异常 且 失败发生在快窗内 else 0)；RateLimit 永不重试。
+    attempt_number 语义：第 k 次尝试失败后 tenacity 以 attempt_number=k 询问；
+    放行条件 k <= allowed → 实际重试次数恰为 allowed。"""
+    def _policy(retry_state):
+        outcome = getattr(retry_state, "outcome", None)
+        exc = outcome.exception() if (outcome is not None and outcome.failed) else None
+        if exc is None:
+            return False
+        import openai
+        if isinstance(exc, openai.RateLimitError):
+            return False
+        allowed = n_retries
+        if _is_jitter_error(exc) and retry_state.seconds_since_start < fast_window:
+            allowed += 1
+        return retry_state.attempt_number <= allowed
+    return _policy
+
+
+def _make_stop(n_retries):
+    """tenacity stop 上限（纯函数）：最多 N+2 次尝试（覆盖快失败 N+1 次重试路径）。
+    实际截断通常由 _make_retry_policy 先发生；本函数只是防御性天花板。"""
+    def _stop(retry_state):
+        return retry_state.attempt_number >= n_retries + 2
+    return _stop
+
+
+def _llm_thinking_extra_body():
+    """思考模式开关（secret env TOUCHSTONE_LLM_THINKING）→ 注入请求体的 extra_body。
+    值：disabled / enabled；未设/空 = 不注入（随端点默认）。方言为 GLM 系
+    `{"thinking": {"type": ...}}`（对 litellm 1.84.0 实测 extra_body 原样落到请求 JSON 顶层）。
+    背景：思考型端点默认开思考时，每次调用先烧数千 reasoning token 再出正文——大 diff
+    improve 单调用 10min+ 的头号嫌疑；pr-agent 对 GLM 无任何思考控制路径（其 thinking
+    参数仅 Claude extended thinking 专用），故由 runner 注入。优先在网关侧对本 key 默认
+    关思考（治本）；网关不可改时用本开关。非法值 fail-loud 不注入（防静默改变端点行为）。"""
+    _raw = os.environ.get("TOUCHSTONE_LLM_THINKING", "").strip().lower()
+    if not _raw:
+        return None
+    if _raw in ("disabled", "enabled"):
+        return {"thinking": {"type": _raw}}
+    print(f"[runner] TOUCHSTONE_LLM_THINKING 非法（{_raw!r}，需 disabled/enabled），不注入", file=sys.stderr)
+    return None
+
+
+def _guard_acompletion(orig_acompletion, extra_body=None):
+    """围栏（纯函数工厂，供单测）：逐调用注入 max_retries=0——openai client 内层不重试
+    （否则默认 max_retries=2 在 tenacity 之下偷偷乘）；extra_body 非空时一并注入
+    （思考开关等端点方言，主模型与自评模型统一生效）。setdefault：上游显式传参不覆盖。"""
+    async def _guarded(*args, **kwargs):
+        kwargs.setdefault("max_retries", 0)
+        if extra_body and "extra_body" not in kwargs:
+            kwargs["extra_body"] = extra_body
+        return await orig_acompletion(*args, **kwargs)
+    return _guarded
+
+
+def _install_llm_call_tuning(model_override):
+    """接线：围栏 + tenacity 谓词/上限 + glm 系列流式。调优是收敛性优化——任何一步失败
+    fail-loud（stderr + 交互日志）后继续，不把可用引擎搞挂。"""
+    try:
+        from pr_agent.algo.ai_handlers import litellm_ai_handler as _lah
+    except Exception as e:
+        print(f"[runner] LLM 调用调优未安装（pr_agent 导入失败：{type(e).__name__}: {e}）", file=sys.stderr)
+        _ix(f"LLM 调用调优未安装: {type(e).__name__}: {e}")
+        return
+    # 围栏：client 内层 0 重试 + 思考开关注入
+    try:
+        _thinking = _llm_thinking_extra_body()
+        _lah.acompletion = _guard_acompletion(_lah.acompletion, extra_body=_thinking)
+        _ix("围栏: openai client max_retries=0（每 litellm 调用恰 1 次 HTTP 尝试）"
+            + (f"；thinking={_thinking['thinking']['type']}" if _thinking else "；thinking=端点默认"))
+    except Exception as e:
+        print(f"[runner] 围栏安装失败：{type(e).__name__}: {e}", file=sys.stderr)
+        _ix(f"围栏安装失败: {type(e).__name__}: {e}")
+    # tenacity 层：谓词 + 上限（控制器运行期可改，纯函数谓词/stop 均经概念验证）
+    _n, _fw = _llm_num_retries(), _retry_fast_window()
+    try:
+        _pol = _lah.LiteLLMAIHandler.chat_completion.retry
+        _pol.retry = _make_retry_policy(_n, _fw)
+        _pol.stop = _make_stop(_n)
+        _ix(f"重试策略: N={_n}（慢失败）/ N+1（{_fw}s 快窗内抖动）/ RateLimit 永不")
+    except Exception as e:
+        print(f"[runner] 重试策略安装失败，维持 pr-agent 默认（超时/断连也重试）："
+              f"{type(e).__name__}: {e}", file=sys.stderr)
+        _ix(f"重试策略安装失败: {type(e).__name__}: {e}")
+    # glm 系列流式化：主模型 + 自评模型都入清单（自评模型同为 glm 长生成路径）
+    if os.environ.get("TOUCHSTONE_LLM_STREAM", "true").lower() in ("1", "true", "yes"):
+        try:
+            from pr_agent.algo import STREAMING_REQUIRED_MODELS
+            _models = [model_override, os.environ.get("TOUCHSTONE_LLM_REFLECT_MODEL", "").strip()]
+            for _m in (f"openai/{m}" for m in _models if m):
+                if _m not in STREAMING_REQUIRED_MODELS:
+                    STREAMING_REQUIRED_MODELS.append(_m)   # handler 实例持同一 list 对象，append 即生效
+            _ix(f"流式: {[m for m in _models if m]} 已入 STREAMING_REQUIRED_MODELS")
+        except Exception as e:
+            print(f"[runner] 流式启用失败，维持非流式：{type(e).__name__}: {e}", file=sys.stderr)
+            _ix(f"流式启用失败: {type(e).__name__}: {e}")
+
+
 def run(pr_url, mode, extra_instructions=None):
     """调 PR-Agent（不发评论）→ 返回 dict 供 touchstone 解析。
 
@@ -167,6 +311,18 @@ def run(pr_url, mode, extra_instructions=None):
             s.config.fallback_models = []
         except Exception:
             pass
+        # improve 自评换模。注意概念区分：这是 config.model_reasoning（improve 生成建议后那次
+        # mandatory self-reflection 打分调用【专用】的模型，pr_code_suggestions.py:409），
+        # 【不是】fallback_models（那是主调用失败后 retry_with_fallback_models 的换模清单，
+        # 上面已清空）。自评是浅任务无需大模型；指到 glm-5.2-air 可把 improve 健康路径
+        # 耗时近乎减半。不设 = 沿用主模型（pr-agent 默认）。
+        _reflect = os.environ.get("TOUCHSTONE_LLM_REFLECT_MODEL", "").strip()
+        if _reflect:
+            try:
+                s.config.model_reasoning = f"openai/{_reflect}"
+                _ix(f"improve 自评换模: openai/{_reflect}（model_reasoning，非 fallback_models）")
+            except Exception as e:
+                print(f"[pr-agent] 自评换模失败，沿用主模型：{type(e).__name__}: {e}", file=sys.stderr)
     # 单次 LLM 调用超时（pr-agent 默认 ai_timeout=120s，对 glm-5.2 等慢模型不够--实测 glm-5.2
     # 响应 360s+，120s 必超时，litellm 重试又超时，improve 工具两次全超时 -> 0 suggestions 假象）。
     # 经 TOUCHSTONE_LLM_CALL_TIMEOUT env 配置（秒），默认 600s（glm-5.2 实测 360-380s，留余量）。
@@ -198,24 +354,17 @@ def run(pr_url, mode, extra_instructions=None):
         import litellm
         litellm.suppress_debug_info = True
         litellm.set_verbose = os.environ.get("TOUCHSTONE_LITELLM_VERBOSE", "").lower() in ("1", "true", "yes")
-        # LiteLLM【内部】重试次数（每次 chat_completion）。默认 litellm.num_retries=None → litellm 回退
-        # openai.DEFAULT_MAX_RETRIES=2（litellm/main.py: max_retries = litellm.num_retries or
-        # openai.DEFAULT_MAX_RETRIES）→ 单次调用最多 3 次尝试，每次吃满 ai_timeout(600s)。
-        # improve 工具一次跑 2 次 LLM 调用，glm 抖动时墙钟膨胀到 ~50min（GHA 日志坐实：单调用
-        # litellm 自报 "timeout value=600.0, time taken=1189.44/1494s" ≈ 2-3×600）。
-        # 显式设 1：保留"至少重试一次"（glm 偶发抖动给第二次机会），把单次调用压到最多 2 次尝试。
-        # 注意 litellm 的 `or` 短路语义：设 0 会被当成 falsy 回退成 2，故底线就是 1。
-        # 防 ValueError 静默回退：空/非法 env（如 TOUCHSTONE_LLM_NUM_RETRIES= 或 =abc）会让 int()
-        # 抛、被外层 except 吞掉，num_retries 留 None → 回退 2（正是本 PR 要修的 bug 却无信号）。
-        # 故嵌套 try 兜底默认 1 并记 stderr；max(1,..) 挡负数与 0 的 or-falsy 陷阱。
-        try:
-            _num_retries = int(os.environ.get("TOUCHSTONE_LLM_NUM_RETRIES", "1"))
-        except (ValueError, TypeError):
-            _log.warning("TOUCHSTONE_LLM_NUM_RETRIES 非法，回退默认 1")
-            _num_retries = 1
-        litellm.num_retries = max(1, _num_retries)
+        # 【勘误 + 语义变更】此处曾设 litellm.num_retries = max(1, env)。实证推翻其注释的机制：
+        # 该全局是【一次性】的——litellm 1.84 的异常包装器在首个失败消费后即重置为 None
+        # （litellm/utils.py:1698），此后 openai client 回落默认 max_retries=2（3 次尝试/调用），
+        # 压制从第二个失败起失效；且旧注释引用的 or-短路（litellm/main.py:6738）在 text-to-speech
+        # 路径、与 chat 无关。现语义：重试【只】发生在 tenacity 层（_install_llm_call_tuning：
+        # 慢失败 N 次、快窗内抖动 N+1 次，默认 N=0 不重试）；litellm 包装层与 openai client
+        # 内层一律 0（下面置 0 中和全局 + 围栏逐调用注入 max_retries=0），层次单一、次数确定。
+        litellm.num_retries = 0   # falsy → litellm 包装层不重试（utils.py 的 or 链落到 None）
     except Exception:
         pass
+    _install_llm_call_tuning(model_override)
 
     # 【关键节点】LLM 配置日志 + 预检 ping：用同样的 base/key/model 直接发一个 1-token 请求，
     # 确认端点可达、凭据有效（成功会出现在 LLM 服务端请求日志里）。这是回答"LLM key 是否被调用"

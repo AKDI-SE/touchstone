@@ -113,8 +113,29 @@ jobs:
           TOUCHSTONE_INTERACTION_LOG: "pr-agent-interaction.log"   # 完整 LLM 交互日志（artifact，评审评论里贴链接）
           TOUCHSTONE_PRAGENT_TIMEOUT: "3600"            # pr-agent 子进程超时（秒）。glm-5.2 慢（单次 360s+），
                                                           # improve+review 各含重试，需足够余量；可调
-          TOUCHSTONE_LLM_CALL_TIMEOUT: "600"            # 单次 LLM 调用超时（秒，pr-agent ai_timeout）。
-                                                          # pr-agent 默认 120s 对 glm-5.2（实测 360s+）不够必超时
+          TOUCHSTONE_LLM_CALL_TIMEOUT: "600"            # 单次 LLM 调用超时（秒，pr-agent ai_timeout）。【语义勘误】
+                                                          # 这是 httpx per-read 超时、不是墙钟：端点持续出字节则不触发
+                                                          # （生产单调用实测 1515s；滴流实验可无限续命）。流式化后该语义
+                                                          # 恰好变正确：真死等 600s 必杀、持续出字不误杀。
+          TOUCHSTONE_LLM_REFLECT_MODEL: "glm-5.2-air"   # improve 自评（第二次 LLM 调用，pr-agent 0.39 mandatory 的
+                                                          # self-reflection 打分）专用模型 = config.model_reasoning，
+                                                          # 【不是】fallback_models（后者是主调用失败换模清单，已清空）。
+                                                          # 自评是浅任务，小模型即可，improve 健康路径耗时近乎减半。
+          TOUCHSTONE_LLM_NUM_RETRIES: ${{ secrets.TOUCHSTONE_LLM_NUM_RETRIES }}
+                                                          # tenacity 层重试次数 N。未设/空 = 默认 0 = 不重试——全量
+                                                          # 183 run 实证：真实失败（超时+长生成断连）全部发生在 600s+
+                                                          # 后，轮内重试救回率 0/8。快窗内抖动类失败自动 N+1（见下）。
+                                                          # litellm/openai client 内层一律 0，不再参与重试。
+          # TOUCHSTONE_LLM_RETRY_FAST_WINDOW: "120"     # 快窗（秒）：失败发生在此窗内且为抖动类（秒级瞬断/快速 5xx）
+                                                          # 才享受 N+1；窗外一律视为系统性失败按 N（默认0）处理。0=关闭加成。
+          TOUCHSTONE_LLM_STREAM: "true"                 # glm 系列（主模型+自评模型）流式调用。false 回退非流式。
+          TOUCHSTONE_LLM_THINKING: ${{ secrets.TOUCHSTONE_LLM_THINKING }}
+                                                          # 思考模式开关：disabled / enabled，未设=端点默认。注入请求体
+                                                          # {"thinking":{"type":...}}（GLM 方言，litellm extra_body 透传
+                                                          # 已实测）。思考型端点默认开思考时每调用先烧数千 reasoning
+                                                          # token——大 diff improve 单调用 10min+ 的头号嫌疑。优先在网关
+                                                          # 侧对本 key 默认关（治本）；网关不可改时配 disabled。主模型与
+                                                          # 自评模型统一生效。
           TOUCHSTONE_LITELLM_VERBOSE: "true"            # 诊断：litellm.set_verbose=True（runner.py:170 读取），把完整请求
                                                           # (model/messages/token 估算)打到 stderr → 进 pr-agent-interaction artifact。
                                                           # 定位"LLM 被调了没/输入多大/真实异常"。确认后可置 false 关闭。
