@@ -289,6 +289,14 @@ def render(checklist, rounds_left=None, lineage=None):
 def parse_latest(bodies):
     """从（受信的）评论正文序列中取最新一份权威清单（marker 解析失败则跳过该条）。
     调用方须先用 loop.trusted_bodies 过滤——清单权威状态只信机器人自己发的评论。"""
+    # marker = _OPEN + json.dumps(obj) + _CLOSE，内容是单个 JSON 对象。json.dumps 不转义
+    # '>'，故某项的 note/direction/reasoning 含字面 '-->'（评审方向提到 HTML 注释语法、或
+    # author 的 waived note 带 -->）时，定位首个 _CLOSE 会命中内容里那个 '-->' 而非真正收尾
+    # → JSON 截断 → 整条 marker 被跳过（权威清单丢失、收敛跟踪断）。用 stdlib
+    # JSONDecoder.raw_decode 从首个 '{' 起解析：它按 JSON 结构停在对象边界（字符串字面量内的
+    # 括号/箭头不干扰），一步既扫又析，不依赖首个 '-->'（与 #53 修 sig 脏空白同一类"author/
+    # 评审可控内容渗入 marker"加固；弃手写括号深度扫描器，复用成熟 stdlib 解析）。
+    decoder = json.JSONDecoder()
     latest = None
     for body in bodies or []:
         start = 0
@@ -296,14 +304,16 @@ def parse_latest(bodies):
             i = (body or "").find(_OPEN, start)
             if i < 0:
                 break
-            j = body.find(_CLOSE, i)
-            if j < 0:
-                break
+            brace = (body or "").find("{", i + len(_OPEN))
+            if brace < 0:
+                start = i + len(_OPEN)
+                continue
             try:
-                latest = json.loads(body[i + len(_OPEN):j].strip())
+                obj, end = decoder.raw_decode(body or "", brace)
+                latest = obj
+                start = end
             except (json.JSONDecodeError, ValueError):
-                pass
-            start = j + len(_CLOSE)
+                start = brace + 1
     return latest
 
 
