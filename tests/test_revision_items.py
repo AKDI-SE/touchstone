@@ -607,6 +607,26 @@ def test_report_layout_invariants():
     assert "| 风险等级 | 建议动作 | 验证建议 | 影响面 |" not in body    # 旧四列枚举表已移除
 
 
+def test_render_report_does_not_rescan_substituted_placeholders():
+    """A2-F1：render_report 此前顺序 `out = out.replace(...)` 累积替换会重扫已填入内容——若 finding
+    文本含 `{{markers}}` 占位符（LLM 输出 / 对抗构造 / legitimately 讨论模板），【最后一步】的 markers
+    替换会扫描整段 out、把 markers 段内容注入 finding 文本（占位符注入 / 串段）。修：单遍 re.sub 替换，
+    替换文本不被重扫，占位符在内容值里保持字面。"""
+    from touchstone import render
+    risk = {"risk_band": "low", "human_action": "skip",
+            "verification_decision": "cheap_only", "blast_radius": []}
+    f = {"rule_id": "R1", "severity": "warn", "confidence": 0.9, "agent": "pr-agent",
+         "file": "a.py", "line": 1,
+         "rationale": "详见 {{markers}} 段",              # 故意带占位符——修复前会被展开
+         "fix_direction": "d",
+         "done_criteria": {"kind": "deterministic", "spec": {"recheck": "R1"}}}
+    body = render.render_report(risk, [f], markers="<!-- ZZZ_SECRET_MARKER -->")
+    # 修复前（顺序 replace）：finding 里的 {{markers}} 被最后一步 markers 替换展开成 markers 内容
+    #   → "{{markers}}" 不在 body、ZZZ_SECRET_MARKER 注入 finding 文本
+    # 修复后（单遍）：finding 里的 {{markers}} 保持字面、不被重扫展开
+    assert "详见 {{markers}} 段" in body                  # finding 文本里的占位符保持字面（未被展开）
+
+
 # ---------------- 不可信评审的呈现层接入（PR #44 教训回归）----------------
 def test_unreliable_review_renders_caution_and_distrusts_action():
     """铁律：review_reliable=False 必须 [!CAUTION] 置顶告警；态势表不采信 skip 类建议；
