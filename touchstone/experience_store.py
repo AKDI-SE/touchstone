@@ -46,7 +46,17 @@ def load_store(path=None):
     path = path or STORE_PATH
     try:
         text = _read_store_text(path)
-        return json.loads(text) if text else {"experiences": []}
+        if not text:
+            return {"experiences": []}
+        store = json.loads(text)
+        # 防静默故障（A3-F3）：经验库唯一合法顶层结构是 dict 且 experiences 为 list。存档若是合法
+        # JSON 但形状不对（顶层 list/标量，或 experiences 非 list——旧格式/损坏/手改），json.loads 照样
+        # 成功并原样返回，下游 render_injection / seed_experience 的 store.get(...) 与迭代会
+        # AttributeError/TypeError 崩整个学习回路注入。在唯一加载边界 fail-safe：形状不对即视为损坏、
+        # 回落安全默认，不抛、不崩、不把坏数据静默传下去。
+        if not isinstance(store, dict) or not isinstance(store.get("experiences"), list):
+            return {"experiences": []}
+        return store
     except (OSError, json.JSONDecodeError):
         return {"experiences": []}
 
