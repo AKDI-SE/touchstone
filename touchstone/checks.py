@@ -92,6 +92,18 @@ def _run_relay(pr, cfg):
     return (not bad), f"{src}=" + ",".join(r.get("conclusion") or "?" for r in runs)
 
 
+def _truthy(v):
+    """把 service 返回的 passed 字段归一为布尔（fail-closed）。
+
+    service（外部 HTTP 服务 / shell 脚本）常把布尔写成字符串——`bool('false') == True` 会把
+    「失败」误判为「通过」（required service 假放行总闸）。字符串按真值白名单 {'true','1','yes','on'}
+    （大小写无关）判；其余类型走 `bool()`（与旧行为一致：bool/int/None 不变）。非白名单字符串
+    （'ok' / 'passed' 等畸形值）→ False：门禁对模糊输入 fail-closed，不凭 lenient truthiness 放行。"""
+    if isinstance(v, str):
+        return v.strip().lower() in ("true", "1", "yes", "on")
+    return bool(v)
+
+
 def _run_service(pr, cfg):
     """POST PR 上下文到一个 HTTP 服务（未来自建质量服务的挂点）。"""
     r = requests.post(cfg["url"], json={
@@ -99,7 +111,7 @@ def _run_service(pr, cfg):
         "files": pr.get("files", [])}, timeout=cfg.get("timeout", 60))
     r.raise_for_status()
     d = r.json()
-    return bool(d.get("passed")), str(d.get("summary", ""))
+    return _truthy(d.get("passed")), str(d.get("summary", ""))
 
 
 def _run_builtin(pr, cfg):
