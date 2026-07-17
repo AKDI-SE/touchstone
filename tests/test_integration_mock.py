@@ -1105,9 +1105,9 @@ def test_runner_raw_excerpt_empty_when_review_empty(monkeypatch):
     assert out["review"]["_raw_excerpt"] == {}
 
 
-def test_runner_warns_when_ticket_disable_fails(monkeypatch, capsys):
+def test_runner_warns_when_ticket_disable_fails(monkeypatch, caplog):
     # 闭环 round-3 PRA-GENERAL:pr_agent_runner.py:175——bare except:pass 改为告警（防静默故障）。
-    # require_ticket_analysis_review 不可设（pr_reviewer 版本不符/只读）时，须落 _IX + stderr，不静默吞。
+    # require_ticket_analysis_review 不可设（pr_reviewer 版本不符/只读）时，须落 _IX + 日志，不静默吞。
     settings = _install_fake_pr_agent(monkeypatch)
     _stub_llm(monkeypatch)
     import pr_agent.algo.utils as algo_utils
@@ -1127,10 +1127,11 @@ def test_runner_warns_when_ticket_disable_fails(monkeypatch, capsys):
             return True
     settings.pr_reviewer = _ReadOnlyTicket()      # runner 取同一 settings 对象（见 test_runner_disables_ticket_analysis）
     R._IX.clear()
-    R.run("https://pr", "review")                  # 不应崩（except 兜住）
-    err = capsys.readouterr().err
+    import logging
+    with caplog.at_level(logging.WARNING, logger="touchstone.pr_agent"):
+        R.run("https://pr", "review")             # 不应崩（except 兜住）
     assert "关 require_ticket_analysis_review 失败" in "\n".join(R._IX)   # 交互日志可见
-    assert "关 require_ticket_analysis_review 失败" in err               # stderr 可见（CI 日志直见）
+    assert "关 require_ticket_analysis_review 失败" in caplog.text        # 日志可见（CI 直见/可采集）
 
 
 def test_runner_disables_ticket_analysis(monkeypatch):
