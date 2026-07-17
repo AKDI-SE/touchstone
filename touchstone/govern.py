@@ -16,7 +16,7 @@ import re
 import subprocess
 import sys
 
-from touchstone.atomicio import atomic_write_json
+from touchstone.atomicio import atomic_write_json, atomic_write_text
 from touchstone.artifacts import artifact_path
 
 PROMOTE_MIN_FIRES = int(os.environ.get("PROMOTE_MIN_FIRES", "5"))
@@ -134,12 +134,14 @@ def main():
                     "（enforced=true）。请人确认后合入 standards.yaml：")
         for c in cands:
             prop.append(f"- `{c['rule_id']}` fires={c['fires']} 采纳率={c['adoption']} — {c['reason']}")
-        with open(artifact_path("standards.proposed.yaml"), "w", encoding="utf-8") as f:
-            yaml.safe_dump(apply_promotions(standards, cands), f, allow_unicode=True, sort_keys=False)
+        # atomic_write_text：自建 OUTPUT_DIR 父目录（设隔离目录时不 FileNotFoundError）+ 原子落盘
+        atomic_write_text(artifact_path("standards.proposed.yaml"),
+                          yaml.safe_dump(apply_promotions(standards, cands),
+                                         allow_unicode=True, sort_keys=False))
         prop.append("\n→ 已生成 standards.proposed.yaml（含 enforced=true），供 review。")
     else:
         prop.append("无达阈值的固化候选。")
-    open(artifact_path("promotion-proposal.md"), "w", encoding="utf-8").write("\n".join(prop))
+    atomic_write_text(artifact_path("promotion-proposal.md"), "\n".join(prop))
 
     # 2) 熔断
     repo = os.environ.get("REPO_DIR", ".")

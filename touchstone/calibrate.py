@@ -18,7 +18,7 @@ import re
 import sys
 
 from touchstone import ghclient            # GitHub HTTP 客户端(requests + 退避)
-from touchstone.atomicio import atomic_write_json   # 状态文件原子写
+from touchstone.atomicio import atomic_write_json, atomic_write_text   # 状态文件原子写
 from touchstone.artifacts import artifact_path
 import requests
 
@@ -322,8 +322,8 @@ def main():
     agg = aggregate(records)
     report = render_report(agg)
     print(report)
-    with open(artifact_path("calibration-report.md"), "w", encoding="utf-8") as f:
-        f.write(report)
+    # atomic_write_text：自建 OUTPUT_DIR 父目录（设隔离目录时不 FileNotFoundError）+ 原子落盘
+    atomic_write_text(artifact_path("calibration-report.md"), report)
     # 原子：calibration.json 喂 autonomy graduate 与 govern 固化判据，半文件会污染毕业类
     # override_env="CALIBRATION_JSON" 与读方（govern.py + autonomy.py）对齐：设了 CALIBRATION_JSON
     # 时读写都走它，不致写 OUTPUT_DIR/calibration.json 而读方读 CALIBRATION_JSON（#90 round-1 finding calibrate.py:328）

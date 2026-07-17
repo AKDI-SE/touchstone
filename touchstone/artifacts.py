@@ -46,3 +46,15 @@ def artifact_path(name, override_env=None):
     if d in ("", "."):
         return name            # 保持相对文件名原样（与旧 open("x.json") 字节级一致）
     return os.path.join(d, name)
+
+
+def ensure_output_dir(path):
+    """确保 ``path`` 的父目录存在。供【非原子写】（append / 第三方流式写）在 OUTPUT_DIR
+    指向不存在目录时不 ``FileNotFoundError``——这正是 OUTPUT_DIR feature「设目录隔离」的
+    核心用例。原子写（``atomicio.atomic_write_*``）已自建父目录，无需调用本函数。
+
+    path 为已解析路径（``artifact_path()`` 的返回值亦可）。目录已存在是 no-op（exist_ok）；
+    裸文件名（无父目录，如默认 OUTPUT_DIR="." 返回的 "x.json"）安全跳过。"""
+    d = os.path.dirname(path)
+    if d:
+        os.makedirs(d, exist_ok=True)

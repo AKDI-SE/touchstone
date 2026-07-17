@@ -18,7 +18,7 @@ import sys
 import time
 
 from touchstone import __version__
-from touchstone.artifacts import artifact_path
+from touchstone.artifacts import artifact_path, ensure_output_dir
 
 # TOUCHSTONE_METRICS_PATH 显式覆盖优先（兼容既有部署）；未设则 OUTPUT_DIR/touchstone-metrics.json。
 # 模块级求值：CI/进程启动时 env 已就绪。运行中动态改 OUTPUT_DIR 的场景请显式传 path 参数。
@@ -69,6 +69,7 @@ def emit(record, path=None):
     绝不静默故障（同 learning_loop 2026-07-04 的防静默约定）。"""
     p = path or METRICS_PATH
     try:
+        ensure_output_dir(p)   # append 是非原子写：OUTPUT_DIR 指向不存在目录时先建父目录（#90）
         with open(p, "a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
         return True
