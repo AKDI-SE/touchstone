@@ -99,7 +99,8 @@ def _extract_json(text, default):
             try:
                 return json.loads(raw[i:j + 1])
             except json.JSONDecodeError:
-                pass
+                pass    # 静默豁免：候选切片解析失败 → 继续尝试下一策略，
+                        # 回退链走完仍失败时由调用方统一报错。
     return default
 
 

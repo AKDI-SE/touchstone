@@ -401,3 +401,17 @@ def test_disabled_service_skipped(monkeypatch):
     results = checks.run_checks(cfg, _PR)
     assert [r.name for r in results] == ["on", "on2"]   # off 被跳过、不进结果
     assert active["max"] <= 2                            # 没把 disabled 也并发进去
+
+
+def test_scope_rules_corrupt_warns_missing_silent(tmp_path, capsys):
+    # P2-1：可选配置【缺失】= 常态静默；【损坏】= 回落默认但必须可见（防静默变粗）
+    from touchstone import contract_check as CC
+    # 缺失：无告警
+    rules = CC.load_scope_rules(str(tmp_path))
+    assert rules and "scope-rules 加载失败" not in capsys.readouterr().err
+    # 损坏：回落默认 + stderr 可见
+    d = tmp_path / ".touchstone"; d.mkdir()
+    (d / "scope-rules.yaml").write_text(": :\n  - [", encoding="utf-8")
+    rules2 = CC.load_scope_rules(str(tmp_path))
+    assert rules2 == rules                      # 回落内置默认
+    assert "scope-rules 加载失败" in capsys.readouterr().err

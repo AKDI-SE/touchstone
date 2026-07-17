@@ -33,6 +33,7 @@ import sys
 # 本文件保留 CLI/main 编排，并再导出全部名字——既有引用路径
 # （orchestrator._ll.* / review_provider / 测试 / seed 脚本）零改动兼容。
 # ============================================================================
+from touchstone.atomicio import atomic_write_json
 from touchstone.experience_store import (  # noqa: F401
     SUPPRESS_ADOPT_MAX, EMPHASIZE_ADOPT_MIN,
     GRADUATE_MIN_SAMPLES, GRADUATE_MIN_LIFT, RETIRE_ADOPT_MAX, STORE_PATH,
@@ -108,8 +109,9 @@ def main(argv=None):
                 ground_truth = build_ground_truth(owner, repo_name, token, window=window)
                 if gt_path:
                     os.makedirs(os.path.dirname(gt_path) or ".", exist_ok=True)
-                    json.dump(ground_truth, open(gt_path, "w", encoding="utf-8"),
-                              ensure_ascii=False, indent=2)
+                    # 原子写：真值喂校准（决策相邻态），崩溃留半文件会让下轮校准
+                    # 读到损坏 JSON——与决策态同纪律走 atomicio。
+                    atomic_write_json(gt_path, ground_truth)
                 report["steps"].append(f"build_ground_truth: 重建 {len(ground_truth)} 条真值")
             except Exception as e:
                 report["steps"].append(f"build_ground_truth 失败: {e}")

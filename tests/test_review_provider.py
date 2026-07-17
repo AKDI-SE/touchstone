@@ -1543,3 +1543,15 @@ def test_fanout_subprocesses_run_in_parallel(monkeypatch):
     monkeypatch.setattr(RP, "_experience_injection", lambda d: "")
     RP.fetch({"owner": "o", "repo": "r", "number": 3})
     assert state["max_active"] == 2                        # 两子进程并发（串行=1 → 断言失败）
+
+
+def test_load_nmap_corrupt_warns_missing_silent(tmp_path, capsys, monkeypatch):
+    # P2-1：可选归一映射【缺失】= 常态静默；【损坏】= 回落默认但 stderr 可见（防分类漂移）
+    monkeypatch.delenv("TOUCHSTONE_PRAGENT", raising=False)
+    default = RP.load_nmap(str(tmp_path))
+    assert "归一映射加载失败" not in capsys.readouterr().err
+    d = tmp_path / ".touchstone"; d.mkdir()
+    (d / "pr-agent.yaml").write_text(": :\n  - [", encoding="utf-8")
+    got = RP.load_nmap(str(tmp_path))
+    assert got == default
+    assert "归一映射加载失败" in capsys.readouterr().err

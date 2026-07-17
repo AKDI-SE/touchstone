@@ -33,6 +33,8 @@
 import json
 import re
 
+from touchstone.atomicio import atomic_write_json
+
 _OPEN = "<!-- touchstone-checklist: "
 _CLOSE = "-->"
 
@@ -313,7 +315,7 @@ def parse_latest(bodies):
                 latest = obj
                 start = end
             except (json.JSONDecodeError, ValueError):
-                start = brace + 1
+                start = brace + 1    # 跳过畸形 marker 块取次新（抗畸形是扫描协议设计，非故障）
     return latest
 
 
@@ -323,8 +325,9 @@ def snapshot(checklist, path=None):
     cl = checklist or {}
     path = path or f"checklist-round-{cl.get('round', 0)}.json"
     try:
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(cl, f, ensure_ascii=False, indent=2)
+        # 原子写：快照供校准回放消费，半文件会让回放读损坏 JSON；
+        # 失败仍返回 None（快照是旁路，不阻塞评审主链）。
+        atomic_write_json(path, cl)
         return path
     except OSError:
         return None

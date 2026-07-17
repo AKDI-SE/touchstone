@@ -89,8 +89,11 @@ def load(path=None):
                         out.append(json.loads(line))
                     except ValueError:
                         continue        # 跳过损坏行，不让单条坏记录拖垮聚合
-    except OSError:
-        pass
+    except FileNotFoundError:
+        pass    # 静默豁免：遥测文件不存在 = 未开遥测的常态，非故障
+    except OSError as e:
+        # 文件在但读不动（权限/损坏）→ 聚合会静默缺数据，必须可见。
+        print(f"[metrics] 遥测文件读取失败，本次聚合缺数据: {e}", file=sys.stderr)
     return out
 
 

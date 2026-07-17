@@ -380,8 +380,12 @@ def load_nmap(repo_dir="."):
             nmap["label_to_category"] = norm["label_to_category"]
         if "discard_labels" in norm:
             nmap["discard_labels"] = norm["discard_labels"]
-    except (OSError, yaml.YAMLError):
-        pass
+    except FileNotFoundError:
+        pass    # 静默豁免：可选配置，缺省用默认映射是常态，非故障
+    except (OSError, yaml.YAMLError) as e:
+        # 文件【在】但读不动/YAML 损坏 → 回落默认映射。必须可见：静默回落会让
+        # finding 分类在配置损坏时不知不觉漂移（防静默故障）。
+        print(f"[review_provider] 归一映射加载失败，回落默认: {e}", file=sys.stderr)
     return nmap
 
 
@@ -666,9 +670,9 @@ def _merge_interaction_logs(base, sub_paths):
             try:
                 os.unlink(p)
             except OSError:
-                pass
+                pass    # 静默豁免：分片临时文件清理是 best-effort，不影响已合并产物。
     except OSError:
-        pass
+        pass    # 静默豁免：合并流本身失败时产物缺失由消费方可见地报错，此处不重复。
 
 
 # ---- 评审提供器：封装 PR-Agent 调用（子进程集成）----------------------------
@@ -823,7 +827,7 @@ class PRAgentProvider:
                 try:
                     os.unlink(tmp.name)
                 except OSError:
-                    pass
+                    pass    # 静默豁免：临时文件清理 best-effort，主结果已在 try 内返回/抛出。
 
 
 # 本次 invoke 的诊断元信息（部分降级/修复解析计数）。单次 CLI 进程内串行使用；

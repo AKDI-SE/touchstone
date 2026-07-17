@@ -309,8 +309,11 @@ def run(pr_url, mode, extra_instructions=None):
         # 清空 fallback_models：默认 fallback（gpt-5.4-mini 等）发到我们的 base 会返回"模型不存在"，徒增失败噪音。
         try:
             s.config.fallback_models = []
-        except Exception:
-            pass
+        except Exception as e:
+            # 清不掉 → pr-agent 默认 fallback（gpt 系）会打到我们的 base 报"模型不存在"，
+            # 徒增失败噪音与重试墙钟——不可静默。
+            _log.warning("fallback_models 清空失败，默认 fallback 将产生失败噪音：%s: %s",
+                         type(e).__name__, e)
         # improve 自评换模。注意概念区分：这是 config.model_reasoning（improve 生成建议后那次
         # mandatory self-reflection 打分调用【专用】的模型，pr_code_suggestions.py:409），
         # 【不是】fallback_models（那是主调用失败后 retry_with_fallback_models 的换模清单，
@@ -362,8 +365,10 @@ def run(pr_url, mode, extra_instructions=None):
         # 慢失败 N 次、快窗内抖动 N+1 次，默认 N=0 不重试）；litellm 包装层与 openai client
         # 内层一律 0（下面置 0 中和全局 + 围栏逐调用注入 max_retries=0），层次单一、次数确定。
         litellm.num_retries = 0   # falsy → litellm 包装层不重试（utils.py 的 or 链落到 None）
-    except Exception:
-        pass
+    except Exception as e:
+        # 本块失败 = litellm 全局未中和 + verbose 设置丢失：重试语义会静默回到
+        # "litellm 一次性全局 + client 默认 2 重试"的旧世界——必须可见。
+        _log.warning("litellm 全局配置块失败（重试语义可能回退）：%s: %s", type(e).__name__, e)
     _install_llm_call_tuning(model_override)
 
     # 【关键节点】LLM 配置日志 + 预检 ping：用同样的 base/key/model 直接发一个 1-token 请求，

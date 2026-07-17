@@ -744,3 +744,20 @@ def test_build_ground_truth_skips_failed_pr(monkeypatch, tmp_path):
         seq if "pulls?state" in path else ({"files": []} if "/files" in path else None)))
     out = L.build_ground_truth("o", "r", "tok", window=5)
     assert isinstance(out, list)
+
+
+def test_ground_truth_written_atomically(monkeypatch, tmp_path):
+    # P2-3：真值文件走 atomicio（半文件会让下轮校准读损坏 JSON）——锁死调用点防回退裸写
+    import touchstone.learning_loop as LL
+    calls = {}
+    monkeypatch.setattr(LL, "atomic_write_json",
+                        lambda path, obj: calls.update(path=path, obj=obj))
+    monkeypatch.setattr(LL, "build_ground_truth", lambda *a, **k: [{"x": 1}])
+    monkeypatch.setenv("GITHUB_TOKEN", "tok")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "o/r")
+    # 经验库/输出都指向 tmp，避免污染仓库
+    gt = tmp_path / "gt.json"
+    LL.main(["--build-ground-truth", "--ground-truth", str(gt),
+             "--store", str(tmp_path / "store.json"),
+             "--output", str(tmp_path / "report.json")])
+    assert calls.get("path") == str(gt) and calls.get("obj") == [{"x": 1}]
