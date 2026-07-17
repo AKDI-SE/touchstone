@@ -422,6 +422,51 @@ def test_external_mutation_cmd_hostile_filename_not_executed(monkeypatch, tmp_pa
     assert not (tmp_path / "INJECTED").exists()
 
 
+def test_external_mutation_filename_with_result_literal_not_corrupted(monkeypatch, tmp_path):
+    """#89 finding runners.py:221 — {files}/{result} 替换顺序。文件名含字面 `{result}`（author
+    可控输入）：旧顺序先替 {files}（带入 {result} 字面）再替 {result} → 文件名里的 {result}
+    被结果路径展开、结果路径注入文件参数位（损坏命令）。正确顺序先替 {result}（touchstone
+    控制路径永不含 {files}）再替 {files} → 文件名里的 {result} 保持字面。用 {files} 写到
+    work_dir 外的 side 文件观测其展开。"""
+    from verify import verify_change as V
+    side = tmp_path / "files_expansion.txt"
+    monkeypatch.setenv("TS_SIDE", str(side))
+    monkeypatch.setenv("TOUCHSTONE_MUTATION_CMD",
+                       r"""printf '%s' {files} > "$TS_SIDE"; printf '{"score":0.5}' > {result}""")
+    score, trusted = V.external_mutation_score(str(tmp_path), ["{result}.py"])
+    assert score == 0.5 and trusted is True
+    expanded = side.read_text()
+    assert "{result}" in expanded, f"文件名字面 {{result}} 被错误展开: {expanded!r}"
+    assert ".ts_mut_" not in expanded, f"结果路径泄漏进文件参数位（替换顺序错）: {expanded!r}"
+
+
+def test_external_mutation_result_dir_cleaned_even_with_extra_files(monkeypatch, tmp_path):
+    """#89 finding runners.py:233 — 临时结果目录清理。外部工具可能往 result_dir 写辅助产物
+    （日志/锁/中间文件）。旧清理 os.rmdir（仅空目录可删）+ except OSError: pass → 非空即
+    静默失败、泄漏 .ts_mut_* 目录。改 shutil.rmtree(ignore_errors=True) 健壮清空。
+    锁定：工具往 result_dir 写一个额外文件后，调用结束 result_dir 必须被彻底删除。"""
+    import os
+    import tempfile
+    from verify import verify_change as V
+    captured = {}
+    real_mkdtemp = tempfile.mkdtemp
+
+    def spy_mkdtemp(*a, **kw):
+        d = real_mkdtemp(*a, **kw)
+        captured["dir"] = d
+        return d
+    monkeypatch.setattr(tempfile, "mkdtemp", spy_mkdtemp)
+    # 往 result_dir 写额外文件（模拟外部工具留辅助产物），并写出有效结果 JSON
+    monkeypatch.setenv(
+        "TOUCHSTONE_MUTATION_CMD",
+        r"""printf 'aux' > "$(dirname "$TOUCHSTONE_MUTATION_RESULT")/aux.txt"; """
+        r"""printf '{"score":0.5}' > {result}""")
+    score, trusted = V.external_mutation_score(str(tmp_path), ["a.py"])
+    assert score == 0.5 and trusted is True
+    assert "dir" in captured
+    assert not os.path.exists(captured["dir"]), "result_dir 含额外文件仍残留 → 清理不健壮"
+
+
 # ---------------- 纯函数补测 ----------------
 
 

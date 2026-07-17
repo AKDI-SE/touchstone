@@ -15,6 +15,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import tempfile
 
@@ -200,7 +201,11 @@ def external_mutation_score(work_dir, changed_files):
     在自己的测试里 print("kill rate: 100%") 即可把击杀率顶到 1.0、骗过 verify_change 的
     mut_ok 门（mutation_score 直接决定 MUT_MIN 判决）。协议：
       • touchstone 生成随机路径经 TOUCHSTONE_MUTATION_RESULT 注入命令环境，并支持 {result}
-        占位（命令可用它定位写出位置）；该路径在 work_dir 之外的临时目录，被检代码不可预知。
+        占位（命令可用它定位写出位置）；该路径在 work_dir 之外的临时目录。须诚实：这挡住了
+        "随手 print 100%"式伪造（被检代码 grep 不到 stdout 分数即顶高），但路径经环境变量
+        传给命令，蓄意 author 的测试代码仍可读出 $TOUCHSTONE_MUTATION_RESULT 并写出伪造
+        JSON——此通道【未】封死，只是把"一行 print"抬高到"读环境变量再写文件"。不可绕过的
+        防伪需进程隔离（沙箱/独立命名空间），超出本接缝范围。
       • 工具把结果写成 JSON：{"killed":N,"total":M} 或 {"score":0.83}。
       • touchstone 只信这个文件。文件缺失时才回退 stdout 解析，且【标记为不可信回退】——
         回退路径下即便解析出高分也不足采信（调用方 mutation() 会据此判是否降级）。
@@ -218,7 +223,11 @@ def external_mutation_score(work_dir, changed_files):
     result_path = os.path.join(result_dir, "mutation-result.json")
     try:
         quoted_files = " ".join(shlex.quote(f) for f in changed_files or [])
-        full = cmd.replace("{files}", quoted_files).replace("{result}", shlex.quote(result_path))
+        # 替换顺序：先 {result} 后 {files}。{result} 是 touchstone 控制的路径（绝不含字面
+        # {files}），先替换安全；若先替 {files}，author 提交名为 `{result}.py` 的文件会把
+        # 字面 {result} 带入命令，随后的 {result} 替换会把它展开成结果路径→结果路径注入到
+        # 文件参数位置、损坏命令（#89 round-1 finding runners.py:221）。
+        full = cmd.replace("{result}", shlex.quote(result_path)).replace("{files}", quoted_files)
         env = dict(os.environ, TOUCHSTONE_MUTATION_RESULT=result_path)
         r = subprocess.run(full, shell=True, cwd=work_dir, capture_output=True, env=env,
                            text=True, timeout=int(os.environ.get("TOUCHSTONE_MUTATION_TIMEOUT", "900")))
@@ -231,12 +240,10 @@ def external_mutation_score(work_dir, changed_files):
     except Exception:
         return (None, False)
     finally:
-        try:
-            if os.path.exists(result_path):
-                os.unlink(result_path)
-            os.rmdir(result_dir)
-        except OSError:
-            pass
+        # 外部工具可能往 result_dir 写辅助产物（日志/锁/中间文件）——os.rmdir 仅删空目录、
+        # 非空即 ENOTEMPTY，旧 except OSError: pass 会静默吞掉、泄漏 .ts_mut_* 目录（每轮
+        # 一个，CI 下累积）。改 shutil.rmtree 健壮清空（#89 round-1 finding runners.py:233）。
+        shutil.rmtree(result_dir, ignore_errors=True)
 
 
 _MUT_CMP = {ast.Eq: ast.NotEq, ast.NotEq: ast.Eq, ast.Lt: ast.GtE,
