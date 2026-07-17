@@ -28,6 +28,27 @@ def test_store_roundtrip(tmp_path):
     assert L.load_store(str(tmp_path / "none.json")) == {"experiences": []}
 
 
+def test_load_store_non_dict_or_bad_experiences_falls_back_safe(tmp_path):
+    """A3-F3：存档是合法 JSON 但顶层非 dict（list/标量）或 experiences 非 list（旧格式/损坏/手改），
+    json.loads 照样成功并原样返回——下游 render_injection 的 store.get(...) 抛 AttributeError 崩整个
+    学习回路注入。load_store 是唯一加载入口，应在边界 fail-safe：形状不对即回落 {'experiences': []}。"""
+    p = tmp_path / "store.json"
+    # 顶层 list（修复前：load_store 返 list → render_injection 崩 AttributeError: 'list' has no .get）
+    p.write_text('[{"id":"x"}]', encoding="utf-8")
+    store = L.load_store(str(p))
+    assert store == {"experiences": []} and isinstance(store, dict)
+    assert L.render_injection(store) == ""                       # 下游不再崩
+    # 标量 JSON（json.loads("123") -> int）
+    p.write_text("123", encoding="utf-8")
+    assert L.load_store(str(p)) == {"experiences": []}
+    # dict 但 experiences 非 list（迭代崩的姊妹情形，一并 fail-safe）
+    p.write_text('{"experiences":"nope"}', encoding="utf-8")
+    assert L.load_store(str(p)) == {"experiences": []}
+    # 正常 dict 不受影响（回归）
+    p.write_text('{"experiences":[{"id":"x","status":"active"}]}', encoding="utf-8")
+    assert L.load_store(str(p))["experiences"][0]["id"] == "x"
+
+
 # ---------------- 边界：确定性锚不进经验 ----------------
 def test_is_review_type_excludes_contract_anchor():
     assert L._is_review_type("PRA-POSSIBLE_BUG")
