@@ -30,6 +30,7 @@ from touchstone import autonomy              # 变更分类计算（供自治经
 from touchstone import stack_rules           # §4.1 栈专项确定性规则（machine_checkable 的 SPR/JAVA/CTR）
 from touchstone import checklist as checklist_mod   # 收敛清单（修订设计 §4.3，评审意见 1、3）
 from touchstone import lineage               # 轮次台账与同源检测（修订设计 §4.4，评审意见 10）
+from touchstone.atomicio import atomic_write_json   # 状态文件原子写（决策输入不留半文件）
 # 渲染层已拆至 touchstone/render.py（七段版面填充；模块职责单一化）。此处再导出以保持
 # 既有引用路径 orchestrator.render_* 兼容（测试与外部调用无需改动）。
 from touchstone.render import (_load_template, render_facts, render_findings,  # noqa: F401
@@ -629,23 +630,24 @@ def main():
             pass
 
     # 校准 + 自治决策入口：落盘供下游 join / auto_merge 组装
-    with open("touchstone-findings.json", "w", encoding="utf-8") as f:
-        json.dump({"pr": number, "sha": head_sha, "risk": risk, "findings": findings,
-                   "changed_files": sorted(changed_files), "loop_decision": decision,
-                   "contract_clean": contract_clean, "change_class": cls,
-                   "gate": gate,
-                   # 引擎健康度（供 autonomy 决策）：engine_status/ai_raw_count/added_lines +
-                   # 预算 review_reliable。review_reliable=False 时 autonomy 不自动放行
-                   # （防假收敛放行未评审代码，见 review_provider.review_reliable）。
-                   "engine_status": engine_status, "ai_raw_count": ai_raw_count,
-                   "added_lines": added_lines, "review_reliable": reliable,
-                   "review_engaged": engaged,
-                   # LLM 原始 review 段快照（0 原始建议时的"真审过"证据，见 _clean_review_trace）
-                   "raw_review_excerpt": raw_excerpt,
-                   # author 自证但未经人核准的销项数（waived/split）——autonomy 独立闸据此
-                   # 拒放行（多层：即便 loop_decision 被虚报，本计数由 touchstone 侧写入）。
-                   "unverified_claims": n_unverified},
-                  f, ensure_ascii=False, indent=2)
+    # 原子：这份 findings 是 verify join 与 autonomy auto_merge 的组装依据，进程被杀
+    # 留下的半文件会让下游把残缺状态当真（见 atomicio 模块头注）。
+    _findings_doc = {"pr": number, "sha": head_sha, "risk": risk, "findings": findings,
+                     "changed_files": sorted(changed_files), "loop_decision": decision,
+                     "contract_clean": contract_clean, "change_class": cls,
+                     "gate": gate,
+                     # 引擎健康度（供 autonomy 决策）：engine_status/ai_raw_count/added_lines +
+                     # 预算 review_reliable。review_reliable=False 时 autonomy 不自动放行
+                     # （防假收敛放行未评审代码，见 review_provider.review_reliable）。
+                     "engine_status": engine_status, "ai_raw_count": ai_raw_count,
+                     "added_lines": added_lines, "review_reliable": reliable,
+                     "review_engaged": engaged,
+                     # LLM 原始 review 段快照（0 原始建议时的"真审过"证据，见 _clean_review_trace）
+                     "raw_review_excerpt": raw_excerpt,
+                     # author 自证但未经人核准的销项数（waived/split）——autonomy 独立闸据此
+                     # 拒放行（多层：即便 loop_decision 被虚报，本计数由 touchstone 侧写入）。
+                     "unverified_claims": n_unverified}
+    atomic_write_json("touchstone-findings.json", _findings_doc)
 
     # 风险分流的 job 输出：供下游 verify job 决定是否触发验证
     gho = os.environ.get("GITHUB_OUTPUT")
