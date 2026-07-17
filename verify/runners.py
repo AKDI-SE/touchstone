@@ -416,15 +416,37 @@ def _pit_score(work_dir):
     reps = glob.glob(os.path.join(work_dir, "**/target/pit-reports/**/mutations.xml"),
                      recursive=True)
     killed = total = 0
+    parseable = False
+    corrupt = []
     for rep in reps:
         try:
             root = ET.parse(rep).getroot()
-        except ET.ParseError:
+        except ET.ParseError as e:
+            corrupt.append((rep, str(e)))      # 带解析异常细节（行/列/原因），否则只留路径无法定位截断点
             continue
+        parseable = True
         for m in root.iter("mutation"):
             total += 1
             if m.get("status") in ("KILLED", "TIMED_OUT"):
                 killed += 1
+    # 报告存在但【全部】解析失败（PIT 崩溃中途写出截断 xml 等）：不能当"零变异"放过——
+    # 上游 MavenRunner.mutation 会把 _pit_score 的 None 经 _pit_has_report=True 路径返回 1.0
+    # （mutation_score 顶满 → MUT_MIN 判过 → 弱测试骗过 verify 门；恰是 #79 B1 没堵死的口子）。
+    # 区分"无可变异(通过)"与"报告损坏(失败)"：损坏必抛 MutationRunError（→ 上游判 inadequate）。
+    # 若至少有一份可解析报告【且含变异点】，则以它为准（忽略同胞损坏报告，分数仍可信）。
+    #   - 仅 corrupt 全坏        → not parseable → 抛（A5-F1：全部损坏）。
+    #   - corrupt + 可解析且有数据 → 用可解析那份的 killed/total（分数可信）。
+    #   - corrupt + 可解析但【零变异】(total==0)：同胞损坏说明 PIT 有模块崩溃，此时 total=0 会经
+    #     _pit_has_report=True 路径顶满成 1.0 —— 等于让崩溃模块的弱测试骗过门，故同样必抛。
+    #     （无 corrupt 的零变异仍走 None→1.0，那是真正的"无可变异→通过"。）
+    if corrupt and (not parseable or total == 0):
+        # 报错带【每份损坏报告的解析异常细节】（路径 + 行/列/原因）—— #98 二轮评审建议：
+        # 旧版只列路径，运维拿到"PIT 报告损坏"却不知截断在哪/为何坏，难定位。异常细节使该
+        # 失败路径（正是 #98 要从静默里拽出来的）真正可诊断。
+        detail = ", ".join(f"{rep} ({msg[:120]})" for rep, msg in corrupt)
+        raise MutationRunError("mutations.xml 存在但解析失败或零变异且有同胞损坏报告"
+                               "（疑 PIT 崩溃截断，不能当通过）："
+                               + detail[:400])
     return (killed / total) if total else None
 
 

@@ -633,6 +633,86 @@ def test_maven_runner_mutation_zero_mutants_with_report_returns_one(monkeypatch,
     assert V.MavenRunner().mutation(str(tmp_path), ["A.java"]) == 1.0
 
 
+def test_pit_score_corrupt_report_raises(tmp_path):
+    """A5-F1：mutations.xml 存在但损坏（PIT 崩溃中途写出截断 xml 等）→ _pit_score 抛 MutationRunError，
+    而非返回 None。旧实现 ParseError 静默 continue→返回 None→上游 _pit_has_report=True→return 1.0
+    （mutation_score 顶满 → MUT_MIN 判过 → 弱测试骗过 verify 变异门），即 #79 B1 未堵死的口子。"""
+    pd = tmp_path / "mod/target/pit-reports/202606"
+    pd.mkdir(parents=True)
+    (pd / "mutations.xml").write_text('<mutations><mutation status="KILLED"')   # 截断，ET.parse 抛 ParseError
+    with pytest.raises(V.MutationRunError):
+        V._pit_score(str(tmp_path))
+
+
+def test_pit_score_corrupt_report_message_has_parse_detail(tmp_path):
+    """#98 二轮评审建议（PRA-GENERAL）：损坏报告的报错须带解析异常细节（行/列/原因），否则运维只
+    知"报告损坏"却不知截断点、无法定位。锁 except ET.ParseError `as e` 与报错拼接：把 `as e`/
+    细节拼接去掉 → 报错只剩路径、无 column N → 杀红。"""
+    pd = tmp_path / "mod/target/pit-reports/202606"
+    pd.mkdir(parents=True)
+    (pd / "mutations.xml").write_text('<mutations><mutation status="KILLED"')   # 截断
+    with pytest.raises(V.MutationRunError) as exc:
+        V._pit_score(str(tmp_path))
+    msg = str(exc.value)
+    assert "mutations.xml" in msg                     # 仍带损坏报告路径
+    assert "column" in msg                            # 带解析异常定位（仅来自捕获的 ParseError）
+
+
+def test_pit_score_partial_corrupt_uses_parseable(tmp_path):
+    """对照：同胞报告中至少一份可解析 → 以它为准、不抛（损坏同胞不阻塞，分数仍可信）。
+    锁 `corrupt and not parseable` 的 not-parseable 半段——避免误把"有可用报告"当全坏。"""
+    bad = tmp_path / "mod/target/pit-reports/202606"
+    bad.mkdir(parents=True)
+    (bad / "mutations.xml").write_text('<mutations><mutation status="KILLED"')      # 损坏
+    good = tmp_path / "mod2/target/pit-reports/202607"
+    good.mkdir(parents=True)
+    (good / "mutations.xml").write_text(
+        '<mutations><mutation status="KILLED"/><mutation status="SURVIVED"/></mutations>')  # 可解析
+    assert abs(V._pit_score(str(tmp_path)) - 0.5) < 1e-9    # 用可解析那份：1 killed / 2 total
+
+
+def test_pit_score_corrupt_masked_by_empty_report_raises(tmp_path):
+    """#98 续：损坏同胞 + 一份【可解析但零变异】(total=0) 的报告 → 必抛 MutationRunError，不能返回 None。
+    场景：多模块构建，模块 A 改动无变异点（合法零变异报告）、模块 B PIT 崩溃写出截断 xml。
+    旧守卫只 `corrupt and not parseable`：parseable=True 把它压下 → total=0 → 返回 None
+    → 上游 MavenRunner.mutation 经 _pit_has_report=True 路径顶满成 1.0 → 模块 B 的崩溃被无视、弱测试骗过门。
+    锁 `corrupt and (not parseable or total == 0)` 的 total==0 半段。"""
+    bad = tmp_path / "mod/target/pit-reports/202606"
+    bad.mkdir(parents=True)
+    (bad / "mutations.xml").write_text('<mutations><mutation status="KILLED"')      # 损坏（模块 B 崩溃）
+    empty = tmp_path / "mod2/target/pit-reports/202607"
+    empty.mkdir(parents=True)
+    (empty / "mutations.xml").write_text('<mutations></mutations>')                 # 可解析、零变异点
+    with pytest.raises(V.MutationRunError):
+        V._pit_score(str(tmp_path))
+
+
+def test_maven_runner_mutation_corrupt_masked_by_empty_raises(monkeypatch, tmp_path):
+    """#98 端到端：损坏报告 + 可解析零变异报告 → MavenRunner.mutation 抛 MutationRunError，绝不返回 1.0。
+    不桩 _pit_score/_pit_has_report——走真实解析路径，证"空报告掩护损坏报告"的假过口子已堵。"""
+    monkeypatch.setattr(R, "_run", lambda cmd, wd, timeout=None: (True, "ok"))   # PIT 退出码 0
+    bad = tmp_path / "mod/target/pit-reports/202606"
+    bad.mkdir(parents=True)
+    (bad / "mutations.xml").write_text('<mutations><mutation status="KILLED"')      # 损坏
+    empty = tmp_path / "mod2/target/pit-reports/202607"
+    empty.mkdir(parents=True)
+    (empty / "mutations.xml").write_text('<mutations></mutations>')                 # 可解析、零变异
+    with pytest.raises(V.MutationRunError):
+        V.MavenRunner().mutation(str(tmp_path), ["A.java"])
+
+
+def test_maven_runner_mutation_corrupt_report_raises(monkeypatch, tmp_path):
+    """A5-F1 端到端：mvn 退出码 0 但产出的 mutations.xml 损坏 → MavenRunner.mutation 抛
+    MutationRunError（→ check_adequacy/_verify_regression 据此判 inadequate），绝不返回 1.0 假过。
+    不桩 _pit_score/_pit_has_report——走真实解析路径，证 false-pass 已被堵。"""
+    monkeypatch.setattr(R, "_run", lambda cmd, wd, timeout=None: (True, "ok"))   # PIT 退出码 0
+    pd = tmp_path / "mod/target/pit-reports/202606"
+    pd.mkdir(parents=True)
+    (pd / "mutations.xml").write_text('<mutations><mutation status="KILLED"')   # 损坏报告
+    with pytest.raises(V.MutationRunError):
+        V.MavenRunner().mutation(str(tmp_path), ["A.java"])
+
+
 def test_maven_runner_changed_coverage(monkeypatch, tmp_path):
     monkeypatch.setattr(R, "_jacoco_changed_coverage", lambda wd, cf: 0.6)
     monkeypatch.setattr(R, "_jacoco_changed_line_coverage", lambda wd, cf, cl: 0.8)
