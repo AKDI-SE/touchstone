@@ -526,7 +526,9 @@ def test_post_results_banner_shows_telemetry_status(monkeypatch):
 def test_orchestrator_main_end_to_end(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     event = tmp_path / "event.json"
-    event.write_text(json.dumps({"pull_request": {"number": 7, "head": {"sha": "abc123"}}}),
+    event.write_text(json.dumps({"pull_request": {"number": 7, "head": {"sha": "abc123"},
+                                                  "user": {"login": "alice"},
+                                                  "author_association": "MEMBER"}}),
                      encoding="utf-8")
     monkeypatch.setenv("GITHUB_TOKEN", "tok")
     monkeypatch.setenv("GITHUB_REPOSITORY", "o/r")
@@ -553,6 +555,8 @@ def test_orchestrator_main_end_to_end(monkeypatch, tmp_path):
 
     out = json.loads((tmp_path / "touchstone-findings.json").read_text(encoding="utf-8"))
     assert out["pr"] == 7 and "risk" in out and out["gate"] is None
+    # 作者出处持久化（autonomy 作者信任闸的输入；缺失即 fail-closed 不放行）
+    assert out["author"] == {"login": "alice", "association": "MEMBER"}
 
 
 def _setup_main(monkeypatch, tmp_path, fake_gh_fn):

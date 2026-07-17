@@ -415,3 +415,21 @@ def test_scope_rules_corrupt_warns_missing_silent(tmp_path, capsys):
     rules2 = CC.load_scope_rules(str(tmp_path))
     assert rules2 == rules                      # 回落内置默认
     assert "scope-rules 加载失败" in capsys.readouterr().err
+
+
+def test_verify_plugin_malformed_passed_failclosed(tmp_path, monkeypatch):
+    # verify-result.json 由执行 PR 代码的零密 job 产出（攻击者可影响）：畸形字符串
+    # （bool() 恒真）必须 fail-closed 判 False——SECURITY.md 信任边界的代码化。
+    import json as _json
+    monkeypatch.chdir(tmp_path)
+    for v, expect in [("ok", False), ("passed", False), ("true", True),
+                      (True, True), (False, False), (None, False), (1, True)]:
+        (tmp_path / "verify-result.json").write_text(
+            _json.dumps({"passed": v, "spec_source": "contract"}), encoding="utf-8")
+        got, _summary = checks._BUILTINS["verify"]({}, {})
+        assert got is expect, (v, got)
+    # author 自报规格的绿不算过（既有规则回归锚）
+    (tmp_path / "verify-result.json").write_text(
+        _json.dumps({"passed": True, "spec_source": "author_proposed"}), encoding="utf-8")
+    got, _ = checks._BUILTINS["verify"]({}, {})
+    assert got is False

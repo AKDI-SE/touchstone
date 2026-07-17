@@ -43,6 +43,8 @@ Touchstone 的威胁模型有几处已知的关键边界，历史加固均围绕
 - **凭据隔离**：执行不可信 PR 代码的环境（verify_execute）必须零凭据——无 secret、`.git/config` 无 token、job 权限降至 `contents:read`。**任何让 PR 代码窃取到凭据或伪造门禁状态的路径都是高危漏洞。**
 - **确定性核对不打折**：契约/安全/危险代码扫描（SEC-*/DANGER-* 等）跑全文 diff，不受显示截断影响。**任何让确定性检查被 diff 裁剪或输入构造绕过的路径都是漏洞。**
 - **权威状态只信机器人自己**：收敛清单的权威状态从受信评论（机器人自己发的、经 `loop.trusted_bodies` 过滤）读取。**任何让 author 伪造权威 marker 影响判定的路径都是漏洞。**
+- **verify 的"绿"是攻击者可影响信号，结构上不承重**：`verify-result.json` 由执行 PR 代码的零密 job 产出，恶意 PR 可伪造其内容（含 `passed=true`）。系统据此把它设计为非承重输入：总闸只"折入"（插件之一）、伪红只伤攻击者自己；自动放行需九闸 AND（含与 PR 内容无关的作者信任闸）、`author_proposed` 规格的绿不算通过、畸形值经 `_truthy` fail-closed。**任何让 verify 绿单独放行代码的配置或改动都是漏洞。**
+- **自动放行有作者身份闸**：`autonomy.author_trusted` 按 GitHub `author_association`（默认 OWNER/MEMBER/COLLABORATOR，均需仓库侧授予）+ 显式 login 白名单判定；产物缺作者出处即不放行。**任何让不受信作者（fork 陌生人）绕过该闸进入自动合并的路径都是漏洞。**
 
 ## 不属于漏洞的范畴
 

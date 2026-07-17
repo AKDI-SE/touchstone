@@ -368,3 +368,55 @@ def test_build_decision_inputs_recomputes_when_field_absent():
           "engine_status": "llm_failed", "ai_raw_count": 0, "added_lines": 5}
     d = A.build_decision_inputs(co, {"tripped": False}, [])
     assert d["review_reliable"] is False  # llm_failed -> 不可靠
+
+
+# ---------------- 作者信任闸（第 9 闸，P1 闭环：fork 陌生作者不得与内部成员同待遇）----
+
+
+def test_author_trusted_association_matrix(monkeypatch):
+    monkeypatch.delenv("TOUCHSTONE_AUTONOMY_TRUSTED_ASSOCIATIONS", raising=False)
+    monkeypatch.delenv("TOUCHSTONE_AUTONOMY_AUTHOR_ALLOWLIST", raising=False)
+    assert A.author_trusted("alice", "MEMBER") is True
+    assert A.author_trusted("alice", "owner") is True          # 大小写不敏感
+    assert A.author_trusted("alice", "COLLABORATOR") is True
+    # 任意人可达成的关联：不信
+    assert A.author_trusted("mallory", "CONTRIBUTOR") is False
+    assert A.author_trusted("mallory", "FIRST_TIME_CONTRIBUTOR") is False
+    assert A.author_trusted("mallory", "NONE") is False
+    # 出处缺失：fail-closed
+    assert A.author_trusted(None, "MEMBER") is False
+    assert A.author_trusted("alice", None) is False
+    assert A.author_trusted(None, None) is False
+
+
+def test_author_trusted_allowlist_union(monkeypatch):
+    monkeypatch.setenv("TOUCHSTONE_AUTONOMY_AUTHOR_ALLOWLIST", " Ext-Bot , carol ")
+    # 白名单命中（大小写不敏感、容空格）→ 关联再差也放
+    assert A.author_trusted("ext-bot", "NONE") is True
+    assert A.author_trusted("CAROL", None) is True
+    # 白名单不命中 → 回落关联闸
+    assert A.author_trusted("mallory", "NONE") is False
+    assert A.author_trusted("alice", "MEMBER") is True
+
+
+def test_author_trusted_env_associations_override(monkeypatch):
+    monkeypatch.setenv("TOUCHSTONE_AUTONOMY_TRUSTED_ASSOCIATIONS", "OWNER")
+    assert A.author_trusted("alice", "MEMBER") is False        # 收紧生效
+    assert A.author_trusted("alice", "OWNER") is True
+
+
+def test_decide_blocks_untrusted_author():
+    d = A.decide_auto_merge(**_ok_inputs(), enabled=True, shadow=False, author_trusted=False)
+    assert d["merge"] is False and "author_trusted" in d["failed"]
+
+
+def test_decision_inputs_author_failclosed(monkeypatch):
+    monkeypatch.delenv("TOUCHSTONE_AUTONOMY_TRUSTED_ASSOCIATIONS", raising=False)
+    monkeypatch.delenv("TOUCHSTONE_AUTONOMY_AUTHOR_ALLOWLIST", raising=False)
+    co = {"gate": "success", "change_class": "c",
+          "author": {"login": "alice", "association": "MEMBER"}}
+    assert A.build_decision_inputs(co, {}, [])["author_trusted"] is True
+    # 产物缺 author 字段（旧产物/非 GH 环境）→ fail-closed
+    assert A.build_decision_inputs({"gate": "success"}, {}, [])["author_trusted"] is False
+    co_bad = {"gate": "success", "author": {"login": "mallory", "association": "NONE"}}
+    assert A.build_decision_inputs(co_bad, {}, [])["author_trusted"] is False
