@@ -761,7 +761,21 @@ class PRAgentProvider:
             # 正常却空建议，data 合并后正好空 + stderr 带失败串 → 会误命中这条 swallowed 兜底、误把整轮判
             # llm_failed、丢掉 review 的真发现。故 _partial_side 命中时豁免：空是「失败侧没产出」的预期，
             # 不是「吞没式失败」；该失败已由 partial_tool_failure 标记可见，整轮仍可信、不降级。
-            if not _partial_side and prediction_swallowed_failure(data, stderr):
+            # ⚠ 豁免须收紧（防假收敛）：豁免只该盖住"失败侧的失败串"，不该盖住"非失败侧也吞没了自身失败"。
+            # _status_partial_failure 只看子进程状态（_OK = rc=0 且合法 JSON 且无 _degraded），但它【不查
+            # stderr 失败串】——pr-agent 把 LLM 失败吞成 rc=0/空建议时该侧也是 _OK.failed=False。故若非失败
+            # 侧自身 stderr 带该工具失败串（与失败侧同源的 LLM 负载失败），实为【两工具都挂】的吞没式失败，
+            # 整轮当可信空评审即假收敛（PR #44/#46 同类）。故 _partial_side 命中时，再查非失败侧自身 stderr：
+            # 若也带该工具失败串 → 不豁免（落入 prediction_swallowed_failure，判 llm_failed）。
+            if _partial_side == "improve":
+                _ok_side, _ok_sigs = rev_res, _REVIEW_FAIL_SIGS
+            elif _partial_side == "review":
+                _ok_side, _ok_sigs = imp_res, _IMPROVE_FAIL_SIGS
+            else:
+                _ok_side, _ok_sigs = None, ()
+            _ok_side_also_swallowed = _ok_side is not None and any(
+                sig in (_ok_side.stderr or "") for sig in _ok_sigs)
+            if (not _partial_side or _ok_side_also_swallowed) and prediction_swallowed_failure(data, stderr):
                 # caution 领头给【具体原因】（哪个工具 + litellm 真实异常 + 时序），而非误导性的 stderr 尾部
                 # （那常是另一侧成功工具的 success 日志，见 summarize_llm_failure）。
                 _fail_tool, _fail_detail = summarize_llm_failure(stderr)
