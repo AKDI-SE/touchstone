@@ -65,7 +65,10 @@ def _configure_once():
         root.setLevel(_level_from_env())
         return
     if root.handlers:
-        # 宿主已接管：只设级别，不加 handler。
+        # 宿主已接管：不叠加 handler，但仍按 env 设级别。否则 TOUCHSTONE_LOG_LEVEL 被静默
+        # 忽略（logger 留 NOTSET→继承 WARNING→DEBUG/INFO 被级别过滤丢弃），且与第二次调用
+        # 经上方 _CONFIGURED 分支设级别的行为不一致。
+        root.setLevel(_level_from_env())
         _CONFIGURED = True
         return
     handler = logging.StreamHandler(sys.stderr)   # 默认 stderr：与旧 print 可捕获性一致

@@ -87,6 +87,26 @@ def test_host_takeover_not_overridden(monkeypatch):
     root.removeHandler(host_handler)
 
 
+def test_host_takeover_still_sets_level(monkeypatch):
+    """宿主接管分支首调仍须按 env 设级别——回归锁。
+
+    bug（host-takeover 分支曾 `return` 前漏 `setLevel`）：宿主挂了自己的 handler 时，本
+    模块首调走该分支只置 `_CONFIGURED` 不设级别 → logger 留 NOTSET、继承 WARNING →
+    TOUCHSTONE_LOG_LEVEL=DEBUG 静默失效（DEBUG/INFO 被级别过滤丢弃），且与第二次调用经
+    `_CONFIGURED` 分支设级别的行为不一致。本测把级别预置成 WARNING，断言首调后被拉到 env
+    指定的 DEBUG；删掉 `setLevel` 这一行即应红（变异杀红）。"""
+    monkeypatch.setenv("TOUCHSTONE_LOG_LEVEL", "DEBUG")
+    root = logging.getLogger(ls._ROOT_NAME)
+    root.setLevel(logging.WARNING)        # 已知起始态：证明后续 DEBUG 是 setLevel 拉的、非遗留
+    host_handler = logging.StreamHandler()  # 不带 _touchstone_default 标记 → 命中 host-takeover 分支
+    root.addHandler(host_handler)
+    ls._CONFIGURED = False
+    ls.get_logger("hosttakeover")
+    assert root.level == logging.DEBUG, \
+        "宿主接管首调须按 env 设级别（漏 setLevel → DEBUG 静默丢弃）"
+    root.removeHandler(host_handler)
+
+
 def test_captured_by_caplog(caplog):
     """日志经 caplog 可捕获——证明未切断向 root 的冒泡（宿主 root handler 亦能收集）。"""
     with caplog.at_level(logging.INFO, logger="touchstone.captest"):
