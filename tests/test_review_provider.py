@@ -101,6 +101,27 @@ def test_normalize_unknown_label_falls_to_default_category():
     assert f["category"] == "convention"               # default_category
 
 
+def test_normalize_label_case_insensitive():
+    """标签→类别映射大小写无关——回归锁。
+
+    pr-agent 的 label schema 明确「也接受其它相关标签」，LLM 会发 'Security'/'Possible Bug'
+    等大写形式；nmap 键全小写，旧实现 l2c.get(label) 直接拿原始大小写查 → 大写标签落
+    default_category='convention'：安全发现被降级、永不到 high（风险误路由）。删任一 .lower()
+    即红（变异杀红）。"""
+    items = [
+        {"kind": "suggestion", "file": "a.py", "line_start": 1, "label": "Security", "summary": "s"},
+        {"kind": "suggestion", "file": "b.py", "line_start": 2, "label": "Possible Bug", "summary": "s"},
+        {"kind": "suggestion", "file": "c.py", "line_start": 3, "label": "security", "summary": "s"},  # 小写回归
+    ]
+    cats = [f["category"] for f in RP.normalize(items)]
+    assert cats[0] == "security", f"大写 'Security' 须映射 security 非 convention（got {cats[0]!r}）"
+    assert cats[1] == "correctness", f"'Possible Bug' 须映射 correctness（got {cats[1]!r}）"
+    assert cats[2] == "security", f"小写 'security' 回归仍须 security（got {cats[2]!r}）"
+    # 大写安全发现经 case-insensitive 映射后须真能升到 high（端到端证风险路由不再被 casing 误降）
+    _, risk = RP.map_verdict(RP.normalize([items[0]]))
+    assert risk["risk_band"] == "high"
+
+
 # ---------------- 裁决映射 ----------------
 def test_map_verdict_security_is_high():
     _, risk = RP.map_verdict(RP.normalize(RP.parse_pr_agent(_RAW)))

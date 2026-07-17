@@ -811,14 +811,18 @@ def normalize(items, nmap=None):
     """把 PR-Agent 的 ReviewItem 按 nmap 映射成本系统 Finding（与 contract_check 同构，
     供下游裁决映射/总闸/校准直接复用）。agent 记来源（pr-agent:suggestion / pr-agent:review）。"""
     nmap = nmap or _DEFAULT_NMAP
-    l2c = nmap.get("label_to_category", {})
-    discard = set(nmap.get("discard_labels", []))
+    # 标签→类别映射大小写无关：pr-agent 的 label schema 明确「也接受其它相关标签」，LLM 实际会发
+    # 大小写不一的形式（'Security'/'Possible Bug' 等）；nmap 键多为小写，若直接 l2c.get(label) 则
+    # 大写标签落 default_category='convention'——安全/正确性发现被错误降级、永不到 high（风险误路由，
+    # 甚至被自动合并）。键与输入双双归一为小写查表（nmap 自身亦大小写不一，如 'Organization best practice'）。
+    l2c = {str(k).lower(): v for k, v in nmap.get("label_to_category", {}).items()}
+    discard = {str(d).lower() for d in nmap.get("discard_labels", [])}
     findings = []
     for it in items or []:
-        label = it.get("label", "")
-        if label in discard:
+        label = it.get("label") or ""
+        if label.lower() in discard:
             continue
-        cat = l2c.get(label, nmap.get("default_category", "convention"))
+        cat = l2c.get(label.lower(), nmap.get("default_category", "convention"))
         rid = "PRA-" + (label or it.get("kind", "review")).replace(" ", "_").upper()
         # 修订设计 §4.2（评审意见 2）：模型来源只给方向与依据，不给动手级指令。
         # suggestion 的 body 可能是 improved_code（补丁）——按设计降级为方向描述，不进任何建议字段；
