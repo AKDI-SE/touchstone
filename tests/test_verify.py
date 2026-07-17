@@ -619,6 +619,42 @@ def test_maven_runner_mutation_zero_mutants_with_report_returns_one(monkeypatch,
     assert V.MavenRunner().mutation(str(tmp_path), ["A.java"]) == 1.0
 
 
+def test_pit_score_corrupt_report_raises(tmp_path):
+    """A5-F1：mutations.xml 存在但损坏（PIT 崩溃中途写出截断 xml 等）→ _pit_score 抛 MutationRunError，
+    而非返回 None。旧实现 ParseError 静默 continue→返回 None→上游 _pit_has_report=True→return 1.0
+    （mutation_score 顶满 → MUT_MIN 判过 → 弱测试骗过 verify 变异门），即 #79 B1 未堵死的口子。"""
+    pd = tmp_path / "mod/target/pit-reports/202606"
+    pd.mkdir(parents=True)
+    (pd / "mutations.xml").write_text('<mutations><mutation status="KILLED"')   # 截断，ET.parse 抛 ParseError
+    with pytest.raises(V.MutationRunError):
+        V._pit_score(str(tmp_path))
+
+
+def test_pit_score_partial_corrupt_uses_parseable(tmp_path):
+    """对照：同胞报告中至少一份可解析 → 以它为准、不抛（损坏同胞不阻塞，分数仍可信）。
+    锁 `corrupt and not parseable` 的 not-parseable 半段——避免误把"有可用报告"当全坏。"""
+    bad = tmp_path / "mod/target/pit-reports/202606"
+    bad.mkdir(parents=True)
+    (bad / "mutations.xml").write_text('<mutations><mutation status="KILLED"')      # 损坏
+    good = tmp_path / "mod2/target/pit-reports/202607"
+    good.mkdir(parents=True)
+    (good / "mutations.xml").write_text(
+        '<mutations><mutation status="KILLED"/><mutation status="SURVIVED"/></mutations>')  # 可解析
+    assert abs(V._pit_score(str(tmp_path)) - 0.5) < 1e-9    # 用可解析那份：1 killed / 2 total
+
+
+def test_maven_runner_mutation_corrupt_report_raises(monkeypatch, tmp_path):
+    """A5-F1 端到端：mvn 退出码 0 但产出的 mutations.xml 损坏 → MavenRunner.mutation 抛
+    MutationRunError（→ check_adequacy/_verify_regression 据此判 inadequate），绝不返回 1.0 假过。
+    不桩 _pit_score/_pit_has_report——走真实解析路径，证 false-pass 已被堵。"""
+    monkeypatch.setattr(R, "_run", lambda cmd, wd, timeout=None: (True, "ok"))   # PIT 退出码 0
+    pd = tmp_path / "mod/target/pit-reports/202606"
+    pd.mkdir(parents=True)
+    (pd / "mutations.xml").write_text('<mutations><mutation status="KILLED"')   # 损坏报告
+    with pytest.raises(V.MutationRunError):
+        V.MavenRunner().mutation(str(tmp_path), ["A.java"])
+
+
 def test_maven_runner_changed_coverage(monkeypatch, tmp_path):
     monkeypatch.setattr(R, "_jacoco_changed_coverage", lambda wd, cf: 0.6)
     monkeypatch.setattr(R, "_jacoco_changed_line_coverage", lambda wd, cf, cl: 0.8)

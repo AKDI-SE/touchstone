@@ -409,15 +409,27 @@ def _pit_score(work_dir):
     reps = glob.glob(os.path.join(work_dir, "**/target/pit-reports/**/mutations.xml"),
                      recursive=True)
     killed = total = 0
+    parseable = False
+    corrupt = []
     for rep in reps:
         try:
             root = ET.parse(rep).getroot()
         except ET.ParseError:
+            corrupt.append(rep)
             continue
+        parseable = True
         for m in root.iter("mutation"):
             total += 1
             if m.get("status") in ("KILLED", "TIMED_OUT"):
                 killed += 1
+    # 报告存在但【全部】解析失败（PIT 崩溃中途写出截断 xml 等）：不能当"零变异"放过——
+    # 上游 MavenRunner.mutation 会把 _pit_score 的 None 经 _pit_has_report=True 路径返回 1.0
+    # （mutation_score 顶满 → MUT_MIN 判过 → 弱测试骗过 verify 门；恰是 #79 B1 没堵死的口子）。
+    # 区分"无可变异(通过)"与"报告损坏(失败)"：损坏必抛 MutationRunError（→ 上游判 inadequate）。
+    # 若至少有一份可解析报告，则以它为准（忽略同胞损坏报告，分数仍可信）。
+    if corrupt and not parseable:
+        raise MutationRunError("mutations.xml 存在但解析失败（报告损坏，疑 PIT 崩溃截断）："
+                               + ", ".join(corrupt)[:300])
     return (killed / total) if total else None
 
 
