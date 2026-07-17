@@ -183,7 +183,12 @@ def _check_verify(pr, cfg):
     """折入 verify 深检结果：verify_change 作为独立/按需 job 跑、写 verify-result.json，
     本插件只把它的结论折进总闸。未跑则记中性（不挡）。"""
     import json
-    path = cfg.get("result_file", "verify-result.json")
+    # 与写出方（verify_change.py:449 artifact_path("verify-result.json")）对齐：设了
+    # TOUCHSTONE_OUTPUT_DIR 时读写都落隔离目录；旧硬编码 "verify-result.json" 只在 CWD 找，
+    # OUTPUT_DIR 非空时读方找不到结果文件、静默记 "verify 未运行" 把 verify 结论漏出总闸
+    # （#90 round-1 finding checks.py:190）。artifact_path 在 OUTPUT_DIR="." 时原样返回文件名，
+    # 默认场景字节级不变；result_file 为绝对路径时 os.path.join 仍尊重之。
+    path = artifact_path(cfg.get("result_file", "verify-result.json"))
     try:
         d = json.load(open(path, encoding="utf-8"))
     except (OSError, ValueError):

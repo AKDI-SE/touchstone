@@ -275,7 +275,10 @@ def main():
 
     # 模式一：发布达标变更分类（govern 定时任务用）
     if args.graduate:
-        cal = _load(artifact_path("calibration.json")) or {}
+        # override_env="CALIBRATION_JSON" 与写方（calibrate.py）+ 另一读方（govern.py）对齐，
+        # 否则设了 CALIBRATION_JSON 时读 OUTPUT_DIR/calibration.json 而写 CALIBRATION_JSON→graduate
+        # 模式拿不到校准数据（#90 round-1 finding autonomy.py:278）
+        cal = _load(artifact_path("calibration.json", override_env="CALIBRATION_JSON")) or {}
         grad = sorted(graduate_from_calibration(cal.get("records", [])))
         # 原子：这份毕业类清单直接决定哪些 change_class 可被自动放行，半文件不可接受
         atomic_write_json(artifact_path("graduated-classes.json"), {"graduated_classes": grad})
