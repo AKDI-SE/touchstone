@@ -430,6 +430,40 @@ def test_reconcile_unreliable_still_rejects_done_when_still_firing():
     assert cur["items"][0]["status"] == "open" and "复核未通过" in cur["items"][0]["note"]
 
 
+# ---------------- 假收敛守卫：已 done 项在本轮可靠复检再次命中必须重开 ----------------
+def test_reconcile_done_refire_in_reliable_round_reopens():
+    """上轮已 done（机器复核销项）的项，本轮可靠复检【再次命中同一签名】-> 销项未守住
+    （修复回归/前轮销项过急/同一处又被 flag），必须重开为 open。修复前：done 项被
+    `if status in RESOLVED: continue` 直接跳过，still_firing 永不评估 -> done 恒留 ->
+    all_verified 谎报全部销项、resolved_rate 恒 100%，而该处仍被评审 flag（典型假收敛）。"""
+    prev_done = cl.reconcile(cl.from_findings([_finding("R-1")]), {}, [])  # 第 1 轮：复检不再命中 -> done
+    assert prev_done["items"][0]["status"] == "done"                       # 前提：确已销项
+    # 第 2 轮：同一发现再次命中、评审可信、无新申报 -> 必须重开
+    cur = cl.reconcile(prev_done, {}, [_finding("R-1")], round_no=2, review_reliable=True)
+    it = cur["items"][0]
+    assert it["status"] == "open"                                          # 重开（修复前：done）
+    assert "重开" in it["note"] and "假收敛" in it["note"]
+    assert cl.all_verified(cur) is False                                   # 修复前：True（假收敛）
+    assert cur["resolved_rate"] == 0.0                                     # 修复前：1.0
+    assert len(cur["items"]) == 1                                          # 不重复追加为 new item
+
+
+def test_reconcile_done_refire_in_unreliable_round_stays_done():
+    """对称守卫：不可信轮的「再次命中」不可靠（diff 被裁空/LLM 随机性），不得据此撤销销项
+    冤枉 author——与「不可信轮不予销项」对称，双向都须可靠证据。done 项保持 done。"""
+    prev_done = cl.reconcile(cl.from_findings([_finding("R-1")]), {}, [])
+    cur = cl.reconcile(prev_done, {}, [_finding("R-1")], round_no=2, review_reliable=False)
+    assert cur["items"][0]["status"] == "done"                             # 不在不可信轮撤销销项
+    assert cl.all_verified(cur) is True
+
+
+def test_reconcile_done_not_refiring_stays_done():
+    """已 done 项本轮未再命中 -> 保持 done（不误重开）。锁死守卫只在「再次命中」时触发。"""
+    prev_done = cl.reconcile(cl.from_findings([_finding("R-1")]), {}, [])
+    cur = cl.reconcile(prev_done, {}, [], round_no=2, review_reliable=True)
+    assert cur["items"][0]["status"] == "done" and cur["resolved_rate"] == 1.0
+
+
 # ---------------- review_reliable=False：loop 不在不可信轮收敛 ----------------
 def test_loop_unreliable_no_converge_round1_empty(rule_index):
     # PR #44 round-1 场景：首轮 diff 被裁空 -> 0 发现 -> 无清单项。可靠时会假收敛，

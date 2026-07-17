@@ -127,6 +127,10 @@ def reconcile(prev, acks, current_findings, round_no=None, review_reliable=True)
     - split：必须带链接/编号；受理后计入销项。
     - 未申报但本轮发现中已消失的 open 项：同样销为 done（评审方复检即权威，申报缺席不阻塞）。
     - 本轮新增发现：追加为 open 项（清单跨轮累积，历史欠账不清零——供台账继承）。
+    - 假收敛守卫：上轮已 done（机器复核销项）的项，若本轮可靠复检再次命中同一签名 → 销项未
+      守住（修复回归/前轮销项过急/同一处又被 flag）→ 重开为 open。否则 all_verified 会谎报
+      「全部销项」而该处仍被评审 flag（典型假收敛）。仅在 review_reliable 时重开（不可信轮的
+      「再次命中」不可靠）；仅对 done（VERIFIED）——waived/split 是 author 自证、不进 all_verified。
     - review_reliable=False（本轮 LLM 评审不可信：引擎降级/可疑空收敛）时抑制依赖复检的销项：
       "签名本轮未再出现"此时不可靠（可能 diff 被裁空/LLM 随机性，非代码已改）。done 申报与
       自动销项均不触发，保持 open 待可靠轮复核；waived/split 仍受理（人判断不依赖 LLM）。
@@ -140,6 +144,16 @@ def reconcile(prev, acks, current_findings, round_no=None, review_reliable=True)
     known = {i["sig"] for i in items}
 
     for it in items:
+        if it["status"] == "done" and review_reliable and it["sig"] in cur_sigs:
+            # 假收敛守卫：上轮已 done（机器复核销项）的项，本轮可靠复检再次命中同一签名 → 销项
+            # 未守住（修复回归/前轮销项过急/同一处又被 flag），必须重开为 open。否则 all_verified
+            # 会谎报「全部销项」、resolved_rate 恒 100%，而该处仍被评审 flag（典型假收敛）。
+            # 仅 review_reliable 时重开：不可信轮的「再次命中」不可靠（diff 被裁空/LLM 随机性），
+            # 据此撤销销项会冤枉 author——与「不可信轮不予销项」对称，双向都须可靠证据。
+            # 仅 done（VERIFIED）：waived/split 是 author 自证、不进 all_verified，重开不改变收敛语义。
+            it["status"] = "open"
+            it["note"] = "复核未通过：上轮已销项但本轮可靠复检再次命中，重开（防假收敛）"
+            continue
         if it["status"] in RESOLVED:
             continue
         ack = acks.get(it["sig"])
