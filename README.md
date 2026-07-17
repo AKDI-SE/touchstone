@@ -188,7 +188,7 @@ jobs:
 
 pr-agent **取 PR** 用 workflow 自带的 `GITHUB_TOKEN`——**无需额外配置**。其它(GitLab/Bitbucket 等)git provider 未适配,本仓面向 GitHub。
 
-**LLM 调用调优**:`pr_agent_runner` 在子进程内对 LiteLLM 做了三件事——① 主模型与自评模型(`TOUCHSTONE_LLM_REFLECT_MODEL`,默认 `glm-4.5-air`)双双启用**流式**,把单次调用的墙钟超时语义校准为「真死等必杀、持续出字不误杀」;② tenacity 重试层数由 `TOUCHSTONE_LLM_NUM_RETRIES` 控制(默认 0=不重试——基于全量 run 实证:真实失败全发生在 600s+ 后、轮内重试救回率 0);③ 仅对秒级抖动类失败(快速 5xx/瞬断)在快窗(`TOUCHSTONE_LLM_RETRY_FAST_WINDOW`,默认 120s,0=纯单次)内自动 N+1;④ 经 `TOUCHSTONE_LLM_THINKING` 可逐调用下发思考模式开关(pr-agent 对 GLM 无思考控制路径,由 runner 的 acompletion 围栏注入)。流式有 `TOUCHSTONE_LLM_STREAM` 回退开关(默认 `true`)。四者都在子进程内自洽,不进本仓依赖。
+**LLM 调用调优**:`pr_agent_runner` 在子进程内对 LiteLLM 做了四件事——① 主模型与自评模型(`TOUCHSTONE_LLM_REFLECT_MODEL`,默认 `glm-4.5-air`)双双启用**流式**,把单次调用的墙钟超时语义校准为「真死等必杀、持续出字不误杀」;② tenacity 重试层数由 `TOUCHSTONE_LLM_NUM_RETRIES` 控制(默认 0=不重试——基于全量 run 实证:真实失败全发生在 600s+ 后、轮内重试救回率 0);③ 仅对秒级抖动类失败(快速 5xx/瞬断)在快窗(`TOUCHSTONE_LLM_RETRY_FAST_WINDOW`,默认 120s,0=纯单次)内自动 N+1;④ 经 `TOUCHSTONE_LLM_THINKING` 可逐调用下发思考模式开关(pr-agent 对 GLM 无思考控制路径,由 runner 的 acompletion 围栏注入)。流式有 `TOUCHSTONE_LLM_STREAM` 回退开关(默认 `true`)。四者都在子进程内自洽,不进本仓依赖。
 
 **反静默故障**:若 pr-agent 没装好、取 PR 失败、或 LLM 端点没调通,Touchstone **不会**静默降级成"0 条发现"——它会把降级说明写在贴到 PR 的评审评论顶部、并反映在 check 标题里:
 
