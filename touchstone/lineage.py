@@ -79,6 +79,10 @@ def _recent_enough(iso_ts, days=LOOKBACK_DAYS, now=None):
     if t.tzinfo is None:
         t = t.replace(tzinfo=datetime.timezone.utc)
     now = now or datetime.datetime.now(datetime.timezone.utc)
+    # 对称守卫：调用方传入的 now 若为 naive（测试 fixture / 非规范源），与上方已 aware 的 t
+    # 相减同样抛 TypeError。无偏移即按 UTC 解释——与 t 的处理同语义，避免「补了 t 漏 now」的半截修复。
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=datetime.timezone.utc)
     return (now - t).days <= days
 
 

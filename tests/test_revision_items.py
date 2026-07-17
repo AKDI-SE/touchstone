@@ -297,6 +297,20 @@ def test_recent_enough_handles_naive_datetime():
     assert lineage._recent_enough("", now=now) is False
 
 
+def test_recent_enough_assumes_utc_for_naive_now():
+    """对称守卫（round-2 finding PRA-POSSIBLE_ISSUE:lineage.py:79「Assume UTC for naive now」）：
+    round-1 补了 naive `t` 的 UTC 解释却漏了 `now` → 调用方传 naive now 时 `now - t`
+    （naive − aware）仍抛 TypeError，detect_lineage 仍可崩。修复：now 无偏移亦按 UTC 解释，
+    与 t 同语义，避免「补了 t 漏 now」的半截修复。"""
+    import datetime
+    naive_now = datetime.datetime(2026, 7, 16, 12, 0, 0)          # 无 tzinfo
+    # 修复前：now 仍 naive → (now - t) 抛 TypeError: can't subtract offset-naive and offset-aware
+    assert lineage._recent_enough("2026-07-10T12:00:00", days=30, now=naive_now) is True   # recent
+    assert lineage._recent_enough("2026-04-16T12:00:00", days=30, now=naive_now) is False  # old
+    # aware(Z) 串 + naive now：t 经 Z→+00:00 已 aware，故 now 仍须补 UTC 才不抛
+    assert lineage._recent_enough("2026-07-10T12:00:00Z", days=30, now=naive_now) is True
+
+
 def test_detect_lineage_survives_naive_closed_at():
     """detect_lineage 遇到 naive 的 closed_at（A7-F3 harness 场景）不得抛 TypeError 崩整条
     台账继承——无偏移按 UTC 解释后照常判定。"""
