@@ -31,6 +31,22 @@ def _load_template():
         return "{{banner}}\n\n{{summary_line}}\n\n{{facts}}\n\n{{findings}}\n\n{{checklist}}\n\n{{verification}}\n\n{{markers}}"
 
 
+_TEMPLATE_SLOT_RE = re.compile(r"\{\{(\w+)\}\}")
+
+
+def _fill_template(template, parts):
+    """单遍填充版面 `{{占位符}}`（A2-F1 防注入）。
+
+    此前用顺序 `for k,v: out = out.replace("{{k}}", v)` 累积替换——每次 replace 重扫整段 out，
+    于是【已填入】的段落文本若含占位符（finding 的 rationale/banner 等内容里出现 `{{markers}}`、
+    `{{checklist}}` 等——LLM 输出、对抗构造、或 legitimately 讨论模板），后续步骤会把它当模板
+    占位符展开：把 markers/checklist 段内容注入 finding 文本（占位符注入 / 串段）。
+
+    re.sub 单遍替换只扫模板一次、替换文本不再被重扫，故占位符出现在内容值里时保持字面。
+    未知占位符保持原样（同旧 str.replace 对未匹配键的行为）；值统一 str() 以防非字符串。"""
+    return _TEMPLATE_SLOT_RE.sub(lambda m: str(parts.get(m.group(1), m.group(0))), template)
+
+
 def render_unreliable_callout(engine_status, ai_raw_count=0, added_lines=0, engine_detail=""):
     """本轮评审不可信时的置顶告警——[!CAUTION] 红框置顶，替代常规溯源/降级横幅。精简到两行：
     点明【失败环节】+ 后果 + 指向。具体可靠的原始错误详列在「验证与日志」段（本框不塞原始
@@ -191,9 +207,7 @@ def render_report(risk, findings, banner="", scope_facts=None, checklist_md="",
         "verification": verification_md or "",
         "markers": markers or "",
     }
-    out = _load_template()
-    for k, v in parts.items():
-        out = out.replace("{{" + k + "}}", v)
+    out = _fill_template(_load_template(), parts)   # 单遍填充（A2-F1）：不重扫已填入内容，防占位符注入
     # 折叠空段落留下的多余空行；剥掉模板头部注释（HTML 注释会带进评论——只保留 marker 类注释）
     out = re.sub(r"<!-- =+\n.*?=+ -->\n?", "", out, flags=re.S)
     out = re.sub(r"\n{3,}", "\n\n", out).strip()
