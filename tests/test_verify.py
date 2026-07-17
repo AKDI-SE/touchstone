@@ -379,6 +379,20 @@ def test_external_mutation_cmd_hostile_filename_not_executed(monkeypatch, tmp_pa
     assert not (tmp_path / "INJECTED").exists()
 
 
+def test_external_mutation_cmd_nonzero_rc_not_trusted(monkeypatch, tmp_path):
+    """A5-F2：外部变异命令 rc!=0（崩溃/失败）→ 不信其 stdout，返回 None。docstring 既已承诺
+    "命令失败→None"，rc!=0 即按承诺落空、不解析 stdout。外部工具崩溃前可能 print 一个误导性
+    百分数（部分跑完 / segfault 前的汇总行 / 把进度当结果输出），旧实现照旧
+    _parse_mutation_output(r.stdout) 取数 → 该数字直达 mutation_score → 顶过 MUT_MIN 判
+    adequate → 弱测试骗过变异门（与 #79 B1 同类假过）。
+    `echo killed 90%; false` 模拟：stdout 有 90%，但整体 rc=1（false 退出码）。"""
+    from verify import verify_change as V
+    monkeypatch.setenv("TOUCHSTONE_MUTATION_CMD", "echo killed 90%; false")
+    assert V.external_mutation_score(str(tmp_path), ["a.py"]) is None
+    # 对照：rc=0 时正常解析（保留接缝行为、rc 守卫不误伤）——锁 test_external_mutation_cmd_used_when_set
+    # 的同一侧：删 rc 守卫后本测会拿到 0.9 而非 None（变异杀红）。
+
+
 # ---------------- 纯函数补测 ----------------
 
 
