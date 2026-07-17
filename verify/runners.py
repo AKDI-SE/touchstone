@@ -171,7 +171,12 @@ def external_mutation_score(work_dir, changed_files):
     注入面收口：changed_files 来自被检 PR 的 diff——文件名是【PR author 可控输入】。命令模板
     本身走 shell=True 是刻意的（部署方要写管道/重定向），但替换进 {files} 的每个文件名必须
     shlex.quote：否则 author 提交名为 `x;恶意命令;.py` 的文件即可在 verify 进程注入执行
-    （恰是本仓 DANGER-001 规则点名的构造——门禁自身先过自己的门）。"""
+    （恰是本仓 DANGER-001 规则点名的构造——门禁自身先过自己的门）。
+    命令失败收口（A5-F2）：rc!=0 视为命令失败 → 不解析其 stdout、返回 None。外部工具崩溃时
+    可能已把一个中途/误导性的百分数 print 到 stdout（部分跑完、segfault 前的汇总行、或工具
+    自身把进度当结果输出），若照旧 _parse_mutation_output(r.stdout) 取数 → 该数字直达
+    mutation_score → 顶过 MUT_MIN 判 adequate → 弱测试骗过变异门（与 #79 B1 同类假过）。docstring
+    既已承诺"命令失败→None"，此处按 rc 把承诺落实（默认 off 的 TOUCHSTONE_MUTATION_CMD 接缝）。"""
     cmd = os.environ.get("TOUCHSTONE_MUTATION_CMD")
     if not cmd:
         return None
@@ -180,6 +185,8 @@ def external_mutation_score(work_dir, changed_files):
                            " ".join(shlex.quote(f) for f in changed_files or []))
         r = subprocess.run(full, shell=True, cwd=work_dir, capture_output=True,
                            text=True, timeout=int(os.environ.get("TOUCHSTONE_MUTATION_TIMEOUT", "900")))
+        if r.returncode != 0:
+            return None                 # rc!=0 → 命令失败，不信 stdout（防崩溃工具的误导性输出顶满分）
         return _parse_mutation_output(r.stdout)
     except Exception:
         return None
