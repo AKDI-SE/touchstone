@@ -62,3 +62,33 @@ def test_write_text_roundtrip(tmp_path):
     p = tmp_path / "note.txt"
     atomic_write_text(str(p), "hello\n世界")
     assert p.read_text(encoding="utf-8") == "hello\n世界"
+
+
+# ============ round-2 闭环锁：权限保持（F1）+ 目录 fsync（F2） ============
+def test_atomic_write_preserves_existing_file_mode(tmp_path):
+    """F1 权限保持：mkstemp 给 0o600，os.replace 会把源 inode 权限带过去——必须
+    显式恢复目标既有权限，否则每个被重写的状态文件都静默变 0o600，破坏"同签名同效果"。"""
+    p = tmp_path / "state.json"
+    p.write_text("{}", encoding="utf-8")
+    os.chmod(p, 0o640)                          # 模拟既有文件的非默认权限
+    atomic_write_text(str(p), '{"x": 1}')
+    assert (os.stat(p).st_mode & 0o777) == 0o640   # 沿用既有，未被 mkstemp 的 0o600 覆盖
+
+
+def test_atomic_write_new_file_default_mode_is_0o644(tmp_path):
+    """F1 新建文件默认 0o644（=旧 open('w') 按 umask 的常见默认），非 mkstemp 的 0o600。"""
+    p = tmp_path / "fresh.json"                 # 目标不存在
+    atomic_write_text(str(p), "hi")
+    assert (os.stat(p).st_mode & 0o777) == 0o644
+
+
+def test_atomic_write_fsyncs_parent_directory(tmp_path, monkeypatch):
+    """F2 目录 fsync：os.replace 后须 fsync 父目录，让 rename 断电后也持久。pytest
+    无法模拟断电，故 spy 内部 _fsync_dir 锁定"确实对父目录做了 fsync"（否则 remove
+    该行即静默丢失耐久保证，无人察觉）。"""
+    import touchstone.atomicio as aio
+    seen = []
+    monkeypatch.setattr(aio, "_fsync_dir", lambda d: seen.append(d))
+    aio.atomic_write_text(str(tmp_path / "state.json"), "data")
+    assert seen, "os.replace 后未对父目录 fsync（F2 未落地）"
+    assert os.path.samefile(seen[0], str(tmp_path))   # fsync 的是父目录，非别处

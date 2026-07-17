@@ -19,17 +19,46 @@ import os
 import tempfile
 
 
+def _fsync_dir(path):
+    """fsync 父目录：os.replace 在页缓存里原子，但 rename 的目录项不保证落盘——
+    断电后可能丢掉这次 rename（回退到旧完整文件，core "不截断"承诺仍成立，但最新一次写会丢）。
+    补一次目录 fsync 让 rename 持久。某些 FS（tmpfs/网络盘）不支持目录 fsync → 静默跳过
+    （非致命：原子承诺不依赖它，只是少一档断电耐久）。"""
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
 def atomic_write_text(path, text, encoding="utf-8"):
-    """把 text 原子写入 path。父目录不存在则创建。写失败不留半文件。"""
+    """把 text 原子写入 path。父目录不存在则创建。写失败不留半文件。
+
+    权限保持（与旧 ``open(path, "w")`` 同效果）：mkstemp 默认建 0o600（仅属主），而
+    os.replace 携带源 inode 的权限——若照搬，每个被重写的状态文件都会静默变 0o600，
+    破坏"同签名同效果"。故 replace 前 chmod：目标已存在→沿用其当前权限（=旧 open('w')
+    截断写保持权限）；新建→0o644（=旧 open('w') 按 umask 的常见默认）。"""
     d = os.path.dirname(path) or "."
     os.makedirs(d, exist_ok=True)
+    # 目标权限：存在则沿用既有（旧 open('w') 截断保持权限），新建则 0o644（旧 open('w') 默认）
+    try:
+        mode = os.stat(path).st_mode & 0o777
+    except FileNotFoundError:
+        mode = 0o644
     fd, tmp = tempfile.mkstemp(prefix=".ts_tmp_", dir=d)
     try:
         with os.fdopen(fd, "w", encoding=encoding) as f:
             f.write(text)
             f.flush()
             os.fsync(f.fileno())          # 元数据+数据落盘，防 replace 后仍是脏页
+        os.chmod(tmp, mode)               # 恢复目标权限（mkstemp 给的是 0o600）
         os.replace(tmp, path)             # 原子改名：读方永不见截断态
+        _fsync_dir(d)                     # 目录 fsync：让 rename 断电后也持久
         tmp = None
     finally:
         if tmp is not None and os.path.exists(tmp):
