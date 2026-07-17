@@ -162,6 +162,22 @@ def test_checklist_ack_parse_and_render_marker_roundtrip():
     assert cl.parse_latest([md]) == c                     # marker 往返无损
 
 
+def test_checklist_marker_survives_arrow_in_item_content():
+    """A7-F2：清单项的 direction/reasoning/note 含字面 '-->'（评审方向提到 HTML 注释语法、
+    或 author 的 waived note 带 -->）时，marker 不得被首个 '-->' 截断——parse_latest 仍无损
+    取回完整清单。旧实现 body.find(_CLOSE, i) 命中内容里的 --> → JSON 截断 → json.loads 失败
+    → 整条 marker 跳过（权威清单丢失 → 收敛跟踪断、resolved_rate 归零/承旧）。"""
+    c = {"round": 2, "items": [
+        {"sig": "R-1:a.py:1",
+         "direction": "把注释 `<!-- 旧 -->` 替换为显式常量",
+         "reasoning": "见 --> 标记处，魔法数应命名",
+         "done_criteria": {"kind": "review", "spec": {"question": "替换了吗？"}},
+         "status": "waived", "note": "author 宣称可豁免：<!-- x --> 是文档不是代码"}],
+        "resolved_rate": 1.0}
+    md = cl.render(c)
+    assert cl.parse_latest([md]) == c                     # 含 --> 仍往返无损
+
+
 # ---------------- sig 归一化（闭环 PR #52 advisory 发现的换行 bug）----------------
 def test_sig_of_strips_whitespace_in_file_and_line():
     # pr-agent 输出的 file/line 字段可能带尾换行/空格——sig 构造即归一化，不渗入签名
