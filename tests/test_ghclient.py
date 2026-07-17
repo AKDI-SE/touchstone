@@ -108,6 +108,20 @@ def test_client_get_post(monkeypatch):
     assert s.calls[1]["json"] == {"k": 1}
 
 
+def test_client_patch_sends_patch(monkeypatch):
+    # 对称 get/post：编辑既有资源（如 issue body 重写）。method 必须是 PATCH、json 透传，
+    # Content-Type 带 application/json。make_session allowed_methods 不含 PATCH→不发【重试】，
+    # 但 session.request 仍正常发 PATCH（本测锁死这一点）。
+    s = _mock_session(monkeypatch, [_Resp(200, {"ok": 1})])
+    c = ghclient.client("tok")
+    out = c.patch("/repos/o/r/issues/9", {"body": "new"})
+    assert out == {"ok": 1}
+    assert s.calls[0]["method"] == "PATCH"
+    assert s.calls[0]["url"].endswith("/repos/o/r/issues/9")
+    assert s.calls[0]["json"] == {"body": "new"}
+    assert s.calls[0]["headers"]["Content-Type"] == "application/json"
+
+
 def test_client_paginate_and_check_runs(monkeypatch):
     pages = [_Resp(200, [{"a": 1}] * 100), _Resp(200, [{"a": 2}])]
     cr = [_Resp(200, {"check_runs": [{"id": 9}] * 100}), _Resp(200, {"check_runs": [{"id": 1}]})]
