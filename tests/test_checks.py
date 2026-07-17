@@ -344,6 +344,27 @@ def test_service_failure_isolated_under_parallelism(monkeypatch):
     assert checks.aggregate_gate(results) == "failure"   # required crash 中性 → 总闸 fail
 
 
+def test_service_passed_string_false_is_not_passed(monkeypatch):
+    """service 把 passed 写成字符串 'false' 时不得当通过——回归锁。
+
+    bug（_run_service 曾 `bool(d.get('passed'))`）：`bool('false') == True` 把「失败」误判为
+    「通过」→ required service 假放行总闸。改回 bool() 即红（变异杀红）。"""
+    def fake_post(payload):
+        def _p(url, json=None, timeout=None, **k):
+            return _FakeResp(payload)
+        return _p
+    monkeypatch.setattr(checks.requests, "post", fake_post({"passed": "false", "summary": "tests failed"}))
+    passed, summary = checks._run_service(_PR, {"url": "http://svc"})
+    assert passed is False, "字符串 'false' 须判失败（bool('false')==True 假放行 bug）"
+    assert summary == "tests failed"
+    # 真值字符串（大小写/变体）仍通过
+    monkeypatch.setattr(checks.requests, "post", fake_post({"passed": "True"}))
+    assert checks._run_service(_PR, {"url": "x"})[0] is True
+    # 非白名单字符串 fail-closed（门禁对模糊输入不 lenient 放行）
+    monkeypatch.setattr(checks.requests, "post", fake_post({"passed": "ok"}))
+    assert checks._run_service(_PR, {"url": "x"})[0] is False
+
+
 def test_service_order_preserved_when_interleaved_with_builtin(monkeypatch):
     """config = [builtin, service, builtin]：service 结果按配置位置回填，顺序不被并行打乱。"""
     monkeypatch.setattr(checks.requests, "post", _concurrent_post({"n": 0, "max": 0}, sleep=0.01))
