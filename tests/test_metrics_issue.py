@@ -226,6 +226,17 @@ def test_marker_survives_close_token_in_content():
     assert parsed == history                                    # 含 ` -->` 字段不丢
 
 
+def test_marker_survives_open_token_in_content():
+    # 记录字段含字面 _OPEN 串（与 marker 开标记同形）。旧实现 body.rfind(_OPEN) 取【末个】_OPEN →
+    # 落在 JSON 内部那个上 → body[i+len(_OPEN):j] 是垃圾 → json.loads 失败 → 返 []（滚动历史静默
+    # 丢失，同 #53/#99 marker-corruption 类；本字段当前 schema 未用=latent，但是真 trap）。修：改用
+    # find（首个 _OPEN=真 marker）+ raw_decode（停在 JSON 数组结构边界）。
+    history = [{"pr": 1, "note": MI._OPEN + " 见迁移说明 " + MI._CLOSE, "round": 1},
+               {"pr": 2, "round": 2}]
+    parsed = MI._parse_marker(MI._stamp_marker(history))
+    assert parsed == history                                    # 含字面 _OPEN/_CLOSE 字段不丢
+
+
 # ---- _default_gh 路由（生产默认实现，走公开 client()）-----------------------
 def test_default_gh_routes_through_public_client(monkeypatch):
     calls = []

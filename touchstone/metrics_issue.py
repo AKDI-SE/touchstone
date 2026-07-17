@@ -75,21 +75,26 @@ def _stamp_marker(history):
 def _parse_marker(body):
     """从 issue body 提取 marker 内的滚动历史；无 marker / 损坏 → []。
 
-    取最后一个 marker（OPEN/CLOSE 均 rfind），与 loop.parse_latest_state 一致——正常
-    情况下 body 只含一个 marker（每轮整段重写）。CLOSE 用 rfind 是关键：marker 内的
-    JSON 是任意 record（含可演进字段），json.dumps 不转义 `-->`，若某字段含 `-->`，
-    find(_CLOSE) 会误中 JSON 内部那个 `-->` 而截断载荷 → 历史静默丢失；rfind 锁定真正
-    的收尾 `-->`（它在 JSON 内容之后）。"""
+    取【首个】marker（find _OPEN）并用 stdlib JSONDecoder.raw_decode 从 _OPEN 之后起解析 JSON
+    数组——它按 JSON 结构停在数组边界（字符串字面量内的 `-->`/`<!--` 不干扰），一步既扫又析，
+    与 checklist.parse_latest（#99 canonical fix）同法。
+
+    ⚠ OPEN 须用 find（首个）而非 rfind（末个）：记录字段是 author/record 可控内容，json.dumps
+    不转义 `<`/`!`/`-`/`:`，故某字段含字面 _OPEN 串时，rfind(_OPEN) 会落在 JSON 内部那个 _OPEN
+    上 → 切片为垃圾 → 解析失败 → 返 []（滚动历史静默丢失，同 #53/#99 marker-corruption 类）。
+    真 marker 总在内容之前（每轮整段重写、stamp 在末尾），find 取首个即对。raw_decode 进一步保证：
+    即便内容含 `-->`（json.dumps 亦不转义），它停在数组结构边界、不依赖首个 `-->`。"""
     if not body:
         return []
-    i = body.rfind(_OPEN)
+    i = body.find(_OPEN)
     if i == -1:
         return []
-    j = body.rfind(_CLOSE, i)
+    # raw_decode 不跳前导空白、须指向 JSON 结构起点；marker 值恒为数组 → 取首个 '['。
+    j = body.find("[", i + len(_OPEN))
     if j == -1:
         return []
     try:
-        data = json.loads(body[i + len(_OPEN):j].strip())
+        data, _end = json.JSONDecoder().raw_decode(body, j)
     except (json.JSONDecodeError, ValueError, TypeError):
         return []
     return list(data) if isinstance(data, list) else []
