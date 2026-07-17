@@ -92,3 +92,27 @@ def test_atomic_write_fsyncs_parent_directory(tmp_path, monkeypatch):
     aio.atomic_write_text(str(tmp_path / "state.json"), "data")
     assert seen, "os.replace 后未对父目录 fsync（F2 未落地）"
     assert os.path.samefile(seen[0], str(tmp_path))   # fsync 的是父目录，非别处
+
+
+def test_atomic_write_sets_mode_before_fsync(tmp_path, monkeypatch):
+    """round-3 闭环（#86 finding atomicio.py:55）：权限须在 fsync【前】经 fchmod 写到 fd。
+    fsync 只持久化调用前已写入的元数据——若先 fsync（落盘 0o600）再 chmod，chmod 的元数据
+    改动未被持久 → 崩溃后回退 0o600。pytest 无法模拟断电，故 spy os.fsync / os.fchmod 锁定
+    顺序：首个 fchmod 早于首个 fsync。删 fchmod 或挪到 fsync 之后即杀红。"""
+    import touchstone.atomicio as aio
+    seq = []
+    _fsync, _fchmod = os.fsync, os.fchmod
+
+    def spy_fsync(fd):
+        seq.append("fsync")
+        return _fsync(fd)
+
+    def spy_fchmod(fd, mode):
+        seq.append("fchmod")
+        return _fchmod(fd, mode)
+    monkeypatch.setattr(os, "fsync", spy_fsync)
+    monkeypatch.setattr(os, "fchmod", spy_fchmod)
+    aio.atomic_write_text(str(tmp_path / "state.json"), "data")
+    assert "fchmod" in seq, f"未在 fsync 前设权限（fchmod 缺失）: {seq}"
+    assert seq.index("fchmod") < seq.index("fsync"), \
+        f"fchmod 须早于 fsync（否则权限不随数据落盘）: {seq}"

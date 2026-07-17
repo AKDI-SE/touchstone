@@ -55,8 +55,12 @@ def atomic_write_text(path, text, encoding="utf-8"):
         with os.fdopen(fd, "w", encoding=encoding) as f:
             f.write(text)
             f.flush()
-            os.fsync(f.fileno())          # 元数据+数据落盘，防 replace 后仍是脏页
-        os.chmod(tmp, mode)               # 恢复目标权限（mkstemp 给的是 0o600）
+            # 权限须在 fsync【前】经 fchmod 写到 fd：fsync 只持久化【调用前】已写入的元数据。
+            # 原实现先 fsync 再 chmod——fsync 落盘的是 mkstemp 的 0o600，chmod 的元数据改动
+            # 在 fsync 之后、未被持久 → 崩溃后回退 0o600（#86 round-3 finding）。fchmod 早于
+            # fsync，单次 fsync 即把数据 + 正确权限一起落盘。
+            os.fchmod(f.fileno(), mode)
+            os.fsync(f.fileno())          # 元数据+数据（含正确权限）落盘，防 replace 后仍是脏页
         os.replace(tmp, path)             # 原子改名：读方永不见截断态
         _fsync_dir(d)                     # 目录 fsync：让 rename 断电后也持久
         tmp = None
