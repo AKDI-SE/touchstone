@@ -526,7 +526,9 @@ def test_post_results_banner_shows_telemetry_status(monkeypatch):
 def test_orchestrator_main_end_to_end(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     event = tmp_path / "event.json"
-    event.write_text(json.dumps({"pull_request": {"number": 7, "head": {"sha": "abc123"}}}),
+    event.write_text(json.dumps({"pull_request": {"number": 7, "head": {"sha": "abc123"},
+                                                  "user": {"login": "alice"},
+                                                  "author_association": "MEMBER"}}),
                      encoding="utf-8")
     monkeypatch.setenv("GITHUB_TOKEN", "tok")
     monkeypatch.setenv("GITHUB_REPOSITORY", "o/r")
@@ -553,6 +555,46 @@ def test_orchestrator_main_end_to_end(monkeypatch, tmp_path):
 
     out = json.loads((tmp_path / "touchstone-findings.json").read_text(encoding="utf-8"))
     assert out["pr"] == 7 and "risk" in out and out["gate"] is None
+    # 作者出处持久化（autonomy 作者信任闸的输入；缺失即 fail-closed 不放行）
+    assert out["author"] == {"login": "alice", "association": "MEMBER"}
+
+
+def test_orchestrator_main_null_user_failclosed(monkeypatch, tmp_path):
+    # PRA-POSSIBLE_ISSUE(#104 round-2)：事件 payload 的 "user": null（key 在、值空）时，
+    # pr.get("user", {}) 只挡 key 缺失、挡不住 None → None.get("login") 崩 main()。
+    # `or {}` 同时兜底两种情形；作者出处落 None → autonomy 作者闸 fail-closed 不放行。
+    monkeypatch.chdir(tmp_path)
+    event = tmp_path / "event.json"
+    event.write_text(json.dumps({"pull_request": {"number": 9, "head": {"sha": "n9"},
+                                                  "user": None,
+                                                  "author_association": None}}),
+                     encoding="utf-8")
+    monkeypatch.setenv("GITHUB_TOKEN", "tok")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "o/r")
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(event))
+    monkeypatch.setenv("TOUCHSTONE_SKIP_GATE", "1")
+    monkeypatch.setenv("REPO_DIR", ROOT)
+    monkeypatch.setattr(ORC, "STANDARDS_PATH", os.path.join(ROOT, ".touchstone", "standards.yaml"))
+    monkeypatch.setattr(ORC, "CONTRACT_PATH", os.path.join(tmp_path, "nope.yaml"))
+
+    def fake_gh(method, path, token, data=None, accept="application/vnd.github+json"):
+        if accept.endswith("diff"):
+            return "--- a/x.py\n+++ b/x.py\n@@ -0,0 +1,1 @@\n+x\n"
+        if path.endswith("/comments") and method == "GET":
+            return []
+        if "check-runs" in path and method == "GET":
+            return {"check_runs": []}
+        return {}
+    monkeypatch.setattr(ORC, "gh", fake_gh)
+
+    def _no_endpoint(pr, provider=None):                  # 触发 review_pr 的降级分支
+        raise RuntimeError("PR-Agent 端点未配置")
+    monkeypatch.setattr(RP, "fetch", _no_endpoint)
+    ORC.main()                                            # 旧实现在此抛 AttributeError
+
+    out = json.loads((tmp_path / "touchstone-findings.json").read_text(encoding="utf-8"))
+    # null user → login/association 落 None（fail-closed），不崩溃、不误信
+    assert out["author"] == {"login": None, "association": None}
 
 
 def _setup_main(monkeypatch, tmp_path, fake_gh_fn):

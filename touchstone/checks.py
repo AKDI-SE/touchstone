@@ -222,8 +222,16 @@ def _check_verify(pr, cfg):
         d = json.load(open(path, encoding="utf-8"))
     except (OSError, ValueError):
         return None, "verify 未运行（无结果文件）"
+    if not isinstance(d, dict):
+        # verify-result.json 攻击者可影响（零密 job 跑 PR 代码产出）：非对象 JSON
+        # （数组/标量/字符串）会让 d.get 崩插件——按"未产出有效结论"中性 + 明示处理
+        # （fail-closed：required 时总闸 fail），与本函数 _truthy 的畸形值纪律一致。
+        return None, "verify 结果非对象（疑篡改/格式错），按未通过处理"
     # 可信绿：author 自报规格(author_proposed)的绿不构成正确性认证，不算通过（此规则由 autonomy.floor 搬来）
-    passed = bool(d.get("passed")) and d.get("spec_source") != "author_proposed"
+    # passed 走 _truthy 而非 bool()：verify-result.json 由执行 PR 代码的零密 job 产出，内容
+    # 攻击者可影响（见 SECURITY.md 信任边界）——畸形字符串（"ok"/"passed" 等，bool() 恒真）
+    # 必须 fail-closed 判 False，与本文件 _run_service 的 _truthy 纪律一致。
+    passed = _truthy(d.get("passed")) and d.get("spec_source") != "author_proposed"
     return passed, f"verify passed={d.get('passed')} spec={d.get('spec_source')}"
 
 

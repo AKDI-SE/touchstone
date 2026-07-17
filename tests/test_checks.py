@@ -415,3 +415,38 @@ def test_scope_rules_corrupt_warns_missing_silent(tmp_path, capsys):
     rules2 = CC.load_scope_rules(str(tmp_path))
     assert rules2 == rules                      # 回落内置默认
     assert "scope-rules 加载失败" in capsys.readouterr().err
+
+
+def test_verify_plugin_malformed_passed_failclosed(tmp_path, monkeypatch):
+    # verify-result.json 由执行 PR 代码的零密 job 产出（攻击者可影响）：畸形字符串
+    # （bool() 恒真）必须 fail-closed 判 False——SECURITY.md 信任边界的代码化。
+    import json as _json
+    monkeypatch.chdir(tmp_path)
+    for v, expect in [("ok", False), ("passed", False), ("true", True),
+                      (True, True), (False, False), (None, False), (1, True)]:
+        (tmp_path / "verify-result.json").write_text(
+            _json.dumps({"passed": v, "spec_source": "contract"}), encoding="utf-8")
+        got, _summary = checks._BUILTINS["verify"]({}, {})
+        assert got is expect, (v, got)
+    # author 自报规格的绿不算过（既有规则回归锚）
+    (tmp_path / "verify-result.json").write_text(
+        _json.dumps({"passed": True, "spec_source": "author_proposed"}), encoding="utf-8")
+    got, _ = checks._BUILTINS["verify"]({}, {})
+    assert got is False
+
+
+def test_verify_plugin_non_dict_json_failclosed(tmp_path, monkeypatch):
+    # PRA-POSSIBLE_ISSUE(#104 round-3)：verify-result.json 非 dict（数组/标量/字符串，
+    # 攻击者可影响）时 d.get 崩插件。须 isinstance 兜底→中性（fail-closed：required 时总闸 fail），
+    # 不靠 run_checks 的 except Exception 兜控制流、也不留崩栈。
+    import json as _json
+    monkeypatch.chdir(tmp_path)
+    for payload in ("[1, 2, 3]", '"passed"', "42", "null", "true"):
+        (tmp_path / "verify-result.json").write_text(payload, encoding="utf-8")
+        got, summary = checks._BUILTINS["verify"]({}, {})
+        assert got is None, payload                 # 中性、不崩
+        assert "非对象" in summary, payload          # 明示、非崩栈
+    # 对照：合法 dict 仍正常解析（回归锚）
+    (tmp_path / "verify-result.json").write_text(
+        _json.dumps({"passed": True, "spec_source": "human_curated"}), encoding="utf-8")
+    assert checks._BUILTINS["verify"]({}, {})[0] is True

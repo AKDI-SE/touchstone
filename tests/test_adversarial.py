@@ -167,7 +167,7 @@ def test_autonomy_allows_when_all_verified():
         loop_decision="converged", gate="success", autonomy_state={},
         graduated_classes={"docs_only"}, cls="docs_only",
         enabled=True, shadow=False, base_fresh=True, review_reliable=True,
-        unverified_claims=0)
+        unverified_claims=0, author_trusted=True)   # 可信作者前提（默认已改 fail-closed）
     assert dec["merge"] is True
 
 

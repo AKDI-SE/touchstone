@@ -342,4 +342,11 @@ jobs:
           AUTONOMY_TRIPPED: ${{ vars.AUTONOMY_TRIPPED }}
           AUTONOMY_ENABLED: ${{ vars.AUTONOMY_ENABLED }}
           AUTONOMY_SHADOW: ${{ vars.AUTONOMY_SHADOW }}
+          TOUCHSTONE_AUTONOMY_TRUSTED_ASSOCIATIONS: "OWNER,MEMBER,COLLABORATOR"
+                                          # 作者信任闸（第 9 闸）：仅这些 GitHub author_association 的作者
+                                          # 可被自动放行——三者均需仓库/组织侧授予、作者不可自证；
+                                          # CONTRIBUTOR/NONE 等任意人可达成的关联不信。产物缺作者信息时
+                                          # fail-closed 不放行。
+          # TOUCHSTONE_AUTONOMY_AUTHOR_ALLOWLIST: ""   # 额外放行 login 白名单（逗号分隔、大小写不敏感），
+                                          # 与关联闸取并集；给外协/机器人账号开口子用，默认空。
         run: python -m touchstone.autonomy --execute

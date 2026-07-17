@@ -87,10 +87,36 @@ def graduate_classes(experience, min_samples=None, max_bad_rate=None):
 
 
 # --- 自动放行判据（可选路径，默认关）------------------------------------------
+def author_trusted(login, association, trusted_associations=None, allowlist=None):
+    """作者信任闸判定（纯函数，供单测）——decide_auto_merge 第 9 闸的输入。
+    背景：其余 8 闸对 PR 作者身份不敏感，陌生 fork 作者与内部成员待遇相同；而 verify 的
+    "绿"由执行 PR 代码的 job 产出（攻击者可影响，见 SECURITY.md 信任边界）——自动放行
+    必须叠一道与 PR 内容无关、作者不可自证的身份闸。
+    规则（fail-closed）：
+      • allowlist（login 白名单，大小写不敏感）命中 → 信任（与关联闸取并集）；
+      • 否则 association ∈ trusted_associations（默认 OWNER/MEMBER/COLLABORATOR，
+        GitHub author_association 语义：均需仓库/组织侧授予，作者无法单方获得；
+        CONTRIBUTOR/FIRST_TIME_CONTRIBUTOR/NONE 可由任意人达成，不信）；
+      • login/association 缺失或未知 → False（产物没带作者信息就不放行）。"""
+    if trusted_associations is None:
+        trusted_associations = {
+            a.strip().upper()
+            for a in os.environ.get("TOUCHSTONE_AUTONOMY_TRUSTED_ASSOCIATIONS",
+                                    "OWNER,MEMBER,COLLABORATOR").split(",") if a.strip()}
+    if allowlist is None:
+        allowlist = {
+            a.strip().lower()
+            for a in os.environ.get("TOUCHSTONE_AUTONOMY_AUTHOR_ALLOWLIST", "").split(",")
+            if a.strip()}
+    if login and str(login).strip().lower() in allowlist:
+        return True
+    return bool(login) and bool(association) and str(association).strip().upper() in trusted_associations
+
+
 def decide_auto_merge(risk, findings, loop_decision, gate,
                       autonomy_state, graduated_classes, cls,
                       enabled=None, shadow=None, base_fresh=None, review_reliable=True,
-                      unverified_claims=0):
+                      unverified_claims=0, author_trusted=False):
     enabled = AUTONOMY_ENABLED if enabled is None else enabled
     shadow = AUTONOMY_SHADOW if shadow is None else shadow
     # 阻断否决（不再是委员会）：high 风险档或任一幸存 block_candidate 发现 → 否决（能拦、不能批）
@@ -114,6 +140,12 @@ def decide_auto_merge(risk, findings, loop_decision, gate,
         # loop 侧已因此不给 converged（第一道），本闸不信 loop_decision 单点、独立再拦一道——
         # 防 author 虚报 result marker 的 loop_decision=converged 跳过 loop 门。
         "no_unverified_claims": (unverified_claims or 0) == 0,
+        # 第 9 闸：作者信任（见 author_trusted docstring）。默认 False = fail-closed：
+        # 调用方漏传即按"不信任"拒放行（PRA-SECURITY——安全闸默认须兜底关，不能乐观开）。
+        # 生产唯一调用方 main → build_decision_inputs 从 findings 产物 fail-closed 计算
+        # 后显式传入；测试 happy-path 须显式传 True。（review_reliable 的 True 默认是既有
+        # 保留项，不在本 PR 范围。）
+        "author_trusted": author_trusted,
     }
     base = {"checks": checks, "change_class": cls,
             "failed": [k for k, v in checks.items() if not v]}
@@ -228,6 +260,12 @@ def build_decision_inputs(touchstone_out, autonomy_state, graduated_classes):
         "cls": touchstone_out.get("change_class"),
         "review_reliable": reliable,
         "unverified_claims": touchstone_out.get("unverified_claims", 0),
+        # 作者信任：orchestrator 把事件里的 user.login/author_association 写进产物
+        # （"author" 字段）。产物缺该字段（旧产物/非 GH 环境）→ author_trusted(None,None)
+        # = False：没有作者出处就不自动放行（fail-closed，与 no_unverified_claims 同哲学）。
+        "author_trusted": author_trusted(
+            (touchstone_out.get("author") or {}).get("login"),
+            (touchstone_out.get("author") or {}).get("association")),
     }
 
 
@@ -308,7 +346,8 @@ def main():
                             set(d.get("graduated_classes", [])), cls,
                             base_fresh=base_fresh,
                             review_reliable=d.get("review_reliable", True),
-                            unverified_claims=d.get("unverified_claims", 0))
+                            unverified_claims=d.get("unverified_claims", 0),
+                            author_trusted=d.get("author_trusted", False))
     print(json.dumps(dec, ensure_ascii=False))
     if dec["merge"] and args.execute and repo and pr and sha:
         if os.environ.get("AUTONOMY_MERGE_MODE", "direct") == "queue":

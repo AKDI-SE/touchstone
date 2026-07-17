@@ -648,7 +648,13 @@ def main():
                      "raw_review_excerpt": raw_excerpt,
                      # author 自证但未经人核准的销项数（waived/split）——autonomy 独立闸据此
                      # 拒放行（多层：即便 loop_decision 被虚报，本计数由 touchstone 侧写入）。
-                     "unverified_claims": n_unverified}
+                     "unverified_claims": n_unverified,
+                     # PR 作者出处（供 autonomy 作者信任闸）：login + GitHub author_association。
+                     # 事件 payload 由 Actions 平台生成、作者不可伪造；产物缺/空此字段时
+                     # autonomy 侧 fail-closed 不放行。`or {}` 同时兜底 key 缺失与 null 两种
+                     # 情形（.get("user", {}) 只挡缺失、挡不住 "user": null 的 None.get() 崩溃）。
+                     "author": {"login": (pr.get("user") or {}).get("login"),
+                                "association": pr.get("author_association")}}
     atomic_write_json("touchstone-findings.json", _findings_doc)
 
     # 风险分流的 job 输出：供下游 verify job 决定是否触发验证
