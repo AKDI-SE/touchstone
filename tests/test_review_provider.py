@@ -101,6 +101,84 @@ def test_normalize_unknown_label_falls_to_default_category():
     assert f["category"] == "convention"               # default_category
 
 
+def test_normalize_label_case_insensitive():
+    """标签→类别映射大小写无关——回归锁。
+
+    pr-agent 的 label schema 明确「也接受其它相关标签」，LLM 会发 'Security'/'Possible Bug'
+    等大写形式；nmap 键全小写，旧实现 l2c.get(label) 直接拿原始大小写查 → 大写标签落
+    default_category='convention'：安全发现被降级、永不到 high（风险误路由）。删任一 .lower()
+    即红（变异杀红）。"""
+    items = [
+        {"kind": "suggestion", "file": "a.py", "line_start": 1, "label": "Security", "summary": "s"},
+        {"kind": "suggestion", "file": "b.py", "line_start": 2, "label": "Possible Bug", "summary": "s"},
+        {"kind": "suggestion", "file": "c.py", "line_start": 3, "label": "security", "summary": "s"},  # 小写回归
+    ]
+    cats = [f["category"] for f in RP.normalize(items)]
+    assert cats[0] == "security", f"大写 'Security' 须映射 security 非 convention（got {cats[0]!r}）"
+    assert cats[1] == "correctness", f"'Possible Bug' 须映射 correctness（got {cats[1]!r}）"
+    assert cats[2] == "security", f"小写 'security' 回归仍须 security（got {cats[2]!r}）"
+    # 大写安全发现经 case-insensitive 映射后须真能升到 high（端到端证风险路由不再被 casing 误降）
+    _, risk = RP.map_verdict(RP.normalize([items[0]]))
+    assert risk["risk_band"] == "high"
+
+
+def test_normalize_non_string_label_falls_to_default_not_crash():
+    """输入侧与键侧同样防御：非字符串 label（上游解析出的数字等）直接 .lower() 会 AttributeError
+    崩在 normalize 里。应像键侧 str(k).lower() 一样 str() 归一后落 default_category。"""
+    # 数字 label（truthy、非 str）：旧实现 (7).lower() -> AttributeError
+    out = RP.normalize([{"kind": "suggestion", "file": "a.py", "line_start": 1, "label": 7, "summary": "s"}])
+    assert out[0]["category"] == "convention"            # 落默认，不崩
+    # None label 同样安全
+    out = RP.normalize([{"kind": "suggestion", "file": "a.py", "line_start": 1, "label": None, "summary": "s"}])
+    assert out[0]["category"] == "convention"
+
+
+def test_normalize_preserves_falsy_label_zero_not_swallowed():
+    """round-2 finding PRA-GENERAL:review_provider.py:836「Avoid silently dropping falsy label values」：
+    `str(label or "")` 会吞掉 falsy 但有效的 label——`0 or ""` 得 ""，于是 label=0 与缺失不可区分，
+    rule_id 退回 kind 兜底（PRA-SUGGESTION）而非 PRA-0，与本 PR「防御非字符串 label」自相矛盾
+    （上测试盖了 7，0 亦须正解）。修：只把 None 当空，0→"0" 经 str() 保留。"""
+    out = RP.normalize([{"kind": "suggestion", "file": "a.py", "line_start": 1, "label": 0, "summary": "s"}])
+    assert out[0]["category"] == "convention"            # 0 不在 nmap → 默认（语义正确）
+    assert out[0]["rule_id"] == "PRA-0"                  # 0 被保留成 "0"，未被 or "" 吞成空→kind 兜底
+
+
+def test_default_label_maps_precomputed_once():
+    """round-3 finding PRA-GENERAL:review_provider.py:821「Precompute normalized label map once」：
+    默认 nmap（模块级、不可变）的大小写归一+冲突校验原本每轮 normalize() 重算——冗余。改为 import 时
+    预计算一次（_DEFAULT_L2C/_DEFAULT_DISCARD），既让坏默认配置在 import 即 fail-fast，又让默认路径
+    per-call 成本只与 items 成比例。自定义 nmap 仍每次重建（不沿用预计算、不能假设传入 dict 不可变）。"""
+    import pytest
+    import touchstone.review_provider as rp
+    # 预计算结果存在且正确（键全小写、大写键已归一命中）
+    assert rp._DEFAULT_L2C, "默认标签映射应在 import 时预计算（非空）"
+    assert rp._DEFAULT_L2C["security"] == "security"
+    assert rp._DEFAULT_L2C["organization best practice"] == "convention"   # 大写键归一为小写
+    assert rp._DEFAULT_DISCARD == set()                                    # discard_labels 默认空
+    # 预计算 == 逐次重建（行为不变，只是不每轮重算）
+    assert (rp._DEFAULT_L2C, rp._DEFAULT_DISCARD) == rp._build_label_maps(rp._DEFAULT_NMAP)
+    # 自定义 nmap（有冲突）仍每次重建并 fail-loud——不沿用预计算
+    bad = {"label_to_category": {"Security": "security", "security": "convention"}}
+    with pytest.raises(ValueError, match="大小写归一后键冲突"):
+        rp.normalize([{"label": "x"}], nmap=bad)
+
+
+def test_normalize_raises_on_case_collision_in_nmap():
+    """大小写归一把仅大小写不同的键合并；若映射到【不同】类别，后者静默覆盖前者（配置笔误把发现
+    路由到错误类别=防静默故障）。对真冲突 fail-loud；同类别冗余键无害不报。默认 nmap 无冲突。"""
+    import pytest
+    bad = {"label_to_category": {"Security": "security", "security": "convention"},
+           "default_category": "convention"}
+    with pytest.raises(ValueError, match="大小写归一后键冲突"):
+        RP.normalize([{"label": "x"}], nmap=bad)
+    # 同类别冗余键无害（不报、保留首个）
+    ok = {"label_to_category": {"Security": "security", "security": "security"},
+          "default_category": "convention"}
+    out = RP.normalize([{"label": "security", "summary": "s", "kind": "suggestion",
+                         "file": "a", "line_start": 1}], nmap=ok)
+    assert out[0]["category"] == "security"
+
+
 # ---------------- 裁决映射 ----------------
 def test_map_verdict_security_is_high():
     _, risk = RP.map_verdict(RP.normalize(RP.parse_pr_agent(_RAW)))
