@@ -47,7 +47,8 @@ def _ok_inputs():
     risk = {"risk_band": "low", "blast_radius": []}
     return dict(risk=risk, findings=[], loop_decision="converged", gate="success",
                 autonomy_state={"tripped": False},
-                graduated_classes={"low|code|none|none"}, cls="low|code|none|none")
+                graduated_classes={"low|code|none|none"}, cls="low|code|none|none",
+                author_trusted=True)        # happy-path 前提：可信作者（默认已改 fail-closed）
 
 
 def test_decide_disabled_by_default():
@@ -184,7 +185,8 @@ _CLS = "low|code|none|none"
 def _ok(**kw):
     base = dict(risk={"risk_band": "low"}, findings=[], loop_decision="converged",
                 gate="success", autonomy_state={"tripped": False},
-                graduated_classes={_CLS}, cls=_CLS, enabled=True, shadow=False)
+                graduated_classes={_CLS}, cls=_CLS, enabled=True, shadow=False,
+                author_trusted=True)        # happy-path 前提：可信作者（默认已改 fail-closed）
     base.update(kw); return base
 
 
@@ -227,7 +229,7 @@ def test_base_fresh_gate_blocks_stale_base():
     from touchstone import autonomy as A
     kw = dict(risk={"risk_band": "low"}, findings=[], loop_decision="converged",
               gate="success", autonomy_state={}, graduated_classes={"low|code"},
-              cls="low|code", enabled=True, shadow=False)
+              cls="low|code", enabled=True, shadow=False, author_trusted=True)
     assert A.decide_auto_merge(**kw, base_fresh=None)["merge"] is True     # 未评估：兼容旧行为
     dec = A.decide_auto_merge(**kw, base_fresh=False)
     assert dec["merge"] is False and "base_fresh" in dec["failed"]         # 过期：拒放行
@@ -406,8 +408,17 @@ def test_author_trusted_env_associations_override(monkeypatch):
 
 
 def test_decide_blocks_untrusted_author():
-    d = A.decide_auto_merge(**_ok_inputs(), enabled=True, shadow=False, author_trusted=False)
+    kw = _ok_inputs(); kw["author_trusted"] = False     # 覆盖 happy-path 的 True
+    d = A.decide_auto_merge(**kw, enabled=True, shadow=False)
     assert d["merge"] is False and "author_trusted" in d["failed"]
+
+
+def test_decide_author_trusted_default_is_failclosed():
+    # PRA-SECURITY：author_trusted 默认须 fail-closed。调用方漏传（不传 author_trusted）
+    # → 第 9 闸按"不信任"拒放行。变异锚：若默认被改回 True，本断言红（闸通过、不在 failed）。
+    kw = _ok_inputs(); kw.pop("author_trusted")          # 故意漏传，吃默认值
+    d = A.decide_auto_merge(**kw, enabled=True, shadow=False)
+    assert "author_trusted" in d["failed"] and d["merge"] is False
 
 
 def test_decision_inputs_author_failclosed(monkeypatch):

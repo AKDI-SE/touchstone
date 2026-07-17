@@ -116,7 +116,7 @@ def author_trusted(login, association, trusted_associations=None, allowlist=None
 def decide_auto_merge(risk, findings, loop_decision, gate,
                       autonomy_state, graduated_classes, cls,
                       enabled=None, shadow=None, base_fresh=None, review_reliable=True,
-                      unverified_claims=0, author_trusted=True):
+                      unverified_claims=0, author_trusted=False):
     enabled = AUTONOMY_ENABLED if enabled is None else enabled
     shadow = AUTONOMY_SHADOW if shadow is None else shadow
     # 阻断否决（不再是委员会）：high 风险档或任一幸存 block_candidate 发现 → 否决（能拦、不能批）
@@ -140,9 +140,11 @@ def decide_auto_merge(risk, findings, loop_decision, gate,
         # loop 侧已因此不给 converged（第一道），本闸不信 loop_decision 单点、独立再拦一道——
         # 防 author 虚报 result marker 的 loop_decision=converged 跳过 loop 门。
         "no_unverified_claims": (unverified_claims or 0) == 0,
-        # 第 9 闸：作者信任（见 author_trusted docstring）。默认参数 True 沿用本函数
-        # review_reliable 的既有风格——真值由唯一调用方（main → build_decision_inputs）
-        # 从 findings 产物 fail-closed 计算后传入。
+        # 第 9 闸：作者信任（见 author_trusted docstring）。默认 False = fail-closed：
+        # 调用方漏传即按"不信任"拒放行（PRA-SECURITY——安全闸默认须兜底关，不能乐观开）。
+        # 生产唯一调用方 main → build_decision_inputs 从 findings 产物 fail-closed 计算
+        # 后显式传入；测试 happy-path 须显式传 True。（review_reliable 的 True 默认是既有
+        # 保留项，不在本 PR 范围。）
         "author_trusted": author_trusted,
     }
     base = {"checks": checks, "change_class": cls,
