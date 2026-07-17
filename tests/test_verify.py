@@ -363,9 +363,51 @@ def test_parse_mutation_output_takes_last_number():
 def test_external_mutation_cmd_used_when_set(monkeypatch, tmp_path):
     from verify import verify_change as V
     monkeypatch.setenv("TOUCHSTONE_MUTATION_CMD", "echo killed 3/4 = 75%")
-    assert V.external_mutation_score(str(tmp_path), ["a.py"]) == 0.75
+    score, trusted = V.external_mutation_score(str(tmp_path), ["a.py"])
+    assert score == 0.75 and trusted is False       # stdout 来源 → 不可信
     monkeypatch.delenv("TOUCHSTONE_MUTATION_CMD")
-    assert V.external_mutation_score(str(tmp_path), ["a.py"]) is None   # 未设 → 回退内置
+    assert V.external_mutation_score(str(tmp_path), ["a.py"]) == (None, False)  # 未设
+
+
+def test_external_mutation_result_file_is_trusted(monkeypatch, tmp_path):
+    """结果文件来源 → trusted=True。工具把 JSON 写到 TOUCHSTONE_MUTATION_RESULT
+    指向的路径（touchstone 经 env 注入、被检代码不可预知），score 采信。"""
+    from verify import verify_change as V
+    # 命令用 {result} 占位拿到 touchstone 指定的写出路径，写 killed/total
+    monkeypatch.setenv("TOUCHSTONE_MUTATION_CMD",
+                       "printf '{\"killed\":9,\"total\":10}' > {result}")
+    score, trusted = V.external_mutation_score(str(tmp_path), ["a.py"])
+    assert score == 0.9 and trusted is True
+
+
+def test_external_mutation_stdout_forgery_not_trusted(monkeypatch, tmp_path):
+    """防伪核心：被检测试在 stdout 打印假的 100%，但不写结果文件 → 回退 stdout 解析、
+    标记 trusted=False。mutation() 据此拒绝采信、回退内置 AST 变异（见对应测试）。"""
+    from verify import verify_change as V
+    monkeypatch.setenv("TOUCHSTONE_MUTATION_CMD",
+                       "echo 'evil test output: kill rate 100%'")
+    score, trusted = V.external_mutation_score(str(tmp_path), ["a.py"])
+    assert trusted is False, "stdout 来源必须标记不可信"
+
+
+def test_mutation_rejects_untrusted_stdout_score(monkeypatch, tmp_path):
+    """PythonRunner.mutation：不可信 stdout 分数默认不采信，回退内置。
+    构造：外部命令只往 stdout 打印 100%（不写结果文件）+ 提供 test_code 使内置路径可跑。
+    期望：返回值【不是】被伪造的 1.0（走了内置 AST 变异，得到真实分数或按内置规则）。"""
+    from verify import runners as R
+    monkeypatch.setenv("TOUCHSTONE_MUTATION_CMD", "echo 'kill rate 100%'")
+    runner = R.PythonRunner()
+    # 无 test_code → 内置路径返回 None（而非被伪造的 1.0），证明未采信 stdout
+    assert runner.mutation(str(tmp_path), ["a.py"], test_code=None) is None
+
+
+def test_mutation_trust_stdout_escape_hatch(monkeypatch, tmp_path):
+    """逃生阀：部署方显式 TOUCHSTONE_MUTATION_TRUST_STDOUT=1 时恢复旧行为（信 stdout）。"""
+    from verify import runners as R
+    monkeypatch.setenv("TOUCHSTONE_MUTATION_CMD", "echo 'score 80%'")
+    monkeypatch.setenv("TOUCHSTONE_MUTATION_TRUST_STDOUT", "1")
+    runner = R.PythonRunner()
+    assert runner.mutation(str(tmp_path), ["a.py"], test_code=None) == 0.8
 
 
 def test_external_mutation_cmd_hostile_filename_not_executed(monkeypatch, tmp_path):
@@ -375,8 +417,54 @@ def test_external_mutation_cmd_hostile_filename_not_executed(monkeypatch, tmp_pa
     from verify import verify_change as V
     hostile = "x.py; touch INJECTED; echo 0.99;"
     monkeypatch.setenv("TOUCHSTONE_MUTATION_CMD", "true {files}; echo 0.5")
-    assert V.external_mutation_score(str(tmp_path), [hostile]) == 0.5
+    score, trusted = V.external_mutation_score(str(tmp_path), [hostile])
+    assert score == 0.5 and trusted is False        # stdout 来源
     assert not (tmp_path / "INJECTED").exists()
+
+
+def test_external_mutation_filename_with_result_literal_not_corrupted(monkeypatch, tmp_path):
+    """#89 finding runners.py:221 — {files}/{result} 替换顺序。文件名含字面 `{result}`（author
+    可控输入）：旧顺序先替 {files}（带入 {result} 字面）再替 {result} → 文件名里的 {result}
+    被结果路径展开、结果路径注入文件参数位（损坏命令）。正确顺序先替 {result}（touchstone
+    控制路径永不含 {files}）再替 {files} → 文件名里的 {result} 保持字面。用 {files} 写到
+    work_dir 外的 side 文件观测其展开。"""
+    from verify import verify_change as V
+    side = tmp_path / "files_expansion.txt"
+    monkeypatch.setenv("TS_SIDE", str(side))
+    monkeypatch.setenv("TOUCHSTONE_MUTATION_CMD",
+                       r"""printf '%s' {files} > "$TS_SIDE"; printf '{"score":0.5}' > {result}""")
+    score, trusted = V.external_mutation_score(str(tmp_path), ["{result}.py"])
+    assert score == 0.5 and trusted is True
+    expanded = side.read_text()
+    assert "{result}" in expanded, f"文件名字面 {{result}} 被错误展开: {expanded!r}"
+    assert ".ts_mut_" not in expanded, f"结果路径泄漏进文件参数位（替换顺序错）: {expanded!r}"
+
+
+def test_external_mutation_result_dir_cleaned_even_with_extra_files(monkeypatch, tmp_path):
+    """#89 finding runners.py:233 — 临时结果目录清理。外部工具可能往 result_dir 写辅助产物
+    （日志/锁/中间文件）。旧清理 os.rmdir（仅空目录可删）+ except OSError: pass → 非空即
+    静默失败、泄漏 .ts_mut_* 目录。改 shutil.rmtree(ignore_errors=True) 健壮清空。
+    锁定：工具往 result_dir 写一个额外文件后，调用结束 result_dir 必须被彻底删除。"""
+    import os
+    import tempfile
+    from verify import verify_change as V
+    captured = {}
+    real_mkdtemp = tempfile.mkdtemp
+
+    def spy_mkdtemp(*a, **kw):
+        d = real_mkdtemp(*a, **kw)
+        captured["dir"] = d
+        return d
+    monkeypatch.setattr(tempfile, "mkdtemp", spy_mkdtemp)
+    # 往 result_dir 写额外文件（模拟外部工具留辅助产物），并写出有效结果 JSON
+    monkeypatch.setenv(
+        "TOUCHSTONE_MUTATION_CMD",
+        r"""printf 'aux' > "$(dirname "$TOUCHSTONE_MUTATION_RESULT")/aux.txt"; """
+        r"""printf '{"score":0.5}' > {result}""")
+    score, trusted = V.external_mutation_score(str(tmp_path), ["a.py"])
+    assert score == 0.5 and trusted is True
+    assert "dir" in captured
+    assert not os.path.exists(captured["dir"]), "result_dir 含额外文件仍残留 → 清理不健壮"
 
 
 # ---------------- 纯函数补测 ----------------
@@ -528,7 +616,7 @@ def test_changed_lines_uses_git_diff(monkeypatch):
 def test_external_mutation_score_no_cmd_no_mutmut(monkeypatch, tmp_path):
     monkeypatch.delenv("TOUCHSTONE_MUTATION_CMD", raising=False)
     monkeypatch.setattr(V.subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(FileNotFoundError))
-    assert V.external_mutation_score(str(tmp_path), ["a.py"]) is None
+    assert V.external_mutation_score(str(tmp_path), ["a.py"]) == (None, False)
 
 
 def test_suite_coverage_python_no_py(tmp_path):
@@ -572,10 +660,10 @@ def test_python_runner_run_suite(monkeypatch):
 def test_python_runner_mutation_branches(monkeypatch, tmp_path):
     r = V.PythonRunner()
     # 外部变异工具有值 → 直接用
-    monkeypatch.setattr(R, "external_mutation_score", lambda wd, cf: 0.7)
+    monkeypatch.setattr(R, "external_mutation_score", lambda wd, cf: (0.7, True))
     assert r.mutation(str(tmp_path), ["a.py"], test_code="t") == 0.7
     # 外部返回 None + 有 test_code → _mutation_check
-    monkeypatch.setattr(R, "external_mutation_score", lambda wd, cf: None)
+    monkeypatch.setattr(R, "external_mutation_score", lambda wd, cf: (None, False))
     monkeypatch.setattr(R, "_mutation_check", lambda wd, tc, cf: 0.4)
     assert r.mutation(str(tmp_path), ["a.py"], test_code="t") == 0.4
     # 外部 None + 无 test_code → None
@@ -729,7 +817,7 @@ def test_run_success_timeout_notfound(monkeypatch):
 def test_external_mutation_cmd_parse_and_fail(monkeypatch, tmp_path):
     # 设了 cmd + 正常百分数输出 → 解析击杀率
     monkeypatch.setenv("TOUCHSTONE_MUTATION_CMD", "echo mutation score: 75%")
-    assert V.external_mutation_score(str(tmp_path), ["a.py"]) == 0.75
+    assert V.external_mutation_score(str(tmp_path), ["a.py"]) == (0.75, False)
     # cmd 抛错 → None
     monkeypatch.setenv("TOUCHSTONE_MUTATION_CMD", "false")
-    assert V.external_mutation_score(str(tmp_path), ["a.py"]) is None
+    assert V.external_mutation_score(str(tmp_path), ["a.py"]) == (None, False)
