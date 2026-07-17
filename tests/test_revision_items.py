@@ -280,6 +280,43 @@ def test_fingerprint_similarity_and_same_origin():
     assert lineage.fileset_jaccard([], []) == 0.0          # 空 diff 不构成同源证据
 
 
+def test_recent_enough_handles_naive_datetime():
+    """naive 时间戳（无 Z/偏移——非 GitHub 规范源/脏数据）与 aware 的 now 相减会抛 TypeError
+    把整个 detect_lineage 带崩（A7-F3）。修复：无偏移即按 UTC 解释。语义对照：recent=True /
+    old=False，与 aware(Z) 串一致；垃圾/空串仍返 False。"""
+    import datetime
+    now = datetime.datetime(2026, 7, 16, tzinfo=datetime.timezone.utc)
+    # 修复前：下面两行任一抛 TypeError: can't subtract offset-naive and offset-aware datetimes
+    assert lineage._recent_enough("2026-07-10T12:00:00", days=30, now=now) is True   # naive recent
+    assert lineage._recent_enough("2026-04-16T12:00:00", days=30, now=now) is False  # naive old
+    # aware(Z) 串语义不变（回归）
+    assert lineage._recent_enough("2026-07-10T12:00:00Z", days=30, now=now) is True
+    assert lineage._recent_enough("2026-04-16T12:00:00Z", days=30, now=now) is False
+    # 垃圾/空仍 fail-closed
+    assert lineage._recent_enough("not-a-date", now=now) is False
+    assert lineage._recent_enough("", now=now) is False
+
+
+def test_detect_lineage_survives_naive_closed_at():
+    """detect_lineage 遇到 naive 的 closed_at（A7-F3 harness 场景）不得抛 TypeError 崩整条
+    台账继承——无偏移按 UTC 解释后照常判定。"""
+    import datetime
+
+    class _Api:
+        def __call__(self, m, p):
+            if "state=closed" in p:
+                return [{"number": 99, "merged_at": None,
+                         "closed_at": "2026-07-10T12:00:00",     # naive——修复前崩此处
+                         "updated_at": "2026-07-10T12:00:00"}]
+            return []
+    fp = {"fileset": ["a.py"], "shape": {"a.py": [1, 1]}, "fileset_hash": "x"}
+    # 修复前：TypeError；修复后：正常返回（不崩）
+    led = lineage.detect_lineage(fp, _Api(), "o", "r", 100,
+                                 now=datetime.datetime(2026, 7, 16, tzinfo=datetime.timezone.utc))
+    assert isinstance(led, dict)                                  # 没崩、回了台账结构
+
+
+
 def _fake_api(closed_prs, files_by_pr, comments_by_pr):
     def api(method, path):
         if "/pulls?" in path:

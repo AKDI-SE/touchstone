@@ -73,6 +73,11 @@ def _recent_enough(iso_ts, days=LOOKBACK_DAYS, now=None):
         t = datetime.datetime.fromisoformat((iso_ts or "").replace("Z", "+00:00"))
     except ValueError:
         return False
+    # 健壮性：naive 时间戳（无 Z/偏移——非 GitHub 规范源/脏数据/手写 fixture）与 aware 的 now
+    # 相减会抛 TypeError「can't subtract offset-naive and offset-aware datetimes」，把整个
+    # detect_lineage 带崩（台账继承失败→上游回落）。无偏移即按 UTC 解释，与上方 Z→+00:00 同语义。
+    if t.tzinfo is None:
+        t = t.replace(tzinfo=datetime.timezone.utc)
     now = now or datetime.datetime.now(datetime.timezone.utc)
     return (now - t).days <= days
 
