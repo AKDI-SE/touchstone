@@ -44,7 +44,7 @@ Touchstone 把一个 PR 上要回答的问题分成三类,各用各的依据:
 ## 默认形态与可选能力
 
 - **评审(默认开)** —— 顾问式,只产建议与发现,不阻断。
-- **确定性门禁(默认开)** —— 契约与栈规则 + SEC-001 密钥扫描,机器可检。`severity=block_candidate` 的规则(CTR-001/SPR-TX-001/JAVA-EQ-001/SEC-001)命中即阻断;`warn` 规则经校准固化(`enforced`)后升级为阻断。SEC-002(注入)依赖外部 SAST。
+- **确定性门禁(默认开)** —— 契约与栈规则 + SEC-001 密钥扫描 + DANGER-001 危险代码构造(`eval`/`exec`/`os.system`/`pickle`、subprocess 启用 shell)扫描,机器可检。`severity=block_candidate` 的规则(CTR-001/SPR-TX-001/JAVA-EQ-001/SEC-001/DANGER-001)命中即阻断;`warn` 规则经校准固化(`enforced`)后升级为阻断。SEC-002(注入)依赖外部 SAST。
 - **独立验证 verify(默认关)** —— 用**异于评审的模型**、盲于实现地生成验收测试,在 git worktree 上对改动前/改动后两版分别执行,要求"改后通过 ∧ 改前失败 ∧ 覆盖/变异达标 ∧ 回归绿"才判正确。是 Touchstone 的核心,分量也最重。
 - **渐进自治 autonomy(默认关)** —— 仅对经校准证明"放行靠谱"的变更类,才开自动合并,且有熔断保障。自主边界严格等于验证边界。
 - **学习回路 learning_loop(离线,Touchstone 的差异化核心)** —— 评审引擎复用的是开源 PR-Agent,所以真正属于 Touchstone 的创造,是这条让评审越用越准的回路:统计"人最终采纳了哪些发现、忽略了哪些",把规律写成自然语言经验,加进给 PR-Agent 的提示词里。它分两档:当前实际跑的是**计数式做法**(不训练模型、不改权重,只统计采纳率,已实现);更强的 **TF-GRPO**(取自 arXiv 2510.08191)**也已实现、离线可测**(机制见 `docs/learning-loop-design.html` 第 3 节;生产需一个参数固定的旗舰模型端点)。整条回路都离线跑、和评审分开(它出问题不影响评审);经验只用来调建议,绝不参与合入判定;新经验还要先用真实 PR 做 shadow A/B 对照,达标了才正式启用。
@@ -155,6 +155,7 @@ jobs:
 | `LLM_MODEL` | ✅ | 评审用的模型名 | `glm-5.2` |
 | `TOUCHSTONE_LLM_CONTEXT_TOKENS` | 推荐 | 模型上下文窗口（token）。2000 行 diff 约需 64K（含 prompt 开销 + 输出预留）；GLM-5.2 支持 128K | `131072` |
 | `TOUCHSTONE_LLM_OUTPUT_TOKENS` | 推荐 | 模型最大输出（token）。2000 行 PR 的建议产出上限 ~7.5K，8192 覆盖不截断 | `8192` |
+| `TOUCHSTONE_LLM_REFLECT_MODEL` | 可选 | improve 自评（self-reflection 打分，第二次 LLM 调用）专用的小模型；不设则沿用主模型。`touchstone.yml` 已默认 `glm-4.5-air`（自评是浅任务，小模型即可，improve 健康路径耗时近乎减半） | `glm-4.5-air` |
 
 > `GITHUB_TOKEN` 由 GitHub Actions 自动提供，无需手动配。
 
@@ -186,6 +187,8 @@ jobs:
 
 pr-agent **取 PR** 用 workflow 自带的 `GITHUB_TOKEN`——**无需额外配置**。其它(GitLab/Bitbucket 等)git provider 未适配,本仓面向 GitHub。
 
+**LLM 调用调优**:`pr_agent_runner` 在子进程内对 LiteLLM 做了三件事——① 主模型与自评模型(`TOUCHSTONE_LLM_REFLECT_MODEL`,默认 `glm-4.5-air`)双双启用**流式**,把单次调用的墙钟超时语义校准为「真死等必杀、持续出字不误杀」;② tenacity 重试层数由 `TOUCHSTONE_LLM_NUM_RETRIES` 控制(默认 0=不重试——基于全量 run 实证:真实失败全发生在 600s+ 后、轮内重试救回率 0);③ 仅对秒级抖动类失败(快速 5xx/瞬断)在快窗内自动 N+1。三者都在子进程内自洽,不进本仓依赖。
+
 **反静默故障**:若 pr-agent 没装好、取 PR 失败、或 LLM 端点没调通,Touchstone **不会**静默降级成"0 条发现"——它会把降级说明写在贴到 PR 的评审评论顶部、并反映在 check 标题里:
 
 - `⚠️ AI 评审未运行` —— pr-agent 未安装/不可用,本次只含确定性契约与栈规则核对;
@@ -206,30 +209,44 @@ pr-agent **取 PR** 用 workflow 自带的 `GITHUB_TOKEN`——**无需额外配
 │   ├── pr-agent.yaml           # PR-Agent 输出 → Finding 归一映射
 │   ├── best_practices.md       # 主观规则库(评审 prompt 素材)
 │   └── acceptance.yaml.example # 人核准验收规格样例(verify 用)
-├── touchstone/                 # 评审判断 + 门禁/集成 + 闭环/治理 + 入口
-│   ├── orchestrator.py            # 主编排:评审归一 → 裁决映射/风险分流 → 回贴(advisory)
+├── touchstone/                 # 评审判断 + 门禁/集成 + 闭环/治理 + 可观测 + 入口
+│   ├── orchestrator.py         # 主编排:评审归一 → 风险分流 → 回贴(advisory)
 │   ├── review_provider.py      # 评审来源适配(PR-Agent / 优雅降级)
-│   ├── pr_agent_runner.py      # PR-Agent 调用(独立 venv,子进程)
+│   ├── pr_agent_runner.py      # PR-Agent 调用(独立 venv 子进程)+ LLM 调用调优(重试/流式/自评换模)
+│   ├── render.py               # 评审报告渲染(分段 + rdjson)
 │   ├── stack_rules.py          # 栈专项确定性规则(DI/事务/equals/异常/日志/路径契约)
 │   ├── contract_check.py       # 确定性契约一致性核对(无 LLM)
 │   ├── gen_best_practices.py   # 主观规则 → PR-Agent prompt 素材
+│   ├── checklist.py            # 收敛清单:逐项销项 + author ack 申报(done/waived/split)
 │   ├── loop.py                 # 反馈循环 loop_step(有界、防震荡、可升级)
 │   ├── calibrate.py            # 影子校准:与人审吻合度 / 噪声
 │   ├── learning_loop.py        # 离线学习:从校准记录蒸馏候选
+│   ├── distill.py              # 经验蒸馏器(可插拔:TF-GRPO + 计数式)
+│   ├── experience_store.py     # 经验库读写(原子写 + 受信 marker 信任根)
+│   ├── ground_truth.py         # 校准真值集
+│   ├── lineage.py              # 轮次台账:同源重提检测 + 历史欠账继承
+│   ├── llm_budget.py           # LLM token 预算(上下文/输出窗口)
+│   ├── logging_setup.py        # 统一日志配置
 │   ├── checks.py               # 可插拔检查闸聚合 → 单一 touchstone/gate
 │   ├── govern.py               # 治理:固化提案(发现→硬门禁)+ 熔断
 │   ├── autonomy.py             # 渐进开放自动合并(可选、默认关)
+│   ├── metrics.py              # 评审度量(可信率/静默故障/放行率)
+│   ├── metrics_issue.py        # (可选)度量看板:常驻 issue 每轮刷新趋势
+│   ├── alert.py                # 阈值告警(可信率跌破/静默故障超额)
+│   ├── telemetry.py            # (可选)外部 telemetry 转发
 │   ├── ghclient.py             # GitHub REST/GraphQL 客户端(连接池 + 退避)
 │   ├── gitcode_check.py        # GitCode 平台适配检查(可插拔检查闸)
-│   ├── preflight.py            # 起步自检
+│   ├── preflight.py            # 起步自检(配置 + 连通)
+│   ├── doctor.py               # 上线自检(配置 + 连通 + 一次自检评审)
 │   └── run.py                  # 独立入口:python -m touchstone.run --pr N
 ├── verify/
-│   └── verify_change.py        # 质量门禁的核心:独立验收测试 + 改前/改后对比 + 充分性阶梯
-├── tests/                      # 276 个离线用例(无需 LLM / 网络 / 外部服务)
+│   ├── verify_change.py        # 质量门禁核心:独立验收测试 + 改前/改后对比 + 充分性阶梯
+│   └── runners.py              # Python(pytest+coverage)/Java(Maven+JaCoCo+PIT) runner + 外部变异接缝(防伪)
+├── tests/                      # 818 个离线用例 / 37 个文件(无需 LLM / 网络 / 外部服务)
 └── .github/workflows/          # touchstone.yml · calibrate.yml · govern.yml · learn.yml · seed.yml
 ```
 
-生产代码约 4445 行 / 17 个模块;测试 276 个用例 / 14 个文件,全绿、离线;行覆盖率 83%(核心逻辑模块 85–100%;GitHub API / 子进程 / LLM / CLI 等集成层经 mock 覆盖)。
+生产代码约 8350 行 / 31 个模块;测试 818 个用例 / 37 个文件,全绿、离线;行覆盖率 93%(核心逻辑模块 90–100%;GitHub API / 子进程 / LLM / CLI 等集成层经 mock 覆盖)。
 
 ## 状态与边界(诚实交代)
 

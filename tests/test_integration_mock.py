@@ -312,51 +312,47 @@ def _noop_cs(monkeypatch):
     monkeypatch.setattr(cs_mod, "PRCodeSuggestions", CS)
 
 
-def test_pr_agent_run_sets_litellm_num_retries_default(monkeypatch):
-    # runner 显式设 litellm【内部】重试为 1：默认 litellm.num_retries=None → 回退
-    # openai.DEFAULT_MAX_RETRIES=2 → 单次调用最多 3 attempts × ai_timeout(600s)，是慢轮
-    # 墙钟膨胀到 ~50min 的根因（GHA 日志坐实：litellm 自报 time taken≈1189-1494s ≈ 2-3×600）。
-    # 默认 1 = 保留"至少重试一次"。经 TOUCHSTONE_LLM_NUM_RETRIES env 可调。
+def test_pr_agent_run_neutralizes_litellm_num_retries_global(monkeypatch):
+    # 【契约反转（勘误）】旧实现设 litellm.num_retries = max(1, env)。实证推翻其机制：该全局
+    # 是【一次性】的——litellm 1.84 包装器首个失败即消费并重置 None（utils.py:1698），此后
+    # openai client 回落默认 max_retries=2；且旧注释引用的 or-短路在 TTS 路径与 chat 无关。
+    # 新契约：重试只在 tenacity 层（N 默认 0，快窗内抖动 N+1，见 test_llm_call_tuning）；
+    # 此全局置 0（falsy → litellm 包装层不重试），client 内层由围栏逐调用注入 max_retries=0。
+    # 本测试锁死"置 0"，防回归到会被 litellm 消费的正数。
     _install_fake_pr_agent(monkeypatch)
     _stub_llm(monkeypatch)
     litellm_mod = _install_fake_litellm(monkeypatch)
     _noop_cs(monkeypatch)
     monkeypatch.delenv("TOUCHSTONE_LLM_NUM_RETRIES", raising=False)
     R.run("https://pr", "improve")
-    assert litellm_mod.num_retries == 1
+    assert litellm_mod.num_retries == 0
 
 
-def test_pr_agent_run_sets_litellm_num_retries_env_override(monkeypatch):
+def test_pr_agent_run_tuning_failloud_when_handler_missing(monkeypatch, capsys):
+    # fake pr_agent 树不含 algo.ai_handlers.litellm_ai_handler 子模块 → 调优安装失败必须
+    # fail-loud 后继续（调优是收敛性优化，不把可用引擎搞挂；stderr 必须可见，防静默退化）。
     _install_fake_pr_agent(monkeypatch)
     _stub_llm(monkeypatch)
-    litellm_mod = _install_fake_litellm(monkeypatch)
+    _install_fake_litellm(monkeypatch)
     _noop_cs(monkeypatch)
-    monkeypatch.setenv("TOUCHSTONE_LLM_NUM_RETRIES", "2")
-    R.run("https://pr", "improve")
-    assert litellm_mod.num_retries == 2
+    out = R.run("https://pr", "improve")
+    assert "LLM 调用调优未安装" in capsys.readouterr().err
+    assert "_degraded" not in out
 
 
-def test_pr_agent_run_num_retries_invalid_env_falls_back(monkeypatch):
-    # 非法 TOUCHSTONE_LLM_NUM_RETRIES 不能让 int() 的 ValueError 被外层 except 吞成静默回退
-    # 到 None（→litellm 回退 2，正是本 PR 修的 bug）——嵌套 try 兜底默认 1 且记 stderr（防静默故障）。
+def test_pr_agent_run_sets_reflect_model(monkeypatch):
+    # TOUCHSTONE_LLM_REFLECT_MODEL → config.model_reasoning（improve 自评专用），
+    # 且【不是】fallback_models（后者保持清空）。
     _install_fake_pr_agent(monkeypatch)
     _stub_llm(monkeypatch)
-    litellm_mod = _install_fake_litellm(monkeypatch)
+    _install_fake_litellm(monkeypatch)
     _noop_cs(monkeypatch)
-    monkeypatch.setenv("TOUCHSTONE_LLM_NUM_RETRIES", "abc")
+    monkeypatch.setenv("TOUCHSTONE_LLM_REFLECT_MODEL", "glm-4.5-air")
     R.run("https://pr", "improve")
-    assert litellm_mod.num_retries == 1
-
-
-def test_pr_agent_run_num_retries_clamps_zero(monkeypatch):
-    # litellm 的 `or` 短路让 num_retries=0 被当 falsy 回退成 2；max(1,..) 把 0/负数归 1。
-    _install_fake_pr_agent(monkeypatch)
-    _stub_llm(monkeypatch)
-    litellm_mod = _install_fake_litellm(monkeypatch)
-    _noop_cs(monkeypatch)
-    monkeypatch.setenv("TOUCHSTONE_LLM_NUM_RETRIES", "0")
-    R.run("https://pr", "improve")
-    assert litellm_mod.num_retries == 1
+    import pr_agent.config_loader as cl
+    s = cl.get_settings()
+    assert s.config.model_reasoning == "openai/glm-4.5-air"
+    assert s.config.fallback_models == []
 
 
 def test_interaction_log_written_and_redacts_key(monkeypatch, tmp_path):
