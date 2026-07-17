@@ -117,7 +117,7 @@ jobs:
                                                           # 这是 httpx per-read 超时、不是墙钟：端点持续出字节则不触发
                                                           # （生产单调用实测 1515s；滴流实验可无限续命）。流式化后该语义
                                                           # 恰好变正确：真死等 600s 必杀、持续出字不误杀。
-          TOUCHSTONE_LLM_REFLECT_MODEL: "glm-5.2-air"   # improve 自评（第二次 LLM 调用，pr-agent 0.39 mandatory 的
+          TOUCHSTONE_LLM_REFLECT_MODEL: "glm-4.5-air"   # improve 自评（第二次 LLM 调用，pr-agent 0.39 mandatory 的
                                                           # self-reflection 打分）专用模型 = config.model_reasoning，
                                                           # 【不是】fallback_models（后者是主调用失败换模清单，已清空）。
                                                           # 自评是浅任务，小模型即可，improve 健康路径耗时近乎减半。

@@ -166,7 +166,7 @@ def _install_fake_tree(monkeypatch):
 
 def test_install_wires_guard_policy_and_streaming(monkeypatch):
     fake_lah, fake_algo, calls, pol = _install_fake_tree(monkeypatch)
-    monkeypatch.setenv("TOUCHSTONE_LLM_REFLECT_MODEL", "glm-5.2-air")
+    monkeypatch.setenv("TOUCHSTONE_LLM_REFLECT_MODEL", "glm-4.5-air")
     monkeypatch.delenv("TOUCHSTONE_LLM_NUM_RETRIES", raising=False)
     monkeypatch.delenv("TOUCHSTONE_LLM_STREAM", raising=False)
 
@@ -182,7 +182,7 @@ def test_install_wires_guard_policy_and_streaming(monkeypatch):
     assert pol.retry(_rs(drop, 3.0, attempt=1)) is True
     # 主模型 + 自评模型均入流式清单
     assert "openai/glm-5.2" in fake_algo.STREAMING_REQUIRED_MODELS
-    assert "openai/glm-5.2-air" in fake_algo.STREAMING_REQUIRED_MODELS
+    assert "openai/glm-4.5-air" in fake_algo.STREAMING_REQUIRED_MODELS
 
 
 def test_install_stream_optout(monkeypatch):

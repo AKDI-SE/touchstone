@@ -347,11 +347,11 @@ def test_pr_agent_run_sets_reflect_model(monkeypatch):
     _stub_llm(monkeypatch)
     _install_fake_litellm(monkeypatch)
     _noop_cs(monkeypatch)
-    monkeypatch.setenv("TOUCHSTONE_LLM_REFLECT_MODEL", "glm-5.2-air")
+    monkeypatch.setenv("TOUCHSTONE_LLM_REFLECT_MODEL", "glm-4.5-air")
     R.run("https://pr", "improve")
     import pr_agent.config_loader as cl
     s = cl.get_settings()
-    assert s.config.model_reasoning == "openai/glm-5.2-air"
+    assert s.config.model_reasoning == "openai/glm-4.5-air"
     assert s.config.fallback_models == []
 
 
