@@ -264,6 +264,38 @@ def test_loop_converges_only_when_checklist_resolved(rule_index):
     assert dec2 == "escalate" and "无推进" in reason2
 
 
+def test_loop_no_progress_not_fired_for_non_actionable_finding():
+    """无推进闸只对 author 可自改的发现成立。correctness 发现不由 author ack 销项（归 verify/
+    评审管），author_actionable 会将其排除（cur 为空）。此时它卡在清单不销项，不应判「无推进
+    （含假修）」——那是把 author 无法着手的事归咎于 author（A1-F1 假升级）。修复前：no_progress
+    只比销项计数 0<=0 即触发，不看是否还有可自改发现 → 误升级。"""
+    findings = [{"rule_id": "COR-001", "category": "correctness",
+                 "fix_direction": "fix the bug", "file": "a.py", "line": 1, "fix_reasoning": "r"}]
+    ri = {"COR-001": {"id": "COR-001", "class": "correctness"}}
+    assert loop.author_actionable(findings, ri) == []             # 前提：correctness 不可自改
+    cur1 = cl.reconcile(None, {}, findings, round_no=1, review_reliable=True)
+    d1, _, _ = loop.loop_step(findings, ri, loop.LoopState(0),
+                              checklist_pair=(None, cur1), review_reliable=True)
+    assert d1 == "continue"
+    cur2 = cl.reconcile(cur1, {}, findings, round_no=2, review_reliable=True)   # 同发现再命中、无申报
+    d2, reason2, _ = loop.loop_step(findings, ri, loop.LoopState(1, history=[[]]),
+                                    checklist_pair=(cur1, cur2), review_reliable=True)
+    assert d2 != "escalate", f"非可自改发现不应判无推进升级: {reason2!r}"       # 修复前：escalate
+    assert "无推进" not in reason2 and "假修" not in reason2
+
+
+def test_loop_no_progress_still_fires_for_actionable_stuck(rule_index):
+    """对照：author 可自改的发现（有 fix_direction、非 correctness）卡住不销项 → 仍应判无推进
+    升级。锁死 A1-F1 的守卫没有过度放宽（仅在 cur 为空时豁免）。"""
+    f = _finding("R-1")
+    assert loop.author_actionable([f], rule_index)                # 前提：R-1 可自改
+    prev = cl.from_findings([f])
+    stuck = cl.reconcile(prev, {}, [f])                           # 仍命中、无申报
+    dec, reason, _ = loop.loop_step([f], rule_index, loop.LoopState(),
+                                    checklist_pair=(prev, stuck))
+    assert dec == "escalate" and "无推进" in reason               # 可自改发现卡住照旧升级
+
+
 def test_loop_default_path_unchanged_without_checklist(rule_index):
     dec, _, st = loop.loop_step([], rule_index, loop.LoopState())
     assert dec == "converged" and st.round == 1

@@ -147,10 +147,17 @@ def loop_step(findings, rule_index, state, max_rounds=MAX_ROUNDS, ci_passed=None
                         LoopState(nr, hist, ci_passed))
             return ("converged", "收敛清单全部销项且无新增可自改发现（正确性另由 verify 把关）",
                     LoopState(nr, hist, ci_passed))
-        if review_reliable and _cl.no_progress(prev_cl, cur_cl):
+        if review_reliable and cur and _cl.no_progress(prev_cl, cur_cl):
             # 无推进闸仅在评审可信时触发：不可信轮 checklist.reconcile 会 withhold 依赖复检的销项
             # （done/自动销项），销项率自然不升--这是评审故障所致，非 author 未改。此时判"无推进"
             # 会把"已改但评审不可信无法验证"误判为假修升级。不可信轮回落 continue 等可靠轮再判。
+            #
+            # 且仅当本轮存在 author 可自改发现（cur 非空）时才触发：无推进的本意（见
+            # checklist.no_progress 文档）是抓「author 只发评论不实际修改」的假修——只对 author
+            # 可自改的发现成立。若本轮无可自改发现（cur 为空，典型=仅剩 correctness 这类不由
+            # author ack 销项、归 verify/评审管的发现），「无推进（含假修）」是把 author 根本无法
+            # 着手的事归咎于 author 的误判：回落 continue（轮次耗尽时走下方的「轮次耗尽」诚实
+            # 升级），不甩假修锅。cur 已是 author_actionable 过滤后的本轮可自改签名集。
             return ("escalate", "无推进：清单销项率连续未提升且无 waived/split 申报（含假修）",
                     LoopState(nr, hist, ci_passed))
         if nr >= max_rounds:
