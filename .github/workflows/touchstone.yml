@@ -66,7 +66,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: .pragent-venv
-          key: pragent-venv-${{ runner.os }}-py${{ steps.py.outputs.python-version }}-pragent${{ env.PRA_VERSION }}-v1
+          key: pragent-venv-${{ runner.os }}-py${{ steps.py.outputs.python-version }}-pragent${{ env.PRA_VERSION }}-lock${{ hashFiles('pragent-constraints.txt') }}-v1
       - name: Set up PR-Agent (independent venv)
         # PR-Agent 是评审引擎（Apache-2.0 pip 包），按"不进本仓依赖"原则装在独立 venv。
         # continue-on-error：装失败不让整个评审 job 崩（那样连评审都不发）；orchestrator 会优雅降级、
@@ -93,7 +93,7 @@ jobs:
             # （与留着破损 venv 走 import 失败→降级同路）。纯缓存卫生修复，零行为变化。
             if python -m venv .pragent-venv \
                && .pragent-venv/bin/pip install -U pip \
-               && .pragent-venv/bin/pip install pr-agent==${{ env.PRA_VERSION }}; then
+               && .pragent-venv/bin/pip install pr-agent==${{ env.PRA_VERSION }} -c pragent-constraints.txt; then
               echo "[pragent-venv] 安装成功"
             else
               echo "[pragent-venv] 安装失败——清理破损 venv，避免被缓存污染"
@@ -177,7 +177,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: .pragent-venv
-          key: pragent-venv-${{ runner.os }}-py${{ steps.py.outputs.python-version }}-pragent${{ env.PRA_VERSION }}-v1
+          key: pragent-venv-${{ runner.os }}-py${{ steps.py.outputs.python-version }}-pragent${{ env.PRA_VERSION }}-lock${{ hashFiles('pragent-constraints.txt') }}-v1
       - name: Upload LLM interaction log
         if: always()
         uses: actions/upload-artifact@v4
