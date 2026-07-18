@@ -29,6 +29,18 @@ jobs:
         run: |
           pip install -e . mypy types-PyYAML types-requests
           python -m mypy touchstone/ verify/
+      - name: 依赖 CVE 审计（主仓锁，阻断）
+        # constraints.txt 是给客户的复现锁——出现已知漏洞版本即 CI 红（fail-loud）。
+        # 咨询库更新可能让本步"自发"变红：这是特性不是缺陷（新披露 CVE 触达即报警）。
+        run: |
+          pip install pip-audit
+          pip-audit -r constraints.txt --no-deps
+      - name: 依赖 CVE 审计（PR-Agent venv 锁，信息型不阻断）
+        # pr-agent 对多数依赖精确钉死（==），带 CVE 版本无法越过上游硬钉修复（见 SECURITY.md
+        # 供应链信任边界）——长期非零的审计若阻断只会教人忽略红灯，故 continue-on-error 只留可见记录；
+        # pr-agent 升版（PRA_VERSION + 重生成锁）时以本步输出核对残留是否收敛。
+        continue-on-error: true
+        run: pip-audit -r pragent-constraints.txt --no-deps
 
   test:
     runs-on: ubuntu-latest
