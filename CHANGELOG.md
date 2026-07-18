@@ -122,7 +122,7 @@ PR #44/#46 暴露的最后一块拼图：`review_reliable` 信号已接判定层
 - **打包与导入（P1）**：新增 `pyproject.toml`（`pip install -e .` 可装，`touchstone` CLI 入口）；`verify/` 包化；移除全部模块内 `sys.path.insert` hack，包内 sibling 导入统一为 `from touchstone import x`；运行方式统一为 `python -m touchstone.<module>`（workflow/README/RUNBOOK 已同步），`requirements.txt` 降级为指向 pyproject 的薄引用。
 - **仓库卫生（P1）**：移除入库的构建产物——`mutants/`（mutmut 变异快照，约占仓库三分之一体量，其中还残留着已删测试的陈旧副本）与 `.coverage`；`.gitignore` 补全（coverage/pytest/hypothesis/mutants/egg-info/venv/运行产物）。
 - **ghclient「唯一入口」承诺兑现（P1）**：`autonomy` 的 5 处裸 urllib 调用（check_base_fresh / update-branch / GraphQL 入队 / merge 执行 / marker 评论）全部迁至 ghclient——自动合并链路此前无任何重试与 Retry-After 处理；orchestrator 清理 urllib 残留 except 与死导入。
-- **可排障性（P2）**：learning_loop 三处静默吞异常（LLM 调用回退 / 评审线程解析 / diff 取数）补 stderr 留痕；`gitcode_check` 的 `GITCODE_DIFF_CMD` 执行去 `shell=True`（改 shlex.split，管道需求需显式 `bash -c` 包裹，让 shell 语义成为明示选择）。
+- **可排障性（P2）**：learning_loop 三处静默吞异常（LLM 调用回退 / 评审线程解析 / diff 取数）补 stderr 留痕；`gitcode_check` 的 `GITCODE_DIFF_CMD` 执行不再启用 shell（改 shlex.split，管道需求需显式 `bash -c` 包裹，让 shell 语义成为明示选择）。
 
 ### 2026-07-04
 
