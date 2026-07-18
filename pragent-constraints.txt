@@ -57,7 +57,11 @@ google-cloud-aiplatform==1.154.0
 google-cloud-bigquery==3.42.2
 google-cloud-core==2.6.0
 google-cloud-resource-manager==1.18.0
-google-cloud-storage==2.10.0
+# google-cloud-storage 锁定 3.13（CI Python）：pr-agent 0.39.0 按主版本二选一 gcs
+#   (<3.13 ==2.10.0 / >=3.13 ==3.12.0)，单一 pin 无法同时满足两版 Python。CI=3.13 故取
+#   3.12.0。改 CI Python 主版本必须在目标版本上重生成本锁，勿手改此行
+#   （2026-07-18 PR#108 合入后 PR#109 评审轮 no_engine 根因即此 pin 与 3.13 冲突）。
+google-cloud-storage==3.12.0
 google-crc32c==1.8.0
 google-genai==2.12.1
 google-resumable-media==2.10.0
