@@ -30,6 +30,7 @@ def test_mutation_check_no_py_files_returns_one():
 def test_external_mutation_cmd_timeout_returns_none(monkeypatch, tmp_path):
     # 外部变异命令超时（真抛）→ None，回退内置
     import subprocess as sp
+    monkeypatch.setenv("TOUCHSTONE_MUTATION_TRUST_STDOUT", "1")   # 走 legacy 路径以真抵达 subprocess.run
     monkeypatch.setenv("TOUCHSTONE_MUTATION_CMD", "sleep 5")
     monkeypatch.setenv("TOUCHSTONE_MUTATION_TIMEOUT", "1")
     # 真跑 sleep 会等 1s 超时；改用直接打桩 TimeoutExpired 更快更稳
