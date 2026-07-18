@@ -393,10 +393,13 @@ def test_external_mutation_score_result_file_not_spoofed_by_stdout(monkeypatch, 
     assert score < 0.6                  # 弱测试不会被顶过 MUT_MIN
 
 
-def test_external_mutation_score_result_file_missing_rc0(monkeypatch, tmp_path):
-    """#111：rc==0 但工具没写结果文件 → 无可信分 → None（不退回 stdout）。"""
+def test_external_mutation_score_result_file_unwritten_not_stdout(monkeypatch, tmp_path):
+    """#111：rc==0、命令往 stdout 喷假满分、但没往 {result_file} 写可解析分 → None（不退回 stdout 顶分）。
+    命令**含 {result_file}** 故真进入 `_external_score_via_result_file`；`echo 99%` 喷 stdout、`true` 忽略
+    {result_file} 不写（mkstemp 预建空文件）→ 读得空 → _parse_mutation_output('') → None。若可信路径
+    错误退回 stdout 会拿到 0.99 → 杀红（堵住「文件空就 fallback stdout」的回归）。"""
     from verify import verify_change as V
-    monkeypatch.setenv("TOUCHSTONE_MUTATION_CMD", "true")   # rc=0 但从不碰 {result_file}
+    monkeypatch.setenv("TOUCHSTONE_MUTATION_CMD", "echo 99%; true {result_file}")
     monkeypatch.delenv("TOUCHSTONE_MUTATION_TRUST_STDOUT", raising=False)
     assert V.external_mutation_score(str(tmp_path), ["a.py"]) is None
 

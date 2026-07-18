@@ -13,6 +13,7 @@
 import ast
 import os
 import re
+import secrets
 import shlex
 import subprocess
 import tempfile
@@ -199,6 +200,8 @@ def external_mutation_score(work_dir, changed_files):
         if os.environ.get("TOUCHSTONE_MUTATION_TRUST_STDOUT") != "1":
             return None                 # #111 安全默认：旧 stdout 模板无显式 opt-in → 弃 stdout → 回退内置 AST 变异
         full = cmd.replace("{files}", files_sub)
+        # shell=True 可信边界（DANGER-001）：TOUCHSTONE_MUTATION_CMD 模板要 shell 语义（管道/重定向），
+        # 是该接缝契约的固有需求；{files} 已 shlex.quote 注入面闭合，模板本身是部署可信 secret、非 PR 可控。
         r = subprocess.run(full, shell=True, cwd=work_dir, capture_output=True,
                            text=True, timeout=timeout)
         if r.returncode != 0:
@@ -210,13 +213,21 @@ def external_mutation_score(work_dir, changed_files):
 
 def _external_score_via_result_file(cmd, files_sub, work_dir, timeout):
     """可信路径落地：runner 在 work_dir 之外建随机名临时文件，工具写真击杀率进去，runner 读
-    文件取分、**完全不看 stdout**。mkstemp 的路径在系统 temp 目录（work_dir 之外）、文件名随机
-    ——PR 代码（在 work_dir 内跑、为工具的孙进程）猜不到该路径，故无法像往 stdout 喷数那样低成本
-    伪造（要把假分写进去需读父进程 argv 发现路径，是可审计的高门槛构造，非 #111 收口的廉价 spoof）。"""
-    fd, result_path = tempfile.mkstemp(prefix="touchstone_mut_", suffix=".txt")
+    文件取分、**完全不看 stdout**。mkstemp 路径在系统 temp 目录（work_dir 之外）、**前缀用
+    secrets.token_hex 随机化（非固定 `touchstone_mut_`）**——否则 author 的 conftest 一句
+    `glob.glob('/tmp/touchstone_mut_*')` 即可枚举发现并覆写假分，直接推翻 #111 防伪。随机前缀下
+    PR 代码（在 work_dir 内跑、为工具的孙进程）无法按名定位该文件，要把假分写进去需读父进程 argv
+    发现路径——可审计的高门槛构造，非 #111 收口的廉价 spoof。
+
+    shell=True 可信边界（DANGER-001）：命令模板含 shell 重定向 `> {result_file}` 等操作符，部署方
+    依赖 shell 语义写模板——这是 TOUCHSTONE_MUTATION_CMD 契约的固有需求，非滥用。PR 可控输入仅
+    {files}（已 shlex.quote，注入面闭合）；{result_file} 是 runner 自持随机路径（已 quote）；模板
+    本身是部署可信 secret、非 PR 可控。故此处的 shell=True 满足 DANGER-001「确需使用、已说明可信边界」。"""
+    fd, result_path = tempfile.mkstemp(prefix=secrets.token_hex(6), suffix=".txt")
     try:
         os.close(fd)                    # 占住路径即可，让工具自己开写
         full = cmd.replace("{files}", files_sub).replace("{result_file}", shlex.quote(result_path))
+        # shell=True 见函数 docstring 的 DANGER-001 可信边界说明（模板要 shell 重定向，注入面已 quote）
         r = subprocess.run(full, shell=True, cwd=work_dir, capture_output=True,
                            text=True, timeout=timeout)
         if r.returncode != 0:
