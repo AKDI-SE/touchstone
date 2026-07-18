@@ -39,6 +39,16 @@ def test_external_mutation_cmd_timeout_returns_none(monkeypatch, tmp_path):
     assert V.external_mutation_score(str(tmp_path), ["a.py"]) is None
 
 
+def test_external_mutation_cmd_malformed_timeout_returns_none(monkeypatch, tmp_path):
+    """round-2 PRA-REVIEW:195 / PRA-POSSIBLE_ISSUE:195：TOUCHSTONE_MUTATION_TIMEOUT 畸形（非数字，
+    如部署 typo `30s`）→ int() 抛 ValueError。int() 必须在 try 内 → 被吞 → None（graceful degradation，
+    回退内置变异），不得向调用方抛 ValueError 崩 verify pipeline。把 int() 挪回 try 外（变异）→
+    本测会拿 ValueError 而非 None → 杀红。"""
+    monkeypatch.setenv("TOUCHSTONE_MUTATION_CMD", "echo 75%")
+    monkeypatch.setenv("TOUCHSTONE_MUTATION_TIMEOUT", "30s")   # 非数字
+    assert V.external_mutation_score(str(tmp_path), ["a.py"]) is None
+
+
 def test_changed_lines_git_failure_returns_empty(monkeypatch):
     # git diff 子进程失败 → {} （不能崩，也不能误报改动行）
     monkeypatch.setattr(V.subprocess, "run",
