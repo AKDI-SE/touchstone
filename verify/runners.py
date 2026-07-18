@@ -15,6 +15,7 @@ import os
 import re
 import secrets
 import shlex
+import shutil
 import subprocess
 import tempfile
 
@@ -181,8 +182,8 @@ def external_mutation_score(work_dir, changed_files):
     末尾喷一个高数——旧实现 _parse_mutation_output 取 stdout 最后一个数 → 顶过 MUT_MIN 判
     adequate，弱测试骗过变异门。与 #79 B1 同类假过）：
       · 模板含 {result_file}  → 跑命令、读结果文件取分、弃 stdout（可信路径）。结果文件在系统 temp
-        的**随机名子目录**内（work_dir 之外、顶层无固定前缀/后缀可 glob）：PR 代码跑在 work_dir 内、
-        无法用固定前缀或后缀枚举定位该文件，故无法像喷 stdout 那样低成本伪造。
+        的**随机名子目录**内、文件名亦随机（work_dir 之外、顶层无固定前缀/后缀/文件名可 glob）：
+        PR 代码跑在 work_dir 内、无法用固定前缀/后缀/文件名枚举定位该文件，故无法像喷 stdout 那样低成本伪造。
       · 模板不含 {result_file}：默认**不**解析 stdout → 返回 None（回退内置 AST 变异）。仅当显式
         设 TOUCHSTONE_MUTATION_TRUST_STDOUT=1 才回到旧 stdout 解析（兼容仅往 stdout 喷分数的
         工具，但部署方知情接受 spoof 风险）。
@@ -222,29 +223,32 @@ def _run_mutation_cmd(full, work_dir, timeout):
 
 
 def _external_score_via_result_file(cmd, files_sub, work_dir, timeout):
-    """可信路径落地：runner 在系统 temp 下建**随机名子目录**、结果文件置于其内，工具写真击杀率
-    进去，runner 读文件取分、**完全不看 stdout**。随机目录名（secrets.token_hex、无固定前缀）+
-    文件落在子目录内 → 顶层 /tmp 无任何可 glob 的固定前缀/后缀模式：PR 代码（在 work_dir 内跑、
-    为工具的孙进程）既不能用固定前缀、也不能用 `.txt` 后缀 `glob('/tmp/*.txt')` 枚举定位结果文件；
-    要把假分写进去需读父进程 argv 发现路径——可审计的高门槛构造，非 #111 收口的廉价 spoof。"""
+    """可信路径落地：runner 在系统 temp 下建**随机名子目录**、结果文件用**随机名**置于其内，工具
+    写真击杀率进去，runner 读文件取分、**完全不看 stdout**。随机目录名 + 随机文件名（均
+    secrets.token_hex、无固定前缀/后缀/文件名）→ 顶层 /tmp 无任何可 glob 的固定模式（既非固定
+    前缀、非 `.txt` 后缀、亦非 `glob('/tmp/<rand>/score')` 的固定文件名）：PR 代码（在 work_dir
+    内跑、为工具的孙进程）无法枚举定位结果文件；要把假分写进去需读父进程 argv 发现路径——可审计
+    的高门槛构造，非 #111 收口的廉价 spoof。"""
     result_dir = tempfile.mkdtemp(prefix=secrets.token_hex(6))
-    result_path = os.path.join(result_dir, "score")
+    # 文件名亦随机化：仅随机目录名 + 固定文件名 score 仍可 glob('/tmp/<rand>/score') 命中（PR 代码
+    # 跑为工具孙进程、可枚举任意子目录）。文件名 secrets.token_hex 后，glob 既无固定前缀/后缀也无
+    # 固定文件名 → 完全不可枚举定位，把 spoof 抬到「读父进程 argv 发现路径」的高门槛。
+    result_path = os.path.join(result_dir, secrets.token_hex(8))
     try:
-        full = cmd.replace("{files}", files_sub).replace("{result_file}", shlex.quote(result_path))
+        # 先替 {result_file} 再替 {files}：str.replace 单趟扫描、不对替换结果再扫描，故先替占位符
+        # 可避开 files_sub（PR 可控文件名）含 "{result_file}" 字面时被第二次 replace 误伤、把真
+        # result 路径注入 {files} 位置的注入面（PR 作者把文件命名成 {result_file}）。
+        full = cmd.replace("{result_file}", shlex.quote(result_path)).replace("{files}", files_sub)
         r = _run_mutation_cmd(full, work_dir, timeout)
         if r is None:
             return None                 # rc!=0 → 命令失败，不信结果文件（工具崩溃可能留下中途/空文件）
         with open(result_path, "r", encoding="utf-8") as fh:
             return _parse_mutation_output(fh.read())   # 工具没写文件 → read 抛 OSError → 外层 None
     finally:
-        try:
-            os.unlink(result_path)      # 文件可能未创建（工具没写）→ OSError 忽略
-        except OSError:
-            pass
-        try:
-            os.rmdir(result_dir)        # 清理随机目录（finally 必跑）
-        except OSError:
-            pass
+        # shutil.rmtree(ignore_errors=True) 容忍目录非空：外部工具可能往 result_dir 写日志/临时产物，
+        # os.rmdir 仅删空目录会让残留文件挡住删除、泄漏随机目录（每轮一份）；ignore_errors 同时兜底
+        # 「文件未创建」与「目录非空」两种情形。
+        shutil.rmtree(result_dir, ignore_errors=True)
 
 
 _MUT_CMP = {ast.Eq: ast.NotEq, ast.NotEq: ast.Eq, ast.Lt: ast.GtE,

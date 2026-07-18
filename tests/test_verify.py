@@ -404,6 +404,86 @@ def test_external_mutation_score_result_file_unwritten_not_stdout(monkeypatch, t
     assert V.external_mutation_score(str(tmp_path), ["a.py"]) is None
 
 
+def test_external_mutation_score_result_file_random_filename(monkeypatch, tmp_path):
+    """round-4 PRA-SECURITY:230 / PRA-REVIEW:230：结果文件名必须随机化。仅随机目录名 + 固定文件名
+    score 仍可 glob('/tmp/<rand>/score') 命中（PR 代码跑为工具孙进程、可枚举任意子目录）。断言命令里
+    结果文件 basename 是 secrets.token_hex(8)=16 hex 字符、非固定 'score'。变异（文件名改回 'score'）
+    → basename=='score' → 杀红。"""
+    import re
+    captured = {}
+    monkeypatch.setenv("TOUCHSTONE_MUTATION_CMD", "echo 50% > {result_file}")
+    monkeypatch.delenv("TOUCHSTONE_MUTATION_TRUST_STDOUT", raising=False)
+
+    def fake_run(full, wd, to):
+        captured["full"] = full
+        m = re.search(r">\s*(\S+)", full)        # 结果文件路径（shlex.quote 对纯安全路径不加引号 → 裸或引号皆可能）
+        if m:
+            open(m.group(1).strip("';"), "w").write("50%")
+        return type("_R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(R, "_run_mutation_cmd", fake_run)
+    assert R.external_mutation_score(str(tmp_path), ["a.py"]) == 0.5
+    m = re.search(r">\s*(\S+)", captured["full"])
+    assert m, captured["full"]
+    basename = os.path.basename(m.group(1).strip("';"))
+    assert basename != "score", f"固定文件名 score 仍可 glob('/tmp/<rand>/score') 枚举: {basename}"
+    assert re.fullmatch(r"[0-9a-f]{16}", basename), f"期望随机 hex 文件名(token_hex(8)): {basename}"
+
+
+def test_external_mutation_score_cleans_nonempty_temp_dir(monkeypatch, tmp_path):
+    """round-4 PRA-GENERAL:240：外部工具可能往 result_dir 写额外产物（日志/临时文件），os.rmdir 仅删
+    空目录会让残留文件挡住删除、泄漏随机目录（每轮一份）。shutil.rmtree(ignore_errors=True) 容忍非空、
+    保证清理。变异（rmtree 改回 os.rmdir）→ 非空目录删不掉、残留 → 断言目录已删失败 → 杀红。"""
+    import re
+    created = []
+    real_mkdtemp = R.tempfile.mkdtemp
+
+    def spy_mkdtemp(*a, **k):
+        d = real_mkdtemp(*a, **k)
+        created.append(d)
+        return d
+
+    def fake_run(full, wd, to):
+        m = re.search(r">\s*(\S+)", full)        # 结果文件路径（shlex.quote 对纯安全路径不加引号 → 裸或引号皆可能）
+        if m:
+            open(m.group(1).strip("';"), "w").write("50%")
+            # 工具顺手往同一目录写额外产物（os.rmdir 删不掉的元凶）
+            open(os.path.join(os.path.dirname(m.group(1).strip("';")), "tool.log"), "w").write("x")
+        return type("_R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(R.tempfile, "mkdtemp", spy_mkdtemp)
+    monkeypatch.setattr(R, "_run_mutation_cmd", fake_run)
+    monkeypatch.setenv("TOUCHSTONE_MUTATION_CMD", "echo 50% > {result_file}")
+    monkeypatch.delenv("TOUCHSTONE_MUTATION_TRUST_STDOUT", raising=False)
+    assert R.external_mutation_score(str(tmp_path), ["a.py"]) == 0.5
+    assert created, "mkdtemp 应被调用"
+    assert not os.path.exists(created[0]), f"非空目录应被 shutil.rmtree 清理，仍残留: {created[0]}"
+
+
+def test_external_mutation_score_replace_order_safe(monkeypatch, tmp_path):
+    """round-4 PRA-REVIEW:233：chained .replace() 顺序注入面。PR 作者把文件命名成 '{result_file}'，
+    files_sub 会含 '{result_file}' 字面。若先替 {files} 再替 {result_file}（旧顺序），第二次 replace 会
+    把真 result 路径注入 {files} 位置、泄漏隐藏路径。换序（先 {result_file} 后 {files}；str.replace 单趟
+    扫描、不对结果再扫描）可避。变异（换回旧顺序）→ {files} 位出现真路径而非文件名字面 → 杀红。"""
+    import re
+    captured = {}
+    monkeypatch.setenv("TOUCHSTONE_MUTATION_CMD", "echo 50% > {result_file}; touch {files}")
+    monkeypatch.delenv("TOUCHSTONE_MUTATION_TRUST_STDOUT", raising=False)
+
+    def fake_run(full, wd, to):
+        captured["full"] = full
+        m = re.search(r">\s*(\S+)", full)        # 结果文件路径（shlex.quote 对纯安全路径不加引号 → 裸或引号皆可能）
+        if m:
+            open(m.group(1).strip("';"), "w").write("50%")
+        return type("_R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(R, "_run_mutation_cmd", fake_run)
+    # 文件名是 PR 可控的 '{result_file}' 字面（注入触发条件）
+    assert R.external_mutation_score(str(tmp_path), ["{result_file}"]) == 0.5
+    # 换序正确：{files} 位保留文件名字面 '{result_file}'（quote 后），真路径不泄漏到此位
+    assert "touch '{result_file}'" in captured["full"], captured["full"]
+
+
 def test_external_mutation_cmd_hostile_filename_not_executed(monkeypatch, tmp_path):
     """注入面回归锁：changed_files 的文件名是 PR author 可控输入。名为 `x; 命令;` 的
     文件不得在 shell 里逃逸执行——quote 后它只是 `true` 的一个普通参数。若逃逸，
