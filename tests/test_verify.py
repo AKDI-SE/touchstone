@@ -484,6 +484,49 @@ def test_external_mutation_score_replace_order_safe(monkeypatch, tmp_path):
     assert "touch '{result_file}'" in captured["full"], captured["full"]
 
 
+def test_external_mutation_score_result_file_first_line_only(monkeypatch, tmp_path):
+    """round-5 PRA-REVIEW:245：结果文件可能含多指标（score:50%\\ncoverage:80%）。_parse_mutation_output
+    取末数 → 0.80（错，应取击杀率 0.50）。修复：只读第一行（约定 score 在 line 1）。变异（readline
+    改回 read 全文件 + 取末数）→ 0.80 → 杀红。"""
+    import re
+    monkeypatch.setenv("TOUCHSTONE_MUTATION_CMD", "tool > {result_file}")
+    monkeypatch.delenv("TOUCHSTONE_MUTATION_TRUST_STDOUT", raising=False)
+
+    def fake_run(full, wd, to):
+        m = re.search(r">\s*(\S+)", full)
+        if m:
+            # 工具写多指标报告：第一行 score，第二行 coverage
+            open(m.group(1).strip("';"), "w").write("score: 50%\ncoverage: 80%\n")
+        return type("_R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(R, "_run_mutation_cmd", fake_run)
+    score = R.external_mutation_score(str(tmp_path), ["a.py"])
+    assert score == 0.50, f"应取第一行击杀率 0.50，而非末数 coverage 0.80: {score}"
+
+
+def test_external_mutation_score_result_file_append_spoof_blocked(monkeypatch, tmp_path):
+    """round-5：攻击者（同 UID conftest）在工具写真击杀率后、runner 读前，往结果文件末尾 append 假
+    满分。只读第一行（工具写的真分）→ append 到后续行不影响 → 安全。变异（readline 改回 read 全文件
+    + 取末数）→ 0.99 → 杀红。"""
+    import re
+    monkeypatch.setenv("TOUCHSTONE_MUTATION_CMD", "tool > {result_file}")
+    monkeypatch.delenv("TOUCHSTONE_MUTATION_TRUST_STDOUT", raising=False)
+
+    def fake_run(full, wd, to):
+        m = re.search(r">\s*(\S+)", full)
+        if m:
+            target = m.group(1).strip("';")
+            open(target, "w").write("0.05\n")          # 工具写真（弱）击杀率
+            with open(target, "a") as f:                # 攻击者 append 假满分
+                f.write("0.99\n")
+        return type("_R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(R, "_run_mutation_cmd", fake_run)
+    score = R.external_mutation_score(str(tmp_path), ["a.py"])
+    assert score == 0.05, f"append-spoof 应被只读第一行挡住，取工具真分 0.05: {score}"
+    assert score < 0.6
+
+
 def test_external_mutation_cmd_hostile_filename_not_executed(monkeypatch, tmp_path):
     """注入面回归锁：changed_files 的文件名是 PR author 可控输入。名为 `x; 命令;` 的
     文件不得在 shell 里逃逸执行——quote 后它只是 `true` 的一个普通参数。若逃逸，

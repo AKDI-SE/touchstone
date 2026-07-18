@@ -181,9 +181,11 @@ def external_mutation_score(work_dir, changed_files):
     信任阶梯（#111 防伪：外部变异命令最终要跑 PR 的测试，author 的 conftest/test 可往 stdout
     末尾喷一个高数——旧实现 _parse_mutation_output 取 stdout 最后一个数 → 顶过 MUT_MIN 判
     adequate，弱测试骗过变异门。与 #79 B1 同类假过）：
-      · 模板含 {result_file}  → 跑命令、读结果文件取分、弃 stdout（可信路径）。结果文件在系统 temp
-        的**随机名子目录**内、文件名亦随机（work_dir 之外、顶层无固定前缀/后缀/文件名可 glob）：
-        PR 代码跑在 work_dir 内、无法用固定前缀/后缀/文件名枚举定位该文件，故无法像喷 stdout 那样低成本伪造。
+      · 模板含 {result_file}  → 跑命令、读结果文件第一行取分、弃 stdout（可信路径）。结果文件在
+        系统 temp 的**随机名子目录**内、文件名亦随机（堵住固定模式 glob 定位 + stdout 廉价 spoof）；
+        只读第一行防多指标报告误取末数与 append-spoof。**残留**：工具与 PR 测试同 UID、无 sandbox，
+        同 UID 可 listdir 枚举 + 覆盖文件——非彻底闭环，真正闭环需不同 UID/sandbox（详见
+        _external_score_via_result_file 的诚实标注）。
       · 模板不含 {result_file}：默认**不**解析 stdout → 返回 None（回退内置 AST 变异）。仅当显式
         设 TOUCHSTONE_MUTATION_TRUST_STDOUT=1 才回到旧 stdout 解析（兼容仅往 stdout 喷分数的
         工具，但部署方知情接受 spoof 风险）。
@@ -224,15 +226,20 @@ def _run_mutation_cmd(full, work_dir, timeout):
 
 def _external_score_via_result_file(cmd, files_sub, work_dir, timeout):
     """可信路径落地：runner 在系统 temp 下建**随机名子目录**、结果文件用**随机名**置于其内，工具
-    写真击杀率进去，runner 读文件取分、**完全不看 stdout**。随机目录名 + 随机文件名（均
-    secrets.token_hex、无固定前缀/后缀/文件名）→ 顶层 /tmp 无任何可 glob 的固定模式（既非固定
-    前缀、非 `.txt` 后缀、亦非 `glob('/tmp/<rand>/score')` 的固定文件名）：PR 代码（在 work_dir
-    内跑、为工具的孙进程）无法枚举定位结果文件；要把假分写进去需读父进程 argv 发现路径——可审计
-    的高门槛构造，非 #111 收口的廉价 spoof。"""
+    把真击杀率写进文件**第一行**（约定 score 在 line 1），runner 读第一行取分、**完全不看 stdout**。
+    随机目录名 + 随机文件名堵住了 #111 收口的廉价 spoof（往 stdout 喷假满分 + glob 固定模式定位结果
+    文件）；只读第一行同时防住工具写多指标报告误取末数、以及 append-spoof（攻击者往文件末尾 append
+    假分，不动第一行）。
+
+    **诚实标注残留风险**（非密码学不可破，部署方按 opt-in 接缝知情接受）：工具与 PR 测试**同 UID**
+    跑、且无 sandbox/chroot，故 /tmp 通常可被同 UID 枚举（`os.listdir('/tmp')` 发现随机目录、再
+    listdir 找文件）；攻击者可在工具写真分后、runner 读前**覆盖/篡改第一行**。随机化 + 只读第一行把
+    spoof 从「一行 print」抬到「同 UID 枚举 + 覆盖文件」的构造，**非彻底闭环**。真正闭环需把工具跑在
+    不同 UID 或 sandbox/private-temp（0600）下——超本 PR scope，留作未来加固方向。"""
     result_dir = tempfile.mkdtemp(prefix=secrets.token_hex(6))
-    # 文件名亦随机化：仅随机目录名 + 固定文件名 score 仍可 glob('/tmp/<rand>/score') 命中（PR 代码
-    # 跑为工具孙进程、可枚举任意子目录）。文件名 secrets.token_hex 后，glob 既无固定前缀/后缀也无
-    # 固定文件名 → 完全不可枚举定位，把 spoof 抬到「读父进程 argv 发现路径」的高门槛。
+    # 文件名亦随机化：仅随机目录名 + 固定文件名 score 仍可 glob('/tmp/<rand>/score') 命中。文件名
+    # secrets.token_hex 后顶层 /tmp 无固定前缀/后缀/文件名可 glob——堵住「固定模式 glob 定位」的廉价
+    # spoof。残留：同 UID 仍可 os.listdir 枚举（见 docstring 诚实标注）。
     result_path = os.path.join(result_dir, secrets.token_hex(8))
     try:
         # 先替 {result_file} 再替 {files}：str.replace 单趟扫描、不对替换结果再扫描，故先替占位符
@@ -243,7 +250,9 @@ def _external_score_via_result_file(cmd, files_sub, work_dir, timeout):
         if r is None:
             return None                 # rc!=0 → 命令失败，不信结果文件（工具崩溃可能留下中途/空文件）
         with open(result_path, "r", encoding="utf-8") as fh:
-            return _parse_mutation_output(fh.read())   # 工具没写文件 → read 抛 OSError → 外层 None
+            # 只读第一行（约定：击杀率在 line 1）——避免工具写多指标报告（score:50%\ncoverage:80%）
+            # 取末数误判、也防 append-spoof（攻击者往末尾 append 假分，不动第一行）。
+            return _parse_mutation_output(fh.readline())
     finally:
         # shutil.rmtree(ignore_errors=True) 容忍目录非空：外部工具可能往 result_dir 写日志/临时产物，
         # os.rmdir 仅删空目录会让残留文件挡住删除、泄漏随机目录（每轮一份）；ignore_errors 同时兜底
