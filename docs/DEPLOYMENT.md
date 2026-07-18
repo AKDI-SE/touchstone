@@ -2,7 +2,7 @@
 
 > 面向对象：在**你自己的仓库**上把 Touchstone 装起来、稳定跑起来的部署/运维人员，不要求了解内部实现。
 > 与 `RUNBOOK.md` 的区别：RUNBOOK 是作者在本仓自测/dogfooding 的操作手册；本文是**客户环境从零到上线**的落地路径。
-> 适用版本：**v1.0.0**。升级前请对照本仓 `CHANGELOG.md`。
+> 适用版本：**v0.1.0**。升级前请对照本仓 `CHANGELOG.md`。
 
 Touchstone 是一个 **PR 评审门禁**：对每个 PR 跑评审（复用 PR-Agent 产出建议）+ 确定性契约核对，给出风险分流与 advisory；准入由质量门禁/总闸决定。它**不替代**你的人评审，而是把可机检的问题前置拦住、把评审信号沉淀成指标。
 
@@ -22,9 +22,9 @@ Touchstone 是一个 **PR 评审门禁**：对每个 PR 跑评审（复用 PR-Ag
 ```bash
 git clone <你的 touchstone 仓库地址>
 cd touchstone
-git checkout v1.0.0
+git checkout v0.1.0
 pip install -e . -c constraints.txt
-touchstone --version        # 应打印 touchstone 1.0.0
+touchstone --version        # 应打印 touchstone 0.1.0
 ```
 
 `pyproject.toml` 声明的是**兼容范围**（如 `openai>=1.30,<3`）；`constraints.txt` 锁的是**具体版本**。升级依赖的纪律见 §9。
@@ -128,7 +128,7 @@ python -m touchstone.metrics touchstone-metrics.json
 
 ## 9. 版本与升级
 
-- 部署锁在 tag（首个正式版 **v1.0.0**）+ `constraints.txt`，客户可引用、可复现。
+- 部署锁在 tag（首个公开发布 **v0.1.0**）+ `constraints.txt`，客户可引用、可复现。
 - 升级依赖的纪律：**改 `pyproject.toml` 范围 → 重装 → 跑全测试 → 刷新 `constraints.txt`**，四步缺一不可。
 - 报漏洞 / 安全响应流程见 `SECURITY.md`。
 
