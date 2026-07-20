@@ -826,6 +826,14 @@ def test_shadow_candidates_max_per_review_caps():
     assert len(got) == 2
 
 
+def test_shadow_candidates_negative_max_clamped_to_zero():
+    """max_per_review 负数 clamp 到 0（返空），不返 selected[:-N] 的尾部元素（语义 bug 防回归）。
+    触发场景：env TOUCHSTONE_SHADOW_MAX_PER_REVIEW 误配负数——修复前 selected[:-1] 会返 N-1 条。"""
+    store = {"experiences": [_candidate(f"PRA-C{i}") for i in range(4)]}
+    assert L.shadow_candidates(store, ratio=1.0, max_per_review=-1, min_evidence=1) == []
+    assert L.shadow_candidates(store, ratio=1.0, max_per_review=-5, min_evidence=1) == []
+
+
 def test_shadow_candidates_only_candidate_status():
     """非 candidate（active/retired）不入选 shadow。"""
     store = {"experiences": [

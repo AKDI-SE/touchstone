@@ -279,7 +279,8 @@ def shadow_candidates(store, *, ratio, max_per_review, min_evidence):
     安全闸：protected_types（人立的红线类型）的 suppress 永不 shadow 注入——红线类型即使
     历史上人总忽略，也不让学习回路在采数期碰；protected 的 emphasize 不受此限（该挑的仍采数）。
     抽样：每个 candidate 独立确定性判定（_shadow_hash(id) < ratio）——ratio 控长期入选比例；
-    max_per_review 截单轮爆炸面。判定稳定（哈希基于 id）使同 candidate 跨轮归因一致。
+    max_per_review 截单轮爆炸面（负数 clamp 到 0——避免 selected[:负数] 返尾部元素的语义 bug）。
+    判定稳定（哈希基于 id）使同 candidate 跨轮归因一致。
 
     本函数只【选】不【注入】：渲染由 render_injection(include_shadow=True) 做；graduate 零改动。"""
     protected = _protected_types()
@@ -295,7 +296,7 @@ def shadow_candidates(store, *, ratio, max_per_review, min_evidence):
             continue
         selected.append(e)
     selected.sort(key=lambda e: _shadow_hash(e["id"]))
-    return selected[:max_per_review]
+    return selected[:max(0, max_per_review)]
 
 
 def shadow_types(store):
