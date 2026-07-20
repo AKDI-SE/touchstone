@@ -483,6 +483,69 @@ def test_make_gt_entry_carries_injected_and_raised():
     assert e["injected_types"] == ["PRA-A", "PRA-C"]
 
 
+# -------- shadow 注入采 A/B with 臂（冷启动破死锁 step2：aggregate_ab 拓宽 with 臂判据）--------
+def test_aggregate_ab_shadow_counts_as_with_arm():
+    """shadow_types 让 candidate 进 with 臂（破死锁数据侧）：同类型在 injected_types 或
+    shadow_types 任一出现 → with 臂；都未出现 → without 臂。"""
+    gt = [
+        {"raised_types": ["PRA-X"], "injected_types": ["PRA-X"], "shadow_types": [], "human_adopted": ["PRA-X"]},
+        {"raised_types": ["PRA-X"], "injected_types": [], "shadow_types": ["PRA-X"], "human_adopted": ["PRA-X"]},
+        {"raised_types": ["PRA-X"], "injected_types": [], "shadow_types": [], "human_adopted": []},
+    ]
+    ab = L.aggregate_ab(gt)
+    assert ab["PRA-X"] == {"with_seen": 2, "with_adopted": 2,        # active(PR1) + shadow(PR2) 都计入 with 臂
+                           "without_seen": 1, "without_adopted": 0}  # PR3 都未注入 → without 臂
+
+
+def test_aggregate_ab_shadow_absent_backward_compatible():
+    """向后兼容：gt 条目无 shadow_types 键（旧 marker / step2 前）→ 等价 shadow_types=[]，
+    with 臂判据退化为只看 injected_types（现有行为字节级不变）。"""
+    gt = [
+        {"raised_types": ["PRA-A"], "injected_types": ["PRA-A"], "human_adopted": ["PRA-A"]},
+        {"raised_types": ["PRA-A"], "injected_types": [], "human_adopted": []},
+    ]
+    ab = L.aggregate_ab(gt)
+    assert ab["PRA-A"] == {"with_seen": 1, "with_adopted": 1, "without_seen": 1, "without_adopted": 0}
+
+
+def test_make_gt_entry_carries_shadow_types():
+    """make_gt_entry 的 shadow_types 参数透传进真值条目（供 aggregate_ab 的 with 臂判据）。"""
+    e = L.make_gt_entry(1, "o/r", "python", "t", "d", [{"rule_id": "PRA-A"}], {"PRA-A"},
+                        "APPROVED", True, injected_types=["PRA-A"], shadow_types=["PRA-CAND"])
+    assert e["shadow_types"] == ["PRA-CAND"]
+    e2 = L.make_gt_entry(2, "o/r", "python", "t", "d", [], set(), "APPROVED", True)  # 默认 None → 空列表
+    assert e2["shadow_types"] == []
+
+
+def test_build_ground_truth_carries_shadow_types_from_marker(tmp_path, monkeypatch):
+    """result marker 的 shadow_types 必须透传进真值条目——这是 shadow 注入采 with 臂的数据来源（step2 核心）。
+    锁此透传链（对齐 injected_types 的 test_build_ground_truth_carries_injected_types_from_marker）。"""
+    from touchstone import calibrate as C
+    marker = ("<!-- touchstone-result: " + json.dumps(
+        {"findings": [{"rule_id": "PRA-X"}],
+         "injected_types": ["PRA-SEED"],
+         "shadow_types": ["PRA-X", "PRA-CAND"]}) + " -->")
+
+    def fake_gh(path, token, accept="application/vnd.github+json"):
+        if "state=closed" in path:
+            return [{"number": 1, "title": "t", "merged_at": "2026-01-01"}]
+        if "issues/1/comments" in path:
+            return [{"body": marker}]
+        if "pulls/1/reviews" in path:
+            return [{"state": "APPROVED", "user": {"login": "alice"}}]
+        if "pulls/1/files" in path:
+            return [{"filename": "a.py"}]
+        if path.endswith("/pulls/1") and accept.endswith("diff"):
+            return "diff --git a.py"
+        return []
+    monkeypatch.setattr(GT, "_gh_get", fake_gh)
+    monkeypatch.setattr(C, "gql", lambda q, v, t: {"data": {}})
+    entry = L.build_ground_truth("o", "r", "tok")[0]
+    assert entry["raised_types"] == ["PRA-X"]
+    assert entry["injected_types"] == ["PRA-SEED"]
+    assert entry["shadow_types"] == ["PRA-CAND", "PRA-X"]          # marker shadow_types 透传进真值条目
+
+
 def test_aggregate_ab_splits_by_injection():
     gt = [
         {"raised_types": ["PRA-A"], "injected_types": ["PRA-A"], "human_adopted": ["PRA-A"]},
