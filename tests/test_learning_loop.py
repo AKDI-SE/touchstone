@@ -517,6 +517,34 @@ def test_make_gt_entry_carries_shadow_types():
     assert e2["shadow_types"] == []
 
 
+def test_cold_start_candidate_graduates_via_shadow():
+    """【冷启动破死锁验收锚点 · step5】candidate 仅靠 shadow 注入采 A/B with 臂 → graduate 达标转 active。
+
+    死锁机制（step2 前）：candidate 从未被 active 注入 → 历史 marker 的 injected_types 不含其 type →
+    aggregate_ab 对该 type 的 with 臂恒 0 → graduate 因 ws<GRADUATE_MIN_SAMPLES(20) 永远跳过 →
+    candidate 永远卡池（唯一进 active 的是人手 seed，非自进化）。shadow_types 拓宽 with 臂判据
+    （injected_types ∪ shadow_types）→ candidate 未达 active 也能采 with 臂样本 → 死锁破。
+
+    先红后绿：step2 前 aggregate_ab 不看 shadow_types → with_seen 会是 0 → graduate 跳过 → 末尾 assert 红；
+    step2 合入后 with_seen=20 → graduate 转 active → 绿。"""
+    T = "PRA-DEADLOCK"
+    # with 臂 20 条：仅 shadow 注入 T（injected_types 空——candidate 从未 active 注入），16 条人采纳（rate 0.8）
+    gt = ([{"raised_types": [T], "injected_types": [], "shadow_types": [T],
+             "human_adopted": [T] if i % 5 else []} for i in range(20)] +
+          # without 臂 20 条：未注入 T，2 条人采纳（rate 0.1）
+          [{"raised_types": [T], "injected_types": [], "shadow_types": [],
+            "human_adopted": [T] if i % 10 == 0 else []} for i in range(20)])
+    ab = L.aggregate_ab(gt)
+    arm = ab[T]
+    assert arm["with_seen"] == 20 and arm["with_adopted"] == 16     # shadow 拓宽 with 臂（否则恒 0=死锁）
+    assert arm["without_seen"] == 20 and arm["without_adopted"] == 2
+    # lift = 0.8 − 0.1 = 0.7 ≥ 0.10，两臂各 ≥ 20 → graduate 达标
+    store = {"experiences": [{"id": "e:::T", "finding_type": T, "kind": "emphasize",
+                              "text": "x", "status": "candidate", "updated_at": 1, "evidence": {}}]}
+    assert L.graduate(store, ab) == ["e:::T"]
+    assert store["experiences"][0]["status"] == "active"            # 死锁破：candidate 经 shadow graduate
+
+
 def test_build_ground_truth_carries_shadow_types_from_marker(tmp_path, monkeypatch):
     """result marker 的 shadow_types 必须透传进真值条目——这是 shadow 注入采 with 臂的数据来源（step2 核心）。
     锁此透传链（对齐 injected_types 的 test_build_ground_truth_carries_injected_types_from_marker）。"""

@@ -480,7 +480,15 @@ def _experience_injection(repo_dir):
         return ""
     try:
         from touchstone import learning_loop
-        return learning_loop.render_injection(learning_loop.load_store()) or ""
+        # include_shadow 透传：env TOUCHSTONE_SHADOW_INJECTION 开时，active 段后追加 shadow candidate
+        # 段（advisory only、文本标灰）。shadow 与 active 读同一 store、同一 EXPERIENCE_REF 防投毒闸——
+        # 上方 L473-480 未配受信 ref 即整体返回 ""（含 shadow），candidate 也走受信 ref（铁律 5）。
+        # 时序耦合：须与 orchestrator marker 归因（step3）读同一开关，否则 marker 说"注入了 shadow X"
+        # 但此处未渲染 → with 臂归因失真；两处 env 默认关 = 字节级等价现状。
+        return learning_loop.render_injection(
+            learning_loop.load_store(),
+            include_shadow=learning_loop._shadow_injection_enabled(),
+        ) or ""
     except Exception:
         return ""
 

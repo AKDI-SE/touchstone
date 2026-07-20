@@ -469,6 +469,69 @@ def test_injection_skipped_in_pr_without_trusted_ref(monkeypatch, tmp_path):
         importlib.reload(experience_store); importlib.reload(learning_loop)
 
 
+def test_experience_injection_passes_include_shadow_when_enabled(monkeypatch, tmp_path):
+    """step4：TOUCHSTONE_SHADOW_INJECTION 开 → _experience_injection 透传 include_shadow=True，
+    注入文本含 shadow 段（candidate 标灰 [shadow]）；默认关 → 只 active 段、无 shadow。"""
+    import importlib
+    from touchstone import experience_store, learning_loop
+    from touchstone import review_provider as rp
+    store = tmp_path / "exp.json"
+    store.write_text(json.dumps({"experiences": [
+        {"id": "e:::A", "finding_type": "A", "kind": "emphasize",
+         "text": "FLAG-A", "status": "active", "updated_at": 1},
+        {"id": "e:::S", "finding_type": "S", "kind": "emphasize",
+         "text": "FLAG-S", "status": "candidate", "updated_at": 1, "source_prs": [101]},
+    ]}), encoding="utf-8")
+    monkeypatch.setenv("TOUCHSTONE_STORE_PATH", str(store))
+    importlib.reload(experience_store); importlib.reload(learning_loop)
+    try:
+        monkeypatch.setenv("TOUCHSTONE_EXPERIENCE_ENABLED", "true")
+        monkeypatch.setenv("GITHUB_EVENT_NAME", "schedule")        # 非 PR：绕 EXPERIENCE_REF 闸
+        monkeypatch.setenv("TOUCHSTONE_SHADOW_RATIO", "1.0")       # 全入选（免哈希不确定性）
+        monkeypatch.setenv("TOUCHSTONE_SHADOW_MIN_EVIDENCE", "1")
+        # 默认关 → 只 active 段
+        monkeypatch.delenv("TOUCHSTONE_SHADOW_INJECTION", raising=False)
+        out_off = rp._experience_injection(".")
+        assert "FLAG-A" in out_off and "[shadow]" not in out_off
+        assert "Shadow candidates" not in out_off
+        # 开 → active + shadow 段（candidate 标灰）
+        monkeypatch.setenv("TOUCHSTONE_SHADOW_INJECTION", "1")
+        out_on = rp._experience_injection(".")
+        assert "FLAG-A" in out_on and "FLAG-S" in out_on
+        assert "Shadow candidates" in out_on and "[shadow]" in out_on
+    finally:
+        for k in ("TOUCHSTONE_STORE_PATH", "TOUCHSTONE_SHADOW_INJECTION",
+                  "TOUCHSTONE_SHADOW_RATIO", "TOUCHSTONE_SHADOW_MIN_EVIDENCE"):
+            monkeypatch.delenv(k, raising=False)
+        importlib.reload(experience_store); importlib.reload(learning_loop)
+
+
+def test_shadow_does_not_bypass_experience_ref_gate(monkeypatch, tmp_path):
+    """铁律 5：shadow 开也不绕 EXPERIENCE_REF 防投毒闸——PR 事件 + 无受信 ref → 整体返回 ""
+    （含 shadow candidate，证明 candidate 与 active 同走受信 ref，非空转）。"""
+    import importlib
+    from touchstone import experience_store, learning_loop
+    from touchstone import review_provider as rp
+    store = tmp_path / "exp.json"
+    store.write_text(json.dumps({"experiences": [
+        {"id": "e:::S", "finding_type": "S", "kind": "emphasize",
+         "text": "FLAG-S", "status": "candidate", "updated_at": 1, "source_prs": [101]},
+    ]}), encoding="utf-8")
+    monkeypatch.setenv("TOUCHSTONE_STORE_PATH", str(store))
+    importlib.reload(experience_store); importlib.reload(learning_loop)
+    try:
+        monkeypatch.setenv("TOUCHSTONE_EXPERIENCE_ENABLED", "true")
+        monkeypatch.setenv("TOUCHSTONE_SHADOW_INJECTION", "1")     # shadow 开
+        monkeypatch.delenv("TOUCHSTONE_EXPERIENCE_REF", raising=False)
+        monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")    # PR + 无 ref → 必拒
+        assert rp._experience_injection(".") == ""                 # shadow 不绕闸
+    finally:
+        for k in ("TOUCHSTONE_STORE_PATH", "TOUCHSTONE_SHADOW_INJECTION"):
+            monkeypatch.delenv(k, raising=False)
+        monkeypatch.delenv("TOUCHSTONE_EXPERIENCE_REF", raising=False)
+        importlib.reload(experience_store); importlib.reload(learning_loop)
+
+
 # ---------------- review_reliable：引擎健康度判据 ----------------
 def test_review_reliable_ok_with_suggestions():
     assert RP.review_reliable("ok", ai_raw_count=3, added_lines=500) is True
