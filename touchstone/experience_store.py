@@ -30,6 +30,7 @@ RETIRE_MIN_FIRES    = 8      # 退役判据的样本下限（与 distill.DISTILL
 # --- shadow 注入（冷启动破死锁：candidate 先 shadow 注入采集 A/B with 臂；env 默认全关）---------
 # 详见 docs/tfgrpo-self-evolution-design.html §2。本组 env 默认值=现状不变：render_injection
 # 默认 include_shadow=False、shadow_candidates 的 ratio/max/min_evidence 有保守默认。
+SHADOW_INJECTION_DEFAULT      = False # shadow 注入总开关（默认关=字节级零行为变化；开需配 EXPERIENCE_REF）
 SHADOW_RATIO_DEFAULT          = 0.5   # candidate 被选中 shadow 注入的长期比例（0-1，基于 id 稳定哈希）
 SHADOW_MAX_PER_REVIEW_DEFAULT = 3     # 单轮评审最多注入多少条 shadow candidate（限制爆炸面）
 SHADOW_MIN_EVIDENCE_DEFAULT   = 1     # candidate 至少 N 条 source_prs 才入选（初筛防孤证）
@@ -273,6 +274,26 @@ def _shadow_env_params():
         "max_per_review": int(os.environ.get("TOUCHSTONE_SHADOW_MAX_PER_REVIEW", SHADOW_MAX_PER_REVIEW_DEFAULT)),
         "min_evidence": int(os.environ.get("TOUCHSTONE_SHADOW_MIN_EVIDENCE", SHADOW_MIN_EVIDENCE_DEFAULT)),
     }
+
+
+def _shadow_injection_enabled():
+    """shadow 注入总开关（默认关）：TOUCHSTONE_SHADOW_INJECTION 真值时才启用 shadow 注入的
+    【归因】（orchestrator marker 写 shadow_types/shadow_experience_ids）与【渲染】
+    （review_provider render_injection(include_shadow=True)，step4 接通）。
+
+    默认关 = 现状字节级不变：orchestrator 写空 shadow_*、render_injection include_shadow=False。
+    启用前提：还需配 TOUCHSTONE_EXPERIENCE_REF（PR 事件下防经验库投毒，见
+    review_provider._experience_injection 的纵深防御）——ref 未配时 review_provider 整个跳过
+    经验注入（active+shadow 都不渲染），此时单开本开关会致 marker 归因与实际渲染不一致，故
+    【未接通 step4 渲染前勿开本开关】（开了 shadow_types 会写但 PR-Agent 没收到 → with 臂归因失真）。
+
+    orchestrator 与 review_provider 必须读【同一】本开关，保证「marker 归因的 shadow_types」与
+    「实际渲染的 shadow 段」取同一批候选（shadow_types/shadow_ids 与 render_injection 同源走
+    shadow_candidates，见 _shadow_env_params 注释）。"""
+    val = os.environ.get("TOUCHSTONE_SHADOW_INJECTION")
+    if val is None:
+        return SHADOW_INJECTION_DEFAULT
+    return val.lower() in ("1", "true", "yes", "on")
 
 
 def shadow_candidates(store, *, ratio, max_per_review, min_evidence):

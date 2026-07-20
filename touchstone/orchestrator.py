@@ -210,6 +210,7 @@ def _render_engine_detail(engine_status, engine_detail):
 
 def post_results(owner, repo, number, head_sha, token, risk, findings, loop_info=None,
                  change_class=None, diff=None, injected_types=None, injected_experience_ids=None,
+                 shadow_types=None, shadow_experience_ids=None,
                  engine_status="ok", det_warning="", ai_raw_count=0, added_lines=0, n_changed=0,
                  scope_facts=None, checklist_md="", ledger=None, review_reliable=True,
                  llm_notes=None, raw_excerpt=None, unverified_claims=0, telemetry_status="disabled",
@@ -279,6 +280,8 @@ def post_results(owner, repo, number, head_sha, token, risk, findings, loop_info
         "loop_decision": (loop_info[0] if loop_info else None),
         "injected_types": injected_types,          # 本轮注入的经验类型（供 shadow A/B 分臂采集）
         "injected_experience_ids": injected_experience_ids,   # 本轮注入的经验【id】（单条归因/回退，见数据采集设计 取舍2）
+        "shadow_types": shadow_types or [],              # 本轮 shadow 注入的 candidate 类型（破冷启动死锁，with 臂归因；SHADOW_INJECTION 开时非空；None→[] 稳定 list 类型）
+        "shadow_experience_ids": shadow_experience_ids or [],   # 本轮 shadow 注入的 candidate【id】（单条归因/回退；None→[]）
         "findings": [{"rule_id": f.get("rule_id"), "agent": f.get("agent"),
                       "severity": f.get("severity")} for f in findings],
         "unverified_claims": unverified_claims,
@@ -495,14 +498,22 @@ def main():
 
     # 本轮注入的经验类型（学习回路 active 经验）——写入 result marker，供未来 shadow A/B 分臂采集。
     # 与 review_provider._experience_injection 同源（只读经验库、失败即空）。
+    # shadow_*（candidate 经 shadow 注入采 A/B with 臂，破冷启动死锁）：TOUCHSTONE_SHADOW_INJECTION
+    # 开时才取（默认关=空，字节级不变）；与 review_provider 的 include_shadow 读【同一】开关（step4
+    # 接通渲染前勿开——开了 marker 归因与实际渲染不一致，见 experience_store._shadow_injection_enabled）。
     injected_types, injected_experience_ids = [], []
+    shadow_types, shadow_experience_ids = [], []
     try:
         from touchstone import learning_loop as _ll
         _store = _ll.load_store()
         injected_types = _ll.active_types(_store)
         injected_experience_ids = _ll.active_ids(_store)
+        if _ll._shadow_injection_enabled():
+            shadow_types = _ll.shadow_types(_store)
+            shadow_experience_ids = _ll.shadow_ids(_store)
     except Exception:
         injected_types, injected_experience_ids = [], []
+        shadow_types, shadow_experience_ids = [], []
 
     rd_path = os.environ.get("TOUCHSTONE_RDJSON_PATH")
     if rd_path:                       # 可选 reviewdog 后端：导出 RDFormat，行内投递交 reviewdog
@@ -614,6 +625,7 @@ def main():
 
     post_results(owner, repo, number, head_sha, token, risk, findings, loop_info, cls, diff,
                  injected_types=injected_types, injected_experience_ids=injected_experience_ids,
+                 shadow_types=shadow_types, shadow_experience_ids=shadow_experience_ids,
                  engine_status=engine_status, det_warning=det_warning,
                  ai_raw_count=ai_raw_count, added_lines=added_lines, n_changed=n_changed,
                  scope_facts=scope_facts, checklist_md=checklist_md, ledger=ledger,

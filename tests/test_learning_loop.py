@@ -902,3 +902,45 @@ def test_shadow_types_and_ids_mirror_candidates(monkeypatch):
     cands = L.shadow_candidates(store, ratio=1.0, max_per_review=5, min_evidence=1)
     assert sorted(L.shadow_types(store)) == sorted(e["finding_type"] for e in cands)
     assert sorted(L.shadow_ids(store)) == sorted(e["id"] for e in cands)
+
+
+def test_shadow_injection_enabled_reads_env(monkeypatch):
+    """shadow 注入总开关：默认关（字节级零行为变化）、真值开、假值关。orchestrator 与
+    review_provider 必须读同一本开关（marker 归因与实际渲染一致的前提）。"""
+    monkeypatch.delenv("TOUCHSTONE_SHADOW_INJECTION", raising=False)
+    assert L._shadow_injection_enabled() is False                  # 默认关
+    for v in ("1", "true", "yes", "on", "TRUE", "Yes"):
+        monkeypatch.setenv("TOUCHSTONE_SHADOW_INJECTION", v)
+        assert L._shadow_injection_enabled() is True
+    for v in ("0", "false", "no", "off", "", "garbage"):
+        monkeypatch.setenv("TOUCHSTONE_SHADOW_INJECTION", v)
+        assert L._shadow_injection_enabled() is False
+
+
+def test_orchestrator_review_pr_writes_shadow_to_marker_when_enabled(monkeypatch):
+    """post_results 把 shadow_types/shadow_experience_ids 写进 result marker（step3 marker 透传）。
+    review_pr 的取值（env 开→shadow_types(store)）由 _shadow_injection_enabled + shadow_types
+    单测覆盖；本测锁 marker 字段透传 + 向后兼容（不传→空列表=现状字节级）。用 review_pr 产完整
+    risk/findings（0-finding 路径），再单独调 post_results 传 shadow_* 验透传（同 test_e2e_replay 模式）。"""
+    from touchstone import orchestrator as orc
+    import re
+    posted = {}
+    monkeypatch.setattr(orc, "gh", lambda m, p, t, data=None, **k:
+                        posted.update(body=data["body"]) if (m == "POST" and p.endswith("/comments")) else {})
+    monkeypatch.setenv("TOUCHSTONE_SKIP_GATE", "1")            # 跳 gate（聚焦 marker，不测闸）
+    pr = {"owner": "o", "repo": "r", "number": 1, "sha": "s", "token": "t",
+          "diff": "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n",
+          "pr_agent_output": {"code_suggestions": [], "review": {"key_issues_to_review": []}}}
+    out = orc.review_pr(pr, {}, {})                            # 产完整 risk/findings
+    posted.clear()
+    orc.post_results("o", "r", 1, "s", "t", out["risk"], out["findings"],
+                     change_class="low|code|none|none",
+                     shadow_types=["PRA-CAND"], shadow_experience_ids=["emphasize:::PRA-CAND"])
+    result = json.loads(re.search(r"<!-- touchstone-result: (.*?) -->", posted["body"], re.S).group(1))
+    assert result["shadow_types"] == ["PRA-CAND"]
+    assert result["shadow_experience_ids"] == ["emphasize:::PRA-CAND"]
+    # 向后兼容：不传 shadow_* → 空列表（现状字节级）
+    posted.clear()
+    orc.post_results("o", "r", 2, "s", "t", out["risk"], out["findings"], change_class="low|code|none|none")
+    result2 = json.loads(re.search(r"<!-- touchstone-result: (.*?) -->", posted["body"], re.S).group(1))
+    assert result2["shadow_types"] == [] and result2["shadow_experience_ids"] == []
