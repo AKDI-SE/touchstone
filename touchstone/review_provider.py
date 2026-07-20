@@ -489,7 +489,13 @@ def _experience_injection(repo_dir):
         # （只禁 shadow 段），不级联进外层 except 禁用整个经验注入含 active（与 step3 :504 同类隔离）。
         try:
             include_shadow = learning_loop._shadow_injection_enabled()
-        except Exception:
+        except Exception as _e:
+            # 诊断不静默（pr-agent #118 r2）：shadow 开关求值出错时仍降级 False（active 不受影响），
+            # 但打 stderr 告警——运维能看到 shadow 段被关的原因（CLAUDE.md §3 诚实标 gap、不掩盖问题；
+            # 与上方 L477-479 跳过注入告警同款 [warn] print 模式）。
+            import sys as _sys
+            print(f"[warn] _shadow_injection_enabled() 求值失败 → 降级 include_shadow=False"
+                  f"（shadow 段关闭、active 注入不受影响）：{_e}", file=_sys.stderr)
             include_shadow = False
         return learning_loop.render_injection(
             learning_loop.load_store(),

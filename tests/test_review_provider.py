@@ -532,9 +532,10 @@ def test_shadow_does_not_bypass_experience_ref_gate(monkeypatch, tmp_path):
         importlib.reload(experience_store); importlib.reload(learning_loop)
 
 
-def test_shadow_detection_failure_does_not_disable_active_injection(monkeypatch, tmp_path):
-    """pr-agent #118 r1：_shadow_injection_enabled() 抛异常 → 降级 include_shadow=False（只禁 shadow 段），
-    不级联进外层 except 禁用整个经验注入——active 经验仍正常渲染（不返 ""）。"""
+def test_shadow_detection_failure_does_not_disable_active_injection(monkeypatch, tmp_path, capsys):
+    """pr-agent #118 r1+r2：_shadow_injection_enabled() 抛异常 → 降级 include_shadow=False（只禁 shadow 段），
+    不级联进外层 except 禁用整个经验注入——active 经验仍正常渲染（不返 ""）；且降级非静默（r2）——
+    stderr 打 [warn] 含函数名/异常原因，运维可见（CLAUDE.md §3 诚实标 gap）。"""
     import importlib
     from touchstone import experience_store, learning_loop
     from touchstone import review_provider as rp
@@ -555,6 +556,9 @@ def test_shadow_detection_failure_does_not_disable_active_injection(monkeypatch,
         out = rp._experience_injection(".")
         assert "FLAG-A" in out               # active 注入未被禁（不级联返 ""）
         assert "[shadow]" not in out          # shadow 降级关
+        # r2：降级非静默——stderr 打 [warn]（print(stderr) 走 capsys，非 logging）。锁定诊断不被静默移除。
+        err = capsys.readouterr().err
+        assert "[warn]" in err and "_shadow_injection_enabled" in err and "shadow detection exploded" in err
     finally:
         monkeypatch.delenv("TOUCHSTONE_STORE_PATH", raising=False)
         importlib.reload(experience_store); importlib.reload(learning_loop)
