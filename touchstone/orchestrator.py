@@ -210,6 +210,7 @@ def _render_engine_detail(engine_status, engine_detail):
 
 def post_results(owner, repo, number, head_sha, token, risk, findings, loop_info=None,
                  change_class=None, diff=None, injected_types=None, injected_experience_ids=None,
+                 shadow_types=None, shadow_experience_ids=None,
                  engine_status="ok", det_warning="", ai_raw_count=0, added_lines=0, n_changed=0,
                  scope_facts=None, checklist_md="", ledger=None, review_reliable=True,
                  llm_notes=None, raw_excerpt=None, unverified_claims=0, telemetry_status="disabled",
@@ -279,6 +280,8 @@ def post_results(owner, repo, number, head_sha, token, risk, findings, loop_info
         "loop_decision": (loop_info[0] if loop_info else None),
         "injected_types": injected_types,          # 本轮注入的经验类型（供 shadow A/B 分臂采集）
         "injected_experience_ids": injected_experience_ids,   # 本轮注入的经验【id】（单条归因/回退，见数据采集设计 取舍2）
+        "shadow_types": shadow_types or [],              # 本轮 shadow 注入的 candidate 类型（破冷启动死锁，with 臂归因；SHADOW_INJECTION 开时非空；None→[] 稳定 list 类型）
+        "shadow_experience_ids": shadow_experience_ids or [],   # 本轮 shadow 注入的 candidate【id】（单条归因/回退；None→[]）
         "findings": [{"rule_id": f.get("rule_id"), "agent": f.get("agent"),
                       "severity": f.get("severity")} for f in findings],
         "unverified_claims": unverified_claims,
@@ -322,6 +325,31 @@ def post_results(owner, repo, number, head_sha, token, risk, findings, loop_info
 
 
 # --- main ---------------------------------------------------------------------
+def _collect_injection():
+    """取本轮要写入 result marker 的经验注入类型：active（生产路径）+ shadow（实验路径，env 开时）。
+    与 review_provider._experience_injection 同源（只读经验库、失败即空）。
+    active 是生产路径、shadow 是实验路径——shadow 取值用【独立内层】try/except 隔离：shadow 抛异常
+    只丢弃 shadow、不 wipe 已成功取到的 active（pr-agent review #117 指出的失败隔离点）。四者皆
+    失败即空（marker 写空）。shadow 仅 TOUCHSTONE_SHADOW_INJECTION 开时才取（默认关=字节级不变，
+    需 step4 review_provider include_shadow 透传后才不归因失真——见 _shadow_injection_enabled）。"""
+    injected_types, injected_experience_ids = [], []
+    shadow_types, shadow_experience_ids = [], []
+    try:
+        from touchstone import learning_loop as _ll
+        _store = _ll.load_store()
+        injected_types = _ll.active_types(_store)
+        injected_experience_ids = _ll.active_ids(_store)
+        if _ll._shadow_injection_enabled():
+            try:
+                shadow_types = _ll.shadow_types(_store)
+                shadow_experience_ids = _ll.shadow_ids(_store)
+            except Exception:
+                shadow_types, shadow_experience_ids = [], []
+    except Exception:
+        injected_types, injected_experience_ids = [], []
+    return injected_types, injected_experience_ids, shadow_types, shadow_experience_ids
+
+
 def review_pr(pr, contract, standards, provider=None):
     """§4.1 主入口：复用 PR-Agent 评审 → 发现归一 → 提交契约核对 + 栈专项确定性规则 → 裁决映射。
     等价于 map_verdict( normalize(fetch(pr)) + check_contract_consistency(...) + check_stack_rules(...) )。
@@ -493,16 +521,9 @@ def main():
     cls = autonomy.change_class(risk, findings, sorted(changed_files), rule_index)
     contract_clean = not any(f.get("agent") == "contract-check" for f in findings)
 
-    # 本轮注入的经验类型（学习回路 active 经验）——写入 result marker，供未来 shadow A/B 分臂采集。
-    # 与 review_provider._experience_injection 同源（只读经验库、失败即空）。
-    injected_types, injected_experience_ids = [], []
-    try:
-        from touchstone import learning_loop as _ll
-        _store = _ll.load_store()
-        injected_types = _ll.active_types(_store)
-        injected_experience_ids = _ll.active_ids(_store)
-    except Exception:
-        injected_types, injected_experience_ids = [], []
+    # 本轮注入的经验类型（active 生产 + shadow 实验）由 _collect_injection 统一取：shadow 取值独立
+    # try 隔离，失败不 wipe active（pr-agent review #117 隔离点）。详见 _collect_injection。
+    injected_types, injected_experience_ids, shadow_types, shadow_experience_ids = _collect_injection()
 
     rd_path = os.environ.get("TOUCHSTONE_RDJSON_PATH")
     if rd_path:                       # 可选 reviewdog 后端：导出 RDFormat，行内投递交 reviewdog
@@ -614,6 +635,7 @@ def main():
 
     post_results(owner, repo, number, head_sha, token, risk, findings, loop_info, cls, diff,
                  injected_types=injected_types, injected_experience_ids=injected_experience_ids,
+                 shadow_types=shadow_types, shadow_experience_ids=shadow_experience_ids,
                  engine_status=engine_status, det_warning=det_warning,
                  ai_raw_count=ai_raw_count, added_lines=added_lines, n_changed=n_changed,
                  scope_facts=scope_facts, checklist_md=checklist_md, ledger=ledger,

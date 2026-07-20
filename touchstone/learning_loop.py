@@ -37,11 +37,13 @@ from touchstone.atomicio import atomic_write_json
 from touchstone.experience_store import (  # noqa: F401
     SUPPRESS_ADOPT_MAX, EMPHASIZE_ADOPT_MIN,
     GRADUATE_MIN_SAMPLES, GRADUATE_MIN_LIFT, RETIRE_ADOPT_MAX, STORE_PATH,
+    SHADOW_INJECTION_DEFAULT,
     SHADOW_RATIO_DEFAULT, SHADOW_MAX_PER_REVIEW_DEFAULT, SHADOW_MIN_EVIDENCE_DEFAULT,
     _read_store_text, load_store, save_store, _is_review_type, _exp_id,
     _protected_types, seed_experience, merge_candidates, graduate, retire,
     disable, _resolve_conflicts, render_injection, active_types, active_ids,
-    _shadow_hash, _shadow_env_params, shadow_candidates, shadow_types, shadow_ids)
+    _shadow_hash, _shadow_env_params, _shadow_injection_enabled,
+    shadow_candidates, shadow_types, shadow_ids)
 from touchstone.distill import (  # noqa: F401
     DISTILL_MIN_FIRES,
     TFGRPO_GROUP_SIZE, _W_NOISE, _W_MISS,
