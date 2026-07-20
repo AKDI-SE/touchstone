@@ -325,6 +325,31 @@ def post_results(owner, repo, number, head_sha, token, risk, findings, loop_info
 
 
 # --- main ---------------------------------------------------------------------
+def _collect_injection():
+    """取本轮要写入 result marker 的经验注入类型：active（生产路径）+ shadow（实验路径，env 开时）。
+    与 review_provider._experience_injection 同源（只读经验库、失败即空）。
+    active 是生产路径、shadow 是实验路径——shadow 取值用【独立内层】try/except 隔离：shadow 抛异常
+    只丢弃 shadow、不 wipe 已成功取到的 active（pr-agent review #117 指出的失败隔离点）。四者皆
+    失败即空（marker 写空）。shadow 仅 TOUCHSTONE_SHADOW_INJECTION 开时才取（默认关=字节级不变，
+    需 step4 review_provider include_shadow 透传后才不归因失真——见 _shadow_injection_enabled）。"""
+    injected_types, injected_experience_ids = [], []
+    shadow_types, shadow_experience_ids = [], []
+    try:
+        from touchstone import learning_loop as _ll
+        _store = _ll.load_store()
+        injected_types = _ll.active_types(_store)
+        injected_experience_ids = _ll.active_ids(_store)
+        if _ll._shadow_injection_enabled():
+            try:
+                shadow_types = _ll.shadow_types(_store)
+                shadow_experience_ids = _ll.shadow_ids(_store)
+            except Exception:
+                shadow_types, shadow_experience_ids = [], []
+    except Exception:
+        injected_types, injected_experience_ids = [], []
+    return injected_types, injected_experience_ids, shadow_types, shadow_experience_ids
+
+
 def review_pr(pr, contract, standards, provider=None):
     """§4.1 主入口：复用 PR-Agent 评审 → 发现归一 → 提交契约核对 + 栈专项确定性规则 → 裁决映射。
     等价于 map_verdict( normalize(fetch(pr)) + check_contract_consistency(...) + check_stack_rules(...) )。
@@ -496,24 +521,9 @@ def main():
     cls = autonomy.change_class(risk, findings, sorted(changed_files), rule_index)
     contract_clean = not any(f.get("agent") == "contract-check" for f in findings)
 
-    # 本轮注入的经验类型（学习回路 active 经验）——写入 result marker，供未来 shadow A/B 分臂采集。
-    # 与 review_provider._experience_injection 同源（只读经验库、失败即空）。
-    # shadow_*（candidate 经 shadow 注入采 A/B with 臂，破冷启动死锁）：TOUCHSTONE_SHADOW_INJECTION
-    # 开时才取（默认关=空，字节级不变）；与 review_provider 的 include_shadow 读【同一】开关（step4
-    # 接通渲染前勿开——开了 marker 归因与实际渲染不一致，见 experience_store._shadow_injection_enabled）。
-    injected_types, injected_experience_ids = [], []
-    shadow_types, shadow_experience_ids = [], []
-    try:
-        from touchstone import learning_loop as _ll
-        _store = _ll.load_store()
-        injected_types = _ll.active_types(_store)
-        injected_experience_ids = _ll.active_ids(_store)
-        if _ll._shadow_injection_enabled():
-            shadow_types = _ll.shadow_types(_store)
-            shadow_experience_ids = _ll.shadow_ids(_store)
-    except Exception:
-        injected_types, injected_experience_ids = [], []
-        shadow_types, shadow_experience_ids = [], []
+    # 本轮注入的经验类型（active 生产 + shadow 实验）由 _collect_injection 统一取：shadow 取值独立
+    # try 隔离，失败不 wipe active（pr-agent review #117 隔离点）。详见 _collect_injection。
+    injected_types, injected_experience_ids, shadow_types, shadow_experience_ids = _collect_injection()
 
     rd_path = os.environ.get("TOUCHSTONE_RDJSON_PATH")
     if rd_path:                       # 可选 reviewdog 后端：导出 RDFormat，行内投递交 reviewdog

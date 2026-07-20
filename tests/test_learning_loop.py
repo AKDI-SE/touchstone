@@ -944,3 +944,22 @@ def test_orchestrator_review_pr_writes_shadow_to_marker_when_enabled(monkeypatch
     orc.post_results("o", "r", 2, "s", "t", out["risk"], out["findings"], change_class="low|code|none|none")
     result2 = json.loads(re.search(r"<!-- touchstone-result: (.*?) -->", posted["body"], re.S).group(1))
     assert result2["shadow_types"] == [] and result2["shadow_experience_ids"] == []
+
+
+def test_shadow_failure_does_not_wipe_active_injection(monkeypatch):
+    """shadow 取值抛异常不能 wipe 已成功取到的 active injection（pr-agent review #117：生产路径
+    vs 实验路径失败隔离）。直接测 _collect_injection——shadow_types 抛异常时返回的 injected_types
+    仍保留 active 结果、shadow 为空。"""
+    from touchstone import orchestrator as orc
+    monkeypatch.setattr(L, "load_store", lambda: {"experiences": []})
+    monkeypatch.setattr(L, "active_types", lambda s: ["PRA-ACTIVE"])
+    monkeypatch.setattr(L, "active_ids", lambda s: ["emphasize:::PRA-ACTIVE"])
+    def _boom(s):
+        raise RuntimeError("shadow path bug")
+    monkeypatch.setattr(L, "shadow_types", _boom)
+    monkeypatch.setattr(L, "shadow_ids", lambda s: ["s"])
+    monkeypatch.setenv("TOUCHSTONE_SHADOW_INJECTION", "true")
+    it, iid, st, sid = orc._collect_injection()
+    assert it == ["PRA-ACTIVE"]                                # active 保留（未被 shadow 失败 wipe）
+    assert iid == ["emphasize:::PRA-ACTIVE"]
+    assert st == [] and sid == []                              # shadow 失败丢弃
