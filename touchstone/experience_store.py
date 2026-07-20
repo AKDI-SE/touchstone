@@ -253,7 +253,10 @@ def active_ids(store):
 # --- shadow 注入：candidate 池 → 采 A/B with 臂数据的隔离标灰注入（冷启动破死锁）-------------
 # 详见 docs/tfgrpo-self-evolution-design.html §2。本组函数只【选】+【渲染】不【激活】：
 # graduate 零改动（candidate→active 仍走原 A/B 达标判定），仅拓宽数据采集侧的注入口子。
-_SHADOW_HASH_SCALE = float(2**32 - 1)
+# 除数用 2**32 而非 (2**32-1)：前 8 hex 位最大 0xFFFFFFFF=(2**32-1)，除以 2**32 保证商严格
+# < 1.0（半开区间 [0,1)），使 ratio=1.0 能真正全选——除以 (2**32-1) 会让 hash=0xFFFFFFFF 时商=1.0，
+# 被 `>=ratio` 错误排除（off-by-one 边界 bug，pr-agent 第 2 轮指出）。
+_SHADOW_HASH_SCALE = float(2**32)
 
 
 def _shadow_hash(exp_id):

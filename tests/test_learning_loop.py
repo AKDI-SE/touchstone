@@ -834,6 +834,16 @@ def test_shadow_candidates_negative_max_clamped_to_zero():
     assert L.shadow_candidates(store, ratio=1.0, max_per_review=-5, min_evidence=1) == []
 
 
+def test_shadow_hash_scale_guarantees_below_one():
+    """除数必须严格大于最大可能分子（2**32-1）→ 商恒 < 1.0（半开区间 [0,1)），使 ratio=1.0 真正全选。
+    防 off-by-one 回归：除以 (2**32-1) 会让 hash=0xFFFFFFFF 时商=1.0，被 `>=ratio` 错误排除。"""
+    from touchstone import experience_store as ES
+    assert ES._SHADOW_HASH_SCALE > (2**32 - 1)            # 除数 > 最大分子 → 商严格 < 1.0
+    for eid in ["emphasize:::PRA-A", "suppress:o/r:PRA-B", "x", "PRA-" * 25]:
+        h = L._shadow_hash(eid)
+        assert 0.0 <= h < 1.0                             # 行为级：任意 id 落在 [0, 1)
+
+
 def test_shadow_candidates_only_candidate_status():
     """非 candidate（active/retired）不入选 shadow。"""
     store = {"experiences": [
