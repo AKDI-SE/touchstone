@@ -532,6 +532,34 @@ def test_shadow_does_not_bypass_experience_ref_gate(monkeypatch, tmp_path):
         importlib.reload(experience_store); importlib.reload(learning_loop)
 
 
+def test_shadow_detection_failure_does_not_disable_active_injection(monkeypatch, tmp_path):
+    """pr-agent #118 r1：_shadow_injection_enabled() 抛异常 → 降级 include_shadow=False（只禁 shadow 段），
+    不级联进外层 except 禁用整个经验注入——active 经验仍正常渲染（不返 ""）。"""
+    import importlib
+    from touchstone import experience_store, learning_loop
+    from touchstone import review_provider as rp
+    store = tmp_path / "exp.json"
+    store.write_text(json.dumps({"experiences": [
+        {"id": "e:::A", "finding_type": "A", "kind": "emphasize",
+         "text": "FLAG-A", "status": "active", "updated_at": 1},
+    ]}), encoding="utf-8")
+    monkeypatch.setenv("TOUCHSTONE_STORE_PATH", str(store))
+    importlib.reload(experience_store); importlib.reload(learning_loop)
+
+    def _boom():
+        raise RuntimeError("shadow detection exploded")
+    try:
+        monkeypatch.setenv("TOUCHSTONE_EXPERIENCE_ENABLED", "true")
+        monkeypatch.setenv("GITHUB_EVENT_NAME", "schedule")        # 非 PR：绕 EXPERIENCE_REF 闸
+        monkeypatch.setattr(learning_loop, "_shadow_injection_enabled", _boom)
+        out = rp._experience_injection(".")
+        assert "FLAG-A" in out               # active 注入未被禁（不级联返 ""）
+        assert "[shadow]" not in out          # shadow 降级关
+    finally:
+        monkeypatch.delenv("TOUCHSTONE_STORE_PATH", raising=False)
+        importlib.reload(experience_store); importlib.reload(learning_loop)
+
+
 # ---------------- review_reliable：引擎健康度判据 ----------------
 def test_review_reliable_ok_with_suggestions():
     assert RP.review_reliable("ok", ai_raw_count=3, added_lines=500) is True

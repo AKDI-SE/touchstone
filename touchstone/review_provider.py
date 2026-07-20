@@ -485,9 +485,15 @@ def _experience_injection(repo_dir):
         # 上方 L473-480 未配受信 ref 即整体返回 ""（含 shadow），candidate 也走受信 ref（铁律 5）。
         # 时序耦合：须与 orchestrator marker 归因（step3）读同一开关，否则 marker 说"注入了 shadow X"
         # 但此处未渲染 → with 臂归因失真；两处 env 默认关 = 字节级等价现状。
+        # _shadow_injection_enabled() 独立求值 + 安全降级（pr-agent #118 r1）：它抛异常时降级 False
+        # （只禁 shadow 段），不级联进外层 except 禁用整个经验注入含 active（与 step3 :504 同类隔离）。
+        try:
+            include_shadow = learning_loop._shadow_injection_enabled()
+        except Exception:
+            include_shadow = False
         return learning_loop.render_injection(
             learning_loop.load_store(),
-            include_shadow=learning_loop._shadow_injection_enabled(),
+            include_shadow=include_shadow,
         ) or ""
     except Exception:
         return ""
