@@ -761,3 +761,126 @@ def test_ground_truth_written_atomically(monkeypatch, tmp_path):
              "--store", str(tmp_path / "store.json"),
              "--output", str(tmp_path / "report.json")])
     assert calls.get("path") == str(gt) and calls.get("obj") == [{"x": 1}]
+
+
+# ==================== shadow 注入：candidate 池 → A/B with 臂（冷启动破死锁，默认关）====================
+# 详见 docs/tfgrpo-self-evolution-design.html §2。本组锁定 shadow_candidates 的确定性抽样 + 安全闸
+# + render_injection(include_shadow) 的默认关/开启行为；graduate 零改动（candidate→active 仍走原 A/B 门控）。
+def _candidate(ftype, kind="emphasize", source_prs=None, repo="", stack=""):
+    """造一条 candidate 经验（shadow_candidates 的输入）。默认带 1 条 source_prs 过 min_evidence=1 初筛。"""
+    return {"id": L._exp_id(ftype, kind, repo, stack), "repo": repo, "stack": stack,
+            "finding_type": ftype, "kind": kind, "text": f"advise on {ftype}",
+            "status": "candidate", "source_prs": source_prs if source_prs is not None else ["1"],
+            "evidence": {}, "locked": False}
+
+
+def test_shadow_candidates_deterministic_across_calls():
+    """同一 store 多次调 shadow_candidates 返回同一批——hashlib 稳定哈希，不随 PYTHONHASHSEED 抖动
+    （抖动会让同 PR 多轮评审注入不同 shadow 集，污染 A/B 归因）。"""
+    store = {"experiences": [_candidate(f"PRA-C{i}") for i in range(6)]}
+    a = L.shadow_candidates(store, ratio=1.0, max_per_review=10, min_evidence=1)
+    b = L.shadow_candidates(store, ratio=1.0, max_per_review=10, min_evidence=1)
+    assert [e["id"] for e in a] == [e["id"] for e in b]
+
+
+def test_shadow_candidates_ratio_controls_selection():
+    """ratio=1.0 全入选（受 max_per_review 截）；ratio=0.0 空集；中间值按 id 稳定哈希确定性筛选。"""
+    store = {"experiences": [_candidate(f"PRA-C{i}") for i in range(4)]}
+    assert len(L.shadow_candidates(store, ratio=1.0, max_per_review=10, min_evidence=1)) == 4
+    assert L.shadow_candidates(store, ratio=0.0, max_per_review=10, min_evidence=1) == []
+    # 中间值：用已知 _shadow_hash 设 ratio 精确包含/排除某条（确定性，非统计性断言）
+    e = _candidate("PRA-MID")
+    h = L._shadow_hash(e["id"])
+    s = {"experiences": [e]}
+    assert L.shadow_candidates(s, ratio=h + 1e-6, max_per_review=10, min_evidence=1) != []   # h < ratio → 入选
+    assert L.shadow_candidates(s, ratio=h, max_per_review=10, min_evidence=1) == []          # h >= ratio → 排除
+
+
+def test_shadow_candidates_min_evidence_filters():
+    """source_prs 数 < min_evidence 的 candidate 不入选（初筛防孤证）。"""
+    store = {"experiences": [
+        _candidate("PRA-RICH", source_prs=["1", "2", "3"]),
+        _candidate("PRA-POOR", source_prs=[])]}
+    got = L.shadow_candidates(store, ratio=1.0, max_per_review=10, min_evidence=1)
+    assert [e["finding_type"] for e in got] == ["PRA-RICH"]
+
+
+def test_shadow_candidates_protected_suppress_excluded(monkeypatch):
+    """protected_types 的 suppress 永不 shadow 注入（安全闸）；同类型 emphasize 不受此限（该挑的仍采数）。"""
+    monkeypatch.setenv("TOUCHSTONE_PROTECTED_TYPES", "PRA-SEC")
+    store = {"experiences": [
+        _candidate("PRA-SEC", kind="suppress"),    # 红线 suppress → 挡
+        _candidate("PRA-SEC", kind="emphasize"),   # 红线 emphasize → 放行
+        _candidate("PRA-TYPO", kind="suppress")]}  # 非保护 suppress → 放行
+    got = {(e["finding_type"], e["kind"]) for e in
+           L.shadow_candidates(store, ratio=1.0, max_per_review=10, min_evidence=1)}
+    assert ("PRA-SEC", "suppress") not in got
+    assert ("PRA-SEC", "emphasize") in got
+    assert ("PRA-TYPO", "suppress") in got
+
+
+def test_shadow_candidates_max_per_review_caps():
+    """ratio=1.0 全入选，但 max_per_review 截单轮爆炸面。"""
+    store = {"experiences": [_candidate(f"PRA-C{i}") for i in range(5)]}
+    got = L.shadow_candidates(store, ratio=1.0, max_per_review=2, min_evidence=1)
+    assert len(got) == 2
+
+
+def test_shadow_candidates_only_candidate_status():
+    """非 candidate（active/retired）不入选 shadow。"""
+    store = {"experiences": [
+        _candidate("PRA-CAND"),
+        {"id": "emphasize:PRA-ACT", "finding_type": "PRA-ACT", "kind": "emphasize",
+         "status": "active", "source_prs": ["1"], "text": "x"},
+        {"id": "emphasize:PRA-RET", "finding_type": "PRA-RET", "kind": "emphasize",
+         "status": "retired", "source_prs": ["1"], "text": "x"}]}
+    got = [e["finding_type"] for e in
+           L.shadow_candidates(store, ratio=1.0, max_per_review=10, min_evidence=1)]
+    assert got == ["PRA-CAND"]
+
+
+def test_render_injection_shadow_off_by_default():
+    """默认 include_shadow=False：输出不含 shadow 段（零行为变化，与改前等价）。"""
+    store = {"experiences": [
+        {"id": "emphasize:PRA-ACT", "finding_type": "PRA-ACT", "kind": "emphasize",
+         "status": "active", "text": "flag PRA-ACT"},
+        _candidate("PRA-CAND")]}
+    out = L.render_injection(store)
+    assert "PRA-CAND" not in out and "[shadow]" not in out
+    assert "flag PRA-ACT" in out
+
+
+def test_render_injection_includes_shadow_when_enabled(monkeypatch):
+    """include_shadow=True：active 段后追加 shadow 段、每条前缀 [shadow]。"""
+    monkeypatch.setenv("TOUCHSTONE_SHADOW_RATIO", "1.0")          # 全入选，免哈希偶然性
+    monkeypatch.setenv("TOUCHSTONE_SHADOW_MAX_PER_REVIEW", "10")
+    store = {"experiences": [
+        {"id": "emphasize:PRA-ACT", "finding_type": "PRA-ACT", "kind": "emphasize",
+         "status": "active", "text": "flag PRA-ACT"},
+        _candidate("PRA-CAND")]}
+    out = L.render_injection(store, include_shadow=True)
+    assert "flag PRA-ACT" in out                      # active 段在
+    assert "Shadow candidates" in out                 # shadow 段标题在
+    assert "[shadow] advise on PRA-CAND" in out       # shadow 候选标灰注入
+    assert out.index("flag PRA-ACT") < out.index("Shadow candidates")   # active 段在 shadow 段前
+
+
+def test_render_injection_active_empty_shadow_only(monkeypatch):
+    """active 空但 include_shadow=True 且有 candidate → 只输出 shadow 段（不因 active 空早返回空串）。"""
+    monkeypatch.setenv("TOUCHSTONE_SHADOW_RATIO", "1.0")
+    monkeypatch.setenv("TOUCHSTONE_SHADOW_MAX_PER_REVIEW", "10")
+    store = {"experiences": [_candidate("PRA-CAND")]}
+    out = L.render_injection(store, include_shadow=True)
+    assert "Learned review experience" not in out     # 无 active 段
+    assert "[shadow] advise on PRA-CAND" in out       # 仍有 shadow 段
+
+
+def test_shadow_types_and_ids_mirror_candidates(monkeypatch):
+    """shadow_types/shadow_ids 与 shadow_candidates 取同一批（env 同源）——marker 归因与渲染一致。"""
+    monkeypatch.setenv("TOUCHSTONE_SHADOW_RATIO", "1.0")
+    monkeypatch.setenv("TOUCHSTONE_SHADOW_MAX_PER_REVIEW", "5")
+    monkeypatch.setenv("TOUCHSTONE_SHADOW_MIN_EVIDENCE", "1")
+    store = {"experiences": [_candidate(f"PRA-C{i}") for i in range(3)]}
+    cands = L.shadow_candidates(store, ratio=1.0, max_per_review=5, min_evidence=1)
+    assert sorted(L.shadow_types(store)) == sorted(e["finding_type"] for e in cands)
+    assert sorted(L.shadow_ids(store)) == sorted(e["id"] for e in cands)

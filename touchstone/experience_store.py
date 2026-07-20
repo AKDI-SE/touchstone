@@ -11,6 +11,7 @@
 # 铁律不变：经验只调"建议"、绝不进"合入闸"；确定性 contract 类型永不进经验库。
 # ============================================================================
 
+import hashlib
 import json
 import os
 import time
@@ -26,14 +27,26 @@ RETIRE_ADOPT_MAX    = 0.15   # active 经验对应类型采纳率跌破此（且
 RETIRE_MIN_FIRES    = 8      # 退役判据的样本下限（与 distill.DISTILL_MIN_FIRES 同值同理：
                              # 样本不足不轻举妄动——蒸馏侧不入池，退役侧不退役）
 
+# --- shadow 注入（冷启动破死锁：candidate 先 shadow 注入采集 A/B with 臂；env 默认全关）---------
+# 详见 docs/tfgrpo-self-evolution-design.html §2。本组 env 默认值=现状不变：render_injection
+# 默认 include_shadow=False、shadow_candidates 的 ratio/max/min_evidence 有保守默认。
+SHADOW_RATIO_DEFAULT          = 0.5   # candidate 被选中 shadow 注入的长期比例（0-1，基于 id 稳定哈希）
+SHADOW_MAX_PER_REVIEW_DEFAULT = 3     # 单轮评审最多注入多少条 shadow candidate（限制爆炸面）
+SHADOW_MIN_EVIDENCE_DEFAULT   = 1     # candidate 至少 N 条 source_prs 才入选（初筛防孤证）
+
 STORE_PATH = (os.environ.get("TOUCHSTONE_STORE_PATH")
              or os.environ.get("TOUCHSTONE_EXPERIENCE") or ".touchstone/experience.json")
 
 # --- 经验库（JSON 产物，非服务）-------------------------------------------------
 # experience: {id, repo, stack, finding_type, kind(suppress/emphasize),
-#              text, evidence{fires,adoption}, status(candidate/active/retired),
-#              source(human/tfgrpo/counting), locked(bool: 人锁定→回路不得改写/退役),
+#              text, evidence{fires,adoption,shadow_fires?,graduated_via?},
+#              status(candidate/shadow/active/retired),
+#              source(human/tfgrpo/counting/bootstrap?), locked(bool: 人锁定→回路不得改写/退役),
 #              source_prs[], created_at, updated_at}
+#   status=shadow：采 A/B with 臂数据的【注入角色】，由 shadow_candidates 从 candidate 池按 id 稳定
+#   哈希+ratio 临时选中（非持久状态——candidate 经 shadow 采数达标后仍 candidate→active，
+#   graduate 零改动）；当前作语义占位、无写入路径。evidence.shadow_fires（采数 PR 数）/
+#   graduated_via（"ab"|"bootstrap"）为采数/达标流程的回写字段（向后兼容，缺失即默认）。
 def _read_store_text(path):
     ref = os.environ.get("TOUCHSTONE_EXPERIENCE_REF")
     if ref:
@@ -197,16 +210,29 @@ def _resolve_conflicts(active):
     return [e for e in active if id(e) in keep]
 
 
-def render_injection(store):
+def render_injection(store, *, include_shadow=False):
     """把 active 经验渲染成注入 PR-Agent 的 extra_instructions 文本。
-    仅 active；candidate/retired 不注入。输出纯指令文本——只影响 PR-Agent 的建议，
-    不触碰确定性 contract_check / 总闸（评审与合入闸的边界）。"""
+
+    include_shadow=False（默认，现状不变）：仅 active；candidate/retired 不注入。
+    include_shadow=True（冷启动破死锁，需 env 显式开启 + 受信 ref 防投毒同等约束——见
+    review_provider._experience_injection）：active 段后追加 shadow 段，从 candidate 池确定性
+    抽样（shadow_candidates）、每条前缀 [shadow] 标灰（采数期、advisory only、未达门槛）。
+    shadow 候选只影响 PR-Agent 建议、不进 contract_check/verify/总闸——铁律不变。
+    输出纯指令文本——只影响 PR-Agent 的建议，不触碰确定性 contract_check / 总闸（评审与合入闸的边界）。"""
     active = _resolve_conflicts([e for e in store.get("experiences", []) if e["status"] == "active"])
-    if not active:
+    if not active and not include_shadow:
         return ""
-    lines = ["# Learned review experience (repo-specific, advisory only — do not gate merges):"]
-    for e in active:
-        lines.append(f"- {e['text']}")
+    lines = []
+    if active:
+        lines.append("# Learned review experience (repo-specific, advisory only — do not gate merges):")
+        for e in active:
+            lines.append(f"- {e['text']}")
+    if include_shadow:
+        shadow = shadow_candidates(store, **_shadow_env_params())
+        if shadow:
+            lines.append("# Shadow candidates (exploratory, advisory only — gathering A/B data, not yet validated):")
+            for e in shadow:
+                lines.append(f"- [shadow] {e['text']}")
     return "\n".join(lines)
 
 
@@ -222,4 +248,68 @@ def active_ids(store):
     使坏经验可【单条】归因与回退（类型级的 active_types 只能归因到类型，见数据采集设计 取舍 2）。"""
     return [e.get("id") for e in (store or {}).get("experiences", [])
             if e.get("status") == "active" and e.get("id")]
+
+
+# --- shadow 注入：candidate 池 → 采 A/B with 臂数据的隔离标灰注入（冷启动破死锁）-------------
+# 详见 docs/tfgrpo-self-evolution-design.html §2。本组函数只【选】+【渲染】不【激活】：
+# graduate 零改动（candidate→active 仍走原 A/B 达标判定），仅拓宽数据采集侧的注入口子。
+_SHADOW_HASH_SCALE = float(2**32 - 1)
+
+
+def _shadow_hash(exp_id):
+    """经验 id → [0,1) 的稳定哈希。用 hashlib（非内置 hash()）：后者随 PYTHONHASHSEED 抖动，
+    同一 PR 多轮评审会注入不同 shadow 集，污染 A/B 归因（with 臂样本无法稳定归属该 type）。"""
+    return int(hashlib.sha256(exp_id.encode("utf-8")).hexdigest()[:8], 16) / _SHADOW_HASH_SCALE
+
+
+def _shadow_env_params():
+    """从 env 读 shadow 注入三参数（render_injection/shadow_types/shadow_ids 统一来源，保证
+    本轮渲染的 shadow 段与 marker 归因的 shadow_types/shadow_ids 取的是同一批候选）。"""
+    return {
+        "ratio": float(os.environ.get("TOUCHSTONE_SHADOW_RATIO", SHADOW_RATIO_DEFAULT)),
+        "max_per_review": int(os.environ.get("TOUCHSTONE_SHADOW_MAX_PER_REVIEW", SHADOW_MAX_PER_REVIEW_DEFAULT)),
+        "min_evidence": int(os.environ.get("TOUCHSTONE_SHADOW_MIN_EVIDENCE", SHADOW_MIN_EVIDENCE_DEFAULT)),
+    }
+
+
+def shadow_candidates(store, *, ratio, max_per_review, min_evidence):
+    """从 candidate 池里挑出本轮要 shadow 注入的候选（采 A/B with 臂数据，破冷启动死锁）。
+
+    入选条件：status=="candidate" 且 source_prs 数 >= min_evidence（初筛防孤证）。
+    安全闸：protected_types（人立的红线类型）的 suppress 永不 shadow 注入——红线类型即使
+    历史上人总忽略，也不让学习回路在采数期碰；protected 的 emphasize 不受此限（该挑的仍采数）。
+    抽样：每个 candidate 独立确定性判定（_shadow_hash(id) < ratio）——ratio 控长期入选比例；
+    max_per_review 截单轮爆炸面。判定稳定（哈希基于 id）使同 candidate 跨轮归因一致。
+
+    本函数只【选】不【注入】：渲染由 render_injection(include_shadow=True) 做；graduate 零改动。"""
+    protected = _protected_types()
+    selected = []
+    for e in store.get("experiences", []):
+        if e.get("status") != "candidate":
+            continue
+        if e.get("kind") == "suppress" and e.get("finding_type") in protected:
+            continue
+        if len(e.get("source_prs") or []) < min_evidence:
+            continue
+        if _shadow_hash(e["id"]) >= ratio:
+            continue
+        selected.append(e)
+    selected.sort(key=lambda e: _shadow_hash(e["id"]))
+    return selected[:max_per_review]
+
+
+def shadow_types(store):
+    """本轮会被 shadow 注入的 candidate 的 finding_type 列表——供 orchestrator 写入 result
+    marker 的 shadow_types 字段，使 aggregate_ab 的 with 臂能归因到 shadow 注入的 type
+    （破冷启动死锁的数据采集侧）。与 active_types 对称：active_types 归因 active 注入、
+    shadow_types 归因 shadow 注入。参数取自 TOUCHSTONE_SHADOW_* env（与 render_injection 同源）。"""
+    return [e.get("finding_type") for e in shadow_candidates(store or {}, **_shadow_env_params())
+            if e.get("finding_type")]
+
+
+def shadow_ids(store):
+    """本轮会被 shadow 注入的 candidate 的 id 列表——供 orchestrator 写入 result marker 的
+    shadow_experience_ids 字段（与 active_ids 对称：坏 shadow 经验可单条归因与回退）。
+    参数取自 TOUCHSTONE_SHADOW_* env（与 render_injection 同源）。"""
+    return [e.get("id") for e in shadow_candidates(store or {}, **_shadow_env_params()) if e.get("id")]
 
