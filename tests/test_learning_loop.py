@@ -1177,6 +1177,50 @@ def test_low_weight_reviewer_detected():
     assert L._truth_signals([], fa_unresolved, big_diff, "CHANGES_REQUESTED", bot)["low_weight_reviewer"] is False
 
 
+def test_parse_review_threads_reads_authorassociation_field():
+    """association 取自评论节点的 authorAssociation（comment 顶层），非 author 子字段——
+    GitHub GraphQL 的 Actor 无 association（曾用 author{association} → 整查询 undefinedField 报错、
+    崩全部 build_ground_truth）。锁真实 schema 形状，防回退到非法字段。"""
+    from touchstone import calibrate as C
+    data = {"data": {"repository": {"pullRequest": {"reviewThreads": {"nodes": [
+        {"isResolved": True, "resolvedBy": {"login": "alice"},
+         "comments": {"nodes": [
+             {"author": {"login": "alice"}, "authorAssociation": "MEMBER", "body": "b"}]}}]}}}}}
+    parsed = C.parse_review_threads(data)
+    assert parsed[0]["comments"][0]["association"] == "MEMBER"        # 读 authorAssociation
+    assert parsed[0]["comments"][0]["author"] == "alice"
+    # 缺 authorAssociation → 空串（容错，不崩）
+    data2 = {"data": {"repository": {"pullRequest": {"reviewThreads": {"nodes": [
+        {"isResolved": False, "comments": {"nodes": [
+            {"author": {"login": "x"}, "body": "b"}]}}]}}}}}
+    assert C.parse_review_threads(data2)[0]["comments"][0]["association"] == ""
+
+
+def test_resolver_association_excludes_bot_trailing_comment():
+    """信号 C 的 resolver 取线程末条【人类】评论的 association——bot 尾评（association 常 NONE，
+    属 LOW_ASSOCIATIONS）不污染 resolver 身份。bot 在末位、人类(MEMBER)在前 → resolver=MEMBER。
+    修复前取末条(bot)→误判 NONE 触发低权重信号（pr-agent review #120）。"""
+    from touchstone import calibrate as C
+    bot = "github-actions[bot]"
+    threads = C.parse_review_threads({"data": {"repository": {"pullRequest": {"reviewThreads": {"nodes": [
+        {"isResolved": True, "resolvedBy": {"login": "member1"},
+         "comments": {"nodes": [
+             {"author": {"login": "github-actions[bot]"}, "authorAssociation": "NONE",
+              "body": "<!-- touchstone-finding: " + json.dumps({"rule_id": "PRA-X"}) + " -->"},
+             {"author": {"login": "member1"}, "authorAssociation": "MEMBER", "body": "fixed"},
+             {"author": {"login": "github-actions[bot]"}, "authorAssociation": "NONE",
+              "body": "bot trailing ack"}]}}]}}}}})
+    fa = C.thread_findings(threads, bot)
+    assert fa[0]["resolver_association"] == "MEMBER"          # bot 尾评 NONE 被排除，取人类 MEMBER
+    # 全 bot 线程（无人类评论）→ resolver 空（不误触发 C）
+    threads_allbot = C.parse_review_threads({"data": {"repository": {"pullRequest": {"reviewThreads": {"nodes": [
+        {"isResolved": True, "comments": {"nodes": [
+            {"author": {"login": "github-actions[bot]"}, "authorAssociation": "NONE",
+             "body": "<!-- touchstone-finding: " + json.dumps({"rule_id": "PRA-Y"}) + " -->"}]}}]}}}}})
+    fa2 = C.thread_findings(threads_allbot, bot)
+    assert fa2[0]["resolver_association"] == ""               # 无人类评论 → resolver 空
+
+
 def test_tiny_diff_resolved_detected():
     """信号 D：added 行数 < TINY_DIFF_LINES(默认5) 且有 resolved 发现 → True。
     大 diff 即使有 resolved → False；小 diff 但无 resolved → False。"""
@@ -1210,7 +1254,7 @@ def test_truth_quality_disabled_by_default(monkeypatch):
         {"isResolved": True, "comments": {"nodes": [
             {"author": {"login": "github-actions[bot]"},
              "body": "<!-- touchstone-finding: " + json.dumps({"rule_id": "PRA-X"}) + " -->"},
-            {"author": {"login": "newbie", "association": "NONE"}, "body": "fixed"}]}}   # 命中 C（env 开时会三连）
+            {"author": {"login": "newbie"}, "authorAssociation": "NONE", "body": "fixed"}]}}   # 命中 C（env 开时会三连）
     ]}}}}}
 
     def fake_gh(path, token, accept="application/vnd.github+json"):
@@ -1244,7 +1288,7 @@ def test_hard_drop_removes_entry(monkeypatch, capsys):
         1: {"data": {"repository": {"pullRequest": {"reviewThreads": {"nodes": [
             {"isResolved": True, "comments": {"nodes": [            # PR#1: resolved by NONE → C
                 {"author": {"login": "github-actions[bot]"}, "body": finding("PRA-X")},
-                {"author": {"login": "newbie", "association": "NONE"}, "body": "fixed"}]}}]}}}}},
+                {"author": {"login": "newbie"}, "authorAssociation": "NONE", "body": "fixed"}]}}]}}}}},
         2: {"data": {"repository": {"pullRequest": {"reviewThreads": {"nodes": [
             {"isResolved": False, "comments": {"nodes": [           # PR#2: unresolved → 无 C 无 resolved
                 {"author": {"login": "github-actions[bot]"}, "body": finding("PRA-X")}]}},

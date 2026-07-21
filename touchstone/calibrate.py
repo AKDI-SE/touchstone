@@ -47,7 +47,7 @@ query($owner:String!,$repo:String!,$num:Int!){
   repository(owner:$owner,name:$repo){
     pullRequest(number:$num){
       reviewThreads(first:100){
-        nodes{ isResolved resolvedBy{login} comments(first:20){ nodes{ author{login association} body } } }
+        nodes{ isResolved resolvedBy{login} comments(first:20){ nodes{ author{login} authorAssociation body } } }
       }
     }
   }
@@ -61,13 +61,15 @@ def gql(query, variables, token):
 
 
 def parse_review_threads(data):
-    """GraphQL 响应 → [{isResolved, comments:[{author, body}]}]。纯函数。"""
+    """GraphQL 响应 → [{isResolved, comments:[{author, association, body}]}]。纯函数。
+    association 取自评论节点的 authorAssociation（comment 顶层字段，非 author 子字段——
+    GitHub GraphQL 的 Actor 类型无 association，authorAssociation 才合法）。"""
     pr = (((data or {}).get("data") or {}).get("repository") or {}).get("pullRequest") or {}
     nodes = ((pr.get("reviewThreads") or {}).get("nodes")) or []
     out = []
     for t in nodes:
         comments = [{"author": ((c.get("author") or {}).get("login") or ""),
-                     "association": ((c.get("author") or {}).get("association") or ""),
+                     "association": c.get("authorAssociation") or "",
                      "body": c.get("body") or ""}
                     for c in (((t.get("comments") or {}).get("nodes")) or [])]
         out.append({"isResolved": bool(t.get("isResolved")),
@@ -106,9 +108,13 @@ def thread_findings(threads, bot_login=None, pr_author=None):
         if resolved and pr_author and t.get("resolved_by") == pr_author:
             resolved = False           # 作者自 resolve → 不作为采纳信号
         comments = t.get("comments") or []
-        # resolver_association（盲区2 信号 C）：取线程末条评论作者的 association 当解决者身份——
-        # resolved 线程的末条评论通常是解决者所留。低权重(NONE/FIRST_TIME_*/MANNEQUIN)→坏真值降权。
-        resolver_assoc = (comments[-1].get("association") or "") if comments else ""
+        # resolver_association（盲区2 信号 C）：取线程末条【人类】评论的 association 当解决者身份——
+        # resolved 线程的末条人类评论通常是解决者所留。排除 bot 尾评：bot（如 github-actions[bot]）
+        # 的 association 常为 NONE（属 LOW_ASSOCIATIONS），若取它当 resolver 会误触发低权重信号。
+        human_comments = [c for c in comments
+                          if _is_human_reviewer(c.get("author") or "", bot_login)]
+        resolver_comment = human_comments[-1] if human_comments else None
+        resolver_assoc = (resolver_comment.get("association") or "") if resolver_comment else ""
         for c in comments:
             if not _is_trusted_marker_author(c.get("author") or "", bot_login):
                 continue            # 信任根：只认 touchstone 自己发的 finding marker（防伪造）
