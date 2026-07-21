@@ -47,7 +47,7 @@ query($owner:String!,$repo:String!,$num:Int!){
   repository(owner:$owner,name:$repo){
     pullRequest(number:$num){
       reviewThreads(first:100){
-        nodes{ isResolved resolvedBy{login} comments(first:20){ nodes{ author{login} body } } }
+        nodes{ isResolved resolvedBy{login} comments(first:20){ nodes{ author{login association} body } } }
       }
     }
   }
@@ -67,6 +67,7 @@ def parse_review_threads(data):
     out = []
     for t in nodes:
         comments = [{"author": ((c.get("author") or {}).get("login") or ""),
+                     "association": ((c.get("author") or {}).get("association") or ""),
                      "body": c.get("body") or ""}
                     for c in (((t.get("comments") or {}).get("nodes")) or [])]
         out.append({"isResolved": bool(t.get("isResolved")),
@@ -78,6 +79,13 @@ def parse_review_threads(data):
 _DISMISS = re.compile(
     r"wont[\s-]*fix|won't[\s-]*fix|not\s+a\s+bug|by\s+design|false\s+positive|"
     r"not\s+applicable|out\s+of\s+scope|误报|无需修改|不必修改|不采纳|驳回|不在范围|不修",
+    re.IGNORECASE)
+
+
+# 一键过（LGTM-only）的口头禅：approve-review 的 body 仅含此类短语/emoji → shallow（盲区2 信号 B）。
+_APPROVE_SHALLOW = re.compile(
+    r"^(lgtm|lg2m|looks good(?: to me)?|approved|ship\s*it|sgtm|sounds good|"
+    r"\+1|👍|好|没问题|可以|通过|赞同|同意)$",
     re.IGNORECASE)
 
 
@@ -97,7 +105,11 @@ def thread_findings(threads, bot_login=None, pr_author=None):
         resolved = bool(t.get("isResolved"))
         if resolved and pr_author and t.get("resolved_by") == pr_author:
             resolved = False           # 作者自 resolve → 不作为采纳信号
-        for c in t.get("comments", []):
+        comments = t.get("comments") or []
+        # resolver_association（盲区2 信号 C）：取线程末条评论作者的 association 当解决者身份——
+        # resolved 线程的末条评论通常是解决者所留。低权重(NONE/FIRST_TIME_*/MANNEQUIN)→坏真值降权。
+        resolver_assoc = (comments[-1].get("association") or "") if comments else ""
+        for c in comments:
             if not _is_trusted_marker_author(c.get("author") or "", bot_login):
                 continue            # 信任根：只认 touchstone 自己发的 finding marker（防伪造）
             m = _FINDING.search(c.get("body") or "")
@@ -107,10 +119,11 @@ def thread_findings(threads, bot_login=None, pr_author=None):
                 meta = json.loads(m.group(1))
             except json.JSONDecodeError:
                 continue
-            dismissed = _thread_dismissed(t.get("comments", []))
+            dismissed = _thread_dismissed(comments)
             out.append({"rule_id": meta.get("rule_id"), "agent": meta.get("agent"),
                         "resolved": resolved and not dismissed,
-                        "dismissed": dismissed})
+                        "dismissed": dismissed,
+                        "resolver_association": resolver_assoc})
             break                      # 一个线程只对一条发现
     return out
 
@@ -132,6 +145,12 @@ def _parse_result(comment_bodies, bot_login):
     return None
 
 
+def _is_human_reviewer(login, bot_login):
+    """是否非 bot 的人类评审者（排除 bot_login 身份与 [bot] 后缀，空 login 视作非人类）。
+    _lgtm_only 用此过滤 approve-review（_human_verdict 保留原内联过滤、行为字节级不变）。"""
+    return bool(login) and login != bot_login and not login.endswith("[bot]")
+
+
 def _human_verdict(reviews, bot_login):
     """人审最终裁决：取最后一条非 bot 的决定性 review 状态。"""
     state = None
@@ -143,6 +162,27 @@ def _human_verdict(reviews, bot_login):
         if s in ("APPROVED", "CHANGES_REQUESTED"):
             state = s
     return state
+
+
+def _lgtm_only(reviews, human_state, bot_login):
+    """一键过（LGTM-only，盲区2 信号 B）：PR 最终 APPROVED，但所有非 bot 的 approve-review
+    都 shallow——body 空 / 极短(≤TOUCHSTONE_TRUTH_LGTM_BODY_MAX 字) / 仅 LGTM 类口头禅。
+    这种"采纳"信号弱（rubber-stamp），供坏真值检测降权。
+    非 APPROVED（CHANGES_REQUESTED 或无裁决）不算一键过；无任何非 bot approve 时保守不命中。"""
+    if human_state != "APPROVED":
+        return False
+    approves = [rv for rv in (reviews or [])
+                if rv.get("state") == "APPROVED"
+                and _is_human_reviewer((rv.get("user") or {}).get("login", ""), bot_login)]
+    if not approves:
+        return False
+    body_max = int(os.environ.get("TOUCHSTONE_TRUTH_LGTM_BODY_MAX", "8"))
+
+    def _shallow(rv):
+        b = (rv.get("body") or "").strip()
+        return not b or len(b) <= body_max or bool(_APPROVE_SHALLOW.match(b))
+
+    return all(_shallow(rv) for rv in approves)
 
 
 def _is_trusted_marker_author(login, bot_login):

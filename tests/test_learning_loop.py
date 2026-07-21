@@ -1144,3 +1144,149 @@ def test_shadow_failure_does_not_wipe_active_injection(monkeypatch):
     assert it == ["PRA-ACTIVE"]                                # active 保留（未被 shadow 失败 wipe）
     assert iid == ["emphasize:::PRA-ACTIVE"]
     assert st == [] and sid == []                              # shadow 失败丢弃
+
+
+# ==================== 盲区2 坏真值检测（B/C/D 信号 → trust_weight；env 默认关 = 零行为变化）====================
+# 详见 docs/tfgrpo-self-evolution-design.html 盲区2。坏真值（rubber-stamp 采纳、低权重 reviewer 一键过、
+# 极小 diff 却 resolved）污染 TF-GRPO reward；本组锁定三信号的纯函数判据 + trust_weight 数学 + 硬剔除 +
+# 默认关的字节级等价。信号 A（系统性低组奖励）循环依赖 reward、需持久化奖励历史，记为后置先决，不在此。
+def test_lgtm_only_detected():
+    """信号 B：APPROVED 且所有非 bot approve-review 的 body 空/极短(≤max)/仅 LGTM 口头禅 → True。
+    非 APPROVED 不算一键过；approve body 有实质内容 → 不 shallow；纯 bot approve（无人类）保守不命中。"""
+    bot = "github-actions[bot]"
+    shallow = [{"state": "APPROVED", "user": {"login": "alice"}, "body": "LGTM"}]
+    assert L._lgtm_only(shallow, "APPROVED", bot) is True
+    assert L._lgtm_only(shallow, "CHANGES_REQUESTED", bot) is False   # 非 APPROVED 不算一键过
+    substantive = [{"state": "APPROVED", "user": {"login": "alice"},
+                    "body": "Auth flow is correct and edge cases are covered."}]  # 实质内容 → 不 shallow
+    assert L._lgtm_only(substantive, "APPROVED", bot) is False
+    bot_only = [{"state": "APPROVED", "user": {"login": bot}, "body": ""}]
+    assert L._lgtm_only(bot_only, "APPROVED", bot) is False           # 无人类 approve → 保守不命中
+
+
+def test_low_weight_reviewer_detected():
+    """信号 C：resolved 发现的 resolver_association ∈ LOW_ASSOCIATIONS(NONE/FIRST_TIME_*/MANNEQUIN) → True。
+    MEMBER/OWNER/CONTRIBUTOR 的采纳不算坏真值；未 resolved 的发现不计入（不在采纳集）。"""
+    bot = "github-actions[bot]"
+    big_diff = "+a\n+b\n+c\n+d\n+e\n+f\n"                            # 6 added → 不触发 D，隔离 C
+    fa_none = [{"rule_id": "PRA-X", "resolved": True, "resolver_association": "NONE"}]
+    assert L._truth_signals([], fa_none, big_diff, "CHANGES_REQUESTED", bot)["low_weight_reviewer"] is True
+    fa_member = [{"rule_id": "PRA-X", "resolved": True, "resolver_association": "MEMBER"}]
+    assert L._truth_signals([], fa_member, big_diff, "CHANGES_REQUESTED", bot)["low_weight_reviewer"] is False
+    fa_unresolved = [{"rule_id": "PRA-X", "resolved": False, "resolver_association": "NONE"}]
+    assert L._truth_signals([], fa_unresolved, big_diff, "CHANGES_REQUESTED", bot)["low_weight_reviewer"] is False
+
+
+def test_tiny_diff_resolved_detected():
+    """信号 D：added 行数 < TINY_DIFF_LINES(默认5) 且有 resolved 发现 → True。
+    大 diff 即使有 resolved → False；小 diff 但无 resolved → False。"""
+    bot = "github-actions[bot]"
+    fa_resolved = [{"rule_id": "PRA-X", "resolved": True, "resolver_association": "MEMBER"}]  # MEMBER → 不触发 C
+    tiny = "+a\n"                                                    # 1 added line
+    assert L._truth_signals([], fa_resolved, tiny, "CHANGES_REQUESTED", bot)["tiny_diff_resolved"] is True
+    big = "+a\n+b\n+c\n+d\n+e\n"                                     # 5 added → 5<5 False
+    assert L._truth_signals([], fa_resolved, big, "CHANGES_REQUESTED", bot)["tiny_diff_resolved"] is False
+    assert L._truth_signals([], [], tiny, "CHANGES_REQUESTED", bot)["tiny_diff_resolved"] is False  # 无 resolved
+
+
+def test_trust_weight_math(monkeypatch):
+    """默认 penalty=0.34 / hard_drop=3：0 信号→1.0、1→0.66、2→0.32、3+→0（硬剔除）。False 信号不计。"""
+    monkeypatch.delenv("TOUCHSTONE_TRUTH_PENALTY", raising=False)
+    monkeypatch.delenv("TOUCHSTONE_TRUTH_HARD_DROP", raising=False)
+    assert L._trust_weight({}) == 1.0
+    assert L._trust_weight({"a": True}) == 0.66
+    assert L._trust_weight({"a": True, "b": True}) == 0.32
+    assert L._trust_weight({"a": True, "b": True, "c": True}) == 0.0   # ≥3 → 硬剔除
+    assert L._trust_weight({"a": True, "b": False, "c": False}) == 0.66  # False 不计
+
+
+def test_truth_quality_disabled_by_default(monkeypatch):
+    """env 默认关 → 不算信号、weight 恒 1.0、不剔除：即便该 PR 命中全部坏真值信号也原样保留，
+    trust_weight=1.0 / truth_signals={}（与改前字节级一致）。这是零行为变化的安全中间态。"""
+    monkeypatch.delenv("TOUCHSTONE_TRUTH_QUALITY", raising=False)
+    from touchstone import calibrate as C
+    result_marker = "<!-- touchstone-result: " + json.dumps({"findings": [{"rule_id": "PRA-X"}]}) + " -->"
+    threads = {"data": {"repository": {"pullRequest": {"reviewThreads": {"nodes": [
+        {"isResolved": True, "comments": {"nodes": [
+            {"author": {"login": "github-actions[bot]"},
+             "body": "<!-- touchstone-finding: " + json.dumps({"rule_id": "PRA-X"}) + " -->"},
+            {"author": {"login": "newbie", "association": "NONE"}, "body": "fixed"}]}}   # 命中 C（env 开时会三连）
+    ]}}}}}
+
+    def fake_gh(path, token, accept="application/vnd.github+json"):
+        if "state=closed" in path:
+            return [{"number": 1, "title": "t", "merged_at": "x"}]
+        if "issues/1/comments" in path:
+            return [{"body": result_marker}]
+        if "pulls/1/reviews" in path:
+            return [{"state": "APPROVED", "user": {"login": "alice"}, "body": "lgtm"}]  # 命中 B
+        if "pulls/1/files" in path:
+            return [{"filename": "a.py"}]
+        if path.endswith("/pulls/1") and accept.endswith("diff"):
+            return "+a\n"                                            # 命中 D
+        return []
+    monkeypatch.setattr(GT, "_gh_get", fake_gh)
+    monkeypatch.setattr(C, "gql", lambda q, v, t: threads)
+    gt = L.build_ground_truth("o", "r", "tok")
+    assert len(gt) == 1                                             # env 关 → 不剔除，保留
+    assert gt[0]["trust_weight"] == 1.0                             # 默认 weight，字节级不变
+    assert gt[0]["truth_signals"] == {}                             # 默认空 signals
+
+
+def test_hard_drop_removes_entry(monkeypatch, capsys):
+    """env 开：PR#1 命中 3 信号(B+C+D)→weight=0 硬剔除（不 append + 打 [learn] 坏真值硬剔除 stderr）；
+    PR#2 仅 B 信号→weight=0.66 保留、携带降权与 signals。证剔除是选择性的（非全量丢）且保留条目带 weight。"""
+    from touchstone import calibrate as C
+    monkeypatch.setenv("TOUCHSTONE_TRUTH_QUALITY", "1")
+    result_marker = "<!-- touchstone-result: " + json.dumps({"findings": [{"rule_id": "PRA-X"}]}) + " -->"
+    finding = lambda r: "<!-- touchstone-finding: " + json.dumps({"rule_id": r}) + " -->"
+    threads = {
+        1: {"data": {"repository": {"pullRequest": {"reviewThreads": {"nodes": [
+            {"isResolved": True, "comments": {"nodes": [            # PR#1: resolved by NONE → C
+                {"author": {"login": "github-actions[bot]"}, "body": finding("PRA-X")},
+                {"author": {"login": "newbie", "association": "NONE"}, "body": "fixed"}]}}]}}}}},
+        2: {"data": {"repository": {"pullRequest": {"reviewThreads": {"nodes": [
+            {"isResolved": False, "comments": {"nodes": [           # PR#2: unresolved → 无 C 无 resolved
+                {"author": {"login": "github-actions[bot]"}, "body": finding("PRA-X")}]}},
+        ]}}}}},
+    }
+
+    def fake_gh(path, token, accept="application/vnd.github+json"):
+        if "state=closed" in path:
+            return [{"number": 1, "title": "t1", "merged_at": "x"},
+                    {"number": 2, "title": "t2", "merged_at": "x"}]
+        if "issues/1/comments" in path or "issues/2/comments" in path:
+            return [{"body": result_marker}]
+        if "pulls/1/reviews" in path or "pulls/2/reviews" in path:
+            return [{"state": "APPROVED", "user": {"login": "alice"}, "body": "lgtm"}]  # B
+        if "pulls/1/files" in path or "pulls/2/files" in path:
+            return [{"filename": "a.py"}]
+        if path.endswith("/pulls/1") and accept.endswith("diff"):
+            return "+a\n"                                            # PR#1: 1 line + resolved → D
+        if path.endswith("/pulls/2") and accept.endswith("diff"):
+            return "+a\n+b\n+c\n+d\n+e\n+f\n"                        # PR#2: 6 lines → 非 tiny
+        return []
+    monkeypatch.setattr(GT, "_gh_get", fake_gh)
+    monkeypatch.setattr(C, "gql", lambda q, v, t: threads.get(v["num"], {"data": {}}))
+    gt = L.build_ground_truth("o", "r", "tok")
+    assert [e["pr_id"] for e in gt] == ["2"]                        # PR#1 硬剔除，只剩 PR#2
+    kept = gt[0]
+    assert kept["trust_weight"] == 0.66                             # 仅 B → 降权保留
+    assert kept["truth_signals"] == {"lgtm_only": True,
+                                     "low_weight_reviewer": False,
+                                     "tiny_diff_resolved": False}
+    err = capsys.readouterr().err
+    assert "坏真值硬剔除" in err and "PR#1" in err                  # 剔除诊断打到 stderr（非 _log）
+
+
+def test_make_gt_entry_trust_weight_default():
+    """make_gt_entry 不传 trust_weight → 默认 1.0 + 空 signals（向后兼容：旧调用点字节级不变）；
+    显式传 → 透传进条目（供 distill reward 施加）。"""
+    e = L.make_gt_entry(1, "o/r", "python", "t", "d", [{"rule_id": "PRA-A"}],
+                        {"PRA-A"}, "APPROVED", True)
+    assert e["trust_weight"] == 1.0 and e["truth_signals"] == {}
+    e2 = L.make_gt_entry(2, "o/r", "python", "t", "d", [], set(), "APPROVED", True,
+                         trust_weight=0.32,
+                         truth_signals={"lgtm_only": True, "low_weight_reviewer": True})
+    assert e2["trust_weight"] == 0.32
+    assert e2["truth_signals"] == {"lgtm_only": True, "low_weight_reviewer": True}

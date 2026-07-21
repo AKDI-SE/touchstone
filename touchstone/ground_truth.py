@@ -14,6 +14,27 @@ import sys
 GT_WINDOW = int(os.environ.get("TOUCHSTONE_GT_WINDOW", "30"))   # 重建真值集回看的最近已关闭 PR 数
 GT_DIFF_BUDGET = 8000                                            # 单 PR diff 截断字符预算（喂 TF-GRPO 的上下文）
 
+# --- 盲区2 坏真值检测（B/C/D 信号 → trust_weight；env 默认全关 = 零行为变化）-----------
+# 详见 docs/tfgrpo-self-evolution-design.html 盲区2。信号 A（系统性低组奖励）循环依赖 reward、
+# 需持久化奖励历史，记为后置先决——本轮只做 B(LGTM-only)/C(低权重 reviewer)/D(极小 diff 却 resolved)。
+TRUTH_QUALITY_DEFAULT = False        # 坏真值检测总开关（默认关：不算信号、weight 恒 1.0、不剔除）
+TRUTH_PENALTY_DEFAULT = 0.34         # 每命中信号扣的权重（1→0.66、2→0.32）
+TRUTH_HARD_DROP_DEFAULT = 3          # 命中信号数≥此 → weight=0 硬剔除（不进 distill/aggregate_ab）
+TRUTH_LGTM_BODY_MAX_DEFAULT = 8      # approve-review body ≤此字数视作 shallow（信号 B）
+TRUTH_TINY_DIFF_LINES_DEFAULT = 5    # added 行数 <此 且有 resolved 发现 → 信号 D
+
+# GitHub author.association 低权重值（信号 C）：非成员/首次贡献/占位账号的采纳信号降权。
+LOW_ASSOCIATIONS = {"NONE", "FIRST_TIME_CONTRIBUTOR", "FIRST_TIMER", "MANNEQUIN"}
+
+
+def _truth_quality_enabled():
+    """坏真值检测总开关（默认关）：TOUCHSTONE_TRUTH_QUALITY 真值时才算 B/C/D 信号、
+    设 trust_weight、硬剔除。默认关 = reward 路径 weight 恒 1.0、零行为变化。"""
+    val = os.environ.get("TOUCHSTONE_TRUTH_QUALITY")
+    if val is None:
+        return TRUTH_QUALITY_DEFAULT
+    return val.lower() in ("1", "true", "yes", "on")
+
 # --- 真值集采集：从 GitHub 人审裁决重建（喂 TF-GRPO 的学习信号）-----------------
 #   「根据每次人工合入的好坏自己学习」的数据入口：取最近已关闭 PR，
 #   把【人最终 resolve 了哪些发现线程】→ human_adopted（正例：该类发现值得挑）；
@@ -38,7 +59,7 @@ def _stack_of(filenames):
 
 def make_gt_entry(pr_number, repo, stack, summary, diff, touchstone_findings,
                   resolved_types, human_state, merged, injected_types=None,
-                  shadow_types=None):
+                  shadow_types=None, *, trust_weight=1.0, truth_signals=None):
     """纯函数：单个 PR → TF-GRPO 真值条目。
     human_adopted = 人 resolve 了线程的发现类型（正例：值得挑）；
     human_ignored = touchstone 挑了但人没采纳的（噪声负例）。
@@ -46,6 +67,8 @@ def make_gt_entry(pr_number, repo, stack, summary, diff, touchstone_findings,
     injected_types = 本 PR 评审时【active 经验】注入了哪些类型（result marker；A/B with/without 依据）；
     shadow_types = 本 PR 评审时【shadow 注入】了哪些 candidate 类型（result marker；破冷启动死锁——
         让 candidate 未达 active 也能采 with 臂样本，graduate 零改动）。两者皆缺 → 该 PR 视作未注入（without 臂）。
+    trust_weight = 坏真值检测（盲区2）给本条的 0–1 权重，默认 1.0（TOUCHSTONE_TRUTH_QUALITY 关时不传 →
+        隐式 1.0，reward 路径字节级不变）；truth_signals = 命中的 B/C/D 信号（可观测、默认空）。
     与 _distill_via_llm 期望的 ground_truth schema 对齐（human_adopted 喂 score_review）。"""
     adopted = sorted({t for t in (resolved_types or []) if t})
     ts_types = {(f.get("rule_id") or f.get("finding_type")) for f in (touchstone_findings or [])}
@@ -57,7 +80,8 @@ def make_gt_entry(pr_number, repo, stack, summary, diff, touchstone_findings,
             "raised_types": sorted(ts_types),
             "injected_types": sorted({t for t in (injected_types or []) if t}),
             "shadow_types": sorted({t for t in (shadow_types or []) if t}),
-            "human_state": human_state, "merged": bool(merged)}
+            "human_state": human_state, "merged": bool(merged),
+            "trust_weight": trust_weight, "truth_signals": dict(truth_signals or {})}
 
 
 def aggregate_ab(ground_truth):
@@ -87,6 +111,38 @@ def aggregate_ab(ground_truth):
                 if ftype in adopted:
                     a["without_adopted"] += 1
     return arms
+
+
+def _diff_added_lines(diff):
+    """diff 文本里新增行数（以 '+' 开头、排除 '+++' 文件头）。纯函数，供信号 D。"""
+    return sum(1 for ln in (diff or "").splitlines()
+               if ln.startswith("+") and not ln.startswith("+++"))
+
+
+def _truth_signals(reviews, findings_fa, diff, human_state, bot_login):
+    """盲区2 坏真值检测信号（B/C/D，纯函数）。findings_fa = calibrate.thread_findings 的输出
+    （携带 resolver_association + resolved）。返回 {lgtm_only, low_weight_reviewer, tiny_diff_resolved}。
+    B 委托 calibrate._lgtm_only；C 看 resolved 发现的 resolver_association 是否低权重；
+    D 看 added 行数是否极少却有 resolved 发现。信号 A 不在此（后置先决，见模块头注释）。"""
+    from touchstone import calibrate as C
+    resolved_fa = [f for f in (findings_fa or []) if f.get("resolved")]
+    low_weight = any((f.get("resolver_association") or "") in LOW_ASSOCIATIONS for f in resolved_fa)
+    tiny_lines = int(os.environ.get("TOUCHSTONE_TRUTH_TINY_DIFF_LINES", TRUTH_TINY_DIFF_LINES_DEFAULT))
+    tiny_diff = _diff_added_lines(diff) < tiny_lines and bool(resolved_fa)
+    return {"lgtm_only": C._lgtm_only(reviews, human_state, bot_login),
+            "low_weight_reviewer": low_weight,
+            "tiny_diff_resolved": tiny_diff}
+
+
+def _trust_weight(signals):
+    """从命中信号算 trust_weight（0–1，纯函数）。每命中信号扣 penalty；命中数≥hard_drop→0（硬剔除）。
+    默认 penalty=0.34 / hard_drop=3：1 信号→0.66、2→0.32、3+→0。"""
+    active = sum(1 for v in (signals or {}).values() if v)
+    penalty = float(os.environ.get("TOUCHSTONE_TRUTH_PENALTY", TRUTH_PENALTY_DEFAULT))
+    hard_drop = int(os.environ.get("TOUCHSTONE_TRUTH_HARD_DROP", TRUTH_HARD_DROP_DEFAULT))
+    if active >= hard_drop:
+        return 0.0
+    return round(max(0.0, 1.0 - penalty * active), 3)
 
 
 def build_ground_truth(owner, repo, token, *, window=GT_WINDOW, bot_login=None,
@@ -132,11 +188,25 @@ def build_ground_truth(owner, repo, token, *, window=GT_WINDOW, bot_login=None,
                 diff = ""
             files = [f.get("filename") for f in
                      (_gh_get(f"/repos/{owner}/{repo}/pulls/{n}/files?per_page=100", token) or [])]
+            # 盲区2 坏真值检测：TOUCHSTONE_TRUTH_QUALITY 开时算 B/C/D 信号 + trust_weight；
+            # weight==0（命中≥hard_drop 信号）→ 硬剔除，不 append（distill 与 aggregate_ab 都不再见它）。
+            # 关时 signals=None/weight=1.0 → make_gt_entry 默认值，reward 路径字节级不变。
+            if _truth_quality_enabled():
+                signals = _truth_signals(reviews, fa, diff, human_state, bot_login)
+                weight = _trust_weight(signals)
+                if weight == 0.0:
+                    active = sum(1 for v in signals.values() if v)
+                    print(f"[learn] PR#{n} 坏真值硬剔除（命中 {active}/3 信号 → weight=0）：{signals}",
+                          file=sys.stderr)
+                    continue
+            else:
+                signals, weight = None, 1.0
             out.append(make_gt_entry(n, repo, _stack_of(files), pr.get("title", ""),
                                      diff, ts_findings, resolved_types, human_state,
                                      bool(pr.get("merged_at")),
                                      injected_types=result.get("injected_types"),
-                                     shadow_types=result.get("shadow_types")))
+                                     shadow_types=result.get("shadow_types"),
+                                     trust_weight=weight, truth_signals=signals))
         except Exception as e:
             print(f"[learn] PR #{n} 取数失败，跳过：{e}", file=sys.stderr)
             continue
