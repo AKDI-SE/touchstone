@@ -2,6 +2,8 @@
 全离线、纯函数；TF-GRPO 的 rollout/语义优势内省以注入的假 llm 离线覆盖，真实 A/B 跑批在你的环境做。"""
 import json
 import os
+
+import pytest
 from touchstone import learning_loop as L
 from touchstone import ground_truth as GT
 
@@ -126,6 +128,94 @@ def test_disable_single_experience():
     assert L.disable(store, "emphasize:PRA-Z") is True
     assert store["experiences"][0]["status"] == "retired"
     assert L.disable(store, "nope") is False
+
+
+# ---------------- bootstrap seed（冷启动辅助路径 c：高采纳 type 直接 active）----------------
+def test_bootstrap_enabled_reads_env(monkeypatch):
+    """bootstrap 总开关 env 解析：默认关 / 真值开 / 假值关。"""
+    monkeypatch.delenv("TOUCHSTONE_BOOTSTRAP_SEED", raising=False)
+    assert L._bootstrap_enabled() is False
+    for v in ("1", "true", "yes", "on"):
+        monkeypatch.setenv("TOUCHSTONE_BOOTSTRAP_SEED", v)
+        assert L._bootstrap_enabled() is True
+    for v in ("0", "false", "no", "off", ""):
+        monkeypatch.setenv("TOUCHSTONE_BOOTSTRAP_SEED", v)
+        assert L._bootstrap_enabled() is False
+
+
+def test_bootstrap_seeds_active_for_high_adoption(monkeypatch):
+    """env 开 + 高采纳（fires>=15 且 adoption>=0.85）→ 产 active emphasize（source=bootstrap, locked=False）。"""
+    monkeypatch.setenv("TOUCHSTONE_BOOTSTRAP_SEED", "1")
+    agg = _agg({"PRA-HIGH": {"fires": 20, "adoption_rate": 0.90},       # 达标 → 产
+                "PRA-LOW-ADOPT": {"fires": 20, "adoption_rate": 0.50},  # 采纳不足 → 跳
+                "PRA-LOW-FIRES": {"fires": 10, "adoption_rate": 0.90},  # fires 不足 → 跳
+                "SCOPE-001": {"fires": 30, "adoption_rate": 0.95}})     # 确定性锚 → 跳
+    store = {"experiences": []}
+    produced = L.bootstrap_from_calibrate(agg, store, repo="o/r", stack="python")
+    assert produced == ["emphasize:o/r:python:PRA-HIGH"]
+    e = store["experiences"][0]
+    assert e["status"] == "active" and e["kind"] == "emphasize"
+    assert e["source"] == "bootstrap" and e["locked"] is False
+    assert len(store["experiences"]) == 1
+
+
+def test_bootstrap_skips_protected_and_existing(monkeypatch):
+    """protected_types 跳过（人立红线不碰）；已有 emphasize 经验的 type 跳过——不绕 graduate 把
+    candidate 直接提成 active（坑 3 门控纪律）。"""
+    monkeypatch.setenv("TOUCHSTONE_BOOTSTRAP_SEED", "1")
+    monkeypatch.setenv("TOUCHSTONE_PROTECTED_TYPES", "PRA-PROTECTED")
+    try:
+        agg = _agg({"PRA-PROTECTED": {"fires": 20, "adoption_rate": 0.90},  # protected → 跳
+                    "PRA-EXISTING": {"fires": 20, "adoption_rate": 0.90},   # 已有 candidate → 跳
+                    "PRA-NEW": {"fires": 20, "adoption_rate": 0.90}})       # 全新 → 产
+        store = {"experiences": [{"id": "emphasize:o/r:python:PRA-EXISTING",
+                                  "finding_type": "PRA-EXISTING", "kind": "emphasize",
+                                  "status": "candidate", "evidence": {}}]}
+        produced = L.bootstrap_from_calibrate(agg, store, repo="o/r", stack="python")
+        assert produced == ["emphasize:o/r:python:PRA-NEW"]
+        existing = next(e for e in store["experiences"] if e["finding_type"] == "PRA-EXISTING")
+        assert existing["status"] == "candidate"     # 没被提成 active（不绕 graduate）
+        assert len(store["experiences"]) == 2         # 原 candidate + 1 新 active
+    finally:
+        monkeypatch.delenv("TOUCHSTONE_PROTECTED_TYPES", raising=False)
+
+
+def test_bootstrap_disabled_by_default(monkeypatch):
+    """env 默认关 → 无产出（零行为变化）。"""
+    monkeypatch.delenv("TOUCHSTONE_BOOTSTRAP_SEED", raising=False)
+    agg = _agg({"PRA-HIGH": {"fires": 20, "adoption_rate": 0.90}})
+    assert L.bootstrap_from_calibrate(agg, {"experiences": []}) == []
+
+
+def test_main_bootstraps_active_before_merge_when_enabled(tmp_path, monkeypatch):
+    """main 在 merge_candidates【前】调 bootstrap（env 开时）：高采纳全新 type 直接 seed active，
+    随后 distill 同 id candidate 经 merge 补 evidence 但不降级 active。env 关时 distill 只产 candidate 无 active。"""
+    store_path = tmp_path / "exp.json"
+    (tmp_path / "agg.json").write_text(json.dumps({"aggregate": {"by_rule": {
+        "PRA-HIGH": {"fires": 20, "adoption_rate": 0.90}}}}), encoding="utf-8")
+    monkeypatch.setattr(L, "STORE_PATH", str(store_path))
+    monkeypatch.setenv("TOUCHSTONE_CALIB_AGG", str(tmp_path / "agg.json"))
+    monkeypatch.setenv("TOUCHSTONE_DISTILLER", "counting")
+    # env 关 → distill 产 candidate，无 active
+    store_path.write_text('{"experiences": []}', encoding="utf-8")
+    monkeypatch.delenv("TOUCHSTONE_BOOTSTRAP_SEED", raising=False)
+    L.main()
+    exps = L.load_store(str(store_path))["experiences"]
+    assert all(e["status"] != "active" for e in exps)
+    # env 开 → bootstrap 在 merge 前产 active（merge 后仍 active）
+    store_path.write_text('{"experiences": []}', encoding="utf-8")
+    monkeypatch.setenv("TOUCHSTONE_BOOTSTRAP_SEED", "1")
+    report = L.main()
+    exps = L.load_store(str(store_path))["experiences"]
+    e = next(x for x in exps if x["finding_type"] == "PRA-HIGH")
+    assert e["status"] == "active" and e["source"] == "bootstrap"
+    assert any("bootstrap_from_calibrate" in s for s in report["steps"])
+
+
+def test_seed_experience_rejects_unknown_source():
+    """source 只许 human/bootstrap，防误用新取值绕过 source 语义。"""
+    with pytest.raises(ValueError):
+        L.seed_experience({"experiences": []}, "PRA-X", "emphasize", "t", source="bogus")
 
 
 # ---------------- 注入：只 active、不进闸 ----------------

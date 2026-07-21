@@ -39,11 +39,13 @@ from touchstone.experience_store import (  # noqa: F401
     GRADUATE_MIN_SAMPLES, GRADUATE_MIN_LIFT, RETIRE_ADOPT_MAX, STORE_PATH,
     SHADOW_INJECTION_DEFAULT,
     SHADOW_RATIO_DEFAULT, SHADOW_MAX_PER_REVIEW_DEFAULT, SHADOW_MIN_EVIDENCE_DEFAULT,
+    BOOTSTRAP_SEED_DEFAULT, BOOTSTRAP_MIN_FIRES_DEFAULT, BOOTSTRAP_MIN_ADOPT_DEFAULT,
     _read_store_text, load_store, save_store, _is_review_type, _exp_id,
     _protected_types, seed_experience, merge_candidates, graduate, retire,
     disable, _resolve_conflicts, render_injection, active_types, active_ids,
     _shadow_hash, _shadow_env_params, _shadow_injection_enabled,
-    shadow_candidates, shadow_types, shadow_ids)
+    shadow_candidates, shadow_types, shadow_ids,
+    _bootstrap_enabled, bootstrap_from_calibrate)
 from touchstone.distill import (  # noqa: F401
     DISTILL_MIN_FIRES,
     TFGRPO_GROUP_SIZE, _W_NOISE, _W_MISS,
@@ -158,6 +160,19 @@ def main(argv=None):
         name = "counting"
     report["distiller"] = name
     report["candidates"] = len(cands)
+    # ③.5 bootstrap seed（merge 前，冷启动辅助路径 c，env 开时）：高采纳全新 type 直接 seed active
+    # emphasize——让全新 type 立即有首个 active 撑 aggregate_ab with 臂，与 shadow 注入(a) 互补。
+    # 必须在 merge_candidates【前】：distill 已把 adoption>=0.80 的 type 产成 candidate，若 bootstrap
+    # 在 merge 后跑，其 existing 检查会命中刚并入的 candidate 而跳过 → 永不触发。放 merge 前：bootstrap
+    # active 先入 store，随后 merge 的同 id candidate 经 update 分支补 evidence 但不降级 active
+    # （merge_candidates 不降级 active/retired）。默认关=零行为变化。
+    bootstrapped = bootstrap_from_calibrate(agg or {}, store,
+                                            repo=os.environ.get("REPO_DIR", ""),
+                                            stack=os.environ.get("TOUCHSTONE_STACK", ""))
+    if bootstrapped:
+        report["steps"].append(f"bootstrap_from_calibrate: 高采纳 type 直接 seed active："
+                               f"{len(bootstrapped)} 条 {bootstrapped}")
+
     merge_candidates(store, cands)
 
     # ④ candidate → active（shadow A/B 达标）
