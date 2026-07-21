@@ -480,7 +480,27 @@ def _experience_injection(repo_dir):
         return ""
     try:
         from touchstone import learning_loop
-        return learning_loop.render_injection(learning_loop.load_store()) or ""
+        # include_shadow 透传：env TOUCHSTONE_SHADOW_INJECTION 开时，active 段后追加 shadow candidate
+        # 段（advisory only、文本标灰）。shadow 与 active 读同一 store、同一 EXPERIENCE_REF 防投毒闸——
+        # 上方 L473-480 未配受信 ref 即整体返回 ""（含 shadow），candidate 也走受信 ref（铁律 5）。
+        # 时序耦合：须与 orchestrator marker 归因（step3）读同一开关，否则 marker 说"注入了 shadow X"
+        # 但此处未渲染 → with 臂归因失真；两处 env 默认关 = 字节级等价现状。
+        # _shadow_injection_enabled() 独立求值 + 安全降级（pr-agent #118 r1）：它抛异常时降级 False
+        # （只禁 shadow 段），不级联进外层 except 禁用整个经验注入含 active（与 step3 :504 同类隔离）。
+        try:
+            include_shadow = learning_loop._shadow_injection_enabled()
+        except Exception as _e:
+            # 诊断不静默（pr-agent #118 r2）：shadow 开关求值出错时仍降级 False（active 不受影响），
+            # 但打 stderr 告警——运维能看到 shadow 段被关的原因（CLAUDE.md §3 诚实标 gap、不掩盖问题；
+            # 与上方 L477-479 跳过注入告警同款 [warn] print 模式）。
+            import sys as _sys
+            print(f"[warn] _shadow_injection_enabled() 求值失败 → 降级 include_shadow=False"
+                  f"（shadow 段关闭、active 注入不受影响）：{_e}", file=_sys.stderr)
+            include_shadow = False
+        return learning_loop.render_injection(
+            learning_loop.load_store(),
+            include_shadow=include_shadow,
+        ) or ""
     except Exception:
         return ""
 
