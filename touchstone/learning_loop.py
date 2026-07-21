@@ -55,7 +55,13 @@ from touchstone.distill import (  # noqa: F401
     distill, _flagship_configured)
 from touchstone.ground_truth import (  # noqa: F401
     GT_WINDOW, GT_DIFF_BUDGET, _gh_get, _stack_of, aggregate_ab,
-    make_gt_entry, build_ground_truth)
+    make_gt_entry, build_ground_truth,
+    # 盲区2 坏真值检测（B/C/D 信号 → trust_weight；env 默认全关 = 零行为变化）
+    TRUTH_QUALITY_DEFAULT, TRUTH_PENALTY_DEFAULT, TRUTH_HARD_DROP_DEFAULT,
+    TRUTH_LGTM_BODY_MAX_DEFAULT, TRUTH_TINY_DIFF_LINES_DEFAULT, LOW_ASSOCIATIONS,
+    _truth_quality_enabled, _diff_added_lines, _truth_signals, _trust_weight)
+from touchstone.calibrate import (  # noqa: F401
+    _APPROVE_SHALLOW, _is_human_reviewer, _lgtm_only)
 
 def _parse_cli(argv):
     import argparse
