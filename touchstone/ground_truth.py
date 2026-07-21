@@ -122,14 +122,19 @@ def _diff_added_lines(diff):
 def _truth_signals(reviews, findings_fa, diff, human_state, bot_login):
     """盲区2 坏真值检测信号（B/C/D，纯函数）。findings_fa = calibrate.thread_findings 的输出
     （携带 resolver_association + resolved）。返回 {lgtm_only, low_weight_reviewer, tiny_diff_resolved}。
-    B 委托 calibrate._lgtm_only；C 看 resolved 发现的 resolver_association 是否低权重；
-    D 看 added 行数是否极少却有 resolved 发现。信号 A 不在此（后置先决，见模块头注释）。"""
+    B 委托 calibrate._lgtm_only（body_max 在此读 env 传入、默认 TRUTH_LGTM_BODY_MAX_DEFAULT——常量不再死）；
+    C 看 resolved 发现的 resolver_association 是否低权重；
+    D 看 added 行数是否极少却有 resolved 发现（diff 取数失败时 build_ground_truth 置 diff="" → added=0，
+    非真 tiny diff，不触发——否则 fetch 失败叠 B/C 可能硬剔除有效真值；pr-agent review #120 r2）。
+    信号 A 不在此（后置先决，见模块头注释）。"""
     from touchstone import calibrate as C
     resolved_fa = [f for f in (findings_fa or []) if f.get("resolved")]
     low_weight = any((f.get("resolver_association") or "") in LOW_ASSOCIATIONS for f in resolved_fa)
     tiny_lines = int(os.environ.get("TOUCHSTONE_TRUTH_TINY_DIFF_LINES", TRUTH_TINY_DIFF_LINES_DEFAULT))
-    tiny_diff = _diff_added_lines(diff) < tiny_lines and bool(resolved_fa)
-    return {"lgtm_only": C._lgtm_only(reviews, human_state, bot_login),
+    added = _diff_added_lines(diff)
+    tiny_diff = 0 < added < tiny_lines and bool(resolved_fa)   # 0 added=fetch 失败，非真 tiny diff
+    body_max = int(os.environ.get("TOUCHSTONE_TRUTH_LGTM_BODY_MAX", TRUTH_LGTM_BODY_MAX_DEFAULT))
+    return {"lgtm_only": C._lgtm_only(reviews, human_state, bot_login, body_max),
             "low_weight_reviewer": low_weight,
             "tiny_diff_resolved": tiny_diff}
 

@@ -1154,14 +1154,15 @@ def test_lgtm_only_detected():
     """信号 B：APPROVED 且所有非 bot approve-review 的 body 空/极短(≤max)/仅 LGTM 口头禅 → True。
     非 APPROVED 不算一键过；approve body 有实质内容 → 不 shallow；纯 bot approve（无人类）保守不命中。"""
     bot = "github-actions[bot]"
+    bm = L.TRUTH_LGTM_BODY_MAX_DEFAULT                               # body_max 由调用方传入（_lgtm_only 纯）
     shallow = [{"state": "APPROVED", "user": {"login": "alice"}, "body": "LGTM"}]
-    assert L._lgtm_only(shallow, "APPROVED", bot) is True
-    assert L._lgtm_only(shallow, "CHANGES_REQUESTED", bot) is False   # 非 APPROVED 不算一键过
+    assert L._lgtm_only(shallow, "APPROVED", bot, bm) is True
+    assert L._lgtm_only(shallow, "CHANGES_REQUESTED", bot, bm) is False   # 非 APPROVED 不算一键过
     substantive = [{"state": "APPROVED", "user": {"login": "alice"},
                     "body": "Auth flow is correct and edge cases are covered."}]  # 实质内容 → 不 shallow
-    assert L._lgtm_only(substantive, "APPROVED", bot) is False
+    assert L._lgtm_only(substantive, "APPROVED", bot, bm) is False
     bot_only = [{"state": "APPROVED", "user": {"login": bot}, "body": ""}]
-    assert L._lgtm_only(bot_only, "APPROVED", bot) is False           # 无人类 approve → 保守不命中
+    assert L._lgtm_only(bot_only, "APPROVED", bot, bm) is False           # 无人类 approve → 保守不命中
 
 
 def test_low_weight_reviewer_detected():
@@ -1231,6 +1232,17 @@ def test_tiny_diff_resolved_detected():
     big = "+a\n+b\n+c\n+d\n+e\n"                                     # 5 added → 5<5 False
     assert L._truth_signals([], fa_resolved, big, "CHANGES_REQUESTED", bot)["tiny_diff_resolved"] is False
     assert L._truth_signals([], [], tiny, "CHANGES_REQUESTED", bot)["tiny_diff_resolved"] is False  # 无 resolved
+
+
+def test_signal_d_not_fired_on_empty_diff():
+    """信号 D 在 diff 取数失败（build_ground_truth 异常路径置 diff=""）时【不】触发——
+    真 PR 至少 1 行 added，空 diff 只会是 fetch 失败。否则叠 B/C 可能硬剔除有效真值（数据丢失）。
+    pr-agent review #120 r2。"""
+    bot = "github-actions[bot]"
+    fa_resolved = [{"rule_id": "PRA-X", "resolved": True, "resolver_association": "MEMBER"}]  # MEMBER → 不触发 C
+    assert L._truth_signals([], fa_resolved, "", "CHANGES_REQUESTED", bot)["tiny_diff_resolved"] is False   # 空 diff=fetch 失败
+    assert L._truth_signals([], fa_resolved, None, "CHANGES_REQUESTED", bot)["tiny_diff_resolved"] is False  # None 同处置
+    assert L._truth_signals([], fa_resolved, "+a\n", "CHANGES_REQUESTED", bot)["tiny_diff_resolved"] is True  # 真 tiny diff 仍触发
 
 
 def test_trust_weight_math(monkeypatch):

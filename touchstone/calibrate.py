@@ -170,11 +170,14 @@ def _human_verdict(reviews, bot_login):
     return state
 
 
-def _lgtm_only(reviews, human_state, bot_login):
+def _lgtm_only(reviews, human_state, bot_login, body_max):
     """一键过（LGTM-only，盲区2 信号 B）：PR 最终 APPROVED，但所有非 bot 的 approve-review
-    都 shallow——body 空 / 极短(≤TOUCHSTONE_TRUTH_LGTM_BODY_MAX 字) / 仅 LGTM 类口头禅。
+    都 shallow——body 空 / 极短(≤body_max 字) / 仅 LGTM 类口头禅。
     这种"采纳"信号弱（rubber-stamp），供坏真值检测降权。
-    非 APPROVED（CHANGES_REQUESTED 或无裁决）不算一键过；无任何非 bot approve 时保守不命中。"""
+    非 APPROVED（CHANGES_REQUESTED 或无裁决）不算一键过；无任何非 bot approve 时保守不命中。
+    body_max 由调用方传入（ground_truth._truth_signals 读 env TOUCHSTONE_TRUTH_LGTM_BODY_MAX、
+    默认 TRUTH_LGTM_BODY_MAX_DEFAULT）——本函数纯、无 env 耦合（pr-agent review #120 r2：
+    原硬编码 "8" 读 env 致 TRUTH_LGTM_BODY_MAX_DEFAULT 成死代码、改常量则 _lgtm_only 静默漂移）。"""
     if human_state != "APPROVED":
         return False
     approves = [rv for rv in (reviews or [])
@@ -182,7 +185,6 @@ def _lgtm_only(reviews, human_state, bot_login):
                 and _is_human_reviewer((rv.get("user") or {}).get("login", ""), bot_login)]
     if not approves:
         return False
-    body_max = int(os.environ.get("TOUCHSTONE_TRUTH_LGTM_BODY_MAX", "8"))
 
     def _shallow(rv):
         b = (rv.get("body") or "").strip()
