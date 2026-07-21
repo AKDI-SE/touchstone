@@ -31,6 +31,7 @@ from touchstone import stack_rules           # §4.1 栈专项确定性规则（
 from touchstone import checklist as checklist_mod   # 收敛清单（修订设计 §4.3，评审意见 1、3）
 from touchstone import lineage               # 轮次台账与同源检测（修订设计 §4.4，评审意见 10）
 from touchstone.atomicio import atomic_write_json   # 状态文件原子写（决策输入不留半文件）
+from touchstone.artifacts import artifact_path      # 统一产物路径（默认 CWD，可经 OUTPUT_DIR 隔离）
 # 渲染层已拆至 touchstone/render.py（七段版面填充；模块职责单一化）。此处再导出以保持
 # 既有引用路径 orchestrator.render_* 兼容（测试与外部调用无需改动）。
 from touchstone.render import (_load_template, render_facts, render_findings,  # noqa: F401
@@ -677,7 +678,7 @@ def main():
                      # 情形（.get("user", {}) 只挡缺失、挡不住 "user": null 的 None.get() 崩溃）。
                      "author": {"login": (pr.get("user") or {}).get("login"),
                                 "association": pr.get("author_association")}}
-    atomic_write_json("touchstone-findings.json", _findings_doc)
+    atomic_write_json(artifact_path("touchstone-findings.json"), _findings_doc)
 
     # 风险分流的 job 输出：供下游 verify job 决定是否触发验证
     gho = os.environ.get("GITHUB_OUTPUT")
