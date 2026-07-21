@@ -16,7 +16,8 @@ import re
 import subprocess
 import sys
 
-from touchstone.atomicio import atomic_write_json
+from touchstone.atomicio import atomic_write_json, atomic_write_text
+from touchstone.artifacts import artifact_path
 
 PROMOTE_MIN_FIRES = int(os.environ.get("PROMOTE_MIN_FIRES", "5"))
 PROMOTE_MIN_ADOPTION = float(os.environ.get("PROMOTE_MIN_ADOPTION", "0.5"))
@@ -114,7 +115,8 @@ def build_merge_records(calibration_records, revert_shas):
 # --- CLI ---------------------------------------------------------------------
 def main():
     import yaml
-    cal_path = os.environ.get("CALIBRATION_JSON", "calibration.json")
+    # CALIBRATION_JSON 显式覆盖优先（兼容既有部署）；未设则 OUTPUT_DIR/calibration.json
+    cal_path = artifact_path("calibration.json", override_env="CALIBRATION_JSON")
     std_path = os.environ.get("TOUCHSTONE_STANDARDS", ".touchstone/standards.yaml")
     if not os.path.exists(cal_path):
         sys.exit(f"未找到 {cal_path}（请先运行 calibrate.py）")
@@ -132,12 +134,14 @@ def main():
                     "（enforced=true）。请人确认后合入 standards.yaml：")
         for c in cands:
             prop.append(f"- `{c['rule_id']}` fires={c['fires']} 采纳率={c['adoption']} — {c['reason']}")
-        with open("standards.proposed.yaml", "w", encoding="utf-8") as f:
-            yaml.safe_dump(apply_promotions(standards, cands), f, allow_unicode=True, sort_keys=False)
+        # atomic_write_text：自建 OUTPUT_DIR 父目录（设隔离目录时不 FileNotFoundError）+ 原子落盘
+        atomic_write_text(artifact_path("standards.proposed.yaml"),
+                          yaml.safe_dump(apply_promotions(standards, cands),
+                                         allow_unicode=True, sort_keys=False))
         prop.append("\n→ 已生成 standards.proposed.yaml（含 enforced=true），供 review。")
     else:
         prop.append("无达阈值的固化候选。")
-    open("promotion-proposal.md", "w", encoding="utf-8").write("\n".join(prop))
+    atomic_write_text(artifact_path("promotion-proposal.md"), "\n".join(prop))
 
     # 2) 熔断
     repo = os.environ.get("REPO_DIR", ".")
@@ -145,14 +149,15 @@ def main():
     reverts = detect_revert_shas(repo, base)
     merge_records = build_merge_records(records, reverts)
     prior = None
-    if os.path.exists("autonomy-prev.json"):
+    _prev = artifact_path("autonomy-prev.json")
+    if os.path.exists(_prev):
         try:
-            prior = json.load(open("autonomy-prev.json")).get("approval_rate")
+            prior = json.load(open(_prev)).get("approval_rate")
         except (json.JSONDecodeError, KeyError):
             prior = None
     state = update_autonomy(merge_records, prior_approval_rate=prior)
     # 原子：熔断/自治状态被下一轮 govern 读作 prior，半文件会污染熔断判据
-    atomic_write_json("autonomy-state.json", state)
+    atomic_write_json(artifact_path("autonomy-state.json"), state)
 
     print("=== 固化提案 ===")
     print("\n".join(prop))

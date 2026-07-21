@@ -18,6 +18,7 @@ import sys
 from touchstone import ghclient   # GitHub HTTP 统一入口（连接池+退避）
 from touchstone import review_provider  # review_reliable（引擎健康度判据）
 from touchstone.atomicio import atomic_write_json
+from touchstone.artifacts import artifact_path
 
 
 def _envbool(k):
@@ -312,10 +313,13 @@ def main():
 
     # 模式一：发布达标变更分类（govern 定时任务用）
     if args.graduate:
-        cal = _load("calibration.json") or {}
+        # override_env="CALIBRATION_JSON" 与写方（calibrate.py）+ 另一读方（govern.py）对齐，
+        # 否则设了 CALIBRATION_JSON 时读 OUTPUT_DIR/calibration.json 而写 CALIBRATION_JSON→graduate
+        # 模式拿不到校准数据（#90 round-1 finding autonomy.py:278）
+        cal = _load(artifact_path("calibration.json", override_env="CALIBRATION_JSON")) or {}
         grad = sorted(graduate_from_calibration(cal.get("records", [])))
         # 原子：这份毕业类清单直接决定哪些 change_class 可被自动放行，半文件不可接受
-        atomic_write_json("graduated-classes.json", {"graduated_classes": grad})
+        atomic_write_json(artifact_path("graduated-classes.json"), {"graduated_classes": grad})
         print(f"[autonomy] 达标变更分类 {len(grad)}：{grad}")
         return
 
@@ -326,7 +330,7 @@ def main():
                                            d.get("changed_files", []), d.get("rule_index", {}))
         repo, pr, sha = d.get("repo"), d.get("pr"), d.get("sha")
     else:
-        co = _load("touchstone-findings.json")
+        co = _load(artifact_path("touchstone-findings.json"))
         if not co:
             print("[autonomy] 无 touchstone 产物；no-op（默认不放行）")
             return
