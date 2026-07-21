@@ -1144,3 +1144,48 @@ def test_shadow_failure_does_not_wipe_active_injection(monkeypatch):
     assert it == ["PRA-ACTIVE"]                                # active 保留（未被 shadow 失败 wipe）
     assert iid == ["emphasize:::PRA-ACTIVE"]
     assert st == [] and sid == []                              # shadow 失败丢弃
+
+
+# ==================== 盲区2 step2：distill reward 施加 trust_weight（接通消费者）====================
+# 详见 docs/tfgrpo-self-evolution-design.html 盲区2。reward 乘真值条目的 trust_weight：坏真值（rubber-stamp
+# 采纳等）的 reward magnitude 向 0 收缩、抑制其蒸出的经验。本组经注入的 score/distill_advantage 捕获
+# group.rewards，直接验证 reward 接缝。GT 条目无 trust_weight 字段 → 默认 1.0，reward 字节级不变
+# （与 Step1 前等价；Step1 才往条目写该字段，但 Step2 独立可合——默认值兜底）。
+_NO_FIELD = object()   # sentinel：条目不带 trust_weight 字段（区别于"字段在、值 None"）
+
+
+def _capture_distill_reward(trust_weight=_NO_FIELD):
+    """造一份 GT + 注入 rollout/score/distill_advantage，捕获喂给 distill_advantage 的 group.rewards。
+    trust_weight=_NO_FIELD → 条目不带该字段（验默认 1.0）；传任意值（含 None）→ 字段显式带该值。"""
+    captured = {}
+    pr = {"pr_id": "1", "human_adopted": ["PRA-X"]}
+    if trust_weight is not _NO_FIELD:
+        pr["trust_weight"] = trust_weight
+    L._distill_via_llm([pr], {"experiences": []}, llm=lambda m: "[]",
+                      rollout=lambda p, E, llm, G: [[{"finding_type": "PRA-X"}]],
+                      score=lambda r, h: 1.0,                       # 基线 reward=1.0，隔离 weight 效果
+                      distill_advantage=lambda p, g, llm, repo, stack:
+                          captured.update(rewards=list(g["rewards"])) or [])
+    return captured["rewards"]
+
+
+def test_distill_reward_scaled_by_trust_weight():
+    """trust_weight=0.5 → reward 被按比例缩放到 0.5（坏真值条目 reward magnitude 向 0 收缩）。
+    组内每条 review 共享同 PR 的 weight，故相对优势仅等比缩放、符号不变——不破坏组内排序。"""
+    assert _capture_distill_reward(trust_weight=0.5) == [0.5]      # 1.0 * 0.5
+    assert _capture_distill_reward(trust_weight=0.0) == [0.0]      # weight=0 → reward 归零（极端降权）
+
+
+def test_distill_reward_default_weight_unchanged():
+    """GT 条目无 trust_weight 字段（Step1 前 / TOUCHSTONE_TRUTH_QUALITY 默认关）→ 默认 1.0，
+    reward 与改前字节级一致。这是 Step2 可独立先合的安全性所在。"""
+    assert _capture_distill_reward(trust_weight=_NO_FIELD) == [1.0]   # 无字段 → 默认 1.0 → 不变
+
+
+def test_distill_reward_null_and_out_of_range_coalesced():
+    """外部 JSON 异常兜底（pr-agent review #121）：显式 null（key 在、值 None）→ coalesce 1.0
+    （否则 score*None TypeError 崩整批）；越界值 clamp [0,1]——负值→0、>1→1，防翻转符号/放大 reward，
+    保"只缩不放、符号不变"契约。GT 由 make_gt_entry 产时恒合法 [0,1]，此仅兜底手改/外部 JSON。"""
+    assert _capture_distill_reward(trust_weight=None) == [1.0]     # 显式 null → coalesce 1.0（不崩）
+    assert _capture_distill_reward(trust_weight=-0.5) == [0.0]     # 负值 clamp → 0
+    assert _capture_distill_reward(trust_weight=2.0) == [1.0]      # >1 clamp → 1（不放大 reward）
