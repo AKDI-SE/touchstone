@@ -216,7 +216,12 @@ def _distill_via_llm(ground_truth, store, llm=None, *, group_size=TFGRPO_GROUP_S
         experience_text = render_injection(cond)
         for pr in ground_truth or []:
             reviews = rollout(pr, experience_text, llm, group_size)
-            rewards = [score(o, pr.get("human_adopted")) for o in reviews]
+            # 盲区2：reward 乘真值条目的 trust_weight（坏真值检测给的 0–1 权重）。GT 条目无该字段
+            # （Step1 前 / TOUCHSTONE_TRUTH_QUALITY 默认关）→ .get 默认 1.0，reward 字节级不变。
+            # 组内每条 review 共享同 PR 的 weight → 相对优势仅被等比缩放、符号不变；坏真值条目的
+            # reward magnitude 向 0 收缩，抑制其蒸出的经验。weight=0 的条目已在 build_ground_truth 硬剔除。
+            rewards = [score(o, pr.get("human_adopted")) * pr.get("trust_weight", 1.0)
+                       for o in reviews]
             group = {"outputs": reviews, "rewards": rewards}
             for c in distill_advantage(pr, group, llm,
                                                 pr.get("repo", repo), pr.get("stack", stack)):

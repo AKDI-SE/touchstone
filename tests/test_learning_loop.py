@@ -1144,3 +1144,36 @@ def test_shadow_failure_does_not_wipe_active_injection(monkeypatch):
     assert it == ["PRA-ACTIVE"]                                # active 保留（未被 shadow 失败 wipe）
     assert iid == ["emphasize:::PRA-ACTIVE"]
     assert st == [] and sid == []                              # shadow 失败丢弃
+
+
+# ==================== 盲区2 step2：distill reward 施加 trust_weight（接通消费者）====================
+# 详见 docs/tfgrpo-self-evolution-design.html 盲区2。reward 乘真值条目的 trust_weight：坏真值（rubber-stamp
+# 采纳等）的 reward magnitude 向 0 收缩、抑制其蒸出的经验。本组经注入的 score/distill_advantage 捕获
+# group.rewards，直接验证 reward 接缝。GT 条目无 trust_weight 字段 → .get 默认 1.0，reward 字节级不变
+# （与 Step1 前等价；Step1 才往条目写该字段，但 Step2 独立可合——.get 默认值兜底）。
+def _capture_distill_reward(trust_weight=None):
+    """造一份 GT + 注入 rollout/score/distill_advantage，捕获喂给 distill_advantage 的 group.rewards。
+    trust_weight=None → 条目不带该字段（验证 .get 默认 1.0）。"""
+    captured = {}
+    pr = {"pr_id": "1", "human_adopted": ["PRA-X"]}
+    if trust_weight is not None:
+        pr["trust_weight"] = trust_weight
+    L._distill_via_llm([pr], {"experiences": []}, llm=lambda m: "[]",
+                      rollout=lambda p, E, llm, G: [[{"finding_type": "PRA-X"}]],
+                      score=lambda r, h: 1.0,                       # 基线 reward=1.0，隔离 weight 效果
+                      distill_advantage=lambda p, g, llm, repo, stack:
+                          captured.update(rewards=list(g["rewards"])) or [])
+    return captured["rewards"]
+
+
+def test_distill_reward_scaled_by_trust_weight():
+    """trust_weight=0.5 → reward 被按比例缩放到 0.5（坏真值条目 reward magnitude 向 0 收缩）。
+    组内每条 review 共享同 PR 的 weight，故相对优势仅等比缩放、符号不变——不破坏组内排序。"""
+    assert _capture_distill_reward(trust_weight=0.5) == [0.5]      # 1.0 * 0.5
+    assert _capture_distill_reward(trust_weight=0.0) == [0.0]      # weight=0 → reward 归零（极端降权）
+
+
+def test_distill_reward_default_weight_unchanged():
+    """GT 条目无 trust_weight 字段（Step1 前 / TOUCHSTONE_TRUTH_QUALITY 默认关）→ .get 默认 1.0，
+    reward 与改前字节级一致。这是 Step2 可独立先合的安全性所在。"""
+    assert _capture_distill_reward(trust_weight=None) == [1.0]     # 无字段 → 默认 1.0 → 不变
