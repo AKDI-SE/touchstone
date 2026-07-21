@@ -217,11 +217,15 @@ def _distill_via_llm(ground_truth, store, llm=None, *, group_size=TFGRPO_GROUP_S
         for pr in ground_truth or []:
             reviews = rollout(pr, experience_text, llm, group_size)
             # 盲区2：reward 乘真值条目的 trust_weight（坏真值检测给的 0–1 权重）。GT 条目无该字段
-            # （Step1 前 / TOUCHSTONE_TRUTH_QUALITY 默认关）→ .get 默认 1.0，reward 字节级不变。
+            # （Step1 前 / TOUCHSTONE_TRUTH_QUALITY 默认关）→ 默认 1.0，reward 字节级不变。
             # 组内每条 review 共享同 PR 的 weight → 相对优势仅被等比缩放、符号不变；坏真值条目的
             # reward magnitude 向 0 收缩，抑制其蒸出的经验。weight=0 的条目已在 build_ground_truth 硬剔除。
-            rewards = [score(o, pr.get("human_adopted")) * pr.get("trust_weight", 1.0)
-                       for o in reviews]
+            # 防御外部 JSON 异常（pr-agent review #121）：显式 null（key 在、值 None）会 TypeError 崩整批
+            # → coalesce None→1.0；越界值（负/>1）会翻转符号或放大 reward，破坏"只缩不放、符号不变"契约
+            # → clamp [0,1]。GT 由本仓 make_gt_entry 产时恒为合法 [0,1] float，此仅兜底手改/外部 JSON。
+            weight = pr.get("trust_weight", 1.0)
+            weight = 1.0 if weight is None else min(1.0, max(0.0, weight))
+            rewards = [score(o, pr.get("human_adopted")) * weight for o in reviews]
             group = {"outputs": reviews, "rewards": rewards}
             for c in distill_advantage(pr, group, llm,
                                                 pr.get("repo", repo), pr.get("stack", stack)):
