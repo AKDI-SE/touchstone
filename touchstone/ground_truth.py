@@ -119,20 +119,23 @@ def _diff_added_lines(diff):
                if ln.startswith("+") and not ln.startswith("+++"))
 
 
-def _truth_signals(reviews, findings_fa, diff, human_state, bot_login):
+def _truth_signals(reviews, findings_fa, diff, human_state, bot_login, *, diff_truncated=False):
     """盲区2 坏真值检测信号（B/C/D，纯函数）。findings_fa = calibrate.thread_findings 的输出
     （携带 resolver_association + resolved）。返回 {lgtm_only, low_weight_reviewer, tiny_diff_resolved}。
     B 委托 calibrate._lgtm_only（body_max 在此读 env 传入、默认 TRUTH_LGTM_BODY_MAX_DEFAULT——常量不再死）；
     C 看 resolved 发现的 resolver_association 是否低权重；
-    D 看 added 行数是否极少却有 resolved 发现（diff 取数失败时 build_ground_truth 置 diff="" → added=0，
-    非真 tiny diff，不触发——否则 fetch 失败叠 B/C 可能硬剔除有效真值；pr-agent review #120 r2）。
+    D 看 added 行数是否极少却有 resolved 发现。两种 diff 不完整都【不】触发 D（pr-agent review #120 r2/r3）：
+      • 空 diff（added=0）=取数失败——真 PR 至少 1 行 added；
+      • 截断 diff（diff_truncated=True）=added 计数不可信——原始 >GT_DIFF_BUDGET 显然非 tiny，
+        若 added 集中在截断点之后会少算把大 PR 看成 tiny。
+    否则不完整 diff 叠 B/C 可能硬剔除有效真值（数据丢失）。
     信号 A 不在此（后置先决，见模块头注释）。"""
     from touchstone import calibrate as C
     resolved_fa = [f for f in (findings_fa or []) if f.get("resolved")]
     low_weight = any((f.get("resolver_association") or "") in LOW_ASSOCIATIONS for f in resolved_fa)
     tiny_lines = int(os.environ.get("TOUCHSTONE_TRUTH_TINY_DIFF_LINES", TRUTH_TINY_DIFF_LINES_DEFAULT))
     added = _diff_added_lines(diff)
-    tiny_diff = 0 < added < tiny_lines and bool(resolved_fa)   # 0 added=fetch 失败，非真 tiny diff
+    tiny_diff = (not diff_truncated) and 0 < added < tiny_lines and bool(resolved_fa)
     body_max = int(os.environ.get("TOUCHSTONE_TRUTH_LGTM_BODY_MAX", TRUTH_LGTM_BODY_MAX_DEFAULT))
     return {"lgtm_only": C._lgtm_only(reviews, human_state, bot_login, body_max),
             "low_weight_reviewer": low_weight,
@@ -183,10 +186,12 @@ def build_ground_truth(owner, repo, token, *, window=GT_WINDOW, bot_login=None,
             resolved_types = {f.get("rule_id") for f in fa if f.get("resolved")}
             reviews = _gh_get(f"/repos/{owner}/{repo}/pulls/{n}/reviews?per_page=100", token) or []
             human_state = C._human_verdict(reviews, bot_login)
+            diff_truncated = False
             try:
                 diff = _gh_get(f"/repos/{owner}/{repo}/pulls/{n}", token,
                                accept="application/vnd.github.v3.diff")
                 if len(diff) > diff_budget:
+                    diff_truncated = True            # 截断后 added 计数不可信 → _truth_signals 据此不触发 D
                     diff = diff[:diff_budget] + "\n... [diff truncated]"
             except Exception as e:
                 print(f"[learning_loop] PR#{n} diff 获取失败（以空 diff 继续）: {e}", file=sys.stderr)
@@ -197,7 +202,8 @@ def build_ground_truth(owner, repo, token, *, window=GT_WINDOW, bot_login=None,
             # weight==0（命中≥hard_drop 信号）→ 硬剔除，不 append（distill 与 aggregate_ab 都不再见它）。
             # 关时 signals=None/weight=1.0 → make_gt_entry 默认值，reward 路径字节级不变。
             if _truth_quality_enabled():
-                signals = _truth_signals(reviews, fa, diff, human_state, bot_login)
+                signals = _truth_signals(reviews, fa, diff, human_state, bot_login,
+                                         diff_truncated=diff_truncated)
                 weight = _trust_weight(signals)
                 if weight == 0.0:
                     active = sum(1 for v in signals.values() if v)

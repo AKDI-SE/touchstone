@@ -1245,6 +1245,21 @@ def test_signal_d_not_fired_on_empty_diff():
     assert L._truth_signals([], fa_resolved, "+a\n", "CHANGES_REQUESTED", bot)["tiny_diff_resolved"] is True  # 真 tiny diff 仍触发
 
 
+def test_signal_d_not_fired_on_truncated_diff():
+    """信号 D 在 diff 被 build_ground_truth 截断（>GT_DIFF_BUDGET）时【不】触发——
+    截断后 _diff_added_lines 只数到截断点之前的 added，若 added 集中在后段会少算把大 PR 看成 tiny。
+    原始 >budget 显然非 tiny；diff_truncated 由 build 透传，本函数据此抑制 D。
+    pr-agent review #120 r3。"""
+    bot = "github-actions[bot]"
+    fa_resolved = [{"rule_id": "PRA-X", "resolved": True, "resolver_association": "MEMBER"}]  # MEMBER → 不触发 C
+    # 截断 diff + 仅 1 行 added（前端）+ resolved → diff_truncated=True 抑制 D
+    assert L._truth_signals([], fa_resolved, "+a\n... [diff truncated]", "CHANGES_REQUESTED", bot,
+                            diff_truncated=True)["tiny_diff_resolved"] is False
+    # 同 diff 不标截断 → 仍可能误触（说明 flag 是必需的，非默认 True）
+    assert L._truth_signals([], fa_resolved, "+a\n... [diff truncated]", "CHANGES_REQUESTED",
+                            bot)["tiny_diff_resolved"] is True
+
+
 def test_trust_weight_math(monkeypatch):
     """默认 penalty=0.34 / hard_drop=3：0 信号→1.0、1→0.66、2→0.32、3+→0（硬剔除）。False 信号不计。"""
     monkeypatch.delenv("TOUCHSTONE_TRUTH_PENALTY", raising=False)
