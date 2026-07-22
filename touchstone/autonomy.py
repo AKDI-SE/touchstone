@@ -337,7 +337,11 @@ def main():
         d = build_decision_inputs(
             co,
             {"tripped": os.environ.get("AUTONOMY_TRIPPED") == "true"},
-            (_load("graduated-classes.json") or {}).get("graduated_classes", []))
+            # 须与写方（line 322 --graduate 的 artifact_path）同路径：设 TOUCHSTONE_OUTPUT_DIR 时
+            # 写进隔离目录、读方却去 CWD → 读不到 → graduated_classes 空 → class_graduated 永远 fail
+            # （autonomy 对该部署彻底失效）。#90/#122 OUTPUT_DIR 统一漏掉的读点（与 calibration.json/
+            # touchstone-findings.json 读法对齐）。
+            (_load(artifact_path("graduated-classes.json")) or {}).get("graduated_classes", []))
         cls = d["cls"]
         repo = os.environ.get("GITHUB_REPOSITORY")
         pr, sha = co.get("pr"), co.get("sha")
