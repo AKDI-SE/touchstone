@@ -57,12 +57,12 @@ def load_config(repo_dir):
         data = yaml.safe_load(open(path, encoding="utf-8")) or {}
     except FileNotFoundError:
         data = {}                       # 未配置：合法空策略（不挡）
-    except yaml.YAMLError as e:
-        # 文件存在但解析失败 = 配置坏了：不能当成"空策略"静默放行（防静默故障）。
-        # 标 _config_error，post_gate 据此 fail-closed 并在总闸 summary 显式报警。
-        data = {"_config_error": f"checks.yaml 解析失败（{e}）——按 fail-closed 处理，请修正配置"}
-    except OSError:
-        data = {}
+    except (yaml.YAMLError, OSError) as e:
+        # 文件存在但解析失败/不可读（坏 YAML、权限拒、路径指向目录、损坏符号链接等）= 配置坏了：
+        # 不能当成"空策略"静默放行（防静默故障）。标 _config_error，post_gate 据此 fail-closed 并在
+        # 总闸 summary 显式报警。旧 bare `except OSError: data={}` 把这类静默降级成空策略→gate success，
+        # 与 YAMLError 的 fail-closed 处理自相矛盾。FileNotFoundError 在前先捕获，不会落到这里。
+        data = {"_config_error": f"checks.yaml 不可读或解析失败（{e}）——按 fail-closed 处理，请修正配置"}
     data.setdefault("gate", {}).setdefault("status_name", DEFAULT_GATE)
     data.setdefault("checks", [])
     return data
