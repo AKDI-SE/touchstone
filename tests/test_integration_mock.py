@@ -723,6 +723,23 @@ def test_govern_main(monkeypatch, tmp_path):
     assert (tmp_path / "autonomy-state.json").exists()
 
 
+def test_govern_main_fail_closed_when_revert_scan_unavailable(monkeypatch, tmp_path):
+    # detect_revert_shas 扫描失败(None) + 窗口内有自动放行 PR → govern.main 写出 tripped=True
+    # （失败收敛，非谎报健康）。锁 main() 透传 revert_data_available 的接线。
+    monkeypatch.chdir(tmp_path)
+    cal = {"aggregate": {"by_rule": {}}, "records": [
+        {"pr": 1, "merged": True, "merge_commit_sha": "abc12345", "auto_handled": True}]}
+    (tmp_path / "calibration.json").write_text(json.dumps(cal), encoding="utf-8")
+    monkeypatch.setenv("CALIBRATION_JSON", str(tmp_path / "calibration.json"))
+    monkeypatch.setenv("TOUCHSTONE_STANDARDS", os.path.join(ROOT, ".touchstone", "standards.yaml"))
+    monkeypatch.setattr(GOV, "detect_revert_shas", lambda *a, **k: None)   # 扫描失败
+    with pytest.raises(SystemExit) as ei:                                # tripped → main() sys.exit(2)
+        GOV.main()
+    assert ei.value.code == 2
+    state = json.loads((tmp_path / "autonomy-state.json").read_text(encoding="utf-8"))
+    assert state["tripped"] is True and state["revert_rate"] is None
+
+
 # ============================ calibrate ============================
 from touchstone import calibrate as CAL            # noqa: E402
 from touchstone import autonomy as AUT             # noqa: E402

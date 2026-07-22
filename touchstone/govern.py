@@ -57,24 +57,38 @@ def apply_promotions(standards, candidates):
 
 # --- 熔断（纯）---------------------------------------------------------------
 def update_autonomy(merge_records, prior_approval_rate=None,
-                    revert_thresh=REVERT_THRESH, spike=APPROVAL_SPIKE):
-    """merge_records: [{auto_handled, reverted, hotfixed, touchstone_approved}]"""
+                    revert_thresh=REVERT_THRESH, spike=APPROVAL_SPIKE,
+                    revert_data_available=True):
+    """merge_records: [{auto_handled, reverted, hotfixed, touchstone_approved}]
+
+    revert_data_available=False 表示 revert 扫描失败（detect_revert_shas 返回 None）——此时
+    【不能】谎报 revert_rate=0.0/健康：只要窗口内有自动处理的 PR（auto 非空）就失败收敛 tripped=True
+    （退回人审），直到下一轮能重新测量。auto 为空则无可熔断对象、不触发（避免无意义噪声）。
+    这条失败收敛是熔断器的存在意义——拿不到真值时最该保守，而非维持自主继续放行（fail-open）。
+    与 [[touchstone-autonomy-false-convergence]] 同一精神：不可信时不收敛/不自动放行。"""
     auto = [m for m in merge_records if m.get("auto_handled")]
-    bad = sum(1 for m in auto if m.get("reverted") or m.get("hotfixed"))
-    revert_rate = (bad / len(auto)) if auto else 0.0
     approved = sum(1 for m in merge_records if m.get("touchstone_approved"))
     approval_rate = (approved / len(merge_records)) if merge_records else 0.0
     drift = (approval_rate - prior_approval_rate) if prior_approval_rate is not None else None
 
     reasons, tripped = [], False
-    if auto and revert_rate > revert_thresh:
+    revert_rate = None
+    if auto and not revert_data_available:
+        # 失败收敛：测不到 revert 真值（git 不可用/非零退出），保守收回自主——auto 非空才有放行可收回。
         tripped = True
-        reasons.append(f"自动处理 PR 的 revert/hotfix 率 {revert_rate:.2f} > {revert_thresh}")
+        reasons.append("revert 扫描失败（git 不可用/非零退出），无法判定 revert 率——"
+                       "保守收回自主直到下一轮能测（fail-closed，不谎报 0.0）")
+    else:
+        bad = sum(1 for m in auto if m.get("reverted") or m.get("hotfixed"))
+        revert_rate = (bad / len(auto)) if auto else 0.0
+        if auto and revert_rate > revert_thresh:
+            tripped = True
+            reasons.append(f"自动处理 PR 的 revert/hotfix 率 {revert_rate:.2f} > {revert_thresh}")
     if drift is not None and drift > spike:
         reasons.append(f"touchstone 低风险(批准)比例突升 {drift:+.2f}（疑似放水/被钻，告警）")
     return {
         "tripped": tripped,
-        "revert_rate": round(revert_rate, 2),
+        "revert_rate": (None if revert_rate is None else round(revert_rate, 2)),
         "approval_rate": round(approval_rate, 2),
         "approval_drift": (None if drift is None else round(drift, 2)),
         "reasons": reasons,
@@ -85,15 +99,25 @@ def update_autonomy(merge_records, prior_approval_rate=None,
 
 # --- 强归因 revert 检测（git）------------------------------------------------
 def detect_revert_shas(repo_dir, base_ref, window=200):
-    """从 base 分支日志里抓 'This reverts commit <sha>' 的被还原 sha 集合。"""
+    """从 base 分支日志里抓 'This reverts commit <sha>' 的被还原 sha 集合。
+
+    返回值三态（调用方须区分——见 update_autonomy 的 revert_data_available）：
+      set()     = 扫描成功、确无 revert（"测了，是 0"）；
+      非空 set  = 扫描成功、命中 revert；
+      None      = 扫描失败：git 不可用 / 超时 / 非零退出（坏 base ref、浅克隆缺历史、仓库损坏）。
+    关键：失败**不得**伪装成空集——熔断器拿不到 revert 真值时必须失败收敛（退回人审），
+    而非谎报 revert_rate=0.0/健康继续自动放行（fail-open）。旧实现两条失败路径都吞成空集：
+    except 分支 + 无 check=True 时 git 非零退出只剩空 stdout。"""
     try:
-        out = subprocess.run(
+        cp = subprocess.run(
             ["git", "-C", repo_dir, "log", f"-n{window}", "--grep=This reverts commit",
              "--pretty=%B", base_ref],
-            capture_output=True, text=True, timeout=60).stdout
+            capture_output=True, text=True, timeout=60)
     except (subprocess.TimeoutExpired, FileNotFoundError):
-        return set()
-    return set(re.findall(r"This reverts commit ([0-9a-f]{7,40})", out))
+        return None
+    if cp.returncode != 0:        # git 非零退出 = 取不到真值（坏 ref/浅克隆/损坏），与"测了=0"严格分开
+        return None
+    return set(re.findall(r"This reverts commit ([0-9a-f]{7,40})", cp.stdout))
 
 
 def build_merge_records(calibration_records, revert_shas):
@@ -146,8 +170,8 @@ def main():
     # 2) 熔断
     repo = os.environ.get("REPO_DIR", ".")
     base = os.environ.get("BASE_REF", "HEAD")
-    reverts = detect_revert_shas(repo, base)
-    merge_records = build_merge_records(records, reverts)
+    reverts = detect_revert_shas(repo, base)         # None = 扫描失败（git 不可用/非零退出）
+    merge_records = build_merge_records(records, reverts or set())
     prior = None
     _prev = artifact_path("autonomy-prev.json")
     if os.path.exists(_prev):
@@ -155,7 +179,9 @@ def main():
             prior = json.load(open(_prev)).get("approval_rate")
         except (json.JSONDecodeError, KeyError):
             prior = None
-    state = update_autonomy(merge_records, prior_approval_rate=prior)
+    # revert_data_available：扫描失败(None)时让熔断失败收敛，而非假装 revert_rate=0.0/健康。
+    state = update_autonomy(merge_records, prior_approval_rate=prior,
+                            revert_data_available=(reverts is not None))
     # 原子：熔断/自治状态被下一轮 govern 读作 prior，半文件会污染熔断判据
     atomic_write_json(artifact_path("autonomy-state.json"), state)
 
