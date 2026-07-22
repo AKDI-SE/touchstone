@@ -355,7 +355,10 @@ def main():
         auto_handled = any("touchstone:auto_handled" in b for b in _trusted_bodies(comments, bot))
         reviews = gh_paginate(f"/repos/{owner}/{repo}/pulls/{n}/reviews", token)
         try:
-            fa = thread_findings(fetch_review_threads(owner, repo, n, token), bot)
+            # pr_author=作者 login：作者自 resolve 自己 PR 的发现线程不算采纳（与 build_ground_truth
+            # 同一契约），否则 finding_adoption 被污染、adoption_rate 虚高致 graduate/retire 误判。
+            fa = thread_findings(fetch_review_threads(owner, repo, n, token), bot,
+                                 pr_author=(pr.get("user") or {}).get("login"))
         except (requests.exceptions.RequestException, KeyError, ValueError) as e:
             print(f"[warn] PR #{n} 线程采纳取用失败: {e}", file=sys.stderr)
             fa = []
