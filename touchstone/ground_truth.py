@@ -178,7 +178,14 @@ def build_ground_truth(owner, repo, token, *, window=GT_WINDOW, bot_login=None,
             try:
                 threads = C.parse_review_threads(
                     C.gql(C._GQL_THREADS, {"owner": owner, "repo": repo, "num": n}, token))
-                fa = C.thread_findings(threads, bot_login)
+                # pr_author=作者 login：作者自 resolve 自己 PR 的发现线程不算人审采纳（否则伪造正例
+                # 毒化 TF-GRPO 奖励——契约见 calibrate.thread_findings 的 pr_author 参数 +
+                # test_author_self_resolve_not_counted_as_adoption）。build_ground_truth 曾漏传。
+                # pr_author=作者 login：作者自 resolve 自己 PR 的发现线程不算人审采纳（否则伪造正例
+                # 毒化 TF-GRPO 奖励——契约见 calibrate.thread_findings 的 pr_author 参数 +
+                # test_author_self_resolve_not_counted_as_adoption）。build_ground_truth 曾漏传。
+                fa = C.thread_findings(threads, bot_login,
+                                       pr_author=(pr.get("user") or {}).get("login"))
             except Exception as e:
                 print(f"[learning_loop] PR#{n} 评审线程解析失败（按无采纳记录处理）: {e}",
                       file=sys.stderr)

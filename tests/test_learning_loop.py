@@ -538,6 +538,41 @@ def test_build_ground_truth_from_human_verdicts(tmp_path, monkeypatch):
     assert entry["merged"] is True and entry["human_state"] == "APPROVED"
 
 
+def test_build_ground_truth_excludes_author_self_resolve(tmp_path, monkeypatch):
+    """作者自 resolve 自己 PR 的发现线程不算人审采纳——build_ground_truth 须把 pr_author
+    透传给 thread_findings（契约见 test_author_self_resolve_not_counted_as_adoption）。
+    曾漏传 pr_author → 自 resolve 当正例 → 毒化 TF-GRPO 奖励信号。锁死调用点透传：
+    删掉 pr_author 参数（变异）→ 本测 human_adopted 含 PRA-X → 红。"""
+    from touchstone import calibrate as C
+    marker = ("<!-- touchstone-result: " + json.dumps({"findings": [{"rule_id": "PRA-X"}]}) + " -->")
+    threads_payload = {"data": {"repository": {"pullRequest": {"reviewThreads": {"nodes": [
+        {"isResolved": True, "resolvedBy": {"login": "author1"},
+         "comments": {"nodes": [{"author": {"login": "github-actions[bot]"},
+             "authorAssociation": "OWNER",
+             "body": "<!-- touchstone-finding: " + json.dumps({"rule_id": "PRA-X"}) + " -->"}]}}
+    ]}}}}}
+
+    def fake_gh(path, token, accept="application/vnd.github+json"):
+        if "state=closed" in path:
+            return [{"number": 1, "title": "fix", "merged_at": "2026-01-01",
+                     "user": {"login": "author1"}}]      # PR 作者 = author1 = 线程解决者
+        if "issues/1/comments" in path:
+            return [{"body": marker}]
+        if "pulls/1/reviews" in path:
+            return []
+        if "pulls/1/files" in path:
+            return [{"filename": "a.py"}]
+        if path.endswith("/pulls/1") and accept.endswith("diff"):
+            return "+x"
+        return []
+    monkeypatch.setattr(GT, "_gh_get", fake_gh)
+    monkeypatch.setattr(C, "gql", lambda q, v, t: threads_payload)
+
+    entry = L.build_ground_truth("o", "r", "tok")[0]
+    assert "PRA-X" not in entry["human_adopted"]    # 作者自 resolve → 不当正例（pr_author 排除）
+    assert "PRA-X" in entry["raised_types"]          # touchstone 确挑过，只是未被真人采纳
+
+
 # ---------------- aggregate_ab + 自动 graduate（恢复 injected_types→A/B 分臂接线）----------------
 def test_build_ground_truth_carries_injected_types_from_marker(tmp_path, monkeypatch):
     """result marker 的 injected_types 必须透传进真值条目——这是 graduate 自动分臂的数据来源，

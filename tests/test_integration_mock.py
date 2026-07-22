@@ -778,6 +778,38 @@ def test_calibrate_main(monkeypatch, tmp_path, capsys):
     assert rep["aggregate"]["total"] == 1 and (tmp_path / "calibration-report.md").exists()
 
 
+def test_calibrate_main_excludes_author_self_resolve(monkeypatch, tmp_path, capsys):
+    """calibrate.main() 须传 pr_author 给 thread_findings——作者自 resolve 自己 PR 的发现线程
+    不算采纳，否则 finding_adoption 被污染、adoption_rate 虚高致 graduate/retire 误判。
+    与 build_ground_truth 同一 bug 类。锁死调用点 pr_author 透传：删参数（变异）→
+    finding_adoption[0].resolved 变 True → 本测红。"""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("GITHUB_TOKEN", "tok")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "o/r")
+    body = ('<!-- touchstone-finding: '
+            + json.dumps({'rule_id': 'PRA-X', 'agent': 'pr-agent:review'}) + ' -->')
+    threads = [{'isResolved': True, 'resolved_by': 'author1',     # 作者 = 线程解决者
+                'comments': [{'author': 'github-actions[bot]', 'body': body}]}]
+
+    def fake_gh(path, token):
+        if "/pulls?state=closed" in path:
+            return [{"number": 1, "merged_at": "t", "merge_commit_sha": "sha",
+                     "user": {"login": "author1"}}]
+        if "/issues/1/comments" in path:
+            return [{"body": _RESULT_MARKER, "user": {"login": "github-actions[bot]"}}]
+        if "/pulls/1/reviews" in path:
+            return [{"user": {"login": "alice"}, "state": "APPROVED"}]
+        return []
+    monkeypatch.setattr(CAL, "gh", fake_gh)
+    monkeypatch.setattr(CAL, "gh_paginate", fake_gh)
+    monkeypatch.setattr(CAL, "fetch_review_threads", lambda *a: threads)
+    CAL.main()
+    rep = json.loads((tmp_path / "calibration.json").read_text(encoding="utf-8"))
+    fa = rep["records"][0]["finding_adoption"]
+    assert fa and fa[0]["rule_id"] == "PRA-X"
+    assert fa[0]["resolved"] is False     # 作者自 resolve → 不算采纳（传 pr_author 才成立）
+
+
 # ============================ autonomy main / execute ============================
 def test_autonomy_main_graduate(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
