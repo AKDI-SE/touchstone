@@ -884,6 +884,31 @@ def test_autonomy_graduate_reads_calibration_json_override(monkeypatch, tmp_path
     assert "x" in grad["graduated_classes"], "autonomy 未从 CALIBRATION_JSON 读校准（读方漏 override_env）"
 
 
+def test_autonomy_decision_reads_graduated_classes_from_output_dir(monkeypatch, tmp_path, capsys):
+    """#90/#122 OUTPUT_DIR 统一漏掉的读点 autonomy.py:340 —— 决策模式读 graduated-classes.json 曾走
+    【裸文件名】，而写方（autonomy.py:322 --graduate）走 artifact_path。设 TOUCHSTONE_OUTPUT_DIR 时
+    写进隔离目录、读方却去 CWD 找 → 读不到 → graduated_classes 空 → class_graduated 永远 fail
+    （autonomy 对该部署彻底失效，且是静默失效）。CWD 放【空】graduated-classes.json 作诱饵：读方若漏
+    artifact_path 会读诱饵→class_graduated fail；正确读 OUTPUT_DIR 才拿到类→class_graduated pass。"""
+    out = tmp_path / "iso"
+    out.mkdir()
+    monkeypatch.setenv("TOUCHSTONE_OUTPUT_DIR", str(out))
+    monkeypatch.chdir(tmp_path)                          # CWD 下放【空】诱饵（非 OUTPUT_DIR）
+    (tmp_path / "graduated-classes.json").write_text(
+        json.dumps({"graduated_classes": []}), encoding="utf-8")          # 诱饵：空
+    (out / "graduated-classes.json").write_text(
+        json.dumps({"graduated_classes": ["low|code|none|none"]}), encoding="utf-8")  # 真值在 OUTPUT_DIR
+    co = {"gate": "success", "risk": {"risk_band": "low"}, "findings": [], "loop_decision": "converged",
+          "change_class": "low|code|none|none", "review_reliable": True, "unverified_claims": 0,
+          "added_lines": 10, "author": {"login": "alice", "association": "MEMBER"}, "pr": 1, "sha": "abc"}
+    (out / "touchstone-findings.json").write_text(json.dumps(co), encoding="utf-8")
+    monkeypatch.setattr(sys, "argv", ["autonomy"])       # 决策模式（无 --inputs）→ 走 graduated-classes 读路径
+    AUT.main()
+    dec = json.loads(capsys.readouterr().out)
+    assert "class_graduated" not in dec["failed"], \
+        "决策模式未从 OUTPUT_DIR 读 graduated-classes（读方漏 artifact_path，读到 CWD 空诱饵→class_graduated fail）"
+
+
 def test_check_verify_reads_result_from_output_dir(monkeypatch, tmp_path):
     """#90 finding checks.py:190 — _check_verify 须与写出方 verify_change.py 同路径（artifact_path）。
     设 TOUCHSTONE_OUTPUT_DIR 时 verify-result.json 落隔离目录；读方也须去那找，否则静默记
