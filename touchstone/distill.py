@@ -230,10 +230,13 @@ def rollout_reviews(pr, experience_text, llm, group_size=TFGRPO_GROUP_SIZE, *, m
 # 输出 {finding_type, kind, condition, action}，condition+action 渲染成 "When <c>, <a> (PRA-X)"
 # 存进 text；condition/action 含 prompt 注入/越权模式 → 丢弃 + stderr（复用 review_provider
 # EXPERIENCE_REF 防投毒纪律）。关（默认）→ 仅自由 text（reward 路径字节级不变）。
-_EXP_INJECTION_PATTERNS = ("ignore previous", "ignore all previous", "disregard the above",
-                           "disregard previous", "ignore above", "forget previous",
-                           "system:", "you are now", "new instructions:", "approve all",
-                           "act as ", "override previous")
+# 注入式/越权指令模式（词边界正则：避免 "react as"/"filesystem:" 这类合法文本误伤——
+# 评审 PRA-POSSIBLE_ISSUE:distill.py:233）。关（默认）→ 仅自由 text（reward 路径字节级不变）。
+_EXP_INJECTION_RE = re.compile(
+    r"\b(?:ignore|disregard|forget)\b[\s\S]{0,20}\b(?:previous|above)\b"   # 指令覆盖类
+    r"|\b(?:system|new\s+instructions)\s*:"                                 # 角色/分段（\b 不误伤 filesystem:）
+    r"|\b(?:you\s+are\s+now|approve\s+all|act\s+as|override\s+previous)\b",  # 直接越权（\b 不误伤 react as）
+    re.IGNORECASE)
 _EXP_MAX_TEXT_LEN = int(os.environ.get("TOUCHSTONE_EXP_MAX_TEXT_LEN", "240"))
 
 
@@ -243,9 +246,8 @@ def _exp_injection_filter_enabled():
 
 
 def _looks_injected(*texts):
-    """任一段文本命中 prompt 注入/越权指令模式 → 真（丢弃 + stderr 的依据）。"""
-    low = " ".join((t or "") for t in texts).lower()
-    return any(p in low for p in _EXP_INJECTION_PATTERNS)
+    """任一段文本命中 prompt 注入/越权指令模式 → 真（词边界，避免误伤 'react as'/'filesystem:'）。"""
+    return bool(_EXP_INJECTION_RE.search(" ".join((t or "") for t in texts)))
 
 
 def _render_structured_text(condition, action, ftype):
@@ -343,7 +345,9 @@ def _flagship_llm():
 #   预算：max_llm_calls 限单次 run 的旗舰调用量，超限跳过剩余 PR（不静默——skipped_prs 留痕）。
 #   三者默认全关（cache=None / max_llm_calls=None / max_workers=None）→ 字节级零行为变化。
 def _rollout_cache_key(pr, experience_text, group_size):
-    """稳定键：同 PR + 同经验库 E + 同组大小 + 同旗舰模型 → 复用 rollout。模型名入键：换模型即失效。"""
+    """稳定键：同 PR + 同经验库 E + 同组大小 + 同旗舰模型 + 同 PR 内容(summary/diff) → 复用 rollout。
+    summary/diff 入键：PR 标题改 / GT_DIFF_BUDGET 变更截断 → diff 变 → key 变 → 不返回 stale rollout
+    （评审 PRA-REVIEW:distill.py:345；仅影响文件缓存路径，memory 缓存每 run 新建本就稳定）。"""
     model = os.environ.get("TOUCHSTONE_FLAGSHIP_MODEL") or os.environ.get("LLM_MODEL") or ""
     h = hashlib.sha256()
     h.update(str(pr.get("pr_id", "")).encode("utf-8"))
@@ -353,6 +357,10 @@ def _rollout_cache_key(pr, experience_text, group_size):
     h.update(str(group_size).encode("utf-8"))
     h.update(b"\x1f")
     h.update(model.encode("utf-8"))
+    h.update(b"\x1f")
+    h.update((pr.get("summary") or "").encode("utf-8"))   # PR 内容入键（防 stale）
+    h.update(b"\x1f")
+    h.update((pr.get("diff") or "").encode("utf-8"))
     return h.hexdigest()
 
 
@@ -380,7 +388,7 @@ def _save_cache(cache_obj, cache_arg):
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(cache_obj, f, ensure_ascii=False)
         os.replace(tmp, cache_arg)            # 原子替换：崩溃不留半文件（同 atomicio 纪律）
-    except OSError as e:
+    except (OSError, TypeError) as e:        # TypeError：json.dump 遇不可序列化值（评审 PRA-GENERAL:distill.py:373）
         print(f"[distill] rollout 缓存写盘失败（不阻塞）: {e}", file=sys.stderr)
 
 
