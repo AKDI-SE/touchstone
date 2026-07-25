@@ -42,17 +42,22 @@ from touchstone.experience_store import (  # noqa: F401
     BOOTSTRAP_SEED_DEFAULT, BOOTSTRAP_MIN_FIRES_DEFAULT, BOOTSTRAP_MIN_ADOPT_DEFAULT,
     _read_store_text, load_store, save_store, _is_review_type, _exp_id,
     _protected_types, seed_experience, merge_candidates, graduate, retire,
-    disable, _resolve_conflicts, render_injection, active_types, active_ids,
+    disable, _resolve_conflicts, _evidence_strength, render_injection, active_types, active_ids,
     _shadow_hash, _shadow_env_params, _shadow_injection_enabled,
     shadow_candidates, shadow_types, shadow_ids,
-    _bootstrap_enabled, bootstrap_from_calibrate)
+    _bootstrap_enabled, bootstrap_from_calibrate,
+    TAXONOMY_ENFORCE_DEFAULT, _normalize_type, coerce_type, known_types,
+    RETIRE_NEGATIVE_LIFT_DEFAULT, retire_on_negative_lift)
 from touchstone.distill import (  # noqa: F401
     DISTILL_MIN_FIRES,
     TFGRPO_GROUP_SIZE, _W_NOISE, _W_MISS,
     distill_candidates, _finding_types, score_review, _extract_json, _llm_json,
     rollout_reviews, distill_semantic_advantage, _flagship_llm, _distill_via_llm,
     _counting_distiller, _tfgrpo_distiller, _DISTILLERS, register_distiller,
-    distill, _flagship_configured)
+    distill, _flagship_configured,
+    _rollout_cache_key, _load_cache, _save_cache, _Budget,
+    _env_rollout_cache, _env_int_opt,
+    _positional_reward_enabled, _is_positional_signal, _position_credit, _score_positional)
 from touchstone.ground_truth import (  # noqa: F401
     GT_WINDOW, GT_DIFF_BUDGET, _gh_get, _stack_of, aggregate_ab,
     make_gt_entry, build_ground_truth,
@@ -62,6 +67,50 @@ from touchstone.ground_truth import (  # noqa: F401
     _truth_quality_enabled, _diff_added_lines, _truth_signals, _trust_weight)
 from touchstone.calibrate import (  # noqa: F401
     _APPROVE_SHALLOW, _is_human_reviewer, _lgtm_only)
+
+def _pragent_label_types(path):
+    """读 pr-agent.yaml 的 normalization.label_to_category 键 → PRA-* 类型集
+    （复用 review_provider.normalize 的 "PRA-"+label.replace(" ","_").upper() 映射，两端不漂移）。
+    文件缺/解析失败 → 空集（不阻塞；taxonomy 仍含已 active 类型 + env 扩展）。"""
+    try:
+        import yaml
+        data = yaml.safe_load(open(path, encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError, ImportError):
+        return set()
+    labels = (((data.get("normalization") or {}).get("label_to_category")) or {}).keys()
+    return {"PRA-" + str(k).replace(" ", "_").upper() for k in labels}
+
+
+def _lift_summary(ab_results):
+    """从 ab 数据算 lift 分布（c2）：正/负/样本不足 各多少类型——让"经验净效果"从'事后追问'变'可见'。
+    与 retire_on_negative_lift 同源判据（样本门槛镜像 GRADUATE_MIN_SAMPLES）。纯函数。"""
+    pos = neg = insuf = 0
+    for ab in (ab_results or {}).values():
+        ws, wa = ab.get("with_seen", 0), ab.get("with_adopted", 0)
+        os_, oa = ab.get("without_seen", 0), ab.get("without_adopted", 0)
+        if ws < GRADUATE_MIN_SAMPLES or os_ < GRADUATE_MIN_SAMPLES:
+            insuf += 1
+            continue
+        lift = (wa / ws) - (oa / os_)
+        pos += 1 if lift > 0 else 0
+        neg += 1 if lift < 0 else 0
+    return {"positive_lift": pos, "negative_lift": neg, "insufficient_samples": insuf}
+
+
+def _resolve_taxonomy(store):
+    """决定本轮 merge_candidates 用不用 taxonomy 白名单（c1）。
+    TOUCHSTONE_TAXONOMY_ENFORCE 真值时：白名单 = pr-agent.yaml label 集 ∪ 已 active 类型 ∪ env 扩展；
+    否则返回 None = 不启用（默认关 = 字节级零行为变化）。"""
+    val = os.environ.get("TOUCHSTONE_TAXONOMY_ENFORCE")
+    enabled = (TAXONOMY_ENFORCE_DEFAULT if val is None
+               else val.lower() in ("1", "true", "yes", "on"))
+    if not enabled:
+        return None
+    yaml_path = os.environ.get(
+        "TOUCHSTONE_PRAGENT_YAML",
+        os.path.join(os.environ.get("REPO_DIR", "."), ".touchstone", "pr-agent.yaml"))
+    return known_types(store, extra=_pragent_label_types(yaml_path))
+
 
 def _parse_cli(argv):
     import argparse
@@ -179,7 +228,7 @@ def main(argv=None):
         report["steps"].append(f"bootstrap_from_calibrate: 高采纳 type 直接 seed active："
                                f"{len(bootstrapped)} 条 {bootstrapped}")
 
-    merge_candidates(store, cands)
+    merge_candidates(store, cands, taxonomy=_resolve_taxonomy(store))
 
     # ④ candidate → active（shadow A/B 达标）
     ab = None
@@ -195,6 +244,12 @@ def main(argv=None):
         grad = graduate(store, ab)
         report["graduated"] = grad
         report["steps"].append(f"graduate 达标转 active：{len(grad)} 条 {grad}")
+        # c2：差分回滚——注入反降采纳率的 active 经验退役（与 graduate 对称），让坏经验不必
+        # 等跌破 retire 绝对门槛才下线。lift 摘要让"经验净效果"可见（多少正/负 lift）。
+        neg = retire_on_negative_lift(store, ab)
+        if neg:
+            report["steps"].append(f"retire_on_negative_lift 注入反降退役：{len(neg)} 条 {neg}")
+        report["lift_summary"] = _lift_summary(ab)
     else:
         report["steps"].append("graduate 跳过（无 A/B 数据；自动达标需积累样本）")
 
