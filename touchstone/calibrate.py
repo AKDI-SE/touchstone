@@ -48,7 +48,7 @@ query($owner:String!,$repo:String!,$num:Int!){
   repository(owner:$owner,name:$repo){
     pullRequest(number:$num){
       reviewThreads(first:100){
-        nodes{ isResolved resolvedBy{login} comments(first:20){ nodes{ author{login} authorAssociation body } } }
+        nodes{ isResolved resolvedBy{login} path line comments(first:20){ nodes{ author{login} authorAssociation body } } }
       }
     }
   }
@@ -75,6 +75,8 @@ def parse_review_threads(data):
                     for c in (((t.get("comments") or {}).get("nodes")) or [])]
         out.append({"isResolved": bool(t.get("isResolved")),
                     "resolved_by": ((t.get("resolvedBy") or {}).get("login") or ""),
+                    "path": t.get("path") or "",       # 线程锚定的文件（内联评审评论固有，差距1a 位置信号）
+                    "line": t.get("line"),              # 线程锚定的行（outdated 线程可能为 null）
                     "comments": comments})
     return out
 
@@ -130,7 +132,9 @@ def thread_findings(threads, bot_login=None, pr_author=None):
             out.append({"rule_id": meta.get("rule_id"), "agent": meta.get("agent"),
                         "resolved": resolved and not dismissed,
                         "dismissed": dismissed,
-                        "resolver_association": resolver_assoc})
+                        "resolver_association": resolver_assoc,
+                        "file": t.get("path") or "",    # 差距1a：线程位置 → finding 位置（喂 score_review 位置级）
+                        "line": t.get("line")})
             break                      # 一个线程只对一条发现
     return out
 

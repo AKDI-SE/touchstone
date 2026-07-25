@@ -71,9 +71,10 @@ def make_gt_entry(pr_number, repo, stack, summary, diff, touchstone_findings,
     trust_weight = 坏真值检测（盲区2）给本条的 0–1 权重，默认 1.0（TOUCHSTONE_TRUTH_QUALITY 关时不传 →
         隐式 1.0，reward 路径字节级不变）；truth_signals = 命中的 B/C/D 信号（可观测、默认空）。
     resolved_findings（可选，差距1a）：带 file/line 的 resolved 发现列表 → 产 human_adopted_positions
-    供 score_review 位置级部分信用。注：calibrate.thread_findings 当前只回 {rule_id,agent,resolved}（无位置），
-    故生产暂不传；待 result marker+calibrate 补 file/line 后此处即有真位置数据。与 score_review schema 对齐。
-    与 _distill_via_llm 期望的 ground_truth schema 对齐（human_adopted 喂 score_review）。"""
+    供 score_review 位置级部分信用。来源：calibrate.thread_findings 现已带 thread 锚定的 file/line
+    （parse_review_threads 从 GraphQL reviewThread.path/line 解出），build_ground_truth 据此传 resolved 发现。
+    缺失（无位置 / 线程无锚点）即无此字段，向后兼容。与 score_review schema 对齐。
+    与 _distill_via_llm 期望的 ground_truth schema 对齐（human_adopted_positions 喂 score_review）。"""
     adopted = sorted({t for t in (resolved_types or []) if t})
     ts_types = {(f.get("rule_id") or f.get("finding_type")) for f in (touchstone_findings or [])}
     ts_types = {t for t in ts_types if t}
@@ -199,6 +200,7 @@ def build_ground_truth(owner, repo, token, *, window=GT_WINDOW, bot_login=None,
                       file=sys.stderr)
                 fa = []
             resolved_types = {f.get("rule_id") for f in fa if f.get("resolved")}
+            resolved_findings = [f for f in fa if f.get("resolved")]   # 差距1a：带 file/line 的 resolved 发现
             reviews = _gh_get(f"/repos/{owner}/{repo}/pulls/{n}/reviews?per_page=100", token) or []
             human_state = C._human_verdict(reviews, bot_login)
             diff_truncated = False
@@ -232,7 +234,8 @@ def build_ground_truth(owner, repo, token, *, window=GT_WINDOW, bot_login=None,
                                      bool(pr.get("merged_at")),
                                      injected_types=result.get("injected_types"),
                                      shadow_types=result.get("shadow_types"),
-                                     trust_weight=weight, truth_signals=signals))
+                                     trust_weight=weight, truth_signals=signals,
+                                     resolved_findings=resolved_findings))
         except Exception as e:
             print(f"[learn] PR #{n} 取数失败，跳过：{e}", file=sys.stderr)
             continue
