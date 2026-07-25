@@ -11,7 +11,7 @@
 import os
 import sys
 
-GT_WINDOW = int(os.environ.get("TOUCHSTONE_GT_WINDOW", "30"))   # 重建真值集回看的最近已关闭 PR 数
+GT_WINDOW = int((os.environ.get("TOUCHSTONE_GT_WINDOW") or "").strip() or "30")   # 重建真值集回看的最近已关闭 PR 数
 GT_DIFF_BUDGET = 8000                                            # 单 PR diff 截断字符预算（喂 TF-GRPO 的上下文）
 
 # --- 盲区2 坏真值检测（B/C/D 信号 → trust_weight；env 默认全关 = 零行为变化）-----------
@@ -133,10 +133,10 @@ def _truth_signals(reviews, findings_fa, diff, human_state, bot_login, *, diff_t
     from touchstone import calibrate as C
     resolved_fa = [f for f in (findings_fa or []) if f.get("resolved")]
     low_weight = any((f.get("resolver_association") or "") in LOW_ASSOCIATIONS for f in resolved_fa)
-    tiny_lines = int(os.environ.get("TOUCHSTONE_TRUTH_TINY_DIFF_LINES", TRUTH_TINY_DIFF_LINES_DEFAULT))
+    tiny_lines = int((os.environ.get("TOUCHSTONE_TRUTH_TINY_DIFF_LINES") or "").strip() or str(TRUTH_TINY_DIFF_LINES_DEFAULT))
     added = _diff_added_lines(diff)
     tiny_diff = (not diff_truncated) and 0 < added < tiny_lines and bool(resolved_fa)
-    body_max = int(os.environ.get("TOUCHSTONE_TRUTH_LGTM_BODY_MAX", TRUTH_LGTM_BODY_MAX_DEFAULT))
+    body_max = int((os.environ.get("TOUCHSTONE_TRUTH_LGTM_BODY_MAX") or "").strip() or str(TRUTH_LGTM_BODY_MAX_DEFAULT))
     return {"lgtm_only": C._lgtm_only(reviews, human_state, bot_login, body_max),
             "low_weight_reviewer": low_weight,
             "tiny_diff_resolved": tiny_diff}
@@ -146,8 +146,8 @@ def _trust_weight(signals):
     """从命中信号算 trust_weight（0–1，纯函数）。每命中信号扣 penalty；命中数≥hard_drop→0（硬剔除）。
     默认 penalty=0.34 / hard_drop=3：1 信号→0.66、2→0.32、3+→0。"""
     active = sum(1 for v in (signals or {}).values() if v)
-    penalty = float(os.environ.get("TOUCHSTONE_TRUTH_PENALTY", TRUTH_PENALTY_DEFAULT))
-    hard_drop = int(os.environ.get("TOUCHSTONE_TRUTH_HARD_DROP", TRUTH_HARD_DROP_DEFAULT))
+    penalty = float((os.environ.get("TOUCHSTONE_TRUTH_PENALTY") or "").strip() or str(TRUTH_PENALTY_DEFAULT))
+    hard_drop = int((os.environ.get("TOUCHSTONE_TRUTH_HARD_DROP") or "").strip() or str(TRUTH_HARD_DROP_DEFAULT))
     if active >= hard_drop:
         return 0.0
     return round(max(0.0, 1.0 - penalty * active), 3)

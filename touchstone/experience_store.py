@@ -283,9 +283,9 @@ def _shadow_env_params():
     """从 env 读 shadow 注入三参数（render_injection/shadow_types/shadow_ids 统一来源，保证
     本轮渲染的 shadow 段与 marker 归因的 shadow_types/shadow_ids 取的是同一批候选）。"""
     return {
-        "ratio": float(os.environ.get("TOUCHSTONE_SHADOW_RATIO", SHADOW_RATIO_DEFAULT)),
-        "max_per_review": int(os.environ.get("TOUCHSTONE_SHADOW_MAX_PER_REVIEW", SHADOW_MAX_PER_REVIEW_DEFAULT)),
-        "min_evidence": int(os.environ.get("TOUCHSTONE_SHADOW_MIN_EVIDENCE", SHADOW_MIN_EVIDENCE_DEFAULT)),
+        "ratio": float((os.environ.get("TOUCHSTONE_SHADOW_RATIO") or "").strip() or str(SHADOW_RATIO_DEFAULT)),
+        "max_per_review": int((os.environ.get("TOUCHSTONE_SHADOW_MAX_PER_REVIEW") or "").strip() or str(SHADOW_MAX_PER_REVIEW_DEFAULT)),
+        "min_evidence": int((os.environ.get("TOUCHSTONE_SHADOW_MIN_EVIDENCE") or "").strip() or str(SHADOW_MIN_EVIDENCE_DEFAULT)),
     }
 
 
@@ -344,8 +344,8 @@ def bootstrap_from_calibrate(calib_agg, store, repo="", stack=""):
         return []
     by_rule = (calib_agg or {}).get("by_rule") or {}
     protected = _protected_types()
-    min_fires = int(os.environ.get("TOUCHSTONE_BOOTSTRAP_MIN_FIRES", BOOTSTRAP_MIN_FIRES_DEFAULT))
-    min_adopt = float(os.environ.get("TOUCHSTONE_BOOTSTRAP_MIN_ADOPT", BOOTSTRAP_MIN_ADOPT_DEFAULT))
+    min_fires = int((os.environ.get("TOUCHSTONE_BOOTSTRAP_MIN_FIRES") or "").strip() or str(BOOTSTRAP_MIN_FIRES_DEFAULT))
+    min_adopt = float((os.environ.get("TOUCHSTONE_BOOTSTRAP_MIN_ADOPT") or "").strip() or str(BOOTSTRAP_MIN_ADOPT_DEFAULT))
     existing = {_exp_id(e.get("finding_type"), "emphasize", repo, stack)
                 for e in (store or {}).get("experiences", []) if e.get("kind") == "emphasize"}
     produced = []

@@ -63,9 +63,9 @@ def distill_candidates(calib_agg, repo="", stack=""):
 #   用“组内相对语义优势”取代数值优势/梯度，把经验积累成注入提示词的 token prior。
 #   落到 PR 评审：对历史已合 PR（带人审裁决的最小真值集）分组生成评审、离线打分、
 #   旗舰模型内省高分 vs 低分 → 候选经验。无梯度、无权重。
-TFGRPO_GROUP_SIZE = int(os.environ.get("TOUCHSTONE_TFGRPO_G", "4"))
-_W_NOISE = float(os.environ.get("TOUCHSTONE_W_NOISE", "0.5"))   # 噪声（人忽略却挑了）扣分权重，人可调
-_W_MISS  = float(os.environ.get("TOUCHSTONE_W_MISS", "0.25"))   # 漏报（人采纳却没挑）扣分权重，人可调
+TFGRPO_GROUP_SIZE = int((os.environ.get("TOUCHSTONE_TFGRPO_G") or "").strip() or "4")
+_W_NOISE = float((os.environ.get("TOUCHSTONE_W_NOISE") or "").strip() or "0.5")   # 噪声（人忽略却挑了）扣分权重，人可调
+_W_MISS  = float((os.environ.get("TOUCHSTONE_W_MISS") or "").strip() or "0.25")   # 漏报（人采纳却没挑）扣分权重，人可调
 
 
 def _finding_types(review):

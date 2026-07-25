@@ -5,6 +5,16 @@
 
 ## [未发布]
 
+### 运维加固（集成方 CI 耗时上游报告，中位 351s→117s 的经验固化）
+
+- **缓存写入（问题一，影响所有模板集成方）**：GitHub 2026-06-26 起 `pull_request_target` 对默认分支缓存只读，save 永久失败且被 `continue-on-error` 静默为黄警告（"针对瞬态故障的容错在故障变永久后成为静默器"）。`touchstone.yml` 改 restore-only、权限降 `actions: read`；新增 `warm-pragent-cache.yml` 在可信触发器预热（省 ~52s/轮）。缓存键补 `runner.arch`（venv 含编译产物，跨架构命中不可用）；注释标注子目录 checkout 时 `hashFiles` 需改路径。
+- **数值 env 空串静默失效/崩溃（问题三 + 全仓排查）**：`TOUCHSTONE_MAX_DIFF_LINES` 空串此前经 `or 0` 静默关闭 SIZE-001 体量门禁；另有多处裸 `int(env)`/`float(env)` 空串直接 ValueError 崩 job。全仓 14 个文件统一为"空串回落默认"（`_max_diff_lines()` 等），仅显式 `0` 才是关闭。
+- **`TOUCHSTONE_LITELLM_VERBOSE` 空操作（问题二）**：litellm 1.84 的 `set_verbose` 在 import 时求值、事后赋值无效且被废弃。改为显式调 `litellm._turn_on_debug()`；模板默认置 `false` 并注明 stderr 窗口污染（DEBUG 会把 `failure_stderr_tail` 的真实报错挤出）。
+- **耗时可观测性（问题四）**：`_ix` 交互日志每条带 `[+N.NNs]` 相对时间戳；`metrics.build` 增 `durations`（`t_review`/`t_total` 进 `touchstone-metrics.json`，支撑耗时告警）。
+- **预检 ping 开关（问题五）**：`TOUCHSTONE_LLM_PING=false` 可关（默认开，保留防静默故障的观测点）。
+- **Python ≥3.13 下限（问题六）**：`pragent-constraints.txt` 头部显式标注；DEPLOYMENT 新增「部署效率与踩坑」节，把 `TOUCHSTONE_LLM_THINKING`/`REFLECT_MODEL` 升为必配项（集成方数据：213s→31s）。
+- 测试 +5（空串回落 / SIZE 门禁 / ping 开关 / 日志时间戳 / metrics 耗时字段）。
+
 （首个公开发布 [0.1.0] 之后的新变更记于此。）
 
 ## [0.1.0] — 2026-07-18（首个公开发布）

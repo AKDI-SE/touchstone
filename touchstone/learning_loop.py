@@ -136,7 +136,7 @@ def main(argv=None):
             ground_truth = None
 
     # 真值集下限门控（TOUCHSTONE_GROUND_TRUTH_MIN）：不足则不跑 TF-GRPO，回退计数式
-    gt_min = int(os.environ.get("TOUCHSTONE_GROUND_TRUTH_MIN", "0"))
+    gt_min = int((os.environ.get("TOUCHSTONE_GROUND_TRUTH_MIN") or "").strip() or "0")
     if ground_truth and gt_min and len(ground_truth) < gt_min:
         report["steps"].append(f"真值集 {len(ground_truth)} < 下限 {gt_min}，TF-GRPO 跳过")
         ground_truth = None
