@@ -1654,19 +1654,11 @@ def test_distill_defaults_unchanged_without_c3_knobs():
 
 
 def test_tfgrpo_distiller_picks_up_env_cache_and_budget(monkeypatch):
-    # 生产 run-path：distill(ctx, "tfgrpo") 经 _tfgrpo_distiller 读 env 接通 c3（learn.yml 设 env 即生效）
-    calls = {"rollout": 0}
-
-    def counting_rollout(pr, E, llm, G):
-        calls["rollout"] += 1
-        return [[]]
+    # 生产 run-path：distill(ctx, "tfgrpo") 经 _tfgrpo_distiller 读 env 接通 c3（learn.yml 设 env 即生效）。
+    # 注入 rollout 经 register 覆盖默认不可能（rollout 在 _distill_via_llm 内解析），
+    # 故直接验证 env 解析：_env_rollout_cache/_env_int_opt 返回正确类型。
     monkeypatch.setenv("TOUCHSTONE_ROLLOUT_CACHE", "memory")
     monkeypatch.setenv("TOUCHSTONE_ROLLOUT_BUDGET", "2")
-    gt = [{"pr_id": str(i), "human_adopted": [], "repo": "o/r", "stack": "py",
-           "summary": "s", "diff": "d"} for i in range(5)]
-    ctx = {"ground_truth": gt, "store": {"experiences": []}, "llm": lambda m: "[]"}
-    # 注入 rollout：经 register 覆盖默认不可能（rollout 在 _distill_via_llm 内解析），
-    # 故直接验证 env 解析：_env_rollout_cache/_env_int_opt 返回正确类型
     assert isinstance(L._env_rollout_cache(), dict)            # "memory" → 进程内 dict
     assert L._env_int_opt("TOUCHSTONE_ROLLOUT_BUDGET") == 2
     # 未设 → None
