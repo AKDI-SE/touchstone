@@ -67,6 +67,13 @@ _IX: list = []
 _IX_T0: list = []      # run() 起点（monotonic）；上游报告问题四：交互日志自带阶段耗时
 
 
+def _reset_trace():
+    """重置交互轨迹与计时起点。run() 与测试都用它——评审意见：重置逻辑集中一处，
+    测试不再直接改 _IX/_IX_T0 内部结构，run() 的重置演化时测试同步生效。"""
+    _IX.clear()
+    _IX_T0[:] = [time.monotonic()]
+
+
 def _ix(msg):
     if _IX_T0:
         msg = f"[+{time.monotonic() - _IX_T0[0]:7.2f}s] {msg}"
@@ -258,8 +265,7 @@ def run(pr_url, mode, extra_instructions=None):
       _degraded="llm_failed"     —— PR 已取到、但 LLM 调用失败（端点/鉴权/超时/解析等）
     """
     # 先把 LLM_* 映射成 LiteLLM 认的 env（必须在 import/调用 pr-agent 前注入）
-    _IX.clear()
-    _IX_T0[:] = [time.monotonic()]
+    _reset_trace()
     _ix(f"pr_url={pr_url} mode={mode} extra_instructions={len(extra_instructions or '')} 字符")
     if os.environ.get("LLM_API_KEY") and not os.environ.get("OPENAI_API_KEY"):
         os.environ["OPENAI_API_KEY"] = os.environ["LLM_API_KEY"]

@@ -45,14 +45,18 @@ def test_ping_switch(monkeypatch):
     assert R._ping_enabled() is False
     monkeypatch.setenv("TOUCHSTONE_LLM_PING", "0")
     assert R._ping_enabled() is False
+    # 评审意见：锁定大小写不敏感与 "no" 哨兵（防 .lower() 被误删后测试仍绿）
+    for v in ("FALSE", "False", "No", "NO"):
+        monkeypatch.setenv("TOUCHSTONE_LLM_PING", v)
+        assert R._ping_enabled() is False
+    monkeypatch.setenv("TOUCHSTONE_LLM_PING", "true")
+    assert R._ping_enabled() is True
 
 
 def test_interaction_log_carries_stage_timestamps():
     """上游报告问题四：交互日志每条带 [+N.NNs] 相对耗时，阶段耗时可从产物直接读出。"""
-    import time
     from touchstone import pr_agent_runner as R
-    R._IX.clear()
-    R._IX_T0[:] = [time.monotonic()]
+    R._reset_trace()          # 评审意见：经统一入口重置，测试不持有内部结构细节
     R._ix("LLM 配置: …")
     assert re.match(r"^\[\+ *\d+\.\d{2}s\] LLM 配置", R._IX[-1])
     R._IX.clear(); R._IX_T0.clear()

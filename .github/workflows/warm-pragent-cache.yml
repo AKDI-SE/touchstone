@@ -31,6 +31,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         id: py
+        with:
+          python-version: "3.13"   # 评审意见：两个工作流必须钉同一版本——缓存键含解析出的补丁号，
+                                   # 任一侧漂移即全员 cache miss；且 pragent-constraints 硬下限即 3.13
       - name: Restore (skip rebuild on hit)
         id: pv
         uses: actions/cache/restore@v4
