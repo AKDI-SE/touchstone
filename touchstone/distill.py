@@ -225,10 +225,42 @@ def rollout_reviews(pr, experience_text, llm, group_size=TFGRPO_GROUP_SIZE, *, m
     return raw
 
 
+# --- 差距2b：结构化经验模板 + 注入式过滤（opt-in 默认关）-------------------------
+# 设计文档 §3.2：TOUCHSTONE_EXP_INJECTION_FILTER 开 → distill_semantic_advantage 改要求 LLM
+# 输出 {finding_type, kind, condition, action}，condition+action 渲染成 "When <c>, <a> (PRA-X)"
+# 存进 text；condition/action 含 prompt 注入/越权模式 → 丢弃 + stderr（复用 review_provider
+# EXPERIENCE_REF 防投毒纪律）。关（默认）→ 仅自由 text（reward 路径字节级不变）。
+_EXP_INJECTION_PATTERNS = ("ignore previous", "ignore all previous", "disregard the above",
+                           "disregard previous", "ignore above", "forget previous",
+                           "system:", "you are now", "new instructions:", "approve all",
+                           "act as ", "override previous")
+_EXP_MAX_TEXT_LEN = int(os.environ.get("TOUCHSTONE_EXP_MAX_TEXT_LEN", "240"))
+
+
+def _exp_injection_filter_enabled():
+    """差距2b 总开关（默认关）：开 → 结构化 {condition,action} 模板 + 注入式过滤。"""
+    return os.environ.get("TOUCHSTONE_EXP_INJECTION_FILTER", "").lower() in ("1", "true", "yes", "on")
+
+
+def _looks_injected(*texts):
+    """任一段文本命中 prompt 注入/越权指令模式 → 真（丢弃 + stderr 的依据）。"""
+    low = " ".join((t or "") for t in texts).lower()
+    return any(p in low for p in _EXP_INJECTION_PATTERNS)
+
+
+def _render_structured_text(condition, action, ftype):
+    """结构化 condition+action → 注入用经验文本（设计文档 §3.2 口径）。"""
+    return f"When {condition.strip()}, {action.strip()} ({ftype})"
+
+
 def distill_semantic_advantage(pr, group, llm, repo="", stack=""):
     """③ 组内相对语义优势：把一组带分数的评审交旗舰模型内省——高分挑对了什么、低分挑偏/漏了什么——
     按 仓·栈·发现类型 提炼候选经验。返回与 distill_candidates 同 schema 的 Experience(candidate)；
-    只保留 PR-Agent 源类型（确定性 contract 类型永不进经验，坑 2b）。"""
+    只保留 PR-Agent 源类型（确定性 contract 类型永不进经验，坑 2b）。
+
+    差距2b（opt-in，TOUCHSTONE_EXP_INJECTION_FILTER 默认关）：开 → prompt 改要求 LLM 输出
+    {finding_type, kind, condition, action}，text 由 condition+action 渲染（"When <c>, <a> (PRA-X)"），
+    并校验非空 + 祈使味 + 拒注入式；关 → 仅自由 text（行为不变）。"""
     rewards = group["rewards"]
     if len(rewards) < 2 or len({round(r, 6) for r in rewards}) < 2:
         return []                                  # 退化组：组内奖励无差异，对比无意义（I4）
@@ -236,10 +268,18 @@ def distill_semantic_advantage(pr, group, llm, repo="", stack=""):
     ranked = sorted(zip(group["outputs"], rewards, strict=True), key=lambda x: -x[1])
     payload = {"pr_id": pr.get("pr_id"),
                "reviews_by_reward": [{"reward": round(rw, 2), "review": rv} for rv, rw in ranked]}
-    sys_p = ("Compare the higher-reward reviews against the lower-reward ones for this PR and "
-             "distill repo-specific review experience: which finding_type to EMPHASIZE (humans "
-             "act on) and which to SUPPRESS (humans dismiss). Respond ONLY as a JSON array of "
-             '{"finding_type": "PRA-...", "kind": "emphasize|suppress", "text": "<one imperative sentence>"}.')
+    structured = _exp_injection_filter_enabled()                 # 差距2b 总开关
+    if structured:
+        sys_p = ("Compare the higher-reward reviews against the lower-reward ones for this PR and "
+                 "distill repo-specific review experience: which finding_type to EMPHASIZE (humans "
+                 "act on) and which to SUPPRESS (humans dismiss). Respond ONLY as a JSON array of "
+                 '{"finding_type": "PRA-...", "kind": "emphasize|suppress", '
+                 '"condition": "<when this happens>", "action": "<one imperative sentence>"}.')
+    else:
+        sys_p = ("Compare the higher-reward reviews against the lower-reward ones for this PR and "
+                 "distill repo-specific review experience: which finding_type to EMPHASIZE (humans "
+                 "act on) and which to SUPPRESS (humans dismiss). Respond ONLY as a JSON array of "
+                 '{"finding_type": "PRA-...", "kind": "emphasize|suppress", "text": "<one imperative sentence>"}.')
     user = f"# PR\n{pr.get('summary', '')}\n\n# Group\n{json.dumps(payload, ensure_ascii=False)}"
     items = _llm_json(llm, [{"role": "system", "content": sys_p},
                             {"role": "user", "content": user}], default=[])
@@ -248,15 +288,30 @@ def distill_semantic_advantage(pr, group, llm, repo="", stack=""):
     for it in items if isinstance(items, list) else []:
         ftype = (it or {}).get("finding_type", "")
         kind = (it or {}).get("kind")
-        text = (it or {}).get("text")
-        if not ftype or kind not in ("emphasize", "suppress") or not text:
+        if not ftype or kind not in ("emphasize", "suppress"):
             continue
         if not _is_review_type(ftype):
             continue                          # 确定性类型不进经验（固定基准，坑 2b）
         if kind == "suppress" and ftype in protected:
             continue                          # 红线：受保护类型永不 suppress
+        if structured:                        # 差距2b：结构化 + 校验 + 注入过滤
+            condition = (it.get("condition") or "").strip()
+            action = (it.get("action") or "").strip()
+            if not condition or not action or "?" in action:    # 非空 + 祈使味（问句非祈使）
+                continue
+            if _looks_injected(condition, action):              # 注入式/越权 → 丢弃 + stderr
+                print(f"[learn] 差距2b：丢弃疑似注入式经验文本（ftype={ftype}, kind={kind}）",
+                      file=sys.stderr)
+                continue
+            text = _render_structured_text(condition, action, ftype)
+            if len(text) > _EXP_MAX_TEXT_LEN:
+                text = text[:_EXP_MAX_TEXT_LEN]                 # 超长截断（注入文本有长度上限）
+        else:
+            text = (it.get("text") or "").strip()
+            if not text:
+                continue
         out.append({"id": _exp_id(ftype, kind, repo, stack), "repo": repo, "stack": stack,
-                    "finding_type": ftype, "kind": kind, "text": text.strip(),
+                    "finding_type": ftype, "kind": kind, "text": text,
                     "evidence": {"tfgrpo": True, "group_rewards": [round(x, 2) for x in rewards],
                                  "pr": pr.get("pr_id")},
                     "status": "candidate", "source": "tfgrpo", "locked": False,
