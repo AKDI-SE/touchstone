@@ -1905,6 +1905,60 @@ def test_bootstrap_not_blocked_by_taxonomy_and_legitimately_introduces_new_type(
 
 
 # ============================================================================
+# (2) calibrate 线程位置 → 1a 数据管道（不动 marker，位置取自 GitHub 线程元数据）
+# ============================================================================
+def test_thread_findings_carries_thread_position():
+    """calibrate.thread_findings 把线程锚定的 file/line 带到 finding（差距1a 位置信号来源）。"""
+    from touchstone import calibrate as C
+    raw = [{
+        "isResolved": True, "resolvedBy": {"login": "alice"}, "path": "src/a.py", "line": 42,
+        "comments": {"nodes": [{"author": {"login": "github-actions[bot]"},
+                                 "authorAssociation": "NONE",
+                                 "body": '<!-- touchstone-finding: {"rule_id":"PRA-A","agent":"pr-agent"} -->'}]}}]
+    fa = C.thread_findings(C.parse_review_threads({"data": {"repository": {"pullRequest":
+            {"reviewThreads": {"nodes": raw}}}}}),"github-actions[bot]")
+    assert fa[0]["file"] == "src/a.py" and fa[0]["line"] == 42
+
+
+def test_build_ground_truth_carries_positions_to_gt_entry(tmp_path, monkeypatch):
+    """build_ground_truth 把 resolved findings 的位置传进 make_gt_entry → 真值条目带 human_adopted_positions。"""
+    from touchstone import calibrate as C
+    monkeypatch.setenv("TOUCHSTONE_BUILD_GROUND_TRUTH", "true")
+    monkeypatch.setenv("GITHUB_TOKEN", "x")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "o/r")
+
+    def fake_gh(path, token, accept="application/vnd.github+json"):
+        if path.startswith("/repos/o/r/pulls?") or "/pulls?" in path:           # 已关闭 PR 列表
+            return [{"number": 1, "title": "t", "user": {"login": "author"}, "merged_at": "m"}]
+        if path.endswith("/issues/1/comments?per_page=100"):                      # result marker（合法 JSON）
+            return [{"body": ('<!-- touchstone-result: '
+                              '{"findings":[{"rule_id":"PRA-A"}],'
+                              '"injected_types":["PRA-A"]} -->')}]
+        if "/pulls/1/reviews" in path:
+            return []
+        if path.endswith("/pulls/1") and accept.endswith("diff"):
+            return "+diff"
+        if path.endswith("/pulls/1/files?per_page=100"):
+            return [{"filename": "src/a.py"}]
+        return []
+    monkeypatch.setattr(GT, "_gh_get", fake_gh)
+
+    def fake_threads(*a, **kw):                                                  # 带位置的评审线程
+        return [{"isResolved": True, "resolved_by": "alice", "path": "src/a.py", "line": 42,
+                 "comments": [{"author": "github-actions[bot]", "association": "NONE",
+                               "body": '<!-- touchstone-finding: {"rule_id":"PRA-A","agent":"pr-agent"} -->'}]}]
+    monkeypatch.setattr(C, "parse_review_threads", lambda *a, **k: fake_threads())
+    monkeypatch.setattr(C, "gql", lambda *a, **k: {})                      # 拦真 GraphQL 网络（离线）
+    monkeypatch.setattr(C, "thread_findings", lambda threads, bl, pr_author=None: [
+        {"rule_id": "PRA-A", "agent": "pr-agent", "resolved": True, "dismissed": False,
+         "resolver_association": "MEMBER", "file": "src/a.py", "line": 42}])
+
+    gt = GT.build_ground_truth("o", "r", "x", window=5)
+    assert len(gt) == 1
+    assert gt[0]["human_adopted_positions"] == [{"finding_type": "PRA-A", "file": "src/a.py", "line": 42}]
+
+
+# ============================================================================
 # c4-2c：冲突消解按证据强度（原仅 updated_at）
 # ============================================================================
 def test_resolve_conflicts_prefers_evidence_strength_over_recency():
