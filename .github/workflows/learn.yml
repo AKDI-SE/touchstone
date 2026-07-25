@@ -65,6 +65,10 @@ jobs:
           TOUCHSTONE_PROTECTED_TYPES: ${{ vars.TOUCHSTONE_PROTECTED_TYPES || '' }}
           TOUCHSTONE_LEARNING_ENABLED: ${{ vars.TOUCHSTONE_LEARNING_ENABLED || 'true' }}
           TOUCHSTONE_GROUND_TRUTH_MIN: ${{ vars.TOUCHSTONE_GROUND_TRUTH_MIN || '10' }}
+          # c3 rollout 成本控制（缓存 / 预算 / 并发；默认值同设计文档 §5.1，经 vars 可调）
+          TOUCHSTONE_ROLLOUT_CACHE: ${{ vars.TOUCHSTONE_ROLLOUT_CACHE || '' }}       # 空=不缓存；'memory'=进程内；路径=文件缓存
+          TOUCHSTONE_ROLLOUT_BUDGET: ${{ vars.TOUCHSTONE_ROLLOUT_BUDGET || '200' }}   # 每轮总 rollout 上限
+          TOUCHSTONE_ROLLOUT_WORKERS: ${{ vars.TOUCHSTONE_ROLLOUT_WORKERS || '4' }}   # variant 批并发数
           FORCE_REBUILD: ${{ github.event.inputs.force_ground_truth_rebuild || 'false' }}
         run: |
           python -m touchstone.learning_loop \
