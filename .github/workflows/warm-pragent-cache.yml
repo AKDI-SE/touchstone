@@ -12,7 +12,12 @@ name: Warm PR-Agent venv cache
 on:
   push:
     branches: [main]
-    paths: [pragent-constraints.txt, .github/workflows/warm-pragent-cache.yml]
+    # 含 touchstone.yml：PRA_VERSION 在那边升版会改缓存键（键嵌 pragent${VERSION}）——
+    # 若不触发预热，新键要等到周调度才落盘，期间每个 PR 白重建 venv（~57s/轮）。
+    paths:
+      - pragent-constraints.txt
+      - .github/workflows/warm-pragent-cache.yml
+      - .github/workflows/touchstone.yml
   schedule:
     - cron: "17 3 * * 1"     # 每周一预热一次：兜底 runner 镜像更新导致的 Python 补丁号变化（键含补丁号）
   workflow_dispatch: {}

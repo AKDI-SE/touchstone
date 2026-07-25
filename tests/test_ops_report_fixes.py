@@ -46,7 +46,7 @@ def test_ping_switch(monkeypatch):
     monkeypatch.setenv("TOUCHSTONE_LLM_PING", "0")
     assert R._ping_enabled() is False
     # 评审意见：锁定大小写不敏感与 "no" 哨兵（防 .lower() 被误删后测试仍绿）
-    for v in ("FALSE", "False", "No", "NO"):
+    for v in ("FALSE", "False", "No", "NO", " false ", "\tno"):   # 含空白变体：与全仓 env 解析同口径 strip
         monkeypatch.setenv("TOUCHSTONE_LLM_PING", v)
         assert R._ping_enabled() is False
     monkeypatch.setenv("TOUCHSTONE_LLM_PING", "true")

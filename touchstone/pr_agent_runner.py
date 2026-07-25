@@ -49,7 +49,7 @@ def _read(path):
 def _ping_enabled():
     """预检 ping 开关（上游报告问题五）：默认开（防静默故障的决定性观测点）；
     端点已确认健康、fan-out 下想省 improve/review 各一次往返的部署可置 false 关闭。"""
-    return os.environ.get("TOUCHSTONE_LLM_PING", "true").lower() not in ("0", "false", "no")
+    return (os.environ.get("TOUCHSTONE_LLM_PING", "true") or "").strip().lower() not in ("0", "false", "no")
 
 
 def _ping_llm(base, key, model):
