@@ -1685,6 +1685,57 @@ def test_rollout_cache_file_roundtrip(tmp_path):
     assert calls["n"] == 1
 
 
+def test_distill_call_booked_against_budget():
+    """评审 PRA-REVIEW:distill.py:446 回归：distill 内省调用计入预算——预算仅够 rollout 时跳过 distill。"""
+    gt = [{"pr_id": "1", "human_adopted": [], "repo": "o/r", "stack": "py", "summary": "s", "diff": "d"}]
+    distill_calls = {"n": 0}
+
+    def counting_rollout(pr, E, llm, G):
+        return [[{"finding_type": "PRA-A"}], [{"finding_type": "PRA-B"}]]
+
+    def counting_distill(pr, group, llm, repo, stack):
+        distill_calls["n"] += 1
+        return []
+    # 预算恰好够 rollout（G=2），不够后续 distill 内省（还需 1）→ distill 应被跳过
+    L._distill_via_llm(gt, {"experiences": []}, llm=lambda m: "[]",
+                      group_size=2, rollout=counting_rollout, distill_advantage=counting_distill,
+                      max_llm_calls=2)
+    assert distill_calls["n"] == 0          # 预算耗尽 → distill 内省被跳过（修复前会调用 1 次）
+
+
+def test_distill_call_runs_when_budget_allows():
+    """对照：预算够（rollout + distill）→ distill 内省照常调用。"""
+    gt = [{"pr_id": "1", "human_adopted": [], "repo": "o/r", "stack": "py", "summary": "s", "diff": "d"}]
+    distill_calls = {"n": 0}
+
+    def counting_rollout(pr, E, llm, G):
+        return [[{"finding_type": "PRA-A"}], [{"finding_type": "PRA-B"}]]
+
+    def counting_distill(pr, group, llm, repo, stack):
+        distill_calls["n"] += 1
+        return []
+    L._distill_via_llm(gt, {"experiences": []}, llm=lambda m: "[]",
+                      group_size=2, rollout=counting_rollout, distill_advantage=counting_distill,
+                      max_llm_calls=3)     # 2(rollout) + 1(distill) = 3，恰好够
+    assert distill_calls["n"] == 1
+
+
+def test_rollout_cache_key_includes_rollout_tag():
+    """评审 PRA-REVIEW:distill.py:347 回归：rollout 实现身份入键——换实现 → key 变；同 tag 确定性。"""
+    pr = {"pr_id": "1", "summary": "s", "diff": "d"}
+    k_default = L._rollout_cache_key(pr, "E", 4, rollout_tag="default")
+    k_custom = L._rollout_cache_key(pr, "E", 4, rollout_tag="custom:foo")
+    assert k_default != k_custom                                        # 换实现 → key 变
+    assert L._rollout_cache_key(pr, "E", 4, rollout_tag="default") == k_default   # 同 tag 确定性
+
+
+def test_pragent_label_types_returns_empty_when_yaml_unimportable(monkeypatch):
+    """评审 PRA-POSSIBLE_ISSUE:learning_loop.py:71 回归：yaml 不可导入时不抛 NameError，返回空集。"""
+    import sys
+    monkeypatch.setitem(sys.modules, "yaml", None)   # import yaml → ImportError
+    assert L._pragent_label_types("nonexistent.yaml") == set()   # 修复前：except 引用未绑定 yaml.YAMLError → NameError
+
+
 def test_budget_skips_prs_when_exhausted():
     calls = []
 

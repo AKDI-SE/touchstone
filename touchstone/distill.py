@@ -344,10 +344,12 @@ def _flagship_llm():
 #         砍掉"每周 cron 全量重跑"对未变 PR 的重复采样。跨 epoch：E 变了 → key 变 → 自然 miss（正确）。
 #   预算：max_llm_calls 限单次 run 的旗舰调用量，超限跳过剩余 PR（不静默——skipped_prs 留痕）。
 #   三者默认全关（cache=None / max_llm_calls=None / max_workers=None）→ 字节级零行为变化。
-def _rollout_cache_key(pr, experience_text, group_size):
-    """稳定键：同 PR + 同经验库 E + 同组大小 + 同旗舰模型 + 同 PR 内容(summary/diff) → 复用 rollout。
+def _rollout_cache_key(pr, experience_text, group_size, *, rollout_tag="default"):
+    """稳定键：同 PR + 同经验库 E + 同组大小 + 同旗舰模型 + 同 PR 内容(summary/diff) + 同 rollout 实现 → 复用 rollout。
     summary/diff 入键：PR 标题改 / GT_DIFF_BUDGET 变更截断 → diff 变 → key 变 → 不返回 stale rollout
-    （评审 PRA-REVIEW:distill.py:345；仅影响文件缓存路径，memory 缓存每 run 新建本就稳定）。"""
+    （评审 PRA-REVIEW:distill.py:345；仅影响文件缓存路径，memory 缓存每 run 新建本就稳定）。
+    rollout_tag 入键：换 rollout 实现（自定义 distiller 注入）→ tag 变 → 不复用旧实现产的结果
+    （评审 PRA-REVIEW:distill.py:347）。默认 "default" = 内置 rollout_reviews。"""
     model = os.environ.get("TOUCHSTONE_FLAGSHIP_MODEL") or os.environ.get("LLM_MODEL") or ""
     h = hashlib.sha256()
     h.update(str(pr.get("pr_id", "")).encode("utf-8"))
@@ -361,6 +363,8 @@ def _rollout_cache_key(pr, experience_text, group_size):
     h.update((pr.get("summary") or "").encode("utf-8"))   # PR 内容入键（防 stale）
     h.update(b"\x1f")
     h.update((pr.get("diff") or "").encode("utf-8"))
+    h.update(b"\x1f")
+    h.update((rollout_tag or "default").encode("utf-8"))  # rollout 实现身份入键（防跨实现 stale）
     return h.hexdigest()
 
 
@@ -427,12 +431,15 @@ def _distill_via_llm(ground_truth, store, llm=None, *, group_size=TFGRPO_GROUP_S
       score(review, human_adopted) -> float
       distill_advantage(pr, group, llm, repo, stack) -> [Experience(candidate)]
     c3 成本控制（默认全关 = 零行为变化）：
-      cache(dict|路径)：rollout 结果按 (pr_id+E+模型+G) 缓存复用，砍重复采样；
-      max_llm_calls(int)：单次 run 旗舰调用预算，超限跳过剩余 PR（不静默，记 self._budget_skipped）；
+      cache(dict|路径)：rollout 结果按 (pr_id+E+模型+G+summary/diff+rollout_tag) 缓存复用，砍重复采样；
+      max_llm_calls(int)：单次 run 旗舰调用预算（rollout 生成 + distill 内省各计入；评审 distill.py:446），
+                         超限跳过剩余 PR（不静默，记 budget.skipped_prs）；
       max_workers(int)：仅对内置 rollout_reviews 生效（注入自定义 rollout 时自行管理并发）。"""
     llm = llm or _flagship_llm()
     rollout_is_default = rollout is None
     rollout = rollout or rollout_reviews
+    rollout_tag = ("default" if rollout_is_default
+                   else f"{rollout.__module__}:{rollout.__qualname__}")  # 缓存 key 的实现身份（评审 distill.py:347）
     score = score or score_review
     distill_advantage = distill_advantage or distill_semantic_advantage
     base_active = [e for e in (store or {}).get("experiences", []) if e.get("status") == "active"]
@@ -444,7 +451,7 @@ def _distill_via_llm(ground_truth, store, llm=None, *, group_size=TFGRPO_GROUP_S
         cond = {"experiences": base_active + [dict(c, status="active") for c in acc.values()]}
         experience_text = render_injection(cond)
         for pr in ground_truth or []:
-            key = (_rollout_cache_key(pr, experience_text, group_size)
+            key = (_rollout_cache_key(pr, experience_text, group_size, rollout_tag=rollout_tag)
                    if cache_obj is not None else None)
             if cache_obj is not None and key in cache_obj:
                 reviews = cache_obj[key]                       # 缓存命中：复用，不重复采样
@@ -475,8 +482,15 @@ def _distill_via_llm(ground_truth, store, llm=None, *, group_size=TFGRPO_GROUP_S
                             else pr.get("human_adopted"))
             rewards = [score(o, human_signal) * weight for o in reviews]
             group = {"outputs": reviews, "rewards": rewards}
-            for c in distill_advantage(pr, group, llm,
-                                                pr.get("repo", repo), pr.get("stack", stack)):
+            # distill 内省也耗 1 次旗舰调用——计入预算（评审 PRA-REVIEW:distill.py:446）；预算耗尽则跳过内省。
+            # 否则缓存命中时 rollout 0 预算却仍逐 PR 触发 distill 调用，预算失真（可显示 0 用量而数百次调用）。
+            if budget.has(1):
+                budget.use(1)
+                distilled = distill_advantage(pr, group, llm,
+                                              pr.get("repo", repo), pr.get("stack", stack))
+            else:
+                distilled = []
+            for c in distilled:
                 prev = acc.get(c["id"])
                 if prev:
                     prev["source_prs"] = sorted(set(prev["source_prs"]) | set(c["source_prs"]))
