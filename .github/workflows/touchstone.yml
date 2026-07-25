@@ -49,10 +49,8 @@ jobs:
       - uses: actions/setup-python@v5
         id: py
         with:
-          python-version: "3.13"   # 评审意见：两个工作流必须钉同一版本——缓存键含解析出的补丁号，
-                                   # 任一侧漂移即全员 cache miss；且 pragent-constraints 硬下限即 3.13
-        with:
           # 钉 3.13：pr-agent 的原生依赖（tiktoken 经 PyO3 0.22.6）暂不支持 3.14，会源码编译失败。
+          # 且必须与 warm-pragent-cache.yml 钉同一版本——缓存键含解析出的补丁号，任一侧漂移即全员 cache miss。
           python-version: "3.13"
       - name: Install deps
         run: pip install -e .
