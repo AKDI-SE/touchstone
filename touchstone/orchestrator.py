@@ -356,7 +356,14 @@ def _max_diff_lines():
     """SIZE-001 体量门禁阈值。空串（vars 未创建时 `${{ vars.X }}` 透传的常态）回落默认 1000，
     只有显式 "0" 才关闭——上游报告问题三：此前空串经 `or 0` 静默关闭门禁，超大 PR 直送 LLM 且无提示。"""
     raw = (os.environ.get("TOUCHSTONE_MAX_DIFF_LINES") or "").strip()
-    return int(raw) if raw else 1000
+    if not raw:
+        return 1000
+    try:
+        return int(raw)
+    except ValueError:
+        print(f"[warn] TOUCHSTONE_MAX_DIFF_LINES={raw!r} 非数字，回落默认 1000（SIZE-001 门禁保持生效）",
+              file=sys.stderr)
+        return 1000
 
 
 def review_pr(pr, contract, standards, provider=None):

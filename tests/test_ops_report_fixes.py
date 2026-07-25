@@ -32,6 +32,8 @@ def test_max_diff_lines_empty_keeps_gate(monkeypatch):
     assert O._max_diff_lines() == 0
     monkeypatch.setenv("TOUCHSTONE_MAX_DIFF_LINES", "250")
     assert O._max_diff_lines() == 250
+    monkeypatch.setenv("TOUCHSTONE_MAX_DIFF_LINES", "1k")   # 评审意见：非数字（typo）→ 告警回落默认，门禁不失效、评审不崩
+    assert O._max_diff_lines() == 1000
     monkeypatch.delenv("TOUCHSTONE_MAX_DIFF_LINES", raising=False)
     assert O._max_diff_lines() == 1000
 
