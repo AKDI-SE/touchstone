@@ -241,10 +241,12 @@ def rollout_reviews(pr, experience_text, llm, group_size=TFGRPO_GROUP_SIZE, *, m
 # 输出 {finding_type, kind, condition, action}，condition+action 渲染成 "When <c>, <a> (PRA-X)"
 # 存进 text；condition/action 含 prompt 注入/越权模式 → 丢弃 + stderr（复用 review_provider
 # EXPERIENCE_REF 防投毒纪律）。关（默认）→ 仅自由 text（reward 路径字节级不变）。
-_EXP_INJECTION_PATTERNS = ("ignore previous", "ignore all previous", "disregard the above",
-                           "disregard previous", "ignore above", "forget previous",
-                           "system:", "you are now", "new instructions:", "approve all",
-                           "act as ", "override previous")
+# 注入式/越权指令模式（词边界正则：避免 "react as"/"filesystem:" 这类合法文本误伤）。
+_EXP_INJECTION_RE = re.compile(
+    r"\b(?:ignore|disregard|forget)\b[\s\S]{0,20}\b(?:previous|above)\b"   # 指令覆盖类
+    r"|\b(?:system|new\s+instructions)\s*:"                                 # 角色/分段（\b 不误伤 filesystem:）
+    r"|\b(?:you\s+are\s+now|approve\s+all|act\s+as|override\s+previous)\b",  # 直接越权（\b 不误伤 react as）
+    re.IGNORECASE)
 _EXP_MAX_TEXT_LEN = int(os.environ.get("TOUCHSTONE_EXP_MAX_TEXT_LEN", "240"))
 
 
@@ -254,9 +256,8 @@ def _exp_injection_filter_enabled():
 
 
 def _looks_injected(*texts):
-    """任一段文本命中 prompt 注入/越权指令模式 → 真（丢弃 + stderr 的依据）。"""
-    low = " ".join((t or "") for t in texts).lower()
-    return any(p in low for p in _EXP_INJECTION_PATTERNS)
+    """任一段文本命中 prompt 注入/越权指令模式 → 真（词边界，避免误伤 'react as'/'filesystem:'）。"""
+    return bool(_EXP_INJECTION_RE.search(" ".join((t or "") for t in texts)))
 
 
 def _render_structured_text(condition, action, ftype):
