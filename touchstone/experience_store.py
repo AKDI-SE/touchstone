@@ -108,6 +108,49 @@ def _protected_types():
     return {t.strip() for t in os.environ.get("TOUCHSTONE_PROTECTED_TYPES", "").split(",") if t.strip()}
 
 
+# --- 分类法白名单（c1：防 LLM 幻觉 finding_type 污染经验库；env 默认关 = 零行为变化）---
+# 详见 docs/tfgrpo-productionization-design.html 差距 1b。rollout_reviews / distill_semantic_advantage
+# 让旗舰模型自由产 "finding_type":"PRA-..."，唯一过滤是 _is_review_type（只查前缀）——LLM 可幻觉出
+# PRA-FAKE 之类进经验库、再以 [shadow] 注入污染后续 rollout 的 E。白名单在【入池唯一闸】merge_candidates
+# 兜底：未知类型经软映射后仍不中 → 丢弃 + 留痕（fail-closed，不静默）。
+TAXONOMY_ENFORCE_DEFAULT = False
+
+
+def _normalize_type(ftype):
+    """finding_type 归一化用于软匹配：大写、分隔符统一为 '-'。
+    'PRA-Spring_Tx' / 'pra spring tx' / 'PRA_SPRING_TX' → 'PRA-SPRING-TX'。纯函数。"""
+    return (str(ftype or "").upper()
+            .replace("_", "-").replace(" ", "-").replace("/", "-")).strip("-")
+
+
+def coerce_type(ftype, known):
+    """把 LLM 产出的 finding_type 校验/软映射到白名单已知类型。
+    known=None → 白名单未配置，照原样返回（不校验）；非 None 时：精确命中 → 原值；
+    归一化后命中 → 白名单里的规范形（修大小写/分隔符漂移）；都不中 → None（未知，调用方丢弃）。纯函数。"""
+    if known is None:
+        return ftype
+    if ftype in known:
+        return ftype
+    norm = _normalize_type(ftype)
+    if not norm:
+        return None
+    for k in known:
+        if _normalize_type(k) == norm:
+            return k
+    return None
+
+
+def known_types(store, extra=()):
+    """经验库的有效 finding_type 白名单（taxonomy）。
+    = 已 active 的类型 ∪ extra（调用方传入，如 pr-agent.yaml 的 label 集）∪ env TOUCHSTONE_TAXONOMY_TYPES。
+    纯函数（不含 I/O——pr-agent.yaml 的解析由调用方做后经 extra 传入，保持本模块可离线单测）。"""
+    types = set(extra or [])
+    types |= {e.get("finding_type") for e in (store or {}).get("experiences", [])
+              if e.get("status") == "active" and e.get("finding_type")}
+    types |= {t.strip() for t in os.environ.get("TOUCHSTONE_TAXONOMY_TYPES", "").split(",") if t.strip()}
+    return types
+
+
 def seed_experience(store, finding_type, kind, text, *, repo="", stack="",
                     status="active", locked=True, source="human"):
     """写一条经验当种子。默认 source=human（人手写，权威：直接 active 且 locked，学习回路不得
@@ -131,10 +174,22 @@ def seed_experience(store, finding_type, kind, text, *, repo="", stack="",
     return exp
 
 
-def merge_candidates(store, candidates):
-    """把候选并入经验库的 candidate 池：同 id 已存在则更新证据（不降级 active/retired 的状态）。"""
+def merge_candidates(store, candidates, *, taxonomy=None):
+    """把候选并入经验库的 candidate 池：同 id 已存在则更新证据（不降级 active/retired 的状态）。
+    taxonomy（集合，默认 None=不启用 = 零行为变化）：非空时，finding_type 不在白名单的候选经
+    coerce_type 软映射；仍未知 → 丢弃并 stderr 留痕（fail-closed 防 LLM 幻觉类型污染经验库；不静默）。"""
     idx = {e["id"]: e for e in store.get("experiences", [])}
+    dropped = []
     for c in candidates:
+        if taxonomy is not None:
+            ft = coerce_type(c.get("finding_type", ""), taxonomy)
+            if ft is None:
+                dropped.append(c.get("finding_type"))
+                continue                      # 未知类型：丢弃（fail-closed），不入池
+            if ft != c.get("finding_type"):
+                # 软映射修正了类型 → 同步重算 id（id 含 finding_type），否则错位成新条目
+                c = dict(c, finding_type=ft,
+                         id=_exp_id(ft, c.get("kind", ""), c.get("repo", ""), c.get("stack", "")))
         if c["id"] in idx:
             e = idx[c["id"]]
             if e.get("locked") or e.get("source") == "human":
@@ -145,6 +200,11 @@ def merge_candidates(store, candidates):
         else:
             store.setdefault("experiences", []).append(c)
             idx[c["id"]] = c
+    if dropped:
+        import sys as _sys
+        print(f"[experience_store] taxonomy 白名单丢弃 {len(dropped)} 个未知 finding_type："
+              f"{sorted(set(d for d in dropped if d))}（TOUCHSTONE_TAXONOMY_ENFORCE 开时生效）",
+              file=_sys.stderr)
     return store
 
 
@@ -202,6 +262,43 @@ def retire(store, calib_agg):
     return retired
 
 
+# --- c2：差分回滚——active 经验若"注入反降采纳率"则退役（与 graduate 对称）-------------
+# 回答 docs/tfgrpo-productionization-design.html 差距 3b："经验在帮还是在害"。graduate 只看
+# 正向 lift≥+0.10 转 active；坏经验原本要等跌破 retire 的 RETIRE_ADOPT_MAX(0.15) 绝对门槛
+# 才下线——相对差分让"注入后比不注入还差"的经验更快退役。样本门槛镜像 graduate（≥20）防小样本误杀。
+RETIRE_NEGATIVE_LIFT_DEFAULT = -0.05   # 注入臂采纳率比不注入臂低 5pp 即回滚
+
+
+def retire_on_negative_lift(store, ab_results, *, min_samples=None, threshold=None):
+    """active 经验若'注入该经验 vs 不注入'的采纳率 lift ≤ threshold（默认 -0.05）→ 退役。
+    与 graduate 对称：graduate 看 lift≥+0.10 转 active；本函数看 lift≤负阈值 退役。
+    ab_results 同 graduate：{finding_type: {with_seen, with_adopted, without_seen, without_adopted}}。
+    样本不足（<min_samples）不轻动；locked/人手 seed 不动。返回退役的 id 列表。"""
+    if min_samples is None:
+        min_samples = GRADUATE_MIN_SAMPLES
+    if threshold is None:
+        threshold = float(os.environ.get("TOUCHSTONE_RETIRE_NEGATIVE_LIFT",
+                                         RETIRE_NEGATIVE_LIFT_DEFAULT))
+    retired = []
+    for e in store.get("experiences", []):
+        if e.get("status") != "active" or e.get("locked") or e.get("source") == "human":
+            continue
+        ab = (ab_results or {}).get(e.get("finding_type"))
+        if not ab:
+            continue
+        ws, wa = ab.get("with_seen", 0), ab.get("with_adopted", 0)
+        os_, oa = ab.get("without_seen", 0), ab.get("without_adopted", 0)
+        if ws < min_samples or os_ < min_samples:
+            continue
+        lift = (wa / ws) - (oa / os_)
+        if lift <= threshold:
+            e["status"] = "retired"
+            e["evidence"]["ab_lift"] = round(lift, 2)
+            e["updated_at"] = int(time.time())
+            retired.append(e["id"])
+    return retired
+
+
 def disable(store, exp_id):
     """人工单条停用（→retired），可回退。每条经验留来源/证据，便于抽检与回退。"""
     for e in store.get("experiences", []):
@@ -213,12 +310,20 @@ def disable(store, exp_id):
 
 
 # --- 注入：active 经验 → PR-Agent extra_instructions（只建议、不进闸）-------------
+def _evidence_strength(e):
+    """证据强度：(source_prs 数, evidence.fires, updated_at)——多 PR 反复见证 > 命中样本数 > 新旧。
+    用于冲突消解（c4-2c）：原仅取 updated_at 最新，会把'单 PR 偶然蒸出但新'误判为比'多 PR 反复
+    验证但旧'更可信；改为按证据强度排序，证据相同时退回 updated_at（保持既有 tiebreak 行为）。"""
+    ev = e.get("evidence") or {}
+    return (len(e.get("source_prs") or []), ev.get("fires") or 0, e.get("updated_at") or 0)
+
+
 def _resolve_conflicts(active):
-    """同一 仓·栈·发现类型 不能既 emphasize 又 suppress：保留 updated_at 较新的一条（I3）。"""
+    """同一 仓·栈·发现类型 不能既 emphasize 又 suppress：保留证据强度最高的一条（I3 / c4-2c）。"""
     by = {}
     for e in active:
         k = (e.get("repo", ""), e.get("stack", ""), e.get("finding_type"))
-        if k not in by or e.get("updated_at", 0) >= by[k].get("updated_at", 0):
+        if k not in by or _evidence_strength(e) >= _evidence_strength(by[k]):
             by[k] = e
     keep = {id(v) for v in by.values()}
     return [e for e in active if id(e) in keep]

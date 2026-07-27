@@ -52,7 +52,9 @@ def est_tokens(text):
     text = text or ""
     enc = _enc()
     if enc:
-        return len(enc.encode(text))
+        # tiktoken 路径同样套 max(1,·)：空串 encode 出 []→0，违反本函数"空串给 1（避免 0 除）"
+        # 契约（启发式分支已 max(1,·)；tiktoken 装好时原裸 len 会返 0，让 est_tokens("")==1 的测试挂）。
+        return max(1, len(enc.encode(text)))
     # 启发式：CJK 约 1 字符/token、ASCII 代码约 3-4 字符/token → 折中 3
     return max(1, len(text) // 3)
 

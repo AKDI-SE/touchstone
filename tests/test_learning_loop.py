@@ -468,6 +468,28 @@ def test_main_graduates_candidate_when_ab_provided(tmp_path, monkeypatch):
     assert e["status"] == "active"                                          # graduate 已接通
 
 
+def test_main_retires_harming_experience_and_reports_lift(tmp_path, monkeypatch):
+    # c2 main() 接通：active 经验注入反降采纳率 → retire_on_negative_lift 退役 + report 带 lift_summary
+    store_path = tmp_path / "exp.json"
+    store_path.write_text(json.dumps({"experiences": [
+        {"id": "emphasize:PRA-HARM", "finding_type": "PRA-HARM", "kind": "emphasize",
+         "status": "active", "locked": False, "source_prs": ["1"], "evidence": {}}]}),
+        encoding="utf-8")
+    (tmp_path / "agg.json").write_text(json.dumps({}), encoding="utf-8")
+    (tmp_path / "ab.json").write_text(json.dumps({"PRA-HARM": {
+        "with_seen": 25, "with_adopted": 5, "without_seen": 25, "without_adopted": 20}}),
+        encoding="utf-8")                                                    # lift -0.3 ≤ -0.05
+    monkeypatch.setattr(L, "STORE_PATH", str(store_path))
+    monkeypatch.setenv("TOUCHSTONE_CALIB_AGG", str(tmp_path / "agg.json"))
+    monkeypatch.setenv("TOUCHSTONE_AB_RESULTS", str(tmp_path / "ab.json"))
+    monkeypatch.setenv("TOUCHSTONE_DISTILLER", "counting")
+    report = L.main()
+    e = next(x for x in L.load_store(str(store_path))["experiences"]
+             if x["finding_type"] == "PRA-HARM")
+    assert e["status"] == "retired"                                         # 差分回滚已退役
+    assert report["lift_summary"]["negative_lift"] >= 1                     # lift 摘要已产出
+
+
 def test_main_skips_graduate_without_ab(tmp_path, monkeypatch):
     store_path = _seed_candidate_store(tmp_path / "exp.json")
     (tmp_path / "agg.json").write_text(json.dumps({}), encoding="utf-8")
@@ -1441,3 +1463,400 @@ def test_distill_reward_null_and_out_of_range_coalesced():
     assert _capture_distill_reward(trust_weight=None) == [1.0]     # 显式 null → coalesce 1.0（不崩）
     assert _capture_distill_reward(trust_weight=-0.5) == [0.0]     # 负值 clamp → 0
     assert _capture_distill_reward(trust_weight=2.0) == [1.0]      # >1 clamp → 1（不放大 reward）
+
+
+# ============================================================================
+# c1：分类法白名单（防 LLM 幻觉 finding_type 污染经验库）
+# ============================================================================
+def _cand(ftype, kind="emphasize"):
+    return {"id": L._exp_id(ftype, kind, "o/r", "py"), "repo": "o/r", "stack": "py",
+            "finding_type": ftype, "kind": kind, "text": f"rule for {ftype}",
+            "evidence": {"fires": 10, "adoption": 0.9}, "status": "candidate",
+            "source": "counting", "locked": False, "source_prs": ["1"],
+            "created_at": 1, "updated_at": 1}
+
+
+def test_coerce_type_exact_normalized_and_unknown():
+    known = {"PRA-A", "PRA-SPRING-TX"}
+    assert L.coerce_type("PRA-A", known) == "PRA-A"                  # 精确
+    assert L.coerce_type("pra-spring_tx", known) == "PRA-SPRING-TX"  # 软映射（大小写/分隔符）
+    assert L.coerce_type("PRA-FAKE", known) is None                  # 未知 → None（fail-closed）
+    assert L.coerce_type("", known) is None
+    assert L.coerce_type("PRA-A", None) == "PRA-A"                   # known=None → 照原样
+
+
+def test_known_types_from_active_and_env(monkeypatch):
+    store = {"experiences": [{"finding_type": "PRA-A", "status": "active"},
+                             {"finding_type": "PRA-DROP", "status": "retired"}]}
+    monkeypatch.setenv("TOUCHSTONE_TAXONOMY_TYPES", "PRA-ENV1, PRA-ENV2")
+    kt = L.known_types(store, extra={"PRA-LABEL"})
+    assert {"PRA-A", "PRA-LABEL", "PRA-ENV1", "PRA-ENV2"} <= kt
+    assert "PRA-DROP" not in kt                                      # retired 不算已知
+
+
+def test_merge_taxonomy_off_by_default_passes_unknown_through():
+    # taxonomy=None（默认）→ 行为不变：未知类型照样入池（向后兼容）
+    store = {"experiences": []}
+    L.merge_candidates(store, [_cand("PRA-WHATEVER")], taxonomy=None)
+    assert len(store["experiences"]) == 1
+    assert store["experiences"][0]["finding_type"] == "PRA-WHATEVER"
+
+
+def test_merge_taxonomy_drops_unknown_and_keeps_known():
+    store = {"experiences": []}
+    L.merge_candidates(store, [_cand("PRA-A"), _cand("PRA-FAKE"), _cand("PRA-B")],
+                       taxonomy={"PRA-A", "PRA-B"})
+    fts = {e["finding_type"] for e in store["experiences"]}
+    assert fts == {"PRA-A", "PRA-B"}                                 # PRA-FAKE 被丢弃
+
+
+def test_merge_taxonomy_soft_maps_regenerates_id():
+    store = {"experiences": []}
+    # 候选用 'PRA-Spring_Tx'，白名单规范形是 'PRA-SPRING-TX' → 软映射 + id 重算
+    L.merge_candidates(store, [_cand("PRA-Spring_Tx")],
+                       taxonomy={"PRA-SPRING-TX"})
+    e = store["experiences"][0]
+    assert e["finding_type"] == "PRA-SPRING-TX"
+    assert e["id"] == L._exp_id("PRA-SPRING-TX", "emphasize", "o/r", "py")
+
+
+def test_resolve_taxonomy_default_off(monkeypatch):
+    monkeypatch.delenv("TOUCHSTONE_TAXONOMY_ENFORCE", raising=False)
+    assert L._resolve_taxonomy({"experiences": []}) is None          # 默认关 = 不启用
+
+
+def test_resolve_taxonomy_on_reads_pragent_yaml(tmp_path, monkeypatch):
+    yaml = tmp_path / "pr-agent.yaml"
+    yaml.write_text("normalization:\n  label_to_category:\n    possible bug: correctness\n    typo: convention\n")
+    monkeypatch.setenv("TOUCHSTONE_TAXONOMY_ENFORCE", "true")
+    monkeypatch.setenv("TOUCHSTONE_PRAGENT_YAML", str(yaml))
+    kt = L._resolve_taxonomy({"experiences": []})
+    assert "PRA-POSSIBLE_BUG" in kt and "PRA-TYPO" in kt
+
+
+# ============================================================================
+# c2：差分回滚 retire_on_negative_lift + lift_summary
+#    （回答"经验在帮还是在害"；与 graduate 对称）
+# ============================================================================
+def _active_exp(ftype, kind="emphasize", locked=False, source="tfgrpo"):
+    return {"id": L._exp_id(ftype, kind, "o/r", "py"), "repo": "o/r", "stack": "py",
+            "finding_type": ftype, "kind": kind, "text": f"rule {ftype}", "status": "active",
+            "source": source, "locked": locked, "source_prs": ["1"],
+            "evidence": {}, "created_at": 1, "updated_at": 1}
+
+
+def test_retire_on_negative_lift_retires_harming_experience():
+    store = {"experiences": [_active_exp("PRA-HARM")]}
+    # with 臂采纳 0.2、without 0.5 → lift -0.3 ≤ -0.05 → 退役
+    ab = {"PRA-HARM": {"with_seen": 25, "with_adopted": 5, "without_seen": 25, "without_adopted": 12}}
+    retired = L.retire_on_negative_lift(store, ab)
+    assert retired == [L._exp_id("PRA-HARM", "emphasize", "o/r", "py")]
+    assert store["experiences"][0]["status"] == "retired"
+
+
+def test_retire_on_negative_lift_keeps_helping_experience():
+    store = {"experiences": [_active_exp("PRA-HELP")]}
+    # lift +0.3 > 0 → 不退役
+    ab = {"PRA-HELP": {"with_seen": 25, "with_adopted": 20, "without_seen": 25, "without_adopted": 12}}
+    assert L.retire_on_negative_lift(store, ab) == []
+    assert store["experiences"][0]["status"] == "active"
+
+
+def test_retire_on_negative_lift_skips_locked_and_low_samples():
+    store = {"experiences": [
+        _active_exp("PRA-LOCKED", locked=True),         # locked → 不动
+        _active_exp("PRA-LOWSAMPLE"),                   # 样本不足 → 不动
+        _active_exp("PRA-HUMAN", source="human")]}      # 人手 seed → 不动
+    ab = {"PRA-LOCKED": {"with_seen": 25, "with_adopted": 1, "without_seen": 25, "without_adopted": 20},
+          "PRA-LOWSAMPLE": {"with_seen": 3, "with_adopted": 0, "without_seen": 25, "without_adopted": 20},
+          "PRA-HUMAN": {"with_seen": 25, "with_adopted": 1, "without_seen": 25, "without_adopted": 20}}
+    assert L.retire_on_negative_lift(store, ab) == []
+    assert all(e["status"] == "active" for e in store["experiences"])
+
+
+def test_lift_summary_counts_pos_neg_insufficient():
+    ab = {
+        "PRA-POS": {"with_seen": 25, "with_adopted": 20, "without_seen": 25, "without_adopted": 10},  # +
+        "PRA-NEG": {"with_seen": 25, "with_adopted": 5,  "without_seen": 25, "without_adopted": 20},  # -
+        "PRA-LOW": {"with_seen": 2,  "with_adopted": 1,  "without_seen": 25, "without_adopted": 20},  # 样本不足
+    }
+    s = L._lift_summary(ab)
+    assert s == {"positive_lift": 1, "negative_lift": 1, "insufficient_samples": 1}
+
+
+# ============================================================================
+# c3：rollout 缓存 + 预算 + 并发（成本控制；默认全关 = 字节级零行为变化）
+# ============================================================================
+def test_rollout_cache_avoids_redundant_rollout():
+    calls = {"n": 0}
+
+    def counting_rollout(pr, E, llm, G):
+        calls["n"] += 1
+        return [[{"finding_type": "PRA-X"}]]
+
+    gt = [{"pr_id": "1", "human_adopted": ["PRA-X"], "repo": "o/r", "stack": "py",
+           "summary": "s", "diff": "d"}]
+    cache = {}
+    L._distill_via_llm(gt, {"experiences": []}, llm=lambda m: "[]",
+                      rollout=counting_rollout, cache=cache)
+    first = calls["n"]
+    assert len(cache) == 1
+    # 第 2 次同输入 → 全命中缓存，rollout 不再被调
+    L._distill_via_llm(gt, {"experiences": []}, llm=lambda m: "[]",
+                      rollout=counting_rollout, cache=cache)
+    assert calls["n"] == first
+
+
+def test_rollout_cache_file_roundtrip(tmp_path):
+    path = str(tmp_path / "rollout-cache.json")
+    gt = [{"pr_id": "1", "human_adopted": [], "repo": "o/r", "stack": "py",
+           "summary": "s", "diff": "d"}]
+    calls = {"n": 0}
+
+    def counting_rollout(pr, E, llm, G):
+        calls["n"] += 1
+        return [[]]
+    L._distill_via_llm(gt, {"experiences": []}, llm=lambda m: "[]",
+                      rollout=counting_rollout, cache=path)
+    assert calls["n"] == 1
+    # 文件缓存写盘 → 第 2 次读盘命中
+    L._distill_via_llm(gt, {"experiences": []}, llm=lambda m: "[]",
+                      rollout=counting_rollout, cache=path)
+    assert calls["n"] == 1
+
+
+def test_save_cache_uses_unique_temp_file(tmp_path):
+    """评审 item 2：_save_cache 用唯一临时文件——两次写同路径不撞 .tmp（mkstemp 唯一）。"""
+    import touchstone.distill as D
+    p = str(tmp_path / "rollout-cache.json")
+    D._save_cache({"k1": "v1"}, p)
+    D._save_cache({"k2": "v2"}, p)             # 立即二次写：固定 .tmp 会撞，mkstemp 不会
+    import json as _j
+    assert _j.load(open(p, encoding="utf-8")) == {"k2": "v2"}   # 第二次完整替换
+    leftover = [f for f in tmp_path.iterdir() if f.suffix == ".tmp"]
+    assert leftover == []                       # 无残留临时文件
+
+
+def test_save_cache_catches_typeerror_non_serializable(tmp_path):
+    """评审（原 #128 round-1）：json.dump 遇不可序列化值不击穿"失败留痕不阻塞"。"""
+    import touchstone.distill as D
+    p = str(tmp_path / "rollout-cache.json")
+    D._save_cache({"bad": {object()}}, p)       # set 不可 JSON 序列化 → TypeError
+    # 不抛、不落盘（失败留痕）
+    import os
+    assert not os.path.exists(p)
+
+
+def test_save_cache_persists_on_loop_failure(tmp_path, monkeypatch):
+    """评审 item 3：循环中途抛异常，已采缓存仍落盘（try/finally）。"""
+    import touchstone.distill as D
+    p = str(tmp_path / "rollout-cache.json")
+    gt = [{"pr_id": "1", "human_adopted": [], "repo": "o/r", "stack": "py", "summary": "s", "diff": "d"}]
+
+    def boom(pr, E, llm, G):
+        raise RuntimeError("mid-run crash")
+    with pytest.raises(RuntimeError):
+        D._distill_via_llm(gt, {"experiences": []}, llm=lambda m: "[]",
+                          rollout=boom, cache=p)   # rollout 抛 → 循环中断
+    import json as _j, os
+    assert os.path.exists(p)                      # finally 仍落盘（即便本轮 acc 空）
+
+
+def test_distill_call_booked_against_budget():
+    """预算计入 distill 内省调用——预算仅够 rollout 时跳过 distill。"""
+    gt = [{"pr_id": "1", "human_adopted": [], "repo": "o/r", "stack": "py", "summary": "s", "diff": "d"}]
+    distill_calls = {"n": 0}
+
+    def counting_rollout(pr, E, llm, G):
+        return [[{"finding_type": "PRA-A"}], [{"finding_type": "PRA-B"}]]
+
+    def counting_distill(pr, group, llm, repo, stack):
+        distill_calls["n"] += 1
+        return []
+    L._distill_via_llm(gt, {"experiences": []}, llm=lambda m: "[]",
+                      group_size=2, rollout=counting_rollout, distill_advantage=counting_distill,
+                      max_llm_calls=2)
+    assert distill_calls["n"] == 0
+
+
+def test_rollout_cache_key_includes_summary_diff_and_rollout_tag():
+    """cache key 入 PR 内容(summary/diff) + rollout_tag——换任一则 key 变。"""
+    pr = {"pr_id": "1", "summary": "s", "diff": "d"}
+    k0 = L._rollout_cache_key(pr, "E", 4)
+    k_sum = L._rollout_cache_key({"pr_id": "1", "summary": "s2", "diff": "d"}, "E", 4)
+    k_tag = L._rollout_cache_key(pr, "E", 4, rollout_tag="custom:foo")
+    assert k0 != k_sum                                     # summary/diff 变 → key 变
+    assert k0 != k_tag                                     # rollout 实现变 → key 变
+    assert L._rollout_cache_key(pr, "E", 4) == k0          # 确定性
+
+
+def test_pragent_label_types_returns_empty_when_yaml_unimportable(monkeypatch):
+    """yaml 不可导入时不抛 NameError，返回空集（import 拆独立 try/except）。"""
+    import sys
+    monkeypatch.setitem(sys.modules, "yaml", None)
+    assert L._pragent_label_types("nonexistent.yaml") == set()
+
+
+def test_budget_skips_prs_when_exhausted():
+    calls = []
+
+    def counting_rollout(pr, E, llm, G):
+        calls.append(pr.get("pr_id"))
+        return [[]]
+    gt = [{"pr_id": str(i), "human_adopted": [], "repo": "o/r", "stack": "py",
+           "summary": "s", "diff": "d"} for i in range(5)]
+    L._distill_via_llm(gt, {"experiences": []}, llm=lambda m: "[]",
+                      rollout=counting_rollout, group_size=2, max_llm_calls=2)
+    assert len(calls) == 1                       # 预算 2 / group 2 → 只跑 1 个 PR，其余跳过
+
+
+def test_rollout_concurrency_matches_serial():
+    pr = {"pr_id": "1", "repo": "o/r", "stack": "py", "summary": "s", "diff": "d"}
+    serial = L.rollout_reviews(pr, "", _fake_llm, group_size=4)
+    parallel = L.rollout_reviews(pr, "", _fake_llm, group_size=4, max_workers=4)
+    assert serial == parallel                    # ex.map 保序 → 并行结果与串行一致
+
+
+def test_distill_defaults_unchanged_without_c3_knobs():
+    # 不传 cache/budget/max_workers → 行为与改前一致（仍产出 candidate，不跳过）
+    gt = [{"pr_id": "1", "human_adopted": ["PRA-POSSIBLE_BUG"], "repo": "o/r",
+           "stack": "py", "summary": "s", "diff": "d"}]
+    cands = L._distill_via_llm(gt, {"experiences": []}, llm=_fake_llm, group_size=3)
+    assert any(c["finding_type"] == "PRA-POSSIBLE_BUG" for c in cands)
+
+
+def test_tfgrpo_distiller_picks_up_env_cache_and_budget(monkeypatch):
+    # 生产 run-path：distill(ctx, "tfgrpo") 经 _tfgrpo_distiller 读 env 接通 c3（learn.yml 设 env 即生效）。
+    # 注入 rollout 经 register 覆盖默认不可能（rollout 在 _distill_via_llm 内解析），
+    # 故直接验证 env 解析：_env_rollout_cache/_env_int_opt 返回正确类型。
+    monkeypatch.setenv("TOUCHSTONE_ROLLOUT_CACHE", "memory")
+    monkeypatch.setenv("TOUCHSTONE_ROLLOUT_BUDGET", "2")
+    assert isinstance(L._env_rollout_cache(), dict)            # "memory" → 进程内 dict
+    assert L._env_int_opt("TOUCHSTONE_ROLLOUT_BUDGET") == 2
+    # 未设 → None
+    assert L._env_int_opt("TOUCHSTONE_ROLLOUT_WORKERS") is None
+
+
+def test_env_rollout_cache_none_and_path(monkeypatch):
+    monkeypatch.delenv("TOUCHSTONE_ROLLOUT_CACHE", raising=False)
+    assert L._env_rollout_cache() is None
+    monkeypatch.setenv("TOUCHSTONE_ROLLOUT_CACHE", "/tmp/rollout.json")
+    assert L._env_rollout_cache() == "/tmp/rollout.json"
+
+
+# ============================================================================
+# (2) 1a：位置级奖励（opt-in 默认关；数据依赖 result marker+calibrate 补 file/line）
+# ============================================================================
+def test_score_review_typelevel_unchanged_for_string_signal():
+    # human_adopted 为类型集（str）→ 走既有类型集合匹配（字节级不变）
+    r = [{"finding_type": "PRA-A"}, {"finding_type": "PRA-B"}]
+    assert L.score_review(r, ["PRA-A", "PRA-C"]) == 1 - 0.5 - 0.25   # 与 test_score_review_hits_noise_miss 同款
+
+
+def test_score_review_positional_exact_hit_full_credit():
+    # 位置信号（dict）：review 项命中同 type 同 file 行距≤window → 1.0
+    review = [{"finding_type": "PRA-A", "file": "f.py", "line": 10}]
+    positions = [{"finding_type": "PRA-A", "file": "f.py", "line": 12}]   # 行距 2 ≤ 10
+    assert L.score_review(review, positions) == 1.0                       # hits=1, noise=0, miss=0
+
+
+def test_score_review_positional_samefile_far_partial_credit():
+    review = [{"finding_type": "PRA-A", "file": "f.py", "line": 10}]
+    positions = [{"finding_type": "PRA-A", "file": "f.py", "line": 200}]  # 同 file 行距远 → 0.5
+    assert L.score_review(review, positions) == 0.5
+
+
+def test_score_review_positional_noise_and_miss_penalized():
+    review = [{"finding_type": "PRA-A", "file": "f.py", "line": 10},   # 命中
+              {"finding_type": "PRA-NOISE", "file": "g.py", "line": 1}]  # 噪声（type 不在 adopted）
+    positions = [{"finding_type": "PRA-A", "file": "f.py", "line": 10},
+                 {"finding_type": "PRA-MISS", "file": "h.py", "line": 1}]  # 漏报（adopted 无 review 同 type）
+    # hits=1.0 − w_noise·1 − w_miss·1 = 1 − 0.5 − 0.25 = 0.25
+    assert abs(L.score_review(review, positions) - 0.25) < 1e-9
+
+
+def test_distill_via_llm_positional_opt_in_default_off(monkeypatch):
+    # 默认关 → 即便 gt 带 positions，也走类型集合（human_adopted），字节级不变
+    monkeypatch.delenv("TOUCHSTONE_POSITIONAL_REWARD", raising=False)
+    gt = [{"pr_id": "1", "human_adopted": ["PRA-A"], "human_adopted_positions":
+           [{"finding_type": "PRA-A", "file": "f.py", "line": 1}],
+           "repo": "o/r", "stack": "py", "summary": "s", "diff": "d"}]
+    # 注入一个 score 计数器，确认默认走的是类型集（human_adopted）
+    seen = {}
+
+    def my_score(review, adopted):
+        seen["positional"] = L._is_positional_signal(adopted)
+        return 1.0
+    L._distill_via_llm(gt, {"experiences": []}, llm=lambda m: "[]", score=my_score, group_size=2)
+    assert seen["positional"] is False                                     # 默认走类型集
+
+
+def test_distill_via_llm_positional_opt_in_uses_positions(monkeypatch):
+    monkeypatch.setenv("TOUCHSTONE_POSITIONAL_REWARD", "true")
+    gt = [{"pr_id": "1", "human_adopted": ["PRA-A"], "human_adopted_positions":
+           [{"finding_type": "PRA-A", "file": "f.py", "line": 1}],
+           "repo": "o/r", "stack": "py", "summary": "s", "diff": "d"}]
+    seen = {}
+
+    def my_score(review, adopted):
+        seen["positional"] = L._is_positional_signal(adopted)
+        return 1.0
+    L._distill_via_llm(gt, {"experiences": []}, llm=lambda m: "[]", score=my_score, group_size=2)
+    assert seen["positional"] is True                                      # 开关开 → 用位置信号
+
+
+def test_make_gt_entry_carries_positions_when_resolved_findings_given():
+    e = GT.make_gt_entry(1, "o/r", "py", "s", "d", [],
+                         ["PRA-A"], "APPROVED", True,
+                         resolved_findings=[{"rule_id": "PRA-A", "file": "f.py", "line": 10}])
+    assert e["human_adopted_positions"] == [{"finding_type": "PRA-A", "file": "f.py", "line": 10}]
+
+
+def test_make_gt_entry_no_positions_field_when_absent():
+    e = GT.make_gt_entry(1, "o/r", "py", "s", "d", [], ["PRA-A"], "APPROVED", True)
+    assert "human_adopted_positions" not in e                              # 向后兼容：无 resolved_findings 即无此字段
+
+
+# ============================================================================
+# (3) bootstrap vs taxonomy：验证不是 gap
+#    bootstrap 的类型来自 calibrate（真实历史采纳），非 LLM 幻觉；它走 seed_experience 直接入池、
+#    不经 merge_candidates 的 taxonomy 闸——这是正确的（否则会错杀合法新类型），不是覆盖盲区。
+# ============================================================================
+def test_bootstrap_not_blocked_by_taxonomy_and_legitimately_introduces_new_type(monkeypatch):
+    monkeypatch.setenv("TOUCHSTONE_BOOTSTRAP_SEED", "true")
+    monkeypatch.setenv("TOUCHSTONE_TAXONOMY_ENFORCE", "true")
+    monkeypatch.setenv("TOUCHSTONE_TAXONOMY_TYPES", "")                  # 白名单不含 PRA-NEW
+    monkeypatch.delenv("TOUCHSTONE_PRAGENT_YAML", raising=False)
+    agg = {"by_rule": {"PRA-NEW": {"fires": 20, "adoption_rate": 0.90}}}  # 真实高采纳新类型（来自 calibrate）
+    store = {"experiences": []}
+    produced = L.bootstrap_from_calibrate(agg, store, repo="o/r", stack="py")
+    assert produced                                                        # taxonomy 没拦 bootstrap
+    e = next(x for x in store["experiences"] if x["finding_type"] == "PRA-NEW")
+    assert e["status"] == "active" and e["source"] == "bootstrap"        # 合法新类型照常 seed active
+
+
+# ============================================================================
+# c4-2c：冲突消解按证据强度（原仅 updated_at）
+# ============================================================================
+def test_resolve_conflicts_prefers_evidence_strength_over_recency():
+    # 同 type 两条 active：A 多 source_prs + 高 fires 但旧，B 单 PR 但新 → A 应胜（证据强度优先）
+    store = {"experiences": [
+        {"id": "a", "repo": "o/r", "stack": "py", "finding_type": "PRA-X", "kind": "emphasize",
+         "text": "A-strong", "status": "active", "updated_at": 100,
+         "source_prs": ["1", "2", "3"], "evidence": {"fires": 30}},
+        {"id": "b", "repo": "o/r", "stack": "py", "finding_type": "PRA-X", "kind": "suppress",
+         "text": "B-weak-new", "status": "active", "updated_at": 200,
+         "source_prs": [], "evidence": {}}]}
+    out = L.render_injection(store)
+    assert "A-strong" in out and "B-weak-new" not in out   # 强证据胜，非最新
+
+
+def test_resolve_conflicts_recency_tiebreak_when_evidence_equal():
+    # 证据强度相同时退回 updated_at（与旧行为一致——既有 test_injection_conflict_resolved 同款）
+    store = {"experiences": [
+        {"id": "a", "repo": "", "stack": "", "finding_type": "PRA-X", "kind": "emphasize",
+         "text": "OLD", "status": "active", "updated_at": 100, "source_prs": [], "evidence": {}},
+        {"id": "b", "repo": "", "stack": "", "finding_type": "PRA-X", "kind": "suppress",
+         "text": "NEW", "status": "active", "updated_at": 200, "source_prs": [], "evidence": {}}]}
+    out = L.render_injection(store)
+    assert "NEW" in out and "OLD" not in out
