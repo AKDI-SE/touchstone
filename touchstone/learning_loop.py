@@ -74,8 +74,12 @@ def _pragent_label_types(path):
     文件缺/解析失败 → 空集（不阻塞；taxonomy 仍含已 active 类型 + env 扩展）。"""
     try:
         import yaml
-        data = yaml.safe_load(open(path, encoding="utf-8")) or {}
-    except (OSError, yaml.YAMLError, ImportError):
+    except ImportError:                       # yaml 缺：单独 catch，避免下面 except 引用未绑定的 yaml.YAMLError 反抛 NameError
+        return set()
+    try:
+        with open(path, encoding="utf-8") as f:            # with 上下文：及时关闭句柄（非 CPython 也不锁文件）
+            data = yaml.safe_load(f) or {}
+    except (OSError, yaml.YAMLError):
         return set()
     labels = (((data.get("normalization") or {}).get("label_to_category")) or {}).keys()
     return {"PRA-" + str(k).replace(" ", "_").upper() for k in labels}

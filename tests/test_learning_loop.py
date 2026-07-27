@@ -1625,6 +1625,78 @@ def test_rollout_cache_file_roundtrip(tmp_path):
     assert calls["n"] == 1
 
 
+def test_save_cache_uses_unique_temp_file(tmp_path):
+    """评审 item 2：_save_cache 用唯一临时文件——两次写同路径不撞 .tmp（mkstemp 唯一）。"""
+    import touchstone.distill as D
+    p = str(tmp_path / "rollout-cache.json")
+    D._save_cache({"k1": "v1"}, p)
+    D._save_cache({"k2": "v2"}, p)             # 立即二次写：固定 .tmp 会撞，mkstemp 不会
+    import json as _j
+    assert _j.load(open(p, encoding="utf-8")) == {"k2": "v2"}   # 第二次完整替换
+    leftover = [f for f in tmp_path.iterdir() if f.suffix == ".tmp"]
+    assert leftover == []                       # 无残留临时文件
+
+
+def test_save_cache_catches_typeerror_non_serializable(tmp_path):
+    """评审（原 #128 round-1）：json.dump 遇不可序列化值不击穿"失败留痕不阻塞"。"""
+    import touchstone.distill as D
+    p = str(tmp_path / "rollout-cache.json")
+    D._save_cache({"bad": {object()}}, p)       # set 不可 JSON 序列化 → TypeError
+    # 不抛、不落盘（失败留痕）
+    import os
+    assert not os.path.exists(p)
+
+
+def test_save_cache_persists_on_loop_failure(tmp_path, monkeypatch):
+    """评审 item 3：循环中途抛异常，已采缓存仍落盘（try/finally）。"""
+    import touchstone.distill as D
+    p = str(tmp_path / "rollout-cache.json")
+    gt = [{"pr_id": "1", "human_adopted": [], "repo": "o/r", "stack": "py", "summary": "s", "diff": "d"}]
+
+    def boom(pr, E, llm, G):
+        raise RuntimeError("mid-run crash")
+    with pytest.raises(RuntimeError):
+        D._distill_via_llm(gt, {"experiences": []}, llm=lambda m: "[]",
+                          rollout=boom, cache=p)   # rollout 抛 → 循环中断
+    import json as _j, os
+    assert os.path.exists(p)                      # finally 仍落盘（即便本轮 acc 空）
+
+
+def test_distill_call_booked_against_budget():
+    """预算计入 distill 内省调用——预算仅够 rollout 时跳过 distill。"""
+    gt = [{"pr_id": "1", "human_adopted": [], "repo": "o/r", "stack": "py", "summary": "s", "diff": "d"}]
+    distill_calls = {"n": 0}
+
+    def counting_rollout(pr, E, llm, G):
+        return [[{"finding_type": "PRA-A"}], [{"finding_type": "PRA-B"}]]
+
+    def counting_distill(pr, group, llm, repo, stack):
+        distill_calls["n"] += 1
+        return []
+    L._distill_via_llm(gt, {"experiences": []}, llm=lambda m: "[]",
+                      group_size=2, rollout=counting_rollout, distill_advantage=counting_distill,
+                      max_llm_calls=2)
+    assert distill_calls["n"] == 0
+
+
+def test_rollout_cache_key_includes_summary_diff_and_rollout_tag():
+    """cache key 入 PR 内容(summary/diff) + rollout_tag——换任一则 key 变。"""
+    pr = {"pr_id": "1", "summary": "s", "diff": "d"}
+    k0 = L._rollout_cache_key(pr, "E", 4)
+    k_sum = L._rollout_cache_key({"pr_id": "1", "summary": "s2", "diff": "d"}, "E", 4)
+    k_tag = L._rollout_cache_key(pr, "E", 4, rollout_tag="custom:foo")
+    assert k0 != k_sum                                     # summary/diff 变 → key 变
+    assert k0 != k_tag                                     # rollout 实现变 → key 变
+    assert L._rollout_cache_key(pr, "E", 4) == k0          # 确定性
+
+
+def test_pragent_label_types_returns_empty_when_yaml_unimportable(monkeypatch):
+    """yaml 不可导入时不抛 NameError，返回空集（import 拆独立 try/except）。"""
+    import sys
+    monkeypatch.setitem(sys.modules, "yaml", None)
+    assert L._pragent_label_types("nonexistent.yaml") == set()
+
+
 def test_budget_skips_prs_when_exhausted():
     calls = []
 

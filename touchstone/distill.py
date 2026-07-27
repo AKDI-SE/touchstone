@@ -14,6 +14,7 @@ import json
 import os
 import re
 import sys
+import tempfile
 import time
 
 from touchstone.experience_store import (_exp_id, _is_review_type,           # noqa: F401
@@ -286,8 +287,10 @@ def _flagship_llm():
 #         砍掉"每周 cron 全量重跑"对未变 PR 的重复采样。跨 epoch：E 变了 → key 变 → 自然 miss（正确）。
 #   预算：max_llm_calls 限单次 run 的旗舰调用量，超限跳过剩余 PR（不静默——skipped_prs 留痕）。
 #   三者默认全关（cache=None / max_llm_calls=None / max_workers=None）→ 字节级零行为变化。
-def _rollout_cache_key(pr, experience_text, group_size):
-    """稳定键：同 PR + 同经验库 E + 同组大小 + 同旗舰模型 → 复用 rollout。模型名入键：换模型即失效。"""
+def _rollout_cache_key(pr, experience_text, group_size, *, rollout_tag="default"):
+    """稳定键：同 PR + 同经验库 E + 同组大小 + 同旗舰模型 + 同 PR 内容(summary/diff) + 同 rollout 实现 → 复用 rollout。
+    summary/diff 入键：PR 标题改 / GT_DIFF_BUDGET 变更截断 → key 变 → 不返回 stale rollout。
+    rollout_tag 入键：换 rollout 实现（自定义 distiller）→ tag 变 → 不复用旧实现产的结果（默认 "default"）。"""
     model = os.environ.get("TOUCHSTONE_FLAGSHIP_MODEL") or os.environ.get("LLM_MODEL") or ""
     h = hashlib.sha256()
     h.update(str(pr.get("pr_id", "")).encode("utf-8"))
@@ -297,6 +300,12 @@ def _rollout_cache_key(pr, experience_text, group_size):
     h.update(str(group_size).encode("utf-8"))
     h.update(b"\x1f")
     h.update(model.encode("utf-8"))
+    h.update(b"\x1f")
+    h.update((pr.get("summary") or "").encode("utf-8"))   # PR 内容入键（防 stale）
+    h.update(b"\x1f")
+    h.update((pr.get("diff") or "").encode("utf-8"))
+    h.update(b"\x1f")
+    h.update((rollout_tag or "default").encode("utf-8"))  # rollout 实现身份入键（防跨实现 stale）
     return h.hexdigest()
 
 
@@ -315,17 +324,26 @@ def _load_cache(cache):
 
 
 def _save_cache(cache_obj, cache_arg):
-    """仅当 cache_arg 是路径时落盘（dict 入参由调用方持有、不写回）。失败留痕不阻塞（防静默约定）。"""
+    """仅当 cache_arg 是路径时落盘（dict 入参由调用方持有、不写回）。失败留痕不阻塞（防静默约定）。
+    唯一临时文件（mkstemp）：并发/重入同路径不撞 `.tmp`；TypeError 也 catch——json.dump 遇不可序列化值
+    不再击穿"失败留痕不阻塞"契约。"""
     if not isinstance(cache_arg, str) or not isinstance(cache_obj, dict):
         return
+    tmp = None
     try:
-        os.makedirs(os.path.dirname(cache_arg) or ".", exist_ok=True)
-        tmp = cache_arg + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
+        d = os.path.dirname(cache_arg) or "."
+        os.makedirs(d, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=d, prefix=os.path.basename(cache_arg) + ".", suffix=".tmp")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(cache_obj, f, ensure_ascii=False)
         os.replace(tmp, cache_arg)            # 原子替换：崩溃不留半文件（同 atomicio 纪律）
-    except OSError as e:
+        tmp = None                            # 已 replace，勿清理
+    except (OSError, TypeError) as e:
         print(f"[distill] rollout 缓存写盘失败（不阻塞）: {e}", file=sys.stderr)
+    finally:
+        if tmp and os.path.exists(tmp):       # 异常时清理残留临时文件
+            try: os.unlink(tmp)
+            except OSError: pass
 
 
 class _Budget:
@@ -363,68 +381,81 @@ def _distill_via_llm(ground_truth, store, llm=None, *, group_size=TFGRPO_GROUP_S
       score(review, human_adopted) -> float
       distill_advantage(pr, group, llm, repo, stack) -> [Experience(candidate)]
     c3 成本控制（默认全关 = 零行为变化）：
-      cache(dict|路径)：rollout 结果按 (pr_id+E+模型+G) 缓存复用，砍重复采样；
-      max_llm_calls(int)：单次 run 旗舰调用预算，超限跳过剩余 PR（不静默，记 self._budget_skipped）；
+      cache(dict|路径)：rollout 结果按 (pr_id+E+模型+G+summary/diff+rollout_tag) 缓存复用，砍重复采样；
+                        中途失败也落盘（try/finally）；唯一临时文件（mkstemp）防并发撞名。
+      max_llm_calls(int)：单次 run 旗舰调用预算（rollout 生成 + distill 内省各计入），超限跳过剩余 PR
+                         （不静默，记 budget.skipped_prs）；
       max_workers(int)：仅对内置 rollout_reviews 生效（注入自定义 rollout 时自行管理并发）。"""
     llm = llm or _flagship_llm()
     rollout_is_default = rollout is None
     rollout = rollout or rollout_reviews
+    rollout_tag = ("default" if rollout_is_default
+                   else f"{rollout.__module__}:{rollout.__qualname__}")  # 缓存 key 的实现身份
     score = score or score_review
     distill_advantage = distill_advantage or distill_semantic_advantage
     base_active = [e for e in (store or {}).get("experiences", []) if e.get("status") == "active"]
     cache_obj = _load_cache(cache)
     budget = _Budget(max_llm_calls)
     acc = {}
-    for _ in range(max(1, epochs)):
-        # 每轮用「已有 active + 本轮已蒸出候选」重渲染 E，下一轮在更新后的 E 上 rollout（I2）
-        cond = {"experiences": base_active + [dict(c, status="active") for c in acc.values()]}
-        experience_text = render_injection(cond)
-        for pr in ground_truth or []:
-            key = (_rollout_cache_key(pr, experience_text, group_size)
-                   if cache_obj is not None else None)
-            if cache_obj is not None and key in cache_obj:
-                reviews = cache_obj[key]                       # 缓存命中：复用，不重复采样
-            else:
-                if not budget.has(group_size):
-                    budget.skipped_prs.append(pr.get("pr_id"))   # 预算耗尽：跳过（不静默）
-                    continue
-                if rollout_is_default and max_workers:
-                    reviews = rollout(pr, experience_text, llm, group_size, max_workers=max_workers)
+    try:                                    # 评审 item 3：循环中途失败也落盘已采缓存（finally）
+        for _ in range(max(1, epochs)):
+            # 每轮用「已有 active + 本轮已蒸出候选」重渲染 E，下一轮在更新后的 E 上 rollout（I2）
+            cond = {"experiences": base_active + [dict(c, status="active") for c in acc.values()]}
+            experience_text = render_injection(cond)
+            for pr in ground_truth or []:
+                key = (_rollout_cache_key(pr, experience_text, group_size, rollout_tag=rollout_tag)
+                       if cache_obj is not None else None)
+                if cache_obj is not None and key in cache_obj:
+                    reviews = cache_obj[key]                       # 缓存命中：复用，不重复采样
                 else:
-                    reviews = rollout(pr, experience_text, llm, group_size)
-                budget.use(group_size)
-                if cache_obj is not None:
-                    cache_obj[key] = reviews
-            # 盲区2：reward 乘真值条目的 trust_weight（坏真值检测给的 0–1 权重）。GT 条目无该字段
-            # （Step1 前 / TOUCHSTONE_TRUTH_QUALITY 默认关）→ 默认 1.0，reward 字节级不变。
-            # 组内每条 review 共享同 PR 的 weight → 相对优势仅被等比缩放、符号不变；坏真值条目的
-            # reward magnitude 向 0 收缩，抑制其蒸出的经验。weight=0 的条目已在 build_ground_truth 硬剔除。
-            # 防御外部 JSON 异常（pr-agent review #121）：显式 null（key 在、值 None）会 TypeError 崩整批
-            # → coalesce None→1.0；越界值（负/>1）会翻转符号或放大 reward，破坏"只缩不放、符号不变"契约
-            # → clamp [0,1]。GT 由本仓 make_gt_entry 产时恒为合法 [0,1] float，此仅兜底手改/外部 JSON。
-            weight = pr.get("trust_weight", 1.0)
-            weight = 1.0 if weight is None else min(1.0, max(0.0, weight))
-            # 差距1a（opt-in）：开 TOUCHSTONE_POSITIONAL_REWARD 且本 PR 有位置信号 → 喂位置给 score_review
-            # 走部分信用；否则类型集合（既有口径）。位置缺/开关关 → 回落类型集（字节级不变）。
-            human_signal = (pr.get("human_adopted_positions")
-                            if (_positional_reward_enabled() and pr.get("human_adopted_positions"))
-                            else pr.get("human_adopted"))
-            rewards = [score(o, human_signal) * weight for o in reviews]
-            group = {"outputs": reviews, "rewards": rewards}
-            for c in distill_advantage(pr, group, llm,
-                                                pr.get("repo", repo), pr.get("stack", stack)):
-                prev = acc.get(c["id"])
-                if prev:
-                    prev["source_prs"] = sorted(set(prev["source_prs"]) | set(c["source_prs"]))
-                    prev["updated_at"] = c["updated_at"]
+                    if not budget.has(group_size):
+                        budget.skipped_prs.append(pr.get("pr_id"))   # 预算耗尽：跳过（不静默）
+                        continue
+                    if rollout_is_default and max_workers:
+                        reviews = rollout(pr, experience_text, llm, group_size, max_workers=max_workers)
+                    else:
+                        reviews = rollout(pr, experience_text, llm, group_size)
+                    budget.use(group_size)
+                    if cache_obj is not None:
+                        cache_obj[key] = reviews
+                # 盲区2：reward 乘真值条目的 trust_weight（坏真值检测给的 0–1 权重）。GT 条目无该字段
+                # （Step1 前 / TOUCHSTONE_TRUTH_QUALITY 默认关）→ 默认 1.0，reward 字节级不变。
+                # 组内每条 review 共享同 PR 的 weight → 相对优势仅被等比缩放、符号不变；坏真值条目的
+                # reward magnitude 向 0 收缩，抑制其蒸出的经验。weight=0 的条目已在 build_ground_truth 硬剔除。
+                # 防御外部 JSON 异常（pr-agent review #121）：显式 null（key 在、值 None）会 TypeError 崩整批
+                # → coalesce None→1.0；越界值（负/>1）会翻转符号或放大 reward，破坏"只缩不放、符号不变"契约
+                # → clamp [0,1]。GT 由本仓 make_gt_entry 产时恒为合法 [0,1] float，此仅兜底手改/外部 JSON。
+                weight = pr.get("trust_weight", 1.0)
+                weight = 1.0 if weight is None else min(1.0, max(0.0, weight))
+                # 差距1a（opt-in）：开 TOUCHSTONE_POSITIONAL_REWARD 且本 PR 有位置信号 → 喂位置给 score_review
+                # 走部分信用；否则类型集合（既有口径）。位置缺/开关关 → 回落类型集（字节级不变）。
+                human_signal = (pr.get("human_adopted_positions")
+                                if (_positional_reward_enabled() and pr.get("human_adopted_positions"))
+                                else pr.get("human_adopted"))
+                rewards = [score(o, human_signal) * weight for o in reviews]
+                group = {"outputs": reviews, "rewards": rewards}
+                # distill 内省也耗 1 次旗舰调用——计入预算；否则缓存命中时 rollout 0 预算却仍逐 PR
+                # 触发 distill，预算失真（可显示 0 用量而数百次调用）。预算耗尽则跳过内省。
+                if budget.has(1):
+                    budget.use(1)
+                    distilled = distill_advantage(pr, group, llm,
+                                                  pr.get("repo", repo), pr.get("stack", stack))
                 else:
-                    acc[c["id"]] = c
-        if budget.exhausted:
-            break                              # 预算耗尽：不再开下一 epoch
-    if budget.skipped_prs:
-        print(f"[distill] LLM 预算耗尽，跳过 {len(budget.skipped_prs)} 个 PR："
-              f"{budget.skipped_prs}（调 TOUCHSTONE_ROLLOUT_BUDGET / 增量水位）", file=sys.stderr)
-    _save_cache(cache_obj, cache)
+                    distilled = []
+                for c in distilled:
+                    prev = acc.get(c["id"])
+                    if prev:
+                        prev["source_prs"] = sorted(set(prev["source_prs"]) | set(c["source_prs"]))
+                        prev["updated_at"] = c["updated_at"]
+                    else:
+                        acc[c["id"]] = c
+            if budget.exhausted:
+                break                              # 预算耗尽：不再开下一 epoch
+    finally:
+        if budget.skipped_prs:
+            print(f"[distill] LLM 预算耗尽，跳过 {len(budget.skipped_prs)} 个 PR："
+                  f"{budget.skipped_prs}（调 TOUCHSTONE_ROLLOUT_BUDGET / 增量水位）", file=sys.stderr)
+        _save_cache(cache_obj, cache)              # 中途失败也落盘（评审 item 3）
     return list(acc.values())
 
 
