@@ -194,8 +194,14 @@ class VerdictKind(Enum):
 class Verdict:
     mutant_id: str
     kind: VerdictKind
-    killing_test: str | None       # 击杀者；KILLED 时必填（__post_init__ 硬校验，
-    elapsed_s: float               #   注释约定升级为结构不变量，违反即抛 ValueError）
+    killing_test: str | None       # 击杀者；KILLED 时必填（下方硬校验）
+    elapsed_s: float
+
+    def __post_init__(self):
+        # 不变量硬校验：KILLED 必有击杀者标识（判决来源可追溯）。
+        # 注释约定升级为结构约束，违反即抛错——与抗 fail-open 立场一致。
+        if self.kind is VerdictKind.KILLED and not self.killing_test:
+            raise ValueError(f"Verdict 不变量违反：KILLED 判决必须携带 killing_test（mutant={self.mutant_id}）")
 
 @dataclass(frozen=True)
 class CensusIssue:                 # L0 产物
@@ -214,10 +220,15 @@ class ProbeRunReport:              # never-silent 强制载体
     plan_size: int                 # 计划变异体数；0 时 status 必为 PLAN_EMPTY
     executed: int
     sentinel_result: VerdictKind   # 必须为 KILLED，否则 status=INVALID
-    verdicts: list[Verdict]
-    census: list[CensusIssue]
+    verdicts: tuple[Verdict, ...]  # tuple：frozen 只冻结字段绑定不冻结容器内容，
+    census: tuple[CensusIssue, ...]  #   tuple 使不可变契约在容器层成立
     status: ReportStatus           # OK / PLAN_EMPTY / INVALID
     kill_rate: float | None        # killed / (killed + survived)，INVALID 时为 None
+
+    def __post_init__(self):
+        # 构造入参宽容接受任意序列，落位即归一为 tuple——消费方无法事后篡改判决。
+        object.__setattr__(self, "verdicts", tuple(self.verdicts))
+        object.__setattr__(self, "census", tuple(self.census))
 ```
 
 关联关系：`ProbePlan`（ScopeFacts × Budget → list[Mutant]）是输入侧计划；`ProbeRunReport` 是输出侧唯一真相载体；`to_findings()` 消费 Report 产出标准 Finding，Finding 中携带 `mutant_id` 作为与 lineage.py 对接的指纹。
@@ -281,3 +292,4 @@ touchstone probe replay --mutant-id <id>                                        
 | 2026-07-27 | 初版：L0 断言普查 + L1 变异探针分层设计，哨兵变异体 fail-open 防御，Finding/lineage 闭环接入 | 对标 dev-loop 变异探针实践与 AKDI fail-open 实证，补齐 Touchstone"测试有效性"审查层 |
 | 2026-07-27 | R2（PR #133 round-1 销项）：§4 run/replay 签名与实现对齐；补「非空计划无哨兵 ⇒ invalid」语义；CLI 标注 M-next 交付边界；§5 补遗留项④ | R1-01/R1-05/R1-06 评审意见闭环 |
 | 2026-07-27 | R3（PR #134 round-1 销项）：Verdict「KILLED 必有 killing_test」升级为 __post_init__ 硬校验；status 改 ReportStatus(str,Enum)；run() 的 census_issues 改必传 | touchstone 评审 3 条意见闭环（不变量/枚举/必传） |
+| 2026-07-27 | R4（PR #134 round-2 销项）：§3 补 Verdict.__post_init__ 实体（规范可直接实现、无歧义）；verdicts/census 改 tuple + 构造归一（frozen 契约覆盖容器层） | 193 复核意见 + 212 新意见闭环 |
