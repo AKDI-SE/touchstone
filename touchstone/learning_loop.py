@@ -184,7 +184,8 @@ def main(argv=None):
             report["steps"].append("build_ground_truth 跳过：缺 GITHUB_TOKEN/GITHUB_REPOSITORY")
     if ground_truth is None and gt_path and os.path.exists(gt_path):
         try:
-            ground_truth = json.load(open(gt_path, encoding="utf-8"))
+            with open(gt_path, encoding="utf-8") as f:
+                ground_truth = json.load(f)
         except (OSError, json.JSONDecodeError):
             ground_truth = None
 
@@ -199,7 +200,8 @@ def main(argv=None):
     agg = None
     if agg_path and os.path.exists(agg_path):
         try:
-            raw = json.load(open(agg_path, encoding="utf-8"))
+            with open(agg_path, encoding="utf-8") as f:
+                raw = json.load(f)
             agg = raw.get("aggregate", raw) if isinstance(raw, dict) else raw   # 兼容 calibration.json
         except (OSError, json.JSONDecodeError):
             agg = None
@@ -238,7 +240,8 @@ def main(argv=None):
     ab = None
     if ab_path and os.path.exists(ab_path):
         try:
-            ab = json.load(open(ab_path, encoding="utf-8"))
+            with open(ab_path, encoding="utf-8") as f:
+                ab = json.load(f)
         except (OSError, json.JSONDecodeError):
             ab = None
     if ab is None and ground_truth:
@@ -271,7 +274,8 @@ def main(argv=None):
     # ⑥ 学习报告 + changed 输出（供 workflow 决定是否提交经验库）
     if out_path:
         os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
-        json.dump(report, open(out_path, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+        with open(out_path, "w", encoding="utf-8") as f:
+            json.dump(report, f, ensure_ascii=False, indent=2)
     after = {(e.get("id"), e.get("status"), e.get("text")) for e in store.get("experiences", [])}
     changed = "true" if before != after else "false"
     gho = os.environ.get("GITHUB_OUTPUT")
