@@ -14,6 +14,7 @@
 
 import json
 import os
+import time
 import re
 import sys
 
@@ -351,6 +352,20 @@ def _collect_injection():
     return injected_types, injected_experience_ids, shadow_types, shadow_experience_ids
 
 
+def _max_diff_lines():
+    """SIZE-001 体量门禁阈值。空串（vars 未创建时 `${{ vars.X }}` 透传的常态）回落默认 1000，
+    只有显式 "0" 才关闭——上游报告问题三：此前空串经 `or 0` 静默关闭门禁，超大 PR 直送 LLM 且无提示。"""
+    raw = (os.environ.get("TOUCHSTONE_MAX_DIFF_LINES") or "").strip()
+    if not raw:
+        return 1000
+    try:
+        return int(raw)
+    except ValueError:
+        print(f"[warn] TOUCHSTONE_MAX_DIFF_LINES={raw!r} 非数字，回落默认 1000（SIZE-001 门禁保持生效）",
+              file=sys.stderr)
+        return 1000
+
+
 def review_pr(pr, contract, standards, provider=None):
     """§4.1 主入口：复用 PR-Agent 评审 → 发现归一 → 提交契约核对 + 栈专项确定性规则 → 裁决映射。
     等价于 map_verdict( normalize(fetch(pr)) + check_contract_consistency(...) + check_stack_rules(...) )。
@@ -367,7 +382,7 @@ def review_pr(pr, contract, standards, provider=None):
     raw_excerpt = {}        # LLM 原始 review 段快照（0 原始建议时贴横幅，打消"是否真审过"疑虑）
     llm_notes = []          # LLM 侧非致命注记（部分降级/截断修复），进报告横幅
     engine_detail = ""      # 降级/失败时的具体原始错误（PR#68 做准的 reason）——留给渲染层
-    max_lines = int(os.environ.get("TOUCHSTONE_MAX_DIFF_LINES", "1000") or 0)
+    max_lines = _max_diff_lines()
     size_findings = []
     if max_lines > 0 and added_lines > max_lines:
         engine_status = "skipped_large_diff"
@@ -431,6 +446,7 @@ def review_pr(pr, contract, standards, provider=None):
 
 
 def main():
+    _t_main0 = time.monotonic()
     token = os.environ["GITHUB_TOKEN"]
 
     event = load_yaml(os.environ["GITHUB_EVENT_PATH"]) or {}
@@ -453,7 +469,9 @@ def main():
     # 评审主链（§4.1）：PR-Agent 评审归一 + 契约核对 + 栈专项确定性规则 → 裁决映射
     pr_ctx_review = {"owner": owner, "repo": repo, "number": number, "sha": head_sha,
                      "token": token, "diff": diff, "standards": standards}
+    _t_rev0 = time.monotonic()
     _out = review_pr(pr_ctx_review, contract, standards)
+    _t_review = round(time.monotonic() - _t_rev0, 2)
     findings, risk = _out["findings"], _out["risk"]
     engine_status = _out.get("engine_status", "ok")
     det_warning = _out.get("det_warning", "")
@@ -580,7 +598,9 @@ def main():
             engine_status=engine_status, review_reliable=reliable,
             ai_raw_count=ai_raw_count, loop_decision=decision, gate=gate,
             unverified_claims=n_unverified, change_class=cls,
-            added_lines=added_lines, round_no=new_state.round, invoke_meta=_meta)
+            added_lines=added_lines, round_no=new_state.round, invoke_meta=_meta,
+            durations={"t_review": _t_review,
+                       "t_total": round(time.monotonic() - _t_main0, 2)})
         _metrics.emit(_rec)
         # 告警钩子（可观测性投递）：按 env 选通道，判定并投递到客户自己配置的渠道。
         # 总开关不开 → 无操作（只保留上面的 metrics artifact）。失败绝不冒泡——不拖垮评审 job；

@@ -32,7 +32,7 @@ def _enc():
 def context_tokens():
     """模型上下文窗口（token）。0 = 未声明/不限。"""
     try:
-        return int(os.environ.get("TOUCHSTONE_LLM_CONTEXT_TOKENS", "0") or 0)
+        return int((os.environ.get("TOUCHSTONE_LLM_CONTEXT_TOKENS") or "").strip() or "0")
     except ValueError:
         return 0
 
@@ -41,7 +41,7 @@ def output_tokens():
     """模型最大输出（token）。注意：pr-agent 的 custom_model_max_tokens【不】用它——
     那是输入侧上下文窗口预算，用 context_tokens()。本值供 touchstone 自身摘要/截断参考。"""
     try:
-        v = int(os.environ.get("TOUCHSTONE_LLM_OUTPUT_TOKENS", "4096") or 4096)
+        v = int((os.environ.get("TOUCHSTONE_LLM_OUTPUT_TOKENS") or "").strip() or "4096")
         return v if v > 0 else 4096
     except ValueError:
         return 4096

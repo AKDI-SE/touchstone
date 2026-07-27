@@ -27,8 +27,8 @@ def _envbool(k):
 
 AUTONOMY_ENABLED = _envbool("AUTONOMY_ENABLED")       # 总开关，默认关
 AUTONOMY_SHADOW = _envbool("AUTONOMY_SHADOW")         # 影子模式，默认关
-GRAD_MIN_SAMPLES = int(os.environ.get("GRAD_MIN_SAMPLES", "20"))
-GRAD_MAX_BAD_RATE = float(os.environ.get("GRAD_MAX_BAD_RATE", "0.05"))
+GRAD_MIN_SAMPLES = int((os.environ.get("GRAD_MIN_SAMPLES") or "").strip() or "20")
+GRAD_MAX_BAD_RATE = float((os.environ.get("GRAD_MAX_BAD_RATE") or "").strip() or "0.05")
 
 
 # --- 变更分类签名（经验在此粒度累积/毕业）------------------------------------

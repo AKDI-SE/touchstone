@@ -22,7 +22,7 @@ from touchstone.atomicio import atomic_write_json, atomic_write_text   # 状态�
 from touchstone.artifacts import artifact_path
 import requests
 
-WINDOW = int(os.environ.get("CALIBRATE_WINDOW", "50"))   # 取最近 N 个已关闭 PR
+WINDOW = int((os.environ.get("CALIBRATE_WINDOW") or "").strip() or "50")   # 取最近 N 个已关闭 PR
 NOISY_MIN_FIRES = 5          # agent/rule 命中达到此数才判定噪声
 NOISY_CR_RATE = 0.2          # 命中 PR 的"人要求改动"比例低于此 → 噪声
 NOISY_ADOPT_RATE = 0.2       # finding 级：命中条数多但被采纳(线程 resolved)比例低于此 → 噪声

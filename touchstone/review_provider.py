@@ -96,7 +96,7 @@ class ReviewEngineDegraded(RuntimeError):
 
 # 可疑空收敛阈值（改动新增行 >= 此值 且 LLM 0 原始建议 -> 评审不可信）。
 # 与 orchestrator._clean_review_trace 的 suspicious 判据同源；经 env 可调（如超大 PR 调参）。
-_SUSPICIOUS_EMPTY_LINES = int(os.environ.get("TOUCHSTONE_SUSPICIOUS_EMPTY_LINES", "20") or 20)
+_SUSPICIOUS_EMPTY_LINES = int((os.environ.get("TOUCHSTONE_SUSPICIOUS_EMPTY_LINES") or "").strip() or "20")
 
 
 def review_reliable(engine_status, ai_raw_count, added_lines, engaged=False):
@@ -758,7 +758,7 @@ class PRAgentProvider:
         cmd = shlex.split(os.environ.get("TOUCHSTONE_PRAGENT_CMD", "python -m touchstone.pr_agent_runner"))
         base_mode = _provider_mode(pr_ctx)            # improve+review（默认）/ improve / review
         repo_dir = pr_ctx.get("repo_dir", ".")
-        timeout = int(os.environ.get("TOUCHSTONE_PRAGENT_TIMEOUT", "600"))
+        timeout = int((os.environ.get("TOUCHSTONE_PRAGENT_TIMEOUT") or "").strip() or "600")
         # best_practices.md 不经此传：pr-agent 的本地 best_practices 是文件式——放到被审仓库根即可。
         extra = pr_ctx.get("extra_instructions")
         if extra is None:

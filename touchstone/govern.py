@@ -19,10 +19,10 @@ import sys
 from touchstone.atomicio import atomic_write_json, atomic_write_text
 from touchstone.artifacts import artifact_path
 
-PROMOTE_MIN_FIRES = int(os.environ.get("PROMOTE_MIN_FIRES", "5"))
-PROMOTE_MIN_ADOPTION = float(os.environ.get("PROMOTE_MIN_ADOPTION", "0.5"))
-REVERT_THRESH = float(os.environ.get("REVERT_THRESH", "0.10"))
-APPROVAL_SPIKE = float(os.environ.get("APPROVAL_SPIKE", "0.20"))
+PROMOTE_MIN_FIRES = int((os.environ.get("PROMOTE_MIN_FIRES") or "").strip() or "5")
+PROMOTE_MIN_ADOPTION = float((os.environ.get("PROMOTE_MIN_ADOPTION") or "").strip() or "0.5")
+REVERT_THRESH = float((os.environ.get("REVERT_THRESH") or "").strip() or "0.10")
+APPROVAL_SPIKE = float((os.environ.get("APPROVAL_SPIKE") or "").strip() or "0.20")
 
 
 # --- 建议→拦截桥（纯）--------------------------------------------------------

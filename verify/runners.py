@@ -199,7 +199,7 @@ def external_mutation_score(work_dir, changed_files):
         return None
     files_sub = " ".join(shlex.quote(f) for f in changed_files or [])
     try:
-        timeout = int(os.environ.get("TOUCHSTONE_MUTATION_TIMEOUT", "900"))   # 留 try 内：畸形值→ValueError→None（保 graceful degradation）
+        timeout = int((os.environ.get("TOUCHSTONE_MUTATION_TIMEOUT") or "").strip() or "900")   # 留 try 内：畸形值→ValueError→None（保 graceful degradation）
         if "{result_file}" in cmd:
             return _external_score_via_result_file(cmd, files_sub, work_dir, timeout)
         if os.environ.get("TOUCHSTONE_MUTATION_TRUST_STDOUT") != "1":

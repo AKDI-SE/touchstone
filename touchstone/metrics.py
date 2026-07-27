@@ -35,13 +35,16 @@ def _metrics_path():
 
 def build(pr, sha, risk, findings, *, engine_status, review_reliable,
           ai_raw_count, loop_decision, gate, unverified_claims,
-          change_class, added_lines, round_no=None, invoke_meta=None):
+          change_class, added_lines, round_no=None, invoke_meta=None, durations=None):
     """把一轮评审的关键健康信号压成一条扁平指标记录（可 JSON 序列化的纯 dict）。
     invoke_meta：review_provider.invoke_meta()（部分降级/截断修复计数），可选。"""
     meta = invoke_meta or {}
+    dur = {k: round(float(v), 2) for k, v in (durations or {}).items()
+           if k.startswith("t_")}          # 阶段耗时（上游报告问题四：无耗时数据则无法定位时间去向）
     rule_hits = sum(1 for f in findings if f.get("agent") != "pr-agent")
     ai_hits = sum(1 for f in findings if f.get("agent") == "pr-agent")
     return {
+        **dur,
         "ts": int(time.time()),
         "version": __version__,
         "pr": pr,
