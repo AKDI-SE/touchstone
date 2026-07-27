@@ -194,8 +194,8 @@ class VerdictKind(Enum):
 class Verdict:
     mutant_id: str
     kind: VerdictKind
-    killing_test: str | None       # 击杀者，killed 时必填
-    elapsed_s: float
+    killing_test: str | None       # 击杀者；KILLED 时必填（__post_init__ 硬校验，
+    elapsed_s: float               #   注释约定升级为结构不变量，违反即抛 ValueError）
 
 @dataclass(frozen=True)
 class CensusIssue:                 # L0 产物
@@ -204,15 +204,20 @@ class CensusIssue:                 # L0 产物
     test_name: str
     evidence: str
 
+class ReportStatus(str, Enum):     # 三态完备（做了/没得做/做废了）；str 混入兼容字面量比较。
+    OK = "ok"                      # 普通 str 状态机在条件判断中拼写错误会静默失效——
+    PLAN_EMPTY = "plan_empty"      # 结构化枚举从类型上杜绝非法状态值。
+    INVALID = "invalid"
+
 @dataclass(frozen=True)
 class ProbeRunReport:              # never-silent 强制载体
-    plan_size: int                 # 计划变异体数；0 时 status 必为 plan_empty
+    plan_size: int                 # 计划变异体数；0 时 status 必为 PLAN_EMPTY
     executed: int
-    sentinel_result: VerdictKind   # 必须为 KILLED，否则 status=invalid
+    sentinel_result: VerdictKind   # 必须为 KILLED，否则 status=INVALID
     verdicts: list[Verdict]
     census: list[CensusIssue]
-    status: str                    # ok / plan_empty / invalid
-    kill_rate: float | None        # killed / (killed + survived)，invalid 时为 None
+    status: ReportStatus           # OK / PLAN_EMPTY / INVALID
+    kill_rate: float | None        # killed / (killed + survived)，INVALID 时为 None
 ```
 
 关联关系：`ProbePlan`（ScopeFacts × Budget → list[Mutant]）是输入侧计划；`ProbeRunReport` 是输出侧唯一真相载体；`to_findings()` 消费 Report 产出标准 Finding，Finding 中携带 `mutant_id` 作为与 lineage.py 对接的指纹。
@@ -231,11 +236,12 @@ def census(scope_facts: ScopeFacts) -> list[CensusIssue]:
     恒真断言/吞错四类问题。不运行测试。"""
 
 def run(mutants: list[Mutant], test_cmd: TestCommand,
-        budget: ProbeBudget, census_issues: list[CensusIssue] | None = None) -> ProbeRunReport:
+        budget: ProbeBudget, census_issues: list[CensusIssue]) -> ProbeRunReport:
     """逐个注入变异体、运行定向测试、恢复源码、记录判决。哨兵最先执行，
     哨兵未被击杀立即终止并返回 status=invalid；非空计划无哨兵同样 status=invalid
     （链路自检不可用即无效，绝不允许「没自检但绿灯」）。任何路径都产出完整计数。
-    census_issues 仅透传入报告（Finding 一体化输出）。"""
+    census_issues 为必传（无问题显式传 []）：L0 结果是静态 Finding 的核心来源，
+    可选默认极易被调用方遗漏而静默丢失整层检测——never silent 同样约束接口形态。"""
 
 def replay(mutant: Mutant, test_cmd: TestCommand,
            budget: ProbeBudget | None = None) -> Verdict:
@@ -274,3 +280,4 @@ touchstone probe replay --mutant-id <id>                                        
 |---|---|---|
 | 2026-07-27 | 初版：L0 断言普查 + L1 变异探针分层设计，哨兵变异体 fail-open 防御，Finding/lineage 闭环接入 | 对标 dev-loop 变异探针实践与 AKDI fail-open 实证，补齐 Touchstone"测试有效性"审查层 |
 | 2026-07-27 | R2（PR #133 round-1 销项）：§4 run/replay 签名与实现对齐；补「非空计划无哨兵 ⇒ invalid」语义；CLI 标注 M-next 交付边界；§5 补遗留项④ | R1-01/R1-05/R1-06 评审意见闭环 |
+| 2026-07-27 | R3（PR #134 round-1 销项）：Verdict「KILLED 必有 killing_test」升级为 __post_init__ 硬校验；status 改 ReportStatus(str,Enum)；run() 的 census_issues 改必传 | touchstone 评审 3 条意见闭环（不变量/枚举/必传） |
