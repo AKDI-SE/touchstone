@@ -231,13 +231,17 @@ def census(scope_facts: ScopeFacts) -> list[CensusIssue]:
     恒真断言/吞错四类问题。不运行测试。"""
 
 def run(mutants: list[Mutant], test_cmd: TestCommand,
-        budget: ProbeBudget) -> ProbeRunReport:
+        budget: ProbeBudget, census_issues: list[CensusIssue] | None = None) -> ProbeRunReport:
     """逐个注入变异体、运行定向测试、恢复源码、记录判决。哨兵最先执行，
-    哨兵未被击杀立即终止并返回 status=invalid。任何路径都产出完整计数。"""
+    哨兵未被击杀立即终止并返回 status=invalid；非空计划无哨兵同样 status=invalid
+    （链路自检不可用即无效，绝不允许「没自检但绿灯」）。任何路径都产出完整计数。
+    census_issues 仅透传入报告（Finding 一体化输出）。"""
 
-def replay(mutant_id: str, test_cmd: TestCommand) -> Verdict:
+def replay(mutant: Mutant, test_cmd: TestCommand,
+           budget: ProbeBudget | None = None) -> Verdict:
     """定向复验单个变异体，用于下一轮验证 Probe 类 Finding 的 done_criteria。
-    成本为一次测试运行，不触发全量探测。"""
+    成本为一次测试运行，不触发全量探测。参数取整个 Mutant 而非仅 mutant_id：
+    注入编辑需要 original/mutated/site，仅凭指纹无法重建（见 §5 遗留项④）。"""
 
 def to_findings(report: ProbeRunReport) -> list[Finding]:
     """survived → open Finding（fix_direction=补断言/补场景，done_criteria=
@@ -246,11 +250,12 @@ def to_findings(report: ProbeRunReport) -> list[Finding]:
     而是产出一条针对探针链路本身的 P0 Finding。"""
 ```
 
-CLI 面（并入 touchstone 现有命令风格）：
+CLI 面（并入 touchstone 现有命令风格；**交付边界：本轮（PR #133）仅交付库接口，
+CLI 接线为 M-next 交付项**，避免「文档声明、代码悬空」的 AKDI 式失效）：
 
 ```
-touchstone probe --scope <scope_facts.json> [--budget-mutants 30] [--report probe_report.json]
-touchstone probe replay --mutant-id <id>
+touchstone probe --scope <scope_facts.json> [--budget-mutants 30] [--report probe_report.json]   # M-next
+touchstone probe replay --mutant-id <id>                                                          # M-next
 ```
 
 **接口关系总结**：一轮审查中，先 `census()` 做静态体检，其结果既直接转 Finding 又作为 `plan()` 的选点信号；`plan()` 依据 ScopeFacts 与预算产出含哨兵的变异体清单；`run()` 执行清单并产出 never-silent 的 `ProbeRunReport`；`to_findings()` 把报告并入 checklist 收敛。下一轮对每个未闭环的 Probe 类 Finding 调 `replay()` 定向复验，击杀即闭环——探测的重成本只在首轮发生，复验是轻量的。
@@ -261,10 +266,11 @@ touchstone probe replay --mutant-id <id>
 - **状态完备性**：Verdict 五态覆盖运行的全部结局；TIMEOUT 不直接计入 survived（避免把慢测试误判为假测试），归入 suspect 流走 ack——这是校验中发现并修正的一处漏洞。ProbeRunReport.status 三态（ok/plan_empty/invalid）覆盖"做了/没得做/做废了"，不存在第四种沉默态。
 - **接口完备性**：设计逻辑中的每个动作（普查、计划、执行、复验、转 Finding）均有对应接口；哨兵不单独暴露接口，由 plan/run 内聚处理（外部无需感知哨兵的选取）。
 - **层次一致性**：Probe 不承担测试调度（复用 TestCommand）、不承担收敛状态管理（复用 checklist）、不承担轮次记账（复用 lineage 指纹机制），仅新增"测试有效性判定"这一层职责。
-- **有意接受的遗留项**：① 等价变异体无自动判定，依赖 ack 人裁，理由：等价性判定在理论上不可判定，工程上人裁成本可控且已有通道；② 变异注入采用源码原地替换+恢复而非 AST 重写整文件，崩溃恢复依赖 run() 的 finally 保护与 git 工作区校验，理由：保持字节级最小 diff，便于哨兵与判决的可解释性；③ Go 引擎、全库基线棘轮均推迟至 M2。
+- **有意接受的遗留项**：① 等价变异体无自动判定，依赖 ack 人裁，理由：等价性判定在理论上不可判定，工程上人裁成本可控且已有通道；② 变异注入采用源码原地替换+恢复而非 AST 重写整文件，崩溃恢复依赖 run() 的 finally 保护与 git 工作区校验，理由：保持字节级最小 diff，便于哨兵与判决的可解释性；③ Go 引擎、全库基线棘轮均推迟至 M2；④ `replay` 以 `Mutant` 为参数而非 `mutant_id`——注入编辑依赖 original/mutated/site，仅存指纹则需要持久化变异体存储才能重建，M1 选择由调用方（checklist 携带的 Finding 上下文）保存 Mutant 对象，避免引入存储层。
 
 ## 6. 变更历史
 
 | 日期 | 变更内容 | 原因 |
 |---|---|---|
 | 2026-07-27 | 初版：L0 断言普查 + L1 变异探针分层设计，哨兵变异体 fail-open 防御，Finding/lineage 闭环接入 | 对标 dev-loop 变异探针实践与 AKDI fail-open 实证，补齐 Touchstone"测试有效性"审查层 |
+| 2026-07-27 | R2（PR #133 round-1 销项）：§4 run/replay 签名与实现对齐；补「非空计划无哨兵 ⇒ invalid」语义；CLI 标注 M-next 交付边界；§5 补遗留项④ | R1-01/R1-05/R1-06 评审意见闭环 |

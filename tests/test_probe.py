@@ -135,8 +135,7 @@ def test_run_weak_tests_yield_survivors_sentinel_killed(tmp_path):
 def test_run_invalid_when_sentinel_survives(tmp_path):
     sf = _mk_project(tmp_path, "\n    def test_nothing():\n        assert True\n")   # 无真测试→哨兵必存活
     ms = probe.plan(sf, probe.ProbeBudget(max_mutants=6), [])
-    if not any(m.is_sentinel for m in ms):
-        pytest.skip("无哨兵可选")
+    assert any(m.is_sentinel for m in ms)   # 哨兵必须存在（R1-07：前提失效应红，不应静默 skip）
     rep = probe.run(ms, _tc(sf), probe.ProbeBudget(max_mutants=6, per_mutant_timeout_s=60))
     assert rep.status == "invalid"
     assert rep.sentinel_result is not probe.VerdictKind.KILLED
@@ -188,3 +187,47 @@ def test_to_findings_killed_produces_no_finding():
     rep = probe.ProbeRunReport(2, 2, probe.VerdictKind.KILLED,
         [probe.Verdict("mut-k", probe.VerdictKind.KILLED, "t::x", 1.0, "pkg/a.py", 3)], [], "ok", 1.0)
     assert probe.to_findings(rep) == []                             # 击杀=好事，不产 Finding
+
+
+# ============================ Round-1 销项回归（PR #133）============================
+def test_run_invalid_when_no_sentinel_in_nonempty_plan(tmp_path):
+    """R1-01：非空 plan 无哨兵 ⇒ invalid（链路自检不可用，绝不 fail-open 绿灯）。"""
+    m = probe.Mutant("mut-nosent", "pkg/x.py", "f(...)", "CMP",
+                     probe.SourceSpan("pkg/x.py", 1, 1), "a<b", "a<=b")
+    rep = probe.run([m], probe.TestCommand(cmd="python -c pass", cwd=str(tmp_path)),
+                    probe.ProbeBudget(per_mutant_timeout_s=5, total_timeout_s=10))
+    assert rep.status == "invalid"
+    assert rep.verdicts == [] and rep.kill_rate is None
+    assert "哨兵" in rep.reason
+
+
+def test_plan_prioritizes_low_density_covered_module(tmp_path):
+    """R1-02：同分支数的两个模块，被弱测试（census 命中）覆盖者优先被选点；
+    哨兵不落在低密度覆盖面内。"""
+    (tmp_path / "pkg").mkdir(); (tmp_path / "tests").mkdir()
+    fn_src = "def f(a, b):\n    if a < b:\n        return a\n    return b\n"
+    (tmp_path / "pkg" / "mod_weak.py").write_text(fn_src, encoding="utf-8")
+    (tmp_path / "pkg" / "mod_strong.py").write_text(fn_src.replace("f(", "g("), encoding="utf-8")
+    (tmp_path / "tests" / "test_weak.py").write_text(
+        "from pkg.mod_weak import f\ndef test_f_runs():\n    assert f(1, 2) is not None\n", encoding="utf-8")
+    sf = {"_repo_dir": str(tmp_path),
+          "changed_files": [{"path": "pkg/mod_weak.py", "hunks": [[1, 4, 0]]},
+                            {"path": "pkg/mod_strong.py", "hunks": [[1, 4, 0]]},
+                            {"path": "tests/test_weak.py"}]}
+    issues = [probe.CensusIssue("trivial_assertion", "tests/test_weak.py", "test_f_runs", "仅弱断言")]
+    ms = probe.plan(sf, probe.ProbeBudget(max_mutants=3), issues)   # cap=2：只装得下高优先的
+    real_paths = [m.path for m in ms if not m.is_sentinel]
+    assert real_paths and all(p == "pkg/mod_weak.py" for p in real_paths)   # 弱覆盖模块排前
+    sentinels = [m for m in ms if m.is_sentinel]
+    assert sentinels and sentinels[0].path == "pkg/mod_strong.py"           # 哨兵避开低密度面
+
+
+def test_mutation_sites_skip_docstrings():
+    """R1-03：docstring / 裸字符串语句不作 CONST 位点（必然等价变异体）。"""
+    import ast as _ast
+    src = 'def f(x):\n    "doc here"\n    s = "real"\n    return x + 1\n'
+    fn = _ast.parse(src).body[0]
+    sites = probe._mutation_sites(fn, src, "p.py")
+    originals = [s[1] for s in sites if s[0] == "CONST"]
+    assert '"doc here"' not in originals
+    assert '"real"' in originals                                            # 真实字符串常量仍是位点

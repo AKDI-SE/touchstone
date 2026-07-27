@@ -274,9 +274,16 @@ def _funcs_overlapping(tree, ranges):
 
 
 def _mutation_sites(fn, src, path):
-    """遍历函数体，产出 (operator, original, mutated, span) 候选。仅覆盖最小高价值算子集。"""
+    """遍历函数体，产出 (operator, original, mutated, span) 候选。仅覆盖最小高价值算子集。
+    docstring / 裸字符串语句（ast.Expr 位置的 Constant）不作 CONST 位点——变异它们
+    必然是等价变异体，只会浪费预算并产出噪声 Finding（R1-03）。"""
+    doc_consts = {id(n.value) for n in ast.walk(fn)
+                  if isinstance(n, ast.Expr) and isinstance(n.value, ast.Constant)
+                  and isinstance(n.value.value, str)}
     sites = []
     for n in ast.walk(fn):
+        if isinstance(n, ast.Constant) and id(n) in doc_consts:
+            continue
         if isinstance(n, ast.Compare) and n.ops and type(n.ops[0]) in _CMP_FLIP:
             seg = _seg(src, n)
             if not seg:
@@ -317,9 +324,21 @@ def _mutation_sites(fn, src, path):
     return sites
 
 
-def _low_density_files(census_issues):
-    """有 census 问题的测试文件 → 其覆盖的源函数视作低断言密度（提高变异优先级）。"""
-    return {c.test_path for c in (census_issues or [])}
+def _low_density_modules(census_issues, repo_dir):
+    """census 问题测试文件 → 其 import 的模块名集合。命中这些模块的增量源文件
+    视作「低断言密度覆盖面」：变异优先级提高，哨兵选取排除（R1-02）。"""
+    mods = set()
+    for tp in {c.test_path for c in (census_issues or [])}:
+        try:
+            tree = ast.parse(open(os.path.join(repo_dir, tp), encoding="utf-8").read())
+        except (OSError, SyntaxError):
+            continue
+        for n in ast.walk(tree):
+            if isinstance(n, ast.Import):
+                mods.update(a.name.split(".")[-1] for a in n.names)
+            elif isinstance(n, ast.ImportFrom) and n.module:
+                mods.add(n.module.split(".")[-1])
+    return mods
 
 
 def plan(scope_facts, budget, census_issues):
@@ -329,9 +348,9 @@ def plan(scope_facts, budget, census_issues):
     repo_dir = (scope_facts or {}).get("_repo_dir", ".")
     py_files = [f["path"] for f in (scope_facts or {}).get("changed_files", [])
                 if f["path"].endswith(".py") and not os.path.basename(f["path"]).startswith("test")]
-    low_density = bool(_low_density_files(census_issues))
+    low_mods = _low_density_modules(census_issues, repo_dir)
 
-    scored = []      # (priority, fn_node, src, path)
+    scored = []      # (priority, branch_count, in_low_density, fn_node, src, path)
     for path in py_files:
         try:
             src = open(os.path.join(repo_dir, path), encoding="utf-8").read()
@@ -339,15 +358,16 @@ def plan(scope_facts, budget, census_issues):
         except (OSError, SyntaxError):
             continue
         ranges = _changed_line_ranges(scope_facts, path)
+        in_low = os.path.splitext(os.path.basename(path))[0] in low_mods
         for fn in _funcs_overlapping(tree, ranges):
             bc = _branch_count(fn)
-            # 优先级：分支多优先；有 census 低密度信号再加权
-            scored.append((bc + (5 if low_density else 0), bc, fn, src, path))
+            # 优先级：分支数 × 低断言密度——被弱测试覆盖的文件（census 命中）按文件粒度加权
+            scored.append((bc + (5 if in_low else 0), bc, in_low, fn, src, path))
     scored.sort(key=lambda t: -t[0])
 
     mutants, seen = [], set()
     cap = max(1, budget.max_mutants) - 1        # 预留 1 个名额给哨兵
-    for _prio, _bc, fn, src, path in scored:
+    for _prio, _bc, _low, fn, src, path in scored:
         sig = _func_sig(fn)
         for operator, orig, mutated, span in _mutation_sites(fn, src, path):
             if len(mutants) >= cap:
@@ -369,8 +389,11 @@ def plan(scope_facts, budget, census_issues):
 
 def _pick_sentinel(scored, census_issues):
     """哨兵选取：挑【断言密度最高】（最可能被现有测试覆盖）的函数造一个必被击杀的扰动。
-    近似：不在低密度测试文件覆盖面内、且分支数最高的函数的第一个 CMP/RET 位点。"""
-    for _prio, _bc, fn, src, path in sorted(scored, key=lambda t: -t[1]):
+    实现：优先排除低密度覆盖面（census 命中的模块，in_low=True）内的函数，
+    在其余函数中按分支数降序取第一个 CMP/RET 位点；若全部函数都在低密度面内，
+    退回全量按分支数选（宁可有哨兵，run() 层再由「哨兵未击杀→invalid」兜底）。"""
+    ordered = sorted(scored, key=lambda t: (t[2], -t[1]))    # in_low=False 优先，再按分支数降序
+    for _prio, _bc, _low, fn, src, path in ordered:
         for operator, orig, mutated, span in _mutation_sites(fn, src, path):
             if operator in ("CMP", "RET"):
                 sig = _func_sig(fn)
@@ -402,7 +425,11 @@ def _run_tests(test_cmd, timeout):
                             capture_output=True, text=True, timeout=timeout)
         return cp.returncode, (cp.stdout or "") + (cp.stderr or ""), False
     except subprocess.TimeoutExpired as e:
-        return None, (e.stdout or "") + (e.stderr or "") if isinstance(e.stdout, str) else "", True
+        def _s(x):                      # stdout/stderr 各自归一：None/bytes/str → str（R1-04）
+            if x is None:
+                return ""
+            return x if isinstance(x, str) else x.decode("utf-8", errors="replace")
+        return None, _s(e.stdout) + _s(e.stderr), True
 
 
 def _inject_and_run(mutant, test_cmd, timeout):
@@ -463,17 +490,20 @@ def run(mutants, test_cmd, budget, census_issues=None):
     sentinels = [m for m in mutants if m.is_sentinel]
     reals = [m for m in mutants if not m.is_sentinel]
 
-    # ① 哨兵最先执行：链路自检
-    sent_kind = VerdictKind.INFRA_ERROR
-    if sentinels:
-        sv = _inject_and_run(sentinels[0], test_cmd, budget.per_mutant_timeout_s)
-        sent_kind = sv.kind
-        if sent_kind is not VerdictKind.KILLED:
-            return ProbeRunReport(len(mutants), 1, sent_kind, [], census_issues, "invalid", None,
-                                  reason=f"哨兵未被击杀（{sent_kind.name}）→ 探针链路故障，本轮判决全部作废")
+    # ① 哨兵最先执行：链路自检。无哨兵 = 链路自检不可用 = 本轮无效（R1-01：
+    #    绝不允许「没自检但绿灯」——那正是本模块要防御的 fail-open 形态）。
+    if not sentinels:
+        return ProbeRunReport(len(mutants), 0, VerdictKind.INFRA_ERROR, [], census_issues,
+                              "invalid", None,
+                              reason="无法选取哨兵变异体 → 链路自检不可用，本轮判决无效")
+    sv = _inject_and_run(sentinels[0], test_cmd, budget.per_mutant_timeout_s)
+    sent_kind = sv.kind
+    if sent_kind is not VerdictKind.KILLED:
+        return ProbeRunReport(len(mutants), 1, sent_kind, [], census_issues, "invalid", None,
+                              reason=f"哨兵未被击杀（{sent_kind.name}）→ 探针链路故障，本轮判决全部作废")
 
     # ② 预算内逐个执行
-    verdicts, t_start, executed = [], time.monotonic(), (1 if sentinels else 0)
+    verdicts, t_start, executed = [], time.monotonic(), 1   # 哨兵已执行（此处必有哨兵）
     for m in reals:
         if time.monotonic() - t_start > budget.total_timeout_s:
             break                       # 总时长预算用尽：已执行的照常报告，未执行的不沉默（executed<plan_size 即体现）
@@ -539,7 +569,7 @@ def to_findings(report):
     if report.status == "invalid":
         findings.append(_finding(
             "PROBE-INVALID", "", 0, "P0",
-            f"探针链路故障：{report.reason}", 
+            f"探针链路故障：{report.reason}",
             "排查测试命令是否真正执行、变异注入是否落盘、判决逻辑是否正确；修复后重跑探测。",
             {"kind": "deterministic", "spec": {"replay_sentinel_killed": True}}))
         return findings
@@ -569,4 +599,3 @@ def to_findings(report):
                 {"kind": "review", "spec": {"ack_or_kill": v.mutant_id}},
                 mutant_id=v.mutant_id))
     return findings
-
