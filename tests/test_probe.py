@@ -139,7 +139,7 @@ def test_run_invalid_when_sentinel_survives(tmp_path):
     rep = probe.run(ms, _tc(sf), probe.ProbeBudget(max_mutants=6, per_mutant_timeout_s=60), [])
     assert rep.status == "invalid"
     assert rep.sentinel_result is not probe.VerdictKind.KILLED
-    assert rep.kill_rate is None and rep.verdicts == []             # 判决作废
+    assert rep.kill_rate is None and rep.verdicts == ()             # 判决作废
 
 @pytest.mark.slow
 def test_replay_kills_after_strong_test(tmp_path):
@@ -197,7 +197,7 @@ def test_run_invalid_when_no_sentinel_in_nonempty_plan(tmp_path):
     rep = probe.run([m], probe.TestCommand(cmd="python -c pass", cwd=str(tmp_path)),
                     probe.ProbeBudget(per_mutant_timeout_s=5, total_timeout_s=10), [])
     assert rep.status == "invalid"
-    assert rep.verdicts == [] and rep.kill_rate is None
+    assert rep.verdicts == () and rep.kill_rate is None
     assert "哨兵" in rep.reason
 
 
@@ -278,3 +278,12 @@ def test_run_requires_census_issues_positionally(tmp_path):
     import inspect
     sig = inspect.signature(probe.run)
     assert sig.parameters["census_issues"].default is inspect.Parameter.empty
+
+
+def test_report_containers_are_immutable_tuples():
+    """TS4-04：frozen 报告的 verdicts/census 归一为 tuple——不可变契约覆盖容器层。"""
+    rep = probe.ProbeRunReport(1, 1, probe.VerdictKind.KILLED,
+        [probe.Verdict("mut-k", probe.VerdictKind.KILLED, "t::x", 1.0)], [],
+        probe.ReportStatus.OK, 1.0)
+    assert isinstance(rep.verdicts, tuple) and isinstance(rep.census, tuple)
+    assert not hasattr(rep.verdicts, "append")   # tuple 无 append，事后篡改判决被结构性阻断

@@ -98,14 +98,20 @@ class ReportStatus(str, Enum):
 
 @dataclass(frozen=True)
 class ProbeRunReport:                  # never-silent 强制载体：任何计数缺失即非法
-    plan_size: int                     # 计划变异体数（含哨兵）；0 时 status 必为 plan_empty
+    plan_size: int                     # 计划变异体数（含哨兵）；0 时 status 必为 PLAN_EMPTY
     executed: int
-    sentinel_result: VerdictKind       # 非 KILLED（ok 路径下）⇒ status=invalid
-    verdicts: list                     # list[Verdict]（不含哨兵；invalid 时为空/被作废）
-    census: list                       # list[CensusIssue]
+    sentinel_result: VerdictKind       # 非 KILLED（ok 路径下）⇒ status=INVALID
+    verdicts: tuple                    # tuple[Verdict]（不含哨兵；INVALID 时为空/被作废）
+    census: tuple                      # tuple[CensusIssue]
     status: ReportStatus               # ReportStatus.OK / PLAN_EMPTY / INVALID（str 混入，兼容字面量比较）
-    kill_rate: float | None            # killed/(killed+survived)；哨兵与 TIMEOUT 不计入；invalid/plan_empty 为 None
-    reason: str = ""                   # plan_empty/invalid 的可读原因（never silent）
+    kill_rate: float | None            # killed/(killed+survived)；哨兵与 TIMEOUT 不计入；INVALID/PLAN_EMPTY 为 None
+    reason: str = ""                   # PLAN_EMPTY/INVALID 的可读原因（never silent）
+
+    def __post_init__(self):
+        # frozen 只冻结字段绑定，不冻结容器内容——verdicts/census 归一为 tuple，
+        # 使不可变契约在容器层同样成立（消费方无法事后 append/篡改判决，PR#134 R2 意见）。
+        object.__setattr__(self, "verdicts", tuple(self.verdicts))
+        object.__setattr__(self, "census", tuple(self.census))
 
 
 _HEX = 6                               # mutant_id 短哈希位数（与数据流图 snt-9f2c71 一致）
