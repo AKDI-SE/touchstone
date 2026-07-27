@@ -287,3 +287,16 @@ def test_report_containers_are_immutable_tuples():
         probe.ReportStatus.OK, 1.0)
     assert isinstance(rep.verdicts, tuple) and isinstance(rep.census, tuple)
     assert not hasattr(rep.verdicts, "append")   # tuple 无 append，事后篡改判决被结构性阻断
+
+
+def test_report_invariants_reject_contradictory_states():
+    """TS4-05：报告自身不变量硬校验——矛盾报告不允许被构造（与 Verdict 同款）。"""
+    K, S = probe.VerdictKind, probe.ReportStatus
+    with pytest.raises(ValueError):
+        probe.ProbeRunReport(0, 0, K.INFRA_ERROR, [], [], S.OK, None)          # 空计划不得报 ok
+    with pytest.raises(ValueError):
+        probe.ProbeRunReport(3, 3, K.SURVIVED, [], [], S.OK, 0.5)              # 哨兵未杀不得报 ok
+    with pytest.raises(ValueError):
+        probe.ProbeRunReport(3, 1, K.SURVIVED, [], [], S.INVALID, 0.5)         # invalid 不得带 kill_rate
+    r = probe.ProbeRunReport(3, 3, K.KILLED, [], [], "ok", 0.5)                # 字面量构造 → 枚举归一
+    assert r.status is S.OK

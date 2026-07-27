@@ -112,6 +112,14 @@ class ProbeRunReport:                  # never-silent 强制载体：任何计�
         # 使不可变契约在容器层同样成立（消费方无法事后 append/篡改判决，PR#134 R2 意见）。
         object.__setattr__(self, "verdicts", tuple(self.verdicts))
         object.__setattr__(self, "census", tuple(self.census))
+        object.__setattr__(self, "status", ReportStatus(self.status))   # 字面量 → 枚举归一
+        # 报告自身不变量硬校验（与 Verdict 同款，PR#134 R3 意见）：矛盾报告不允许被构造。
+        if self.plan_size == 0 and self.status is not ReportStatus.PLAN_EMPTY:
+            raise ValueError("ProbeRunReport 不变量违反：plan_size==0 时 status 必为 PLAN_EMPTY")
+        if self.status is ReportStatus.OK and self.sentinel_result is not VerdictKind.KILLED:
+            raise ValueError("ProbeRunReport 不变量违反：status=OK 要求哨兵 KILLED（链路自检未过不得报 ok）")
+        if self.status in (ReportStatus.INVALID, ReportStatus.PLAN_EMPTY) and self.kill_rate is not None:
+            raise ValueError("ProbeRunReport 不变量违反：INVALID/PLAN_EMPTY 报告不得携带 kill_rate")
 
 
 _HEX = 6                               # mutant_id 短哈希位数（与数据流图 snt-9f2c71 一致）
