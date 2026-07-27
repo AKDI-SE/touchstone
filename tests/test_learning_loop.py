@@ -1751,6 +1751,21 @@ def test_distill_pos_env_empty_does_not_crash_import():
     assert r.returncode == 0, f"import crashed on empty env:\n{r.stderr}"
 
 
+def test_distill_pos_env_malformed_falls_back_to_default():
+    # 非法值（'abc'）不应在 import 期崩，且回落默认（#132 review：malformed env）
+    import subprocess, sys
+    env = dict(os.environ)
+    env["TOUCHSTONE_POS_LINE_WINDOW"] = "abc"
+    env["TOUCHSTONE_POS_PARTIAL_SAMEFILE"] = "not-a-number"
+    env["TOUCHSTONE_POS_PARTIAL_NOFILE"] = "xx"
+    r = subprocess.run([sys.executable, "-c",
+                        "from touchstone import distill as d; "
+                        "print(d._POS_LINE_WINDOW, d._POS_PARTIAL_SAMEFILE, d._POS_PARTIAL_NOFILE)"],
+                       env=env, capture_output=True, text=True)
+    assert r.returncode == 0, f"import crashed on malformed env:\n{r.stderr}"
+    assert r.stdout.strip() == "10 0.5 0.5", f"未回落默认: {r.stdout!r}"
+
+
 def test_budget_skips_prs_when_exhausted():
     calls = []
 
