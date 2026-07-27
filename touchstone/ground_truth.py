@@ -200,7 +200,10 @@ def build_ground_truth(owner, repo, token, *, window=GT_WINDOW, bot_login=None,
                       file=sys.stderr)
                 fa = []
             resolved_types = {f.get("rule_id") for f in fa if f.get("resolved")}
-            resolved_findings = [f for f in fa if f.get("resolved")]   # 差距1a：带 file/line 的 resolved 发现
+            # 差距1a：带 file/line 的 resolved 发现（#131 review #2：过滤掉无 line 的——位置级奖励需行号；
+            #   无 line 的仅进 resolved_types 做类型匹配，不进 positions，免产 line=null 的废位置）
+            resolved_findings = [f for f in fa if f.get("resolved")
+                                 and (f.get("line") is not None or f.get("line_start") is not None)]
             reviews = _gh_get(f"/repos/{owner}/{repo}/pulls/{n}/reviews?per_page=100", token) or []
             human_state = C._human_verdict(reviews, bot_login)
             diff_truncated = False
