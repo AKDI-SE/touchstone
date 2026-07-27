@@ -305,9 +305,14 @@ def distill_semantic_advantage(pr, group, llm, repo="", stack=""):
                 print(f"[learn] 差距2b：丢弃疑似注入式经验文本（ftype={ftype}, kind={kind}）",
                       file=sys.stderr)
                 continue
+            # 渲染前按字段截断（#131 review #1）：防超长 condition/action 把 "When …, … (ftype)"
+            # 模板从中间切断；原渲染后整体截断会切掉 (ftype) 尾或 action 半句。两字段均分预算扣模板开销。
+            _field_max = max(16, (_EXP_MAX_TEXT_LEN - len(ftype) - 10) // 2)
+            condition = condition[:_field_max]
+            action = action[:_field_max]
             text = _render_structured_text(condition, action, ftype)
             if len(text) > _EXP_MAX_TEXT_LEN:
-                text = text[:_EXP_MAX_TEXT_LEN]                 # 超长截断（注入文本有长度上限）
+                text = text[:_EXP_MAX_TEXT_LEN]                 # 兜底（pre-truncate 后通常不再触发）
         else:
             text = (it.get("text") or "").strip()
             if not text:

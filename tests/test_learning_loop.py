@@ -310,6 +310,23 @@ def test_distill_structured_renders_condition_action(monkeypatch):
         "When a nullable return is dereferenced, flag the null path explicitly (PRA-POSSIBLE_BUG)")
 
 
+def test_distill_structured_truncates_fields_before_render(monkeypatch):
+    """#131 review #1：超长 condition/action 渲染前按字段截断——text 不超 _EXP_MAX_TEXT_LEN 且 (ftype) 尾保留（模板不被从中间切断）。"""
+    import json as _json
+    from touchstone.distill import _EXP_MAX_TEXT_LEN
+    monkeypatch.setenv("TOUCHSTONE_EXP_INJECTION_FILTER", "true")
+    fake = _json.dumps([{"finding_type": "PRA-LONG", "kind": "emphasize",
+                         "condition": "c" * 500, "action": "a" * 500}])
+    pr = {"pr_id": "9", "repo": "o/r", "stack": "py"}
+    group = {"outputs": [[{"finding_type": "PRA-A"}], [{"finding_type": "PRA-B"}]], "rewards": [1.0, -0.5]}
+    cands = L.distill_semantic_advantage(pr, group, lambda m: fake, "o/r", "py")
+    by = {c["finding_type"]: c for c in cands}
+    assert "PRA-LONG" in by
+    text = by["PRA-LONG"]["text"]
+    assert len(text) <= _EXP_MAX_TEXT_LEN                  # 不超上限
+    assert text.endswith("(PRA-LONG)")                     # 模板尾完整，未被从中间切断
+
+
 def test_distill_filters_injection_pattern(monkeypatch, capsys):
     """差距2b 验收锚点（设计文档 §3.2）：注入式 action → 丢弃 + stderr。"""
     monkeypatch.setenv("TOUCHSTONE_EXP_INJECTION_FILTER", "true")
@@ -1942,6 +1959,42 @@ def test_build_ground_truth_carries_positions_to_gt_entry(tmp_path, monkeypatch)
     monkeypatch.setattr(C, "thread_findings", lambda threads, bl, pr_author=None: [
         {"rule_id": "PRA-A", "agent": "pr-agent", "resolved": True, "dismissed": False,
          "resolver_association": "MEMBER", "file": "src/a.py", "line": 42}])
+
+    gt = GT.build_ground_truth("o", "r", "x", window=5)
+    assert len(gt) == 1
+    assert gt[0]["human_adopted_positions"] == [{"finding_type": "PRA-A", "file": "src/a.py", "line": 42}]
+
+
+def test_build_ground_truth_drops_findings_with_null_line(tmp_path, monkeypatch):
+    """#131 review #2：无 line 的 resolved finding 不进 human_adopted_positions（类型仍进 resolved_types 做类型匹配）。"""
+    from touchstone import calibrate as C
+    monkeypatch.setenv("TOUCHSTONE_BUILD_GROUND_TRUTH", "true")
+    monkeypatch.setenv("GITHUB_TOKEN", "x")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "o/r")
+
+    def fake_gh(path, token, accept="application/vnd.github+json"):
+        if "/pulls?" in path:                                  # 已关闭 PR 列表
+            return [{"number": 1, "title": "t", "user": {"login": "author"}, "merged_at": "m"}]
+        if path.endswith("/issues/1/comments?per_page=100"):   # result marker（合法 JSON）
+            return [{"body": ('<!-- touchstone-result: '
+                              '{"findings":[{"rule_id":"PRA-A"}],'
+                              '"injected_types":["PRA-A"]} -->')}]
+        if "/pulls/1/reviews" in path:
+            return []
+        if path.endswith("/pulls/1") and accept.endswith("diff"):
+            return "+diff"
+        if path.endswith("/pulls/1/files?per_page=100"):
+            return [{"filename": "src/a.py"}]
+        return []
+    monkeypatch.setattr(GT, "_gh_get", fake_gh)
+    monkeypatch.setattr(C, "parse_review_threads", lambda *a, **k: [])
+    monkeypatch.setattr(C, "gql", lambda *a, **k: {})
+    # PRA-A 带 line；PRA-NOLINE 无 line（应被过滤出 positions，但仍算 resolved 类型）
+    monkeypatch.setattr(C, "thread_findings", lambda threads, bl, pr_author=None: [
+        {"rule_id": "PRA-A", "agent": "pr-agent", "resolved": True, "dismissed": False,
+         "resolver_association": "MEMBER", "file": "src/a.py", "line": 42},
+        {"rule_id": "PRA-NOLINE", "agent": "pr-agent", "resolved": True, "dismissed": False,
+         "resolver_association": "MEMBER", "file": "src/other.py", "line": None}])
 
     gt = GT.build_ground_truth("o", "r", "x", window=5)
     assert len(gt) == 1
