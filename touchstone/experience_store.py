@@ -227,6 +227,8 @@ def graduate(store, ab_results):
         lift = (wa / ws) - (oa / os_)
         if lift >= GRADUATE_MIN_LIFT:
             e["status"] = "active"
+            if not isinstance(e.get("evidence"), dict):   # evidence 可为 None（JSON evidence:null）→ 建空 dict 再写
+                e["evidence"] = {}
             e["evidence"]["ab_lift"] = round(lift, 2)
             e["updated_at"] = int(time.time())
             graduated.append(e["id"])

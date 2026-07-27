@@ -967,6 +967,19 @@ def test_graduate_skips_no_ab_and_low_samples():
     assert L.graduate(store, ab) == []
 
 
+def test_graduate_null_evidence_does_not_crash():
+    # 经验经 JSON round-trip 后 evidence 可能为 null（None）；graduate 写 ab_lift 前须兜底建空 dict
+    store = {"experiences": [
+        {"id": "e:::T1", "finding_type": "T1", "kind": "emphasize",
+         "status": "candidate", "evidence": None, "updated_at": 1}]}
+    ab = {"T1": {"with_seen": 25, "with_adopted": 20, "without_seen": 25, "without_adopted": 10}}  # lift 0.4
+    grad = L.graduate(store, ab)
+    assert grad == ["e:::T1"]
+    e = store["experiences"][0]
+    assert e["status"] == "active"
+    assert e["evidence"] == {"ab_lift": 0.4}                       # None → 建空 dict 后写入
+
+
 def test_gh_get_uses_ghclient(monkeypatch):
     from touchstone import ghclient, learning_loop as L
     monkeypatch.setattr(ghclient, "request",
@@ -1572,6 +1585,18 @@ def test_retire_on_negative_lift_skips_locked_and_low_samples():
           "PRA-HUMAN": {"with_seen": 25, "with_adopted": 1, "without_seen": 25, "without_adopted": 20}}
     assert L.retire_on_negative_lift(store, ab) == []
     assert all(e["status"] == "active" for e in store["experiences"])
+
+
+def test_retire_on_negative_lift_null_evidence_does_not_crash():
+    # 经验经 JSON round-trip 后 evidence 可能为 null（None）；retire 写 ab_lift 前须兜底建空 dict
+    e = _active_exp("PRA-HARM")
+    e["evidence"] = None
+    store = {"experiences": [e]}
+    ab = {"PRA-HARM": {"with_seen": 25, "with_adopted": 5, "without_seen": 25, "without_adopted": 12}}  # lift -0.28
+    retired = L.retire_on_negative_lift(store, ab)
+    assert retired == [L._exp_id("PRA-HARM", "emphasize", "o/r", "py")]
+    assert store["experiences"][0]["status"] == "retired"
+    assert store["experiences"][0]["evidence"] == {"ab_lift": -0.28}   # None → 建空 dict 后写入
 
 
 def test_lift_summary_counts_pos_neg_insufficient():
