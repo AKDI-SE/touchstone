@@ -315,9 +315,10 @@ def disable(store, exp_id):
 
 # --- 注入：active 经验 → PR-Agent extra_instructions（只建议、不进闸）-------------
 def _evidence_strength(e):
-    """证据强度：(source_prs 数, evidence.fires, updated_at)——多 PR 反复见证 > 命中样本数 > 新旧。
-    用于冲突消解（c4-2c）：原仅取 updated_at 最新，会把'单 PR 偶然蒸出但新'误判为比'多 PR 反复
-    验证但旧'更可信；改为按证据强度排序，证据相同时退回 updated_at（保持既有 tiebreak 行为）。"""
+    """证据强度元组：(source_prs 数, evidence.fires, updated_at)——多 PR 反复见证 > 命中样本数 > 新旧。
+    用于冲突消解（c4-2c）：原仅按 updated_at 排序，会把'单 PR 偶然蒸出但新'误判为比'多 PR 反复
+    验证但旧'更可信。现改为证据强度优先（主排序键已变 = 行为变化）；仅当证据强度完全相等时才退回
+    updated_at 作末位 tiebreak（此 tiebreak 与旧逻辑一致）。"""
     ev = e.get("evidence") or {}
     return (len(e.get("source_prs") or []), ev.get("fires") or 0, e.get("updated_at") or 0)
 
