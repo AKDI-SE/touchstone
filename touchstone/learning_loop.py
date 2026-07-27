@@ -78,9 +78,11 @@ def _pragent_label_types(path):
         return set()
     try:
         with open(path, encoding="utf-8") as f:            # with 上下文：及时关闭句柄（非 CPython 也不锁文件）
-            data = yaml.safe_load(f) or {}
+            data = yaml.safe_load(f)
     except (OSError, yaml.YAMLError):
         return set()
+    if not isinstance(data, dict):     # 非 dict（None/list/标量）→ 视作空，防 data.get 崩
+        data = {}
     labels = (((data.get("normalization") or {}).get("label_to_category")) or {}).keys()
     return {"PRA-" + str(k).replace(" ", "_").upper() for k in labels}
 
@@ -90,6 +92,8 @@ def _lift_summary(ab_results):
     与 retire_on_negative_lift 同源判据（样本门槛镜像 GRADUATE_MIN_SAMPLES）。纯函数。"""
     pos = neg = insuf = 0
     for ab in (ab_results or {}).values():
+        if not isinstance(ab, dict):               # null 值条目（JSON ab:null）→ 跳过，防 ab.get 崩
+            continue
         ws, wa = ab.get("with_seen", 0), ab.get("with_adopted", 0)
         os_, oa = ab.get("without_seen", 0), ab.get("without_adopted", 0)
         if ws < GRADUATE_MIN_SAMPLES or os_ < GRADUATE_MIN_SAMPLES:

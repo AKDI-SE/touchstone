@@ -98,9 +98,9 @@ def score_review(review, human_adopted, *, w_noise=None, w_miss=None):
 # 方差更低。注意【数据依赖】：位置信号 human_adopted_positions 由 make_gt_entry 从 resolved findings
 # （带 file/line）产；但 calibrate.thread_findings 当前只回 {rule_id,agent,resolved}（无位置）——故本
 # 评分器离线可测、生产要等 result marker + calibrate 补 file/line 后才有真位置数据（后续工作，未做）。
-_POS_LINE_WINDOW = int(os.environ.get("TOUCHSTONE_POS_LINE_WINDOW", "10"))
-_POS_PARTIAL_SAMEFILE = float(os.environ.get("TOUCHSTONE_POS_PARTIAL_SAMEFILE", "0.5"))  # 同 file 行距远
-_POS_PARTIAL_NOFILE = float(os.environ.get("TOUCHSTONE_POS_PARTIAL_NOFILE", "0.5"))       # 无 file 可比
+_POS_LINE_WINDOW = int((os.environ.get("TOUCHSTONE_POS_LINE_WINDOW") or "").strip() or "10")
+_POS_PARTIAL_SAMEFILE = float((os.environ.get("TOUCHSTONE_POS_PARTIAL_SAMEFILE") or "").strip() or "0.5")  # 同 file 行距远
+_POS_PARTIAL_NOFILE = float((os.environ.get("TOUCHSTONE_POS_PARTIAL_NOFILE") or "").strip() or "0.5")       # 无 file 可比
 
 
 def _positional_reward_enabled():
