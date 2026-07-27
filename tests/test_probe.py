@@ -1,0 +1,190 @@
+"""Probe（测试有效性探针）测试：§3 数据结构 → census → plan(含哨兵) → run/replay → to_findings。
+静态部分纯内存快测；run/replay 各一条真跑 pytest 的端到端（hermetic 临时工程）。"""
+import os
+import textwrap
+import pytest
+
+from touchstone import probe
+from touchstone import checklist
+
+
+# ---------- 夹具：临时 Python 工程（贯穿案例 semver_range 的最小复刻）----------
+_SRC = '''\
+def parse_version(s):
+    parts = s.split(".")
+    if len(parts) < 3:
+        raise ValueError(s)
+    return tuple(int(p) for p in parts)
+
+def resolve_range(spec, versions):
+    if not spec:
+        raise ValueError(spec)
+    lower, upper = spec[0], spec[1]
+    out = []
+    for v in versions:
+        if v >= lower and v < upper:
+            out.append(v)
+    return out
+'''
+
+def _mk_project(tmp_path, test_body):
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "pkg" / "semver_range.py").write_text(_SRC, encoding="utf-8")
+    (tmp_path / "tests" / "test_semver_range.py").write_text(textwrap.dedent(test_body), encoding="utf-8")
+    return {"_repo_dir": str(tmp_path),
+            "changed_files": [{"path": "pkg/semver_range.py", "added": 20, "hunks": [[1, 20, 0]]},
+                              {"path": "tests/test_semver_range.py"}]}
+
+_STRONG = '''
+    import sys, os
+    sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+    from pkg.semver_range import parse_version, resolve_range
+    def test_parse_version_basic():
+        assert parse_version("1.2.3") == (1, 2, 3)
+    def test_resolve_range_values():
+        assert resolve_range([1, 5], [0, 1, 3, 5, 6]) == [1, 3]
+'''
+_WEAK = '''
+    import sys, os
+    sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+    from pkg.semver_range import parse_version, resolve_range
+    def test_parse_version_basic():
+        assert parse_version("1.2.3") == (1, 2, 3)
+    def test_resolve_range_runs():
+        assert resolve_range([1, 5], [0, 1, 3, 5, 6]) is not None
+'''
+
+def _tc(sf):
+    return probe.TestCommand(cmd="python -m pytest -q tests/test_semver_range.py", cwd=sf["_repo_dir"])
+
+
+# ============================ §3 数据结构 ============================
+def test_report_never_silent_counts_present():
+    r = probe.ProbeRunReport(3, 3, probe.VerdictKind.KILLED, [], [], "ok", 0.5)
+    for fld in ("plan_size", "executed", "sentinel_result", "verdicts", "census", "status", "kill_rate"):
+        assert hasattr(r, fld)                       # 强制计数：任一缺失即报告非法
+
+def test_fingerprint_stable_and_prefixed():
+    a = probe.content_fingerprint("p.py", "f(...)", "CMP", "L3:x < y")
+    assert a == probe.content_fingerprint("p.py", "f(...)", "CMP", "L3:x < y")   # 稳定
+    assert a.startswith("mut-")
+    assert probe.content_fingerprint("p.py", "f(...)", "CMP", "L3", sentinel=True).startswith("snt-")
+
+
+# ============================ census（L0 静态）============================
+def test_census_four_failure_modes(tmp_path):
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_x.py").write_text(textwrap.dedent('''
+        import pytest
+        def test_zero():
+            y = compute()
+        def test_trivial():
+            assert True
+        @pytest.mark.skip(reason="wip")
+        def test_skipped():
+            assert compute() == 1
+        def test_swallow():
+            try:
+                risky()
+            except Exception:
+                pass
+        def test_real():
+            assert compute() == 2
+    '''), encoding="utf-8")
+    sf = {"_repo_dir": str(tmp_path), "changed_files": [{"path": "tests/test_x.py"}]}
+    kinds = {i.kind for i in probe.census(sf, str(tmp_path))}
+    assert {"zero_assertion", "trivial_assertion", "skip_counted_as_pass", "swallowed_exception"} <= kinds
+    names = {i.test_name for i in probe.census(sf, str(tmp_path))}
+    assert "test_real" not in names                  # 真断言不误报
+
+
+# ============================ plan（含哨兵）============================
+def test_plan_covers_operators_and_appends_sentinel(tmp_path):
+    sf = _mk_project(tmp_path, _WEAK)
+    ms = probe.plan(sf, probe.ProbeBudget(max_mutants=8), [])
+    ops = {m.operator for m in ms if not m.is_sentinel}
+    assert {"CMP", "BOOL", "RET", "EXC"} <= ops       # 覆盖最小高价值算子集
+    sentinels = [m for m in ms if m.is_sentinel]
+    assert len(sentinels) == 1 and sentinels[0].operator.startswith("SENTINEL")
+
+def test_plan_respects_budget(tmp_path):
+    sf = _mk_project(tmp_path, _WEAK)
+    ms = probe.plan(sf, probe.ProbeBudget(max_mutants=3), [])
+    assert len(ms) <= 3                               # 含哨兵不超预算
+
+def test_plan_empty_on_non_code_diff(tmp_path):
+    sf = {"_repo_dir": str(tmp_path), "changed_files": [{"path": "README.md", "hunks": [[1, 5, 0]]}]}
+    assert probe.plan(sf, probe.ProbeBudget(), []) == []
+
+
+# ============================ run / replay（动态·真跑 pytest）============================
+@pytest.mark.slow
+def test_run_weak_tests_yield_survivors_sentinel_killed(tmp_path):
+    sf = _mk_project(tmp_path, _WEAK)
+    ms = probe.plan(sf, probe.ProbeBudget(max_mutants=8), [])
+    rep = probe.run(ms, _tc(sf), probe.ProbeBudget(max_mutants=8, per_mutant_timeout_s=60))
+    assert rep.status == "ok"
+    assert rep.sentinel_result is probe.VerdictKind.KILLED          # 链路自检通过
+    assert any(v.kind is probe.VerdictKind.SURVIVED for v in rep.verdicts)   # 弱测试放过了变异
+    assert rep.kill_rate is not None
+    # 工作区恢复
+    assert "v >= lower and v < upper" in (tmp_path / "pkg" / "semver_range.py").read_text()
+
+@pytest.mark.slow
+def test_run_invalid_when_sentinel_survives(tmp_path):
+    sf = _mk_project(tmp_path, "\n    def test_nothing():\n        assert True\n")   # 无真测试→哨兵必存活
+    ms = probe.plan(sf, probe.ProbeBudget(max_mutants=6), [])
+    if not any(m.is_sentinel for m in ms):
+        pytest.skip("无哨兵可选")
+    rep = probe.run(ms, _tc(sf), probe.ProbeBudget(max_mutants=6, per_mutant_timeout_s=60))
+    assert rep.status == "invalid"
+    assert rep.sentinel_result is not probe.VerdictKind.KILLED
+    assert rep.kill_rate is None and rep.verdicts == []             # 判决作废
+
+@pytest.mark.slow
+def test_replay_kills_after_strong_test(tmp_path):
+    sf = _mk_project(tmp_path, _WEAK)
+    ms = probe.plan(sf, probe.ProbeBudget(max_mutants=8), [])
+    rep = probe.run(ms, _tc(sf), probe.ProbeBudget(max_mutants=8, per_mutant_timeout_s=60))
+    # 选一个【值路径】存活者（CMP/BOOL/RET）——强测试断言返回值即能击杀；
+    # EXC/空 spec 等未覆盖路径的存活是探针的正确产出，但不适合演示 replay 闭环。
+    val_ops = {m.mutant_id: m for m in ms if m.operator in ("CMP", "BOOL", "RET")}
+    survivor = next(v for v in rep.verdicts
+                    if v.kind is probe.VerdictKind.SURVIVED and v.mutant_id in val_ops)
+    mutant = val_ops[survivor.mutant_id]
+    # 换成强测试后，同一变异体应被击杀（done_criteria 闭环）
+    (tmp_path / "tests" / "test_semver_range.py").write_text(textwrap.dedent(_STRONG), encoding="utf-8")
+    v = probe.replay(mutant, _tc(sf))
+    assert v.kind is probe.VerdictKind.KILLED
+
+
+# ============================ to_findings 接线 ============================
+def test_to_findings_survived_shape_and_checklist_compat():
+    rep = probe.ProbeRunReport(
+        2, 2, probe.VerdictKind.KILLED,
+        [probe.Verdict("mut-abc", probe.VerdictKind.SURVIVED, None, 1.0, "pkg/a.py", 12)],
+        [], "ok", 0.0)
+    fs = probe.to_findings(rep)
+    f = fs[0]
+    assert f["rule_id"] == "PROBE-SURVIVED" and f["file"] == "pkg/a.py" and f["line"] == 12
+    assert f["done_criteria"] == {"kind": "deterministic", "spec": {"replay_mutant": "mut-abc"}}
+    assert f["mutant_id"] == "mut-abc" and f["agent"] == "probe"
+    assert checklist.from_findings(fs) is not None                  # checklist 能消费
+
+def test_to_findings_invalid_is_p0_not_survived():
+    rep = probe.ProbeRunReport(3, 1, probe.VerdictKind.SURVIVED, [], [], "invalid", None,
+                               reason="哨兵未被击杀")
+    fs = probe.to_findings(rep)
+    assert len(fs) == 1 and fs[0]["rule_id"] == "PROBE-INVALID" and fs[0]["severity"] == "P0"
+
+def test_to_findings_plan_empty_is_explicit_not_silent():
+    rep = probe.ProbeRunReport(0, 0, probe.VerdictKind.INFRA_ERROR, [], [], "plan_empty", None,
+                               reason="无可变异目标")
+    fs = probe.to_findings(rep)
+    assert len(fs) == 1 and fs[0]["rule_id"] == "PROBE-EMPTY"       # 没做事也显式汇报
+
+def test_to_findings_killed_produces_no_finding():
+    rep = probe.ProbeRunReport(2, 2, probe.VerdictKind.KILLED,
+        [probe.Verdict("mut-k", probe.VerdictKind.KILLED, "t::x", 1.0, "pkg/a.py", 3)], [], "ok", 1.0)
+    assert probe.to_findings(rep) == []                             # 击杀=好事，不产 Finding
