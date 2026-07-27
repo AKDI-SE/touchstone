@@ -7,7 +7,7 @@
 
 ### Probe：测试有效性探针（新模块）
 
-补上 Touchstone 缺失的「测试相对于行为」审查层——回答「『测试全绿』本身可信吗」。对标 dev-loop 变异探针实践与 AKDI fail-open 实证（lint 零文件检查恒 exit 0、冒烟 11/63 skip 计通过）。设计见 `docs/touchstone-probe-design.md`。
+补上 Touchstone 缺失的「测试相对于行为」审查层——回答「『测试全绿』本身可信吗」。对标 dev-loop 变异探针实践与 AKDI fail-open 实证（lint 零文件检查恒 exit 0、冒烟 11/63 skip 计通过）。设计见 `docs/touchstone-probe-design.md`（随 docs/probe-design 分支独立 PR 交付，SIZE-001 拆分）。
 
 - **L0 断言普查（静态·`census`）**：不跑测试，静态揪四类假测试——skip 计通过 / 零断言 / 恒真弱断言（assert True、assertIsNotNone）/ 吞异常。
 - **L1 变异探针（动态·`plan`+`run`）**：锚定 ScopeFacts 增量函数，按（分支数 × 低断言密度）选点，套最小高价值算子集（CMP/BOOL/CONST/RET/EXC，纯 stdlib `ast`，零第三方），预算内注入→定向跑测→恢复源码→五态判决。
