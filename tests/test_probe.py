@@ -123,7 +123,7 @@ def test_plan_empty_on_non_code_diff(tmp_path):
 def test_run_weak_tests_yield_survivors_sentinel_killed(tmp_path):
     sf = _mk_project(tmp_path, _WEAK)
     ms = probe.plan(sf, probe.ProbeBudget(max_mutants=8), [])
-    rep = probe.run(ms, _tc(sf), probe.ProbeBudget(max_mutants=8, per_mutant_timeout_s=60))
+    rep = probe.run(ms, _tc(sf), probe.ProbeBudget(max_mutants=8, per_mutant_timeout_s=60), [])
     assert rep.status == "ok"
     assert rep.sentinel_result is probe.VerdictKind.KILLED          # 链路自检通过
     assert any(v.kind is probe.VerdictKind.SURVIVED for v in rep.verdicts)   # 弱测试放过了变异
@@ -136,7 +136,7 @@ def test_run_invalid_when_sentinel_survives(tmp_path):
     sf = _mk_project(tmp_path, "\n    def test_nothing():\n        assert True\n")   # 无真测试→哨兵必存活
     ms = probe.plan(sf, probe.ProbeBudget(max_mutants=6), [])
     assert any(m.is_sentinel for m in ms)   # 哨兵必须存在（R1-07：前提失效应红，不应静默 skip）
-    rep = probe.run(ms, _tc(sf), probe.ProbeBudget(max_mutants=6, per_mutant_timeout_s=60))
+    rep = probe.run(ms, _tc(sf), probe.ProbeBudget(max_mutants=6, per_mutant_timeout_s=60), [])
     assert rep.status == "invalid"
     assert rep.sentinel_result is not probe.VerdictKind.KILLED
     assert rep.kill_rate is None and rep.verdicts == []             # 判决作废
@@ -145,7 +145,7 @@ def test_run_invalid_when_sentinel_survives(tmp_path):
 def test_replay_kills_after_strong_test(tmp_path):
     sf = _mk_project(tmp_path, _WEAK)
     ms = probe.plan(sf, probe.ProbeBudget(max_mutants=8), [])
-    rep = probe.run(ms, _tc(sf), probe.ProbeBudget(max_mutants=8, per_mutant_timeout_s=60))
+    rep = probe.run(ms, _tc(sf), probe.ProbeBudget(max_mutants=8, per_mutant_timeout_s=60), [])
     # 选一个【值路径】存活者（CMP/BOOL/RET）——强测试断言返回值即能击杀；
     # EXC/空 spec 等未覆盖路径的存活是探针的正确产出，但不适合演示 replay 闭环。
     val_ops = {m.mutant_id: m for m in ms if m.operator in ("CMP", "BOOL", "RET")}
@@ -195,7 +195,7 @@ def test_run_invalid_when_no_sentinel_in_nonempty_plan(tmp_path):
     m = probe.Mutant("mut-nosent", "pkg/x.py", "f(...)", "CMP",
                      probe.SourceSpan("pkg/x.py", 1, 1), "a<b", "a<=b")
     rep = probe.run([m], probe.TestCommand(cmd="python -c pass", cwd=str(tmp_path)),
-                    probe.ProbeBudget(per_mutant_timeout_s=5, total_timeout_s=10))
+                    probe.ProbeBudget(per_mutant_timeout_s=5, total_timeout_s=10), [])
     assert rep.status == "invalid"
     assert rep.verdicts == [] and rep.kill_rate is None
     assert "哨兵" in rep.reason
@@ -231,3 +231,50 @@ def test_mutation_sites_skip_docstrings():
     originals = [s[1] for s in sites if s[0] == "CONST"]
     assert '"doc here"' not in originals
     assert '"real"' in originals                                            # 真实字符串常量仍是位点
+
+
+# ============================ Round-3/4 销项回归（PR #133/#134）============================
+def test_census_no_false_positive_on_assert_in_except(tmp_path):
+    """TS3-01：except 内 unittest 断言方法（self.assertEqual 等）是合法异常断言模式，
+    不得误报 swallowed_exception；真吞错仍要抓。"""
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_x.py").write_text(
+        "import unittest\n"
+        "class T(unittest.TestCase):\n"
+        "    def test_exc_detail(self):\n"
+        "        try:\n"
+        "            risky()\n"
+        "        except ValueError as e:\n"
+        "            self.assertEqual(str(e), 'expected')\n"
+        "    def test_true_swallow(self):\n"
+        "        try:\n"
+        "            risky()\n"
+        "        except Exception:\n"
+        "            pass\n"
+        "        assert done() == 1\n", encoding="utf-8")
+    sf = {"_repo_dir": str(tmp_path), "changed_files": [{"path": "tests/test_x.py"}]}
+    swallowed = {i.test_name for i in probe.census(sf, str(tmp_path)) if i.kind == "swallowed_exception"}
+    assert "test_exc_detail" not in swallowed          # 合法模式不误报
+    assert "test_true_swallow" in swallowed            # 真吞错仍命中
+
+
+def test_verdict_invariant_killed_requires_killing_test():
+    """TS4-01：KILLED 判决必须携带 killing_test——注释约定升级为结构硬校验。"""
+    with pytest.raises(ValueError):
+        probe.Verdict("mut-x", probe.VerdictKind.KILLED, None, 1.0)
+    v = probe.Verdict("mut-x", probe.VerdictKind.KILLED, "t::case", 1.0)
+    assert v.killing_test == "t::case"
+
+
+def test_report_status_is_enum_and_str_compatible():
+    """TS4-02：status 为 ReportStatus 枚举；str 混入保证与既有字面量比较兼容。"""
+    assert probe.ReportStatus.OK == "ok" and probe.ReportStatus.INVALID == "invalid"
+    assert set(probe.ReportStatus) == {probe.ReportStatus.OK, probe.ReportStatus.PLAN_EMPTY,
+                                       probe.ReportStatus.INVALID}
+
+
+def test_run_requires_census_issues_positionally(tmp_path):
+    """TS4-03：census_issues 必传——可选默认会静默丢失 L0 检测层。"""
+    import inspect
+    sig = inspect.signature(probe.run)
+    assert sig.parameters["census_issues"].default is inspect.Parameter.empty

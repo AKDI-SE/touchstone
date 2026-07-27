@@ -59,10 +59,16 @@ class VerdictKind(Enum):
 class Verdict:
     mutant_id: str
     kind: VerdictKind
-    killing_test: str | None           # 击杀者；KILLED 时应尽力填
+    killing_test: str | None           # 击杀者；KILLED 时必填（__post_init__ 硬校验）
     elapsed_s: float
     path: str = ""                     # 变异体所在文件（供 Finding 定位）
     line: int = 0
+
+    def __post_init__(self):
+        # 不变量硬校验：KILLED 必有击杀者标识（判决来源可追溯）。注释约定改为
+        # 结构约束——与本模块抗 fail-open 立场一致（PR#134 R1 意见）。
+        if self.kind is VerdictKind.KILLED and not self.killing_test:
+            raise ValueError(f"Verdict 不变量违反：KILLED 判决必须携带 killing_test（mutant={self.mutant_id}）")
 
 
 @dataclass(frozen=True)
@@ -82,6 +88,14 @@ class TestCommand:
     env: dict = field(default_factory=dict)
 
 
+class ReportStatus(str, Enum):
+    """报告状态三态完备（做了/没得做/做废了），str 混入保证与既有 "ok" 字面量比较兼容。
+    普通 str 状态机在条件判断中拼写错误会静默失效——改结构化杜绝（PR#134 R1 意见）。"""
+    OK = "ok"
+    PLAN_EMPTY = "plan_empty"
+    INVALID = "invalid"
+
+
 @dataclass(frozen=True)
 class ProbeRunReport:                  # never-silent 强制载体：任何计数缺失即非法
     plan_size: int                     # 计划变异体数（含哨兵）；0 时 status 必为 plan_empty
@@ -89,7 +103,7 @@ class ProbeRunReport:                  # never-silent 强制载体：任何计�
     sentinel_result: VerdictKind       # 非 KILLED（ok 路径下）⇒ status=invalid
     verdicts: list                     # list[Verdict]（不含哨兵；invalid 时为空/被作废）
     census: list                       # list[CensusIssue]
-    status: str                        # ok / plan_empty / invalid
+    status: ReportStatus               # ReportStatus.OK / PLAN_EMPTY / INVALID（str 混入，兼容字面量比较）
     kill_rate: float | None            # killed/(killed+survived)；哨兵与 TIMEOUT 不计入；invalid/plan_empty 为 None
     reason: str = ""                   # plan_empty/invalid 的可读原因（never silent）
 
@@ -151,16 +165,20 @@ def _assert_stats(fn):
                 nm = c.func.attr if isinstance(c, ast.Call) and isinstance(c.func, ast.Attribute) else ""
                 if nm in ("raises", "warns"):          # with pytest.raises(...) 算真断言
                     real += 1
-    # 吞错型：try/except 捕获后既不 re-raise 也不在 except 内断言/fail
+    # 吞错型：try/except 捕获后既不 re-raise 也不在 except 内断言/fail。
+    # 断言识别口径与上方计数循环一致（_ASSERT_CALLS/_TRIVIAL_ASSERT_CALLS）——
+    # except 内 self.assertEqual(str(e), ...) 是合法的异常断言模式，不得误报（PR#133 R3 意见）。
+    def _is_assert_call(x):
+        if not isinstance(x, ast.Call):
+            return False
+        name = x.func.attr if isinstance(x.func, ast.Attribute) else getattr(x.func, "id", "")
+        return name in _ASSERT_CALLS or name in _TRIVIAL_ASSERT_CALLS or name in ("fail", "raises", "warns")
     for n in ast.walk(fn):
         if isinstance(n, ast.Try):
             for h in n.handlers:
                 body = h.body
                 has_raise = any(isinstance(x, ast.Raise) for x in ast.walk(h))
-                has_assert = any(isinstance(x, ast.Assert) for x in ast.walk(h)) or \
-                    any(isinstance(x, ast.Call) and
-                        (getattr(x.func, "attr", "") in ("fail",) or getattr(x.func, "id", "") == "fail")
-                        for x in ast.walk(h))
+                has_assert = any(isinstance(x, ast.Assert) or _is_assert_call(x) for x in ast.walk(h))
                 only_pass = all(isinstance(x, ast.Pass) for x in body)
                 if (only_pass or not (has_raise or has_assert)):
                     swallowed = True
@@ -479,13 +497,14 @@ def _kill_rate(verdicts):
     return (killed / denom) if denom else None
 
 
-def run(mutants, test_cmd, budget, census_issues=None):
+def run(mutants, test_cmd, budget, census_issues):
     """逐个注入变异体、运行定向测试、恢复源码、记录判决。哨兵最先执行；
-    哨兵未被击杀 → 立即终止并返回 status=invalid。任何路径都产出完整计数（never silent）。"""
-    census_issues = census_issues or []
+    哨兵未被击杀 → 立即终止并返回 status=invalid。任何路径都产出完整计数（never silent）。
+    census_issues 为必传（无问题需显式传 []）：L0 结果是静态 Finding 的核心来源，
+    可选默认极易被调用方遗漏而静默丢失整层检测（PR#134 R1 意见）。"""
     if not mutants:
         return ProbeRunReport(0, 0, VerdictKind.INFRA_ERROR, [], census_issues,
-                              "plan_empty", None, reason="diff 内无可变异目标（新增/改动的 Python 函数为空）")
+                              ReportStatus.PLAN_EMPTY, None, reason="diff 内无可变异目标（新增/改动的 Python 函数为空）")
 
     sentinels = [m for m in mutants if m.is_sentinel]
     reals = [m for m in mutants if not m.is_sentinel]
@@ -494,12 +513,12 @@ def run(mutants, test_cmd, budget, census_issues=None):
     #    绝不允许「没自检但绿灯」——那正是本模块要防御的 fail-open 形态）。
     if not sentinels:
         return ProbeRunReport(len(mutants), 0, VerdictKind.INFRA_ERROR, [], census_issues,
-                              "invalid", None,
+                              ReportStatus.INVALID, None,
                               reason="无法选取哨兵变异体 → 链路自检不可用，本轮判决无效")
     sv = _inject_and_run(sentinels[0], test_cmd, budget.per_mutant_timeout_s)
     sent_kind = sv.kind
     if sent_kind is not VerdictKind.KILLED:
-        return ProbeRunReport(len(mutants), 1, sent_kind, [], census_issues, "invalid", None,
+        return ProbeRunReport(len(mutants), 1, sent_kind, [], census_issues, ReportStatus.INVALID, None,
                               reason=f"哨兵未被击杀（{sent_kind.name}）→ 探针链路故障，本轮判决全部作废")
 
     # ② 预算内逐个执行
@@ -511,7 +530,7 @@ def run(mutants, test_cmd, budget, census_issues=None):
         executed += 1
 
     return ProbeRunReport(len(mutants), executed, sent_kind, verdicts, census_issues,
-                          "ok", _kill_rate(verdicts))
+                          ReportStatus.OK, _kill_rate(verdicts))
 
 
 def replay(mutant, test_cmd, budget=None):
@@ -566,7 +585,7 @@ def to_findings(report):
             f"L0 断言普查：{c.test_name} — {c.evidence}", fix,
             {"kind": "review", "spec": {"recheck": f"census:{c.kind}:{c.test_name}"}}))
 
-    if report.status == "invalid":
+    if report.status == ReportStatus.INVALID:
         findings.append(_finding(
             "PROBE-INVALID", "", 0, "P0",
             f"探针链路故障：{report.reason}",
@@ -574,7 +593,7 @@ def to_findings(report):
             {"kind": "deterministic", "spec": {"replay_sentinel_killed": True}}))
         return findings
 
-    if report.status == "plan_empty":
+    if report.status == ReportStatus.PLAN_EMPTY:
         findings.append(_finding(
             "PROBE-EMPTY", "", 0, "info",
             f"本轮探测无可变异目标：{report.reason}（探针已运行，非静默跳过）。",
