@@ -13,7 +13,7 @@ import shlex
 import subprocess
 import sys
 import time
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from enum import Enum, auto
 
 
@@ -439,7 +439,7 @@ def _inject_and_run(mutant, test_cmd, timeout):
     t0 = time.monotonic()
     try:
         original_bytes = open(abspath, "rb").read()
-    except OSError as e:
+    except OSError:
         return Verdict(mutant.mutant_id, VerdictKind.INFRA_ERROR, None, 0.0, mutant.path, mutant.site.start_line)
     text = original_bytes.decode("utf-8", errors="replace")
     idx = _find_in_window(text, mutant.original, mutant.site)
