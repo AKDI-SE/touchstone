@@ -740,6 +740,61 @@ def test_govern_main_fail_closed_when_revert_scan_unavailable(monkeypatch, tmp_p
     assert state["tripped"] is True and state["revert_rate"] is None
 
 
+def test_govern_main_survives_empty_yaml_and_null_json(monkeypatch, tmp_path):
+    """PR #136（TEST-001）：空/注释-only YAML 与 null JSON 不能让 govern.main 崩。
+    回归锁：yaml.safe_load 对空/注释-only 文件返回 None；json.load 对 ``null`` 字面返回 None。
+    修复前 ``standards.get('rules', [])`` / ``cal.get('aggregate', {})`` 在 None 上 AttributeError；
+    ``or {}`` 兜底后 main() 平稳落盘两份产物（无固化候选、熔断不跳）。"""
+    monkeypatch.chdir(tmp_path)
+    # null JSON：json.load → None；or {} → {}，cal.get 不再崩
+    (tmp_path / "calibration.json").write_text("null", encoding="utf-8")
+    monkeypatch.setenv("CALIBRATION_JSON", str(tmp_path / "calibration.json"))
+    # 空（仅注释）YAML：yaml.safe_load → None；or {} → {}，standards.get 不再崩
+    empty_std = tmp_path / "standards.yaml"
+    empty_std.write_text("# 仅注释、零规则\n", encoding="utf-8")
+    monkeypatch.setenv("TOUCHSTONE_STANDARDS", str(empty_std))
+    monkeypatch.setattr(GOV, "detect_revert_shas", lambda *a, **k: set())   # 不打 git
+    GOV.main()                                                              # 不抛 AttributeError
+    proposal = (tmp_path / "promotion-proposal.md").read_text(encoding="utf-8")
+    assert "无达阈值的固化候选" in proposal                                  # 空规则→无候选，落正常分支
+    state = json.loads((tmp_path / "autonomy-state.json").read_text(encoding="utf-8"))
+    assert state["tripped"] is False                                        # 无 records → 不熔断
+
+
+@pytest.mark.parametrize("module,fn,kind", [
+    ("checks", "load_config", "dict"),
+    ("contract_check", "load_scope_rules", "dict"),
+    ("review_provider", "load_nmap", "dict"),
+    ("gen_best_practices", "generate", "str"),
+])
+def test_yaml_loaders_empty_file_returns_safe_value_not_none(tmp_path, module, fn, kind):
+    """PR #136（TEST-001）：全仓裸 open()→with 扫描把 4 个 YAML 加载站的 ``or {}`` 搬进 with 块。
+    不变量锁：空/注释-only YAML（safe_load → None）必须兜底成空字典，绝不把 None 透传到下游 ``.get``。
+    任一站点误删 ``or {}`` 都会在此复现 ``AttributeError: 'NoneType' ... .get``。"""
+    import importlib
+    m = importlib.import_module(f"touchstone.{module}")
+    ts = tmp_path / ".touchstone"; ts.mkdir()
+    target = {
+        "checks":              tmp_path / "checks.yaml",
+        "contract_check":      ts / "scope-rules.yaml",
+        "review_provider":     ts / "pr-agent.yaml",
+        "gen_best_practices":  tmp_path / "standards.yaml",
+    }[module]
+    target.write_text("# 仅注释、零键\n", encoding="utf-8")                # safe_load → None
+    if module == "checks":
+        os.environ["TOUCHSTONE_CHECKS"] = str(target)
+        try:
+            out = getattr(m, fn)(str(tmp_path))
+        finally:
+            os.environ.pop("TOUCHSTONE_CHECKS", None)
+    elif module == "gen_best_practices":
+        out = getattr(m, fn)(str(target))
+    else:
+        out = getattr(m, fn)(str(tmp_path))
+    assert out is not None, f"{module}.{fn} 对空 YAML 返回 None——``or {{}}`` 兜底丢了"
+    assert isinstance(out, dict if kind == "dict" else str)
+
+
 # ============================ calibrate ============================
 from touchstone import calibrate as CAL            # noqa: E402
 from touchstone import autonomy as AUT             # noqa: E402
