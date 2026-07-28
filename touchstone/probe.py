@@ -17,6 +17,11 @@ from dataclasses import dataclass, field
 from enum import Enum, auto
 
 
+class WorkspaceCorrupted(RuntimeError):
+    """源码恢复失败 → 工作区脏。后续 mutant 会以脏源码为基线 → 级联误判。
+    _inject_and_run 在 finally 恢复失败时抛出；run() 捕获后判 INVALID 中止（R1-07 / PRA restoration cascade）。"""
+
+
 # ============================ §3 核心数据结构 ============================
 @dataclass(frozen=True)
 class SourceSpan:
@@ -327,9 +332,10 @@ def _mutation_sites(fn, src, path):
             if not seg:
                 continue
             if isinstance(n.op, ast.And):
-                sites.append(("BOOL", seg, seg.replace(" and ", " or ", 1), _span(path, n)))
+                # 翻全部 " and "（非仅首个）：a and b and z → a or b or z，对齐 BoolOp 单 op 类型语义
+                sites.append(("BOOL", seg, seg.replace(" and ", " or "), _span(path, n)))
             else:
-                sites.append(("BOOL", seg, seg.replace(" or ", " and ", 1), _span(path, n)))
+                sites.append(("BOOL", seg, seg.replace(" or ", " and "), _span(path, n)))
         elif isinstance(n, ast.UnaryOp) and isinstance(n.op, ast.Not):
             seg = _seg(src, n)
             if seg and seg.startswith("not "):
@@ -501,7 +507,8 @@ def _inject_and_run(mutant, test_cmd, timeout):
         try:
             open(abspath, "wb").write(original_bytes)   # 恢复必达：崩溃也不留脏工作区
         except OSError:
-            print(f"[probe] 源码恢复失败（工作区可能脏）：{abspath}", file=sys.stderr)
+            print(f"[probe] 源码恢复失败，中止 run 以防级联污染：{abspath}", file=sys.stderr)
+            raise WorkspaceCorrupted(abspath)
 
 
 def _kill_rate(verdicts):
@@ -529,7 +536,12 @@ def run(mutants, test_cmd, budget, census_issues):
         return ProbeRunReport(len(mutants), 0, VerdictKind.INFRA_ERROR, [], census_issues,
                               ReportStatus.INVALID, None,
                               reason="无法选取哨兵变异体 → 链路自检不可用，本轮判决无效")
-    sv = _inject_and_run(sentinels[0], test_cmd, budget.per_mutant_timeout_s)
+    try:
+        sv = _inject_and_run(sentinels[0], test_cmd, budget.per_mutant_timeout_s)
+    except WorkspaceCorrupted:
+        return ProbeRunReport(len(mutants), 1, VerdictKind.INFRA_ERROR, [], census_issues,
+                              ReportStatus.INVALID, None,
+                              reason="哨兵源码恢复失败（工作区脏）→ 中止，本轮判决无效")
     sent_kind = sv.kind
     if sent_kind is not VerdictKind.KILLED:
         return ProbeRunReport(len(mutants), 1, sent_kind, [], census_issues, ReportStatus.INVALID, None,
@@ -540,8 +552,14 @@ def run(mutants, test_cmd, budget, census_issues):
     for m in reals:
         if time.monotonic() - t_start > budget.total_timeout_s:
             break                       # 总时长预算用尽：已执行的照常报告，未执行的不沉默（executed<plan_size 即体现）
-        verdicts.append(_inject_and_run(m, test_cmd, budget.per_mutant_timeout_s))
         executed += 1
+        try:
+            verdicts.append(_inject_and_run(m, test_cmd, budget.per_mutant_timeout_s))
+        except WorkspaceCorrupted:
+            # 源码恢复失败 → 工作区脏：后续 mutant 基线会错 → 中止，判 INVALID（防级联误判）
+            return ProbeRunReport(len(mutants), executed, sent_kind, verdicts, census_issues,
+                                  ReportStatus.INVALID, _kill_rate(verdicts),
+                                  reason="源码恢复失败（工作区脏）→ 中止以防后续 mutant 基线被污染")
 
     return ProbeRunReport(len(mutants), executed, sent_kind, verdicts, census_issues,
                           ReportStatus.OK, _kill_rate(verdicts))

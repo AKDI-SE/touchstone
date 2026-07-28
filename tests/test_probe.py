@@ -233,6 +233,51 @@ def test_mutation_sites_skip_docstrings():
     assert '"real"' in originals                                            # 真实字符串常量仍是位点
 
 
+def test_mutation_sites_boolop_multi_operand_flips_all():
+    """133-6：多操作数 BoolOp `a and b and c` 翻全部 and→or。
+    原 seg.replace(...,1) 只翻首个 → `a or b and c` 语义错位（And→Or 应整组翻）。"""
+    import ast as _ast
+    src = 'def f(a, b, c):\n    if a and b and c:\n        return 1\n'
+    fn = _ast.parse(src).body[0]
+    bool_sites = [s for s in probe._mutation_sites(fn, src, "p.py") if s[0] == "BOOL"]
+    assert bool_sites, "应至少有一个 BOOL 位点"
+    orig, mut = bool_sites[0][1], bool_sites[0][2]
+    assert orig.count(" and ") >= 2                       # 多操作数前提
+    assert " and " not in mut                             # 全翻，无残留
+    assert mut.replace(" or ", " and ") == orig           # 全 or→and 可逆回原文
+
+
+def test_inject_and_run_raises_on_restore_failure(tmp_path, monkeypatch):
+    """133-7：_inject_and_run 恢复失败 → 抛 WorkspaceCorrupted（run 据此判 INVALID 中止防级联）。"""
+    sf = _mk_project(tmp_path, _STRONG)
+    mutant = next(m for m in probe.plan(sf, probe.ProbeBudget(max_mutants=8), []) if not m.is_sentinel)
+    real_open = open
+    def flaky(path, mode="r", *a, **kw):
+        if mode == "wb":                                  # 恢复走 "wb"：模拟失败
+            raise OSError("simulated restore failure")
+        return real_open(path, mode, *a, **kw)
+    monkeypatch.setattr(probe, "open", flaky, raising=False)
+    tc = probe.TestCommand(cmd="python -c pass", cwd=sf["_repo_dir"])
+    with pytest.raises(probe.WorkspaceCorrupted):
+        probe._inject_and_run(mutant, tc, 60)
+
+
+def test_run_invalid_when_restore_fails(tmp_path, monkeypatch):
+    """133-7 端到端：恢复失败 → run() 判 INVALID 中止（不继续跑后续 mutant 以免基线被脏工作区污染）。"""
+    sf = _mk_project(tmp_path, _STRONG)
+    ms = probe.plan(sf, probe.ProbeBudget(max_mutants=8), [])
+    real_open = open
+    def flaky(path, mode="r", *a, **kw):
+        if mode == "wb":
+            raise OSError("simulated restore failure")
+        return real_open(path, mode, *a, **kw)
+    monkeypatch.setattr(probe, "open", flaky, raising=False)
+    tc = probe.TestCommand(cmd="python -c pass", cwd=sf["_repo_dir"])
+    rep = probe.run(ms, tc, probe.ProbeBudget(max_mutants=8, per_mutant_timeout_s=60), [])
+    assert rep.status == "invalid"
+    assert "恢复失败" in (rep.reason or "")
+
+
 # ============================ Round-3/4 销项回归（PR #133/#134）============================
 def test_census_no_false_positive_on_assert_in_except(tmp_path):
     """TS3-01：except 内 unittest 断言方法（self.assertEqual 等）是合法异常断言模式，
