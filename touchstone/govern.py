@@ -144,8 +144,10 @@ def main():
     std_path = os.environ.get("TOUCHSTONE_STANDARDS", ".touchstone/standards.yaml")
     if not os.path.exists(cal_path):
         sys.exit(f"未找到 {cal_path}（请先运行 calibrate.py）")
-    cal = json.load(open(cal_path, encoding="utf-8"))
-    standards = yaml.safe_load(open(std_path, encoding="utf-8"))
+    with open(cal_path, encoding="utf-8") as f:
+        cal = json.load(f)
+    with open(std_path, encoding="utf-8") as f:
+        standards = yaml.safe_load(f)
     rule_index = {r["id"]: r for r in standards.get("rules", [])}
     agg = cal.get("aggregate", {})
     records = cal.get("records", [])
@@ -176,7 +178,8 @@ def main():
     _prev = artifact_path("autonomy-prev.json")
     if os.path.exists(_prev):
         try:
-            prior = json.load(open(_prev)).get("approval_rate")
+            with open(_prev, encoding="utf-8") as f:       # 补 encoding：原裸 open 缺，Windows 默认编码会埋雷
+                prior = json.load(f).get("approval_rate")
         except (json.JSONDecodeError, KeyError):
             prior = None
     # revert_data_available：扫描失败(None)时让熔断失败收敛，而非假装 revert_rate=0.0/健康。

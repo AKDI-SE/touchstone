@@ -370,7 +370,8 @@ def load_nmap(repo_dir="."):
     path = os.environ.get("TOUCHSTONE_PRAGENT", os.path.join(repo_dir, ".touchstone", "pr-agent.yaml"))
     nmap = dict(_DEFAULT_NMAP)
     try:
-        data = yaml.safe_load(open(path, encoding="utf-8")) or {}
+        with open(path, encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
         norm = data.get("normalization", {})
         # 浅合并：用户配置覆盖默认（label 映射整体替换以避免歧义）
         for k in ("default_category", "default_severity", "default_confidence", "conf_min", "high_categories"):
@@ -453,7 +454,8 @@ def _build_pr_url(pr_ctx):
 
 def _load_provider_cfg(repo_dir):
     try:
-        d = yaml.safe_load(open(os.path.join(repo_dir, ".touchstone", "pr-agent.yaml"), encoding="utf-8")) or {}
+        with open(os.path.join(repo_dir, ".touchstone", "pr-agent.yaml"), encoding="utf-8") as f:
+            d = yaml.safe_load(f) or {}
         return d.get("provider") or {}
     except OSError:
         return {}
