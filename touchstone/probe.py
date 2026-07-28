@@ -530,9 +530,9 @@ def _inject_and_run(mutant, test_cmd, timeout):
     finally:
         try:
             open(abspath, "wb").write(original_bytes)   # 恢复必达：崩溃也不留脏工作区
-        except OSError:
+        except OSError as err:
             print(f"[probe] 源码恢复失败，中止 run 以防级联污染：{abspath}", file=sys.stderr)
-            raise WorkspaceCorrupted(abspath)
+            raise WorkspaceCorrupted(abspath) from err    # B904：保留 OSError 链供诊断（磁盘满/权限等）
 
 
 def _kill_rate(verdicts):
