@@ -145,9 +145,9 @@ def main():
     if not os.path.exists(cal_path):
         sys.exit(f"未找到 {cal_path}（请先运行 calibrate.py）")
     with open(cal_path, encoding="utf-8") as f:
-        cal = json.load(f)
+        cal = json.load(f) or {}                 # 空/None JSON → 空字典，防下游 cal.get 崩
     with open(std_path, encoding="utf-8") as f:
-        standards = yaml.safe_load(f)
+        standards = yaml.safe_load(f) or {}      # 空 YAML→None：or {} 兜底，对齐全仓其余 yaml 站点（#136 review）
     rule_index = {r["id"]: r for r in standards.get("rules", [])}
     agg = cal.get("aggregate", {})
     records = cal.get("records", [])
