@@ -1,6 +1,7 @@
 """Probe（测试有效性探针）测试：§3 数据结构 → census → plan(含哨兵) → run/replay → to_findings。
 静态部分纯内存快测；run/replay 各一条真跑 pytest 的端到端（hermetic 临时工程）。"""
 import os
+import sys
 import textwrap
 import pytest
 
@@ -56,7 +57,7 @@ _WEAK = '''
 '''
 
 def _tc(sf):
-    return probe.TestCommand(cmd="python -m pytest -q tests/test_semver_range.py", cwd=sf["_repo_dir"])
+    return probe.TestCommand(cmd=f"{sys.executable} -m pytest -q tests/test_semver_range.py", cwd=sf["_repo_dir"])
 
 
 # ============================ §3 数据结构 ============================
@@ -245,6 +246,23 @@ def test_mutation_sites_boolop_multi_operand_flips_all():
     assert orig.count(" and ") >= 2                       # 多操作数前提
     assert " and " not in mut                             # 全翻，无残留
     assert mut.replace(" or ", " and ") == orig           # 全 or→and 可逆回原文
+
+
+def test_node_byte_span_pins_correct_occurrence():
+    """133-3/4/5：col_offset 精确字节定位。同名片段 'a and b' 在 if 行与 return 行各出现一次时，
+    _node_byte_span 按 AST 节点的 (line, col) 各自锁定正确那处，不靠文本查找误中它行。"""
+    import ast as _ast
+    src = 'def f(a, b):\n    if a and b:\n        return a and b\n'
+    fn = _ast.parse(src).body[0]
+    bool_sites = [s for s in probe._mutation_sites(fn, src, "p.py") if s[0] == "BOOL"]
+    assert len(bool_sites) == 2
+    assert bool_sites[0][3].start_line == 2 and bool_sites[1][3].start_line == 3
+    src_b = src.encode("utf-8")
+    for span, expect_line in ((bool_sites[0][3], 2), (bool_sites[1][3], 3)):
+        bs = probe._node_byte_span(src_b, span)
+        assert bs is not None
+        assert src_b[bs[0]:bs[1]].decode() == "a and b"                   # 切片恰为该位点原文
+        assert src_b[:bs[0]].count(b"\n") + 1 == expect_line             # 落在 AST 节点所在行
 
 
 def test_inject_and_run_raises_on_restore_failure(tmp_path, monkeypatch):
