@@ -967,6 +967,19 @@ def test_graduate_skips_no_ab_and_low_samples():
     assert L.graduate(store, ab) == []
 
 
+def test_graduate_null_evidence_does_not_crash():
+    # 经验经 JSON round-trip 后 evidence 可能为 null（None）；graduate 写 ab_lift 前须兜底建空 dict
+    store = {"experiences": [
+        {"id": "e:::T1", "finding_type": "T1", "kind": "emphasize",
+         "status": "candidate", "evidence": None, "updated_at": 1}]}
+    ab = {"T1": {"with_seen": 25, "with_adopted": 20, "without_seen": 25, "without_adopted": 10}}  # lift 0.4
+    grad = L.graduate(store, ab)
+    assert grad == ["e:::T1"]
+    e = store["experiences"][0]
+    assert e["status"] == "active"
+    assert e["evidence"] == {"ab_lift": 0.4}                       # None → 建空 dict 后写入
+
+
 def test_gh_get_uses_ghclient(monkeypatch):
     from touchstone import ghclient, learning_loop as L
     monkeypatch.setattr(ghclient, "request",
@@ -1574,6 +1587,18 @@ def test_retire_on_negative_lift_skips_locked_and_low_samples():
     assert all(e["status"] == "active" for e in store["experiences"])
 
 
+def test_retire_on_negative_lift_null_evidence_does_not_crash():
+    # 经验经 JSON round-trip 后 evidence 可能为 null（None）；retire 写 ab_lift 前须兜底建空 dict
+    e = _active_exp("PRA-HARM")
+    e["evidence"] = None
+    store = {"experiences": [e]}
+    ab = {"PRA-HARM": {"with_seen": 25, "with_adopted": 5, "without_seen": 25, "without_adopted": 12}}  # lift -0.28
+    retired = L.retire_on_negative_lift(store, ab)
+    assert retired == [L._exp_id("PRA-HARM", "emphasize", "o/r", "py")]
+    assert store["experiences"][0]["status"] == "retired"
+    assert store["experiences"][0]["evidence"] == {"ab_lift": -0.28}   # None → 建空 dict 后写入
+
+
 def test_lift_summary_counts_pos_neg_insufficient():
     ab = {
         "PRA-POS": {"with_seen": 25, "with_adopted": 20, "without_seen": 25, "without_adopted": 10},  # +
@@ -1582,6 +1607,16 @@ def test_lift_summary_counts_pos_neg_insufficient():
     }
     s = L._lift_summary(ab)
     assert s == {"positive_lift": 1, "negative_lift": 1, "insufficient_samples": 1}
+
+
+def test_lift_summary_skips_null_ab_entry():
+    # ab_results 里单条为 null（JSON ab:null）→ 跳过该条不崩，其余正常计数（#130 review #4）
+    ab = {
+        "PRA-POS": {"with_seen": 25, "with_adopted": 20, "without_seen": 25, "without_adopted": 10},  # +
+        "PRA-NULL": None,
+    }
+    s = L._lift_summary(ab)
+    assert s == {"positive_lift": 1, "negative_lift": 0, "insufficient_samples": 0}
 
 
 # ============================================================================
@@ -1695,6 +1730,40 @@ def test_pragent_label_types_returns_empty_when_yaml_unimportable(monkeypatch):
     import sys
     monkeypatch.setitem(sys.modules, "yaml", None)
     assert L._pragent_label_types("nonexistent.yaml") == set()
+
+
+def test_pragent_label_types_handles_non_dict_yaml(tmp_path):
+    # YAML 顶层非字典（list/标量）→ 不应 data.get 崩，返回空集（#130 review #3）
+    p = tmp_path / "pr-agent.yaml"
+    p.write_text("- not-a-dict\n", encoding="utf-8")      # 顶层 list
+    assert L._pragent_label_types(str(p)) == set()
+
+
+def test_distill_pos_env_empty_does_not_crash_import():
+    # 位置级奖励 env 空串：模块级 int/float 不应在 import 期崩（#130 review #5）
+    import subprocess, sys
+    env = dict(os.environ)
+    env["TOUCHSTONE_POS_LINE_WINDOW"] = ""
+    env["TOUCHSTONE_POS_PARTIAL_SAMEFILE"] = ""
+    env["TOUCHSTONE_POS_PARTIAL_NOFILE"] = ""
+    r = subprocess.run([sys.executable, "-c", "import touchstone.distill"],
+                       env=env, capture_output=True, text=True)
+    assert r.returncode == 0, f"import crashed on empty env:\n{r.stderr}"
+
+
+def test_distill_pos_env_malformed_falls_back_to_default():
+    # 非法值（'abc'）不应在 import 期崩，且回落默认（#132 review：malformed env）
+    import subprocess, sys
+    env = dict(os.environ)
+    env["TOUCHSTONE_POS_LINE_WINDOW"] = "abc"
+    env["TOUCHSTONE_POS_PARTIAL_SAMEFILE"] = "not-a-number"
+    env["TOUCHSTONE_POS_PARTIAL_NOFILE"] = "xx"
+    r = subprocess.run([sys.executable, "-c",
+                        "from touchstone import distill as d; "
+                        "print(d._POS_LINE_WINDOW, d._POS_PARTIAL_SAMEFILE, d._POS_PARTIAL_NOFILE)"],
+                       env=env, capture_output=True, text=True)
+    assert r.returncode == 0, f"import crashed on malformed env:\n{r.stderr}"
+    assert r.stdout.strip() == "10 0.5 0.5", f"未回落默认: {r.stdout!r}"
 
 
 def test_budget_skips_prs_when_exhausted():
