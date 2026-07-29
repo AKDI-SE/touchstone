@@ -459,10 +459,14 @@ def _node_byte_span(original_bytes, span):
     """AST col_offset/end_col_offset 是行内 UTF-8 字节偏移 → 节点在文件中的字节起止。
     返回 (start_byte, end_byte) 或 None（行列越界）。精确注入用，免行窗口文本查找命中同名片段（133-3/4/5）。"""
     lines = original_bytes.splitlines(keepends=True)
-    if not (1 <= span.start_line <= len(lines)):
+    if not lines or not (1 <= span.start_line <= len(lines)):
+        return None
+    # end_line 越界（AST 节点声称跨到文件外/倒序）→ 早返回 None 触发 _find_in_window 兜底，
+    # 不静默 clamp 出错位字节区间（#137 review：invalid lines 走 graceful fallback）。
+    end_line = span.end_line or span.start_line
+    if not (span.start_line <= end_line <= len(lines)):
         return None
     start_byte = sum(len(l) for l in lines[: span.start_line - 1]) + max(0, span.start_col)
-    end_line = min(span.end_line or span.start_line, len(lines))
     end_byte = sum(len(l) for l in lines[: end_line - 1]) + max(0, span.end_col)
     if end_byte < start_byte:
         return None

@@ -265,6 +265,25 @@ def test_node_byte_span_pins_correct_occurrence():
         assert src_b[:bs[0]].count(b"\n") + 1 == expect_line             # 落在 AST 节点所在行
 
 
+def test_node_byte_span_returns_none_on_invalid_lines():
+    """#137 review：行列越界/倒序/空源 → 早返回 None 触发 _find_in_window 兜底，不静默 clamp 出错位区间。
+    锁：end_line 超过文件实际行数不再被 min() 偷偷夹回，而是 None（graceful fallback）。"""
+    src_b = b"x = 1\ny = 2\n"                       # 2 行
+    Span = probe.SourceSpan
+    # start_line 越界
+    assert probe._node_byte_span(src_b, Span("p", 99, 99, 0, 1)) is None
+    # end_line 超出文件行数（旧 min() 会夹回 2，现返回 None）
+    assert probe._node_byte_span(src_b, Span("p", 1, 99, 0, 1)) is None
+    # end_line < start_line（倒序）
+    assert probe._node_byte_span(src_b, Span("p", 2, 1, 0, 1)) is None
+    # 空源
+    assert probe._node_byte_span(b"", Span("p", 1, 1, 0, 1)) is None
+    # 合法单行仍返有效区间
+    bs = probe._node_byte_span(src_b, Span("p", 1, 1, 0, 3))
+    assert bs is not None and src_b[bs[0]:bs[1]] == b"x ="
+
+
+
 def test_inject_and_run_raises_on_restore_failure(tmp_path, monkeypatch):
     """133-7：_inject_and_run 恢复失败 → 抛 WorkspaceCorrupted（run 据此判 INVALID 中止防级联）。"""
     sf = _mk_project(tmp_path, _STRONG)
