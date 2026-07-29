@@ -55,7 +55,7 @@ from touchstone.distill import (  # noqa: F401
     rollout_reviews, distill_semantic_advantage, _flagship_llm, _distill_via_llm,
     _counting_distiller, _tfgrpo_distiller, _DISTILLERS, register_distiller,
     distill, _flagship_configured,
-    _rollout_cache_key, _load_cache, _save_cache, _Budget,
+    _rollout_cache_key, _load_cache, _save_cache, _Budget, _looks_injected,
     _env_rollout_cache, _env_int_opt,
     _positional_reward_enabled, _is_positional_signal, _position_credit, _score_positional)
 from touchstone.ground_truth import (  # noqa: F401
