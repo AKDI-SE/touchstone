@@ -297,7 +297,8 @@ def graduate_from_calibration(records, reverted_shas=None):
 
 def _load(path):
     try:
-        return json.load(open(path, encoding="utf-8"))
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
     except (OSError, json.JSONDecodeError):
         return None
 
