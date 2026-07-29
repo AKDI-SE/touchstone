@@ -471,19 +471,20 @@ def main():
     # 注入，故此处轻量早取一次评论解析 marker（与下方反馈循环的正式取用相互独立；
     # 双取代价一次 GET，换取不重排 main 流程）。失败即空——绝不阻塞评审链路。
     guard_adjudication = ""
-    from touchstone import guard_context as _gc0
-    if _gc0.enabled():
-        try:
+    try:
+        # import 同在 try 内（PR#140 R3 意见 3）：模块导入失败也走"失败即空"降级，
+        # 不允许守卫增强层的 ImportError 崩掉 main()——与 attach 面的包裹口径一致。
+        from touchstone import guard_context as _gc0
+        if _gc0.enabled():
             _pre_comments = gh("GET", f"/repos/{owner}/{repo}/issues/{number}/comments", token)
             _pre_bodies = loop.trusted_bodies(
                 _pre_comments if isinstance(_pre_comments, list) else [], None)
             _pre_cl = checklist_mod.parse_latest(_pre_bodies)
             if _pre_cl:
-                from touchstone import guard_context as _gc
-                guard_adjudication = _gc.render_adjudication(
+                guard_adjudication = _gc0.render_adjudication(
                     _pre_cl.get("items", []), os.environ.get("REPO_DIR", "."))
-        except Exception:
-            guard_adjudication = ""
+    except Exception:
+        guard_adjudication = ""
     # repo_dir 显式透传（PR#140 R2 意见 1）：guard_adjudication 用 REPO_DIR 解析，而
     # review_provider 侧 digest 此前回退 pr_ctx.get("repo_dir",".")——REPO_DIR 非默认时
     # 两个守卫面解析目录不一致，digest 静默扫错目录返回空。单一来源，两面同目录。

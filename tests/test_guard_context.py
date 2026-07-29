@@ -219,3 +219,31 @@ def test_nested_set_cached_per_scope(tmp_path, monkeypatch):
     assert "pkg/loader.py" in txt
     # 全跨度探测覆盖 2 个 scope（module 级空行 + loader 函数）——每 scope 至多 1 次
     assert calls["n"] <= 2
+
+
+# ============================ PR #140 round-3 销项回归 ============================
+def test_parse_rejects_path_traversal(tmp_path):
+    """R3-04：路径越界拒读——`../` 穿越与绝对路径均返回 None（守卫摘要进 LLM prompt，
+    越界读取等于外送仓外文件内容）。仓内正常路径不受影响。"""
+    repo = _repo(tmp_path)
+    outside = tmp_path.parent / "outside_secret.py"
+    outside.write_text("def f():\n    return 1\n", encoding="utf-8")
+    assert gc.guard_facts(repo, "../outside_secret.py", 1) is None      # 相对穿越拒读
+    assert gc.guard_facts(repo, str(outside), 1) is None                # 绝对路径拒读
+    assert gc.guard_facts(repo, "pkg/loader.py", 12) is not None        # 仓内不受影响
+
+
+def test_continue_not_counted_as_early_exit(tmp_path):
+    """R3-02：continue 不出函数——不得计为早退守卫（假守卫比漏守卫危险）。"""
+    (tmp_path / "pkg").mkdir(exist_ok=True)
+    (tmp_path / "pkg" / "loopy.py").write_text(
+        "def scan(items):\n"
+        "    total = 0\n"
+        "    for it in items:\n"
+        "        if it is None:\n"
+        "            continue\n"
+        "        total += it\n"
+        "    result = total * 2      # 命中行：循环外，continue 保护不到\n"
+        "    return result\n", encoding="utf-8")
+    facts = gc.guard_facts(str(tmp_path), "pkg/loopy.py", 7)
+    assert not any("is None" in e for e in facts["early_exits"])        # continue 不计早退

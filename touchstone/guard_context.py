@@ -39,9 +39,18 @@ _ADJ_MAX = 2400         # C 核销段总预算（字符）
 # ---------------------------------------------------------------- 底层提取
 
 def _parse(repo_dir, path):
-    """读文件 + ast 解析；失败返回 (None, None)（失败即空）。"""
+    """读文件 + ast 解析；失败返回 (None, None)（失败即空）。
+
+    路径边界（PR#140 R3 意见 4）：path 来自 diff 解析/清单签名等外部输入，realpath
+    归一后必须落在 repo_dir 内——`../` 穿越或绝对路径一律拒读（守卫摘要会进 LLM
+    prompt，越界读取等于把仓外文件内容外送）。with 确保句柄确定性关闭（意见 1）。"""
     try:
-        src = open(os.path.join(repo_dir, path), encoding="utf-8").read()
+        base = os.path.realpath(repo_dir)
+        full = os.path.realpath(os.path.join(base, path))
+        if full != base and not full.startswith(base + os.sep):
+            return None, None                            # 越界拒读（失败即空，不抛）
+        with open(full, encoding="utf-8") as f:
+            src = f.read()
         return ast.parse(src), src
     except (OSError, SyntaxError, ValueError):
         return None, None
@@ -127,7 +136,10 @@ def _facts_from_tree(tree, src, line, scope_cache=None):
         # ② 前置早退：同 scope 内、命中行之前、body 含 raise/return/continue 的 if
         elif isinstance(n, ast.If) and n.lineno < line and not _covers(n, line):
             end = getattr(n, "end_lineno", n.lineno)
-            if end < line and any(isinstance(x, (ast.Raise, ast.Return, ast.Continue))
+            # ast.Continue 只跳过本次循环迭代、不退出函数（PR#140 R3 意见 2）：命中行在
+            # 循环外时把 continue 计成早退即【虚假守卫】——宁可漏掉少数循环内守卫（更安全
+            # 的失效方向），不制造压制真报的假事实。
+            if end < line and any(isinstance(x, (ast.Raise, ast.Return))
                                   for x in n.body):
                 facts["early_exits"].append("if " + _seg(src, n.test))
         # ③ 前置断言
