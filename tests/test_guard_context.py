@@ -279,3 +279,35 @@ def test_adjudication_parses_each_file_once(tmp_path, monkeypatch):
     txt = gc.render_adjudication(items, repo)
     assert txt.count("pkg/loader.py") == 3
     assert calls["n"] == 1                               # 同文件两项共享一次 parse；附着项零解析
+
+
+# ============================ PR #140 round-5 销项回归 ============================
+def test_attach_parses_each_file_once(tmp_path, monkeypatch):
+    """R5-01：attach 多 open 项同文件 → 只 parse 一次（与 adjudication 同款口径）。"""
+    repo = _repo(tmp_path)
+    calls = {"n": 0}
+    real = gc._parse
+    def counting(repo_dir, path):
+        calls["n"] += 1
+        return real(repo_dir, path)
+    monkeypatch.setattr(gc, "_parse", counting)
+    cl = {"items": [{"sig": "PRA-A:pkg/loader.py:12", "status": "open", "note": ""},
+                    {"sig": "PRA-B:pkg/loader.py:9", "status": "open", "note": ""}]}
+    gc.attach_guard_facts(cl, repo)
+    assert all("guard" in it for it in cl["items"])
+    assert calls["n"] == 1
+
+
+def test_digest_skips_guardless_entries_but_adjudication_keeps(tmp_path):
+    """R5-02：零守卫条目 digest 侧跳过（不压误报纯耗预算）；adjudication 侧保留
+    （「确实无守卫」对复核有信息量——提示该 finding 可能是真报）。"""
+    (tmp_path / "pkg").mkdir(exist_ok=True)
+    (tmp_path / "pkg" / "bare.py").write_text(
+        "def plain(a, b):\n    x = a + b\n    y = x * 2\n    return y\n", encoding="utf-8")
+    bare_diff = ("diff --git a/pkg/bare.py b/pkg/bare.py\n--- a/pkg/bare.py\n+++ b/pkg/bare.py\n"
+                 "@@ -2,2 +2,2 @@ def plain(a, b):\n-    x = a + b\n+    x = a + b  # touched\n"
+                 "     y = x * 2\n")
+    assert gc.render_guard_digest(bare_diff, str(tmp_path)) == ""       # 裸路径不进 digest
+    txt = gc.render_adjudication(
+        [{"sig": "PRA-Z:pkg/bare.py:3", "status": "open"}], str(tmp_path))
+    assert "无守卫" in txt                                               # 核销面保留裸路径事实

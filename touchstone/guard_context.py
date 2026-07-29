@@ -174,49 +174,57 @@ def facts_line(facts):
 def render_guard_digest(diff_text, repo_dir, max_chars=_DIGEST_MAX):
     """变更 hunk → 守卫摘要文本（注入 extra_instructions）。失败/无内容返回 ""。
 
-    hunk 解析复用 contract_check.scope_facts（unidiff），与 ScopeFacts 同一口径；
-    scope_facts 解析失败（parse_ok=False）→ 摘要为空（失败即空，不另起炉灶）。
+    diff 解析用 unidiff（与 contract_check 同一依赖）取精确变更行号——ScopeFacts 的
+    hunk 三元组只有计数没有位置，不足以定位变更行。解析失败 → 摘要为空（失败即空）。
     """
     if not enabled():
         return ""                                        # 入口自闸（PR#140 R4：所有入口共用判定，
     try:                                                 # 纵深防御不依赖调用方记得挂）
-        from touchstone import contract_check
-        sf = contract_check.scope_facts(diff_text)
-        if not sf.get("parse_ok"):
-            return ""
+        from unidiff import PatchSet                     # 与 contract_check 同一解析依赖
+        # 精确变更行定位（PR#140 R5 修复暴露的探测缺陷）：ScopeFacts 的
+        # [start, added, deleted] 只有计数没有位置——前导 context 多的 hunk 里，
+        # 跨度扫描根本探不到变更行。改用 unidiff 取 target 文件中新增行的精确行号，
+        # 每个变更行探测 {ln, ln+1}（+1 防恰落在 try:/if 守卫自身行被 lineno<line 排除），
+        # 按 (path, 函数) 聚合取最富事实。
         lines, seen = [], set()
-        for cf in sf.get("changed_files", []):
-            path = cf.get("path", "")
+        for pf in PatchSet(diff_text or ""):
+            path = pf.path
             if not path.endswith(".py"):
                 continue
-            tree, src = _parse(repo_dir, path)          # 每文件 parse 一次（PR#140 R1），
-            if tree is None:                            # 多点探测复用同一棵树
+            hit_lines = sorted({l.target_line_no for h in pf for l in h
+                                if l.is_added and l.target_line_no})
+            if not hit_lines:                            # 纯删除 hunk：取删除点的 target 位置
+                hit_lines = sorted({h.target_start for h in pf if h.target_start})
+            if not hit_lines:
                 continue
-            _scopes = {}                                # per-file scope 缓存（PR#140 R2）
-            for h in cf.get("hunks", []):
-                start, added, deleted = int(h[0] or 0), int(h[1] or 0), int(h[2] or 0)
-                span = max(added + deleted, 1)
-                # hunk 跨度内多点探测取最富事实：单点（如中点）可能恰落在守卫语句
-                # 自身行（try:/if 行），守卫按 lineno<line 判定会被排除 → 漏报事实。
-                best, best_line = None, start
-                for ln in range(start, start + span + 1):
-                    f = _facts_from_tree(tree, src, ln, scope_cache=_scopes)
+            tree, src = _parse(repo_dir, path)           # 每文件 parse 一次（PR#140 R1）
+            if tree is None:
+                continue
+            _scopes = {}                                 # per-file scope 缓存（PR#140 R2）
+            best_by_fn = {}                              # fn → (score, line, facts)
+            for ln in hit_lines:
+                for probe in (ln, ln + 1):
+                    f = _facts_from_tree(tree, src, probe, scope_cache=_scopes)
                     if f is None:
                         continue
+                    # 零守卫条目跳过（PR#140 R5）：digest 的用途是压「看 hunk 不看守卫」
+                    # 型误报，「无守卫（裸路径）」不压任何误报、纯耗预算。注意 adjudication
+                    # 面【保留】裸路径输出——那里「确实无守卫」对复核有信息量（提示该
+                    # finding 可能是真报）。
                     score = len(f["path_guards"]) + len(f["early_exits"]) + (1 if f["asserts"] else 0)
-                    if best is None or score > (len(best["path_guards"]) + len(best["early_exits"])
-                                                + (1 if best["asserts"] else 0)):
-                        best, best_line = f, ln
-                facts, probe_line = best, best_line
-                if facts is None:
-                    continue
-                key = (path, facts["fn"])
-                if key in seen:                                  # 同函数多 hunk 去重
+                    if score == 0:
+                        continue
+                    cur = best_by_fn.get(f["fn"])
+                    if cur is None or score > cur[0]:
+                        best_by_fn[f["fn"]] = (score, ln, f)
+            for fn, (_sc, ln, f) in sorted(best_by_fn.items(), key=lambda kv: kv[1][1]):
+                key = (path, fn)
+                if key in seen:
                     continue
                 seen.add(key)
-                fl = facts_line(facts)
+                fl = facts_line(f)
                 if fl:
-                    lines.append(f"- {path}:{probe_line} {fl}")
+                    lines.append(f"- {path}:{ln} {fl}")
         if not lines:
             return ""
         head = ("【守卫上下文（确定性 AST 事实，工具生成）】以下为本次变更命中位置的"
@@ -248,13 +256,20 @@ def attach_guard_facts(checklist, repo_dir):
     if not enabled():
         return checklist                                 # 杀开关：attach 面同样受控（R2 意见 3）
     try:
-        for it in (checklist or {}).get("items", []):
+        _trees, _scopes = {}, {}                         # 每文件单次 parse（PR#140 R5，
+        for it in (checklist or {}).get("items", []):    #  与 adjudication 同款缓存口径）
             if it.get("status") != "open" or it.get("guard"):
                 continue
             path, line = _sig_location(it.get("sig", ""))
             if path is None:
                 continue
-            fl = facts_line(guard_facts(repo_dir, path, line))
+            if path not in _trees:
+                _trees[path] = _parse(repo_dir, path)
+            tree, src = _trees[path]
+            if tree is None:
+                continue
+            fl = facts_line(_facts_from_tree(
+                tree, src, line, scope_cache=_scopes.setdefault(path, {})))
             if fl:
                 it["guard"] = fl
     except Exception:
