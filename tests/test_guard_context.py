@@ -136,3 +136,50 @@ def test_patch_context_settings_defaults_and_env_override(monkeypatch):
     assert s["max_extra_lines_before_dynamic_context"] == 10
     assert s["patch_extra_lines_before"] == 5
     assert s["patch_extra_lines_after"] == 3
+
+
+# ============================ PR #140 round-1 销项回归 ============================
+_NESTED_SRC = '''\
+def outer(x):
+    def helper(y):
+        assert y > 0
+        if not y:
+            raise ValueError("inner")
+        return y * 2
+    value = helper(x)
+    result = value + 1        # ← 命中行（L8）：内层守卫不得泄漏
+    return result
+'''
+
+
+def test_nested_function_guards_do_not_leak(tmp_path):
+    """R1-01：闭包/内层 def 的 assert 与早退不得计入外层函数事实——
+    虚假守卫会让核销面压制真报，比误报更危险。"""
+    (tmp_path / "pkg").mkdir(exist_ok=True)
+    (tmp_path / "pkg" / "nested.py").write_text(_NESTED_SRC, encoding="utf-8")
+    facts = gc.guard_facts(str(tmp_path), "pkg/nested.py", 8)
+    assert facts["fn"] == "outer"
+    assert facts["asserts"] == 0                                 # 内层 assert 不泄漏
+    assert not any("not y" in e for e in facts["early_exits"])   # 内层早退不泄漏
+    inner = gc.guard_facts(str(tmp_path), "pkg/nested.py", 6)    # 内层自身仍正常提取
+    assert inner["fn"] == "helper" and inner["asserts"] == 1
+
+
+def test_digest_parses_each_file_once(tmp_path, monkeypatch):
+    """R1-02/03：hunk 多行探测每文件只 parse 一次（消除逐行重复读盘+重解析）。"""
+    repo = _repo(tmp_path)
+    calls = {"n": 0}
+    real = gc._parse
+    def counting(repo_dir, path):
+        calls["n"] += 1
+        return real(repo_dir, path)
+    monkeypatch.setattr(gc, "_parse", counting)
+    src_lines = _SRC.splitlines()                                 # 真实宽 hunk：全文件上下文 +
+    body = [" " + l for l in src_lines]                           # 中段一行改动（跨度 = 文件全长）
+    body[11] = "-" + src_lines[11]
+    body.insert(12, "+" + src_lines[11] + "  # touched")
+    wide = ("diff --git a/pkg/loader.py b/pkg/loader.py\n--- a/pkg/loader.py\n+++ b/pkg/loader.py\n"
+            f"@@ -1,{len(src_lines)} +1,{len(src_lines)} @@\n" + "\n".join(body) + "\n")
+    txt = gc.render_guard_digest(wide, repo)
+    assert "pkg/loader.py" in txt
+    assert calls["n"] == 1                                        # 全跨度多点探测仍只 parse 一次

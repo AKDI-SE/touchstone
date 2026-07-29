@@ -77,11 +77,25 @@ def guard_facts(repo_dir, path, line):
     tree, src = _parse(repo_dir, path)
     if tree is None:
         return None
+    return _facts_from_tree(tree, src, line)
+
+
+def _facts_from_tree(tree, src, line):
+    """tree 级事实提取（PR#140 R1：调用方每文件 parse 一次，多行探测复用本函数，
+    消除逐行重复读盘+重解析）。"""
     fn = _enclosing_function(tree, line)
     scope = fn if fn is not None else tree
+    # 嵌套函数节点排除（PR#140 R1）：ast.walk 会走进闭包/内层 def——内层的
+    # assert/早退泄漏进外层 facts 即【虚假守卫】，会让核销面压制真报。
+    nested = set()
+    for d in ast.walk(scope):
+        if isinstance(d, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)) and d is not scope:
+            nested.update(id(x) for x in ast.walk(d) if x is not d)
     facts = {"fn": fn.name if fn is not None else "<module>",
              "path_guards": [], "early_exits": [], "asserts": 0}
     for n in ast.walk(scope):
+        if id(n) in nested:
+            continue
         # ① 条件路径守卫：命中行落在其 body/orelse 内的 if/while，以及覆盖命中行的 try
         if isinstance(n, (ast.If, ast.While)) and _covers(n, line) and n.lineno < line:
             facts["path_guards"].append(("while " if isinstance(n, ast.While) else "if ")
@@ -142,6 +156,9 @@ def render_guard_digest(diff_text, repo_dir, max_chars=_DIGEST_MAX):
             path = cf.get("path", "")
             if not path.endswith(".py"):
                 continue
+            tree, src = _parse(repo_dir, path)          # 每文件 parse 一次（PR#140 R1），
+            if tree is None:                            # 多点探测复用同一棵树
+                continue
             for h in cf.get("hunks", []):
                 start, added, deleted = int(h[0] or 0), int(h[1] or 0), int(h[2] or 0)
                 span = max(added + deleted, 1)
@@ -149,7 +166,7 @@ def render_guard_digest(diff_text, repo_dir, max_chars=_DIGEST_MAX):
                 # 自身行（try:/if 行），守卫按 lineno<line 判定会被排除 → 漏报事实。
                 best, best_line = None, start
                 for ln in range(start, start + span + 1):
-                    f = guard_facts(repo_dir, path, ln)
+                    f = _facts_from_tree(tree, src, ln)
                     if f is None:
                         continue
                     score = len(f["path_guards"]) + len(f["early_exits"]) + (1 if f["asserts"] else 0)
