@@ -311,3 +311,24 @@ def test_digest_skips_guardless_entries_but_adjudication_keeps(tmp_path):
     txt = gc.render_adjudication(
         [{"sig": "PRA-Z:pkg/bare.py:3", "status": "open"}], str(tmp_path))
     assert "无守卫" in txt                                               # 核销面保留裸路径事实
+
+
+# ============================ PR #140 round-6 销项回归 ============================
+def test_conditional_nested_early_exits_not_counted(tmp_path):
+    """R6-01：嵌套在条件块内的早退/断言只在外层条件下生效——不得计成无条件守卫
+    （假守卫压制真报）；scope 直接子语句的守卫不受影响。"""
+    (tmp_path / "pkg").mkdir(exist_ok=True)
+    (tmp_path / "pkg" / "cond.py").write_text(
+        "def f(x, mode):\n"
+        "    if not mode:\n"
+        "        return None\n"                      # 直接子语句早退：应计
+        "    if mode == 'strict':\n"
+        "        if x is None:\n"
+        "            raise ValueError('x')\n"        # 嵌套条件内早退：不计
+        "        assert x > 0\n"                     # 嵌套条件内断言：不计
+        "    y = (x or 0) + 1\n"                     # ← 命中行（L9）
+        "    return y\n", encoding="utf-8")
+    facts = gc.guard_facts(str(tmp_path), "pkg/cond.py", 9)
+    assert any("not mode" in e for e in facts["early_exits"])            # 直接子语句仍计
+    assert not any("is None" in e for e in facts["early_exits"])         # 嵌套早退不计
+    assert facts["asserts"] == 0                                         # 嵌套断言不计

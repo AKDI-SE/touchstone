@@ -121,6 +121,11 @@ def _facts_from_tree(tree, src, line, scope_cache=None):
         nested = _nested_set(scope)
     facts = {"fn": fn.name if fn is not None else "<module>",
              "path_guards": [], "early_exits": [], "asserts": 0}
+    # ②③ 只认 scope 的直接子语句（PR#140 R6）：ast.walk 拍平后，嵌套在条件块里的
+    # 早退/断言（如 if mode=="strict": 里的 if x is None: raise）只在外层条件下生效，
+    # 计成无条件守卫即假守卫。宁漏勿假（R3 确立的失效方向）。①路径守卫不受影响——
+    # 它按位置包含判定，本就只收真正罩住命中行的条件。
+    direct = {id(x) for x in getattr(scope, "body", [])}
     for n in ast.walk(scope):
         if id(n) in nested:
             continue
@@ -134,7 +139,8 @@ def _facts_from_tree(tree, src, line, scope_cache=None):
                 kinds.append(_seg(src, h.type, 40) if h.type is not None else "Exception")
             facts["path_guards"].append("try/except " + ("|".join(kinds) or "…"))
         # ② 前置早退：同 scope 内、命中行之前、body 含 raise/return/continue 的 if
-        elif isinstance(n, ast.If) and n.lineno < line and not _covers(n, line):
+        elif (isinstance(n, ast.If) and id(n) in direct
+              and n.lineno < line and not _covers(n, line)):
             end = getattr(n, "end_lineno", n.lineno)
             # ast.Continue 只跳过本次循环迭代、不退出函数（PR#140 R3 意见 2）：命中行在
             # 循环外时把 continue 计成早退即【虚假守卫】——宁可漏掉少数循环内守卫（更安全
@@ -143,7 +149,7 @@ def _facts_from_tree(tree, src, line, scope_cache=None):
                                   for x in n.body):
                 facts["early_exits"].append("if " + _seg(src, n.test))
         # ③ 前置断言
-        elif isinstance(n, ast.Assert) and n.lineno < line:
+        elif isinstance(n, ast.Assert) and id(n) in direct and n.lineno < line:
             facts["asserts"] += 1
     facts["path_guards"].sort(key=lambda s: s)          # 稳定输出（walk 顺序不保证）
     facts["early_exits"] = facts["early_exits"][:6]
