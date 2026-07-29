@@ -179,7 +179,7 @@ def main():
     if os.path.exists(_prev):
         try:
             with open(_prev, encoding="utf-8") as f:       # 补 encoding：原裸 open 缺，Windows 默认编码会埋雷
-                prior = json.load(f).get("approval_rate")
+                prior = (json.load(f) or {}).get("approval_rate")   # #136 review：null/非 dict JSON→None.get 崩，or {} 兜底（同 :149 套路）
         except (json.JSONDecodeError, KeyError):
             prior = None
     # revert_data_available：扫描失败(None)时让熔断失败收敛，而非假装 revert_rate=0.0/健康。

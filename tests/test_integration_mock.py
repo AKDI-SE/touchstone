@@ -761,13 +761,28 @@ def test_govern_main_survives_empty_yaml_and_null_json(monkeypatch, tmp_path):
     assert state["tripped"] is False                                        # 无 records → 不熔断
 
 
+def test_govern_main_survives_null_autonomy_prev(monkeypatch, tmp_path):
+    """#136 review（govern.py:181）：autonomy-prev.json 内容为 ``null`` 时 json.load → None，
+    原 ``json.load(f).get('approval_rate')`` 在 None 上 AttributeError（不在 (JSONDecodeError,KeyError) 捕获域）。
+    ``(json.load(f) or {}).get(...)`` 兜底后 main() 平稳读出 prior=None。回归锁：去 or {} 即在 .get 上崩。"""
+    monkeypatch.chdir(tmp_path)
+    cal = {"aggregate": {"by_rule": {}}, "records": []}
+    (tmp_path / "calibration.json").write_text(json.dumps(cal), encoding="utf-8")
+    monkeypatch.setenv("CALIBRATION_JSON", str(tmp_path / "calibration.json"))
+    monkeypatch.setenv("TOUCHSTONE_STANDARDS", os.path.join(ROOT, ".touchstone", "standards.yaml"))
+    (tmp_path / "autonomy-prev.json").write_text("null", encoding="utf-8")   # null → json.load 返 None
+    monkeypatch.setattr(GOV, "detect_revert_shas", lambda *a, **k: set())
+    GOV.main()                                                               # 不抛 AttributeError
+    assert (tmp_path / "autonomy-state.json").exists()
+
+
 @pytest.mark.parametrize("module,fn,kind", [
     ("checks", "load_config", "dict"),
     ("contract_check", "load_scope_rules", "dict"),
     ("review_provider", "load_nmap", "dict"),
     ("gen_best_practices", "generate", "str"),
 ])
-def test_yaml_loaders_empty_file_returns_safe_value_not_none(tmp_path, module, fn, kind):
+def test_yaml_loaders_empty_file_returns_safe_value_not_none(tmp_path, monkeypatch, module, fn, kind):
     """PR #136（TEST-001）：全仓裸 open()→with 扫描把 4 个 YAML 加载站的 ``or {}`` 搬进 with 块。
     不变量锁：空/注释-only YAML（safe_load → None）必须兜底成空字典，绝不把 None 透传到下游 ``.get``。
     任一站点误删 ``or {}`` 都会在此复现 ``AttributeError: 'NoneType' ... .get``。"""
@@ -781,13 +796,12 @@ def test_yaml_loaders_empty_file_returns_safe_value_not_none(tmp_path, module, f
         "gen_best_practices":  tmp_path / "standards.yaml",
     }[module]
     target.write_text("# 仅注释、零键\n", encoding="utf-8")                # safe_load → None
+    # hermetic（#136 review #2）：清可能劫持默认路径的 env——review_provider.load_nmap 读 TOUCHSTONE_PRAGENT
+    # 先于默认路径，CI/前序测试若设了它，本用例会读错文件；checks 则显式 setenv 覆盖到 tmp 目标。
+    monkeypatch.delenv("TOUCHSTONE_PRAGENT", raising=False)
     if module == "checks":
-        os.environ["TOUCHSTONE_CHECKS"] = str(target)
-        try:
-            out = getattr(m, fn)(str(tmp_path))
-        finally:
-            os.environ.pop("TOUCHSTONE_CHECKS", None)
-    elif module == "gen_best_practices":
+        monkeypatch.setenv("TOUCHSTONE_CHECKS", str(target))
+    if module == "gen_best_practices":
         out = getattr(m, fn)(str(target))
     else:
         out = getattr(m, fn)(str(tmp_path))
