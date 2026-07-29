@@ -24,6 +24,14 @@ import ast
 import os
 
 _COND_MAX = 88          # 单条守卫条件源码截断长度
+
+
+def enabled():
+    """总开关（TOUCHSTONE_GUARD_CONTEXT_ENABLED，默认开）。所有入口共用本判定
+    （PR#140 R2 意见 3：attach 面此前未挂闸，operator 关开关后清单仍渲染守卫行，
+    杀开关被绕过）。"""
+    return os.environ.get("TOUCHSTONE_GUARD_CONTEXT_ENABLED", "true").lower() in (
+        "1", "true", "yes", "on")
 _DIGEST_MAX = 4000      # B 摘要总预算（字符）
 _ADJ_MAX = 2400         # C 核销段总预算（字符）
 
@@ -80,17 +88,28 @@ def guard_facts(repo_dir, path, line):
     return _facts_from_tree(tree, src, line)
 
 
-def _facts_from_tree(tree, src, line):
-    """tree 级事实提取（PR#140 R1：调用方每文件 parse 一次，多行探测复用本函数，
-    消除逐行重复读盘+重解析）。"""
-    fn = _enclosing_function(tree, line)
-    scope = fn if fn is not None else tree
-    # 嵌套函数节点排除（PR#140 R1）：ast.walk 会走进闭包/内层 def——内层的
-    # assert/早退泄漏进外层 facts 即【虚假守卫】，会让核销面压制真报。
+def _nested_set(scope):
+    """scope 内嵌套函数（闭包/内层 def/lambda）的全部子节点 id 集——遍历时排除，
+    防内层 assert/早退泄漏成外层【虚假守卫】（PR#140 R1）。只依赖 scope 不依赖 line。"""
     nested = set()
     for d in ast.walk(scope):
         if isinstance(d, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)) and d is not scope:
             nested.update(id(x) for x in ast.walk(d) if x is not d)
+    return nested
+
+
+def _facts_from_tree(tree, src, line, scope_cache=None):
+    """tree 级事实提取（PR#140 R1：调用方每文件 parse 一次，多行探测复用本函数，
+    消除逐行重复读盘+重解析）。scope_cache（PR#140 R2 意见 2）：嵌套排除集只依赖
+    scope，多点探测热循环传 dict 按 id(scope) 复用，免 O(span×scope_size) 重复遍历。"""
+    fn = _enclosing_function(tree, line)
+    scope = fn if fn is not None else tree
+    if scope_cache is not None:
+        nested = scope_cache.get(id(scope))
+        if nested is None:
+            nested = scope_cache[id(scope)] = _nested_set(scope)
+    else:
+        nested = _nested_set(scope)
     facts = {"fn": fn.name if fn is not None else "<module>",
              "path_guards": [], "early_exits": [], "asserts": 0}
     for n in ast.walk(scope):
@@ -159,6 +178,7 @@ def render_guard_digest(diff_text, repo_dir, max_chars=_DIGEST_MAX):
             tree, src = _parse(repo_dir, path)          # 每文件 parse 一次（PR#140 R1），
             if tree is None:                            # 多点探测复用同一棵树
                 continue
+            _scopes = {}                                # per-file scope 缓存（PR#140 R2）
             for h in cf.get("hunks", []):
                 start, added, deleted = int(h[0] or 0), int(h[1] or 0), int(h[2] or 0)
                 span = max(added + deleted, 1)
@@ -166,7 +186,7 @@ def render_guard_digest(diff_text, repo_dir, max_chars=_DIGEST_MAX):
                 # 自身行（try:/if 行），守卫按 lineno<line 判定会被排除 → 漏报事实。
                 best, best_line = None, start
                 for ln in range(start, start + span + 1):
-                    f = _facts_from_tree(tree, src, ln)
+                    f = _facts_from_tree(tree, src, ln, scope_cache=_scopes)
                     if f is None:
                         continue
                     score = len(f["path_guards"]) + len(f["early_exits"]) + (1 if f["asserts"] else 0)
@@ -211,6 +231,8 @@ def _sig_location(sig):
 def attach_guard_facts(checklist, repo_dir):
     """给 open 项附着守卫事实（item["guard"]，随 marker 持久化）。就地修改并返回。
     只附着、不判断——事实是给人（waived 佐证）与下一轮评审（核销注入）看的。"""
+    if not enabled():
+        return checklist                                 # 杀开关：attach 面同样受控（R2 意见 3）
     try:
         for it in (checklist or {}).get("items", []):
             if it.get("status") != "open" or it.get("guard"):

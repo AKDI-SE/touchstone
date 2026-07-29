@@ -471,7 +471,8 @@ def main():
     # 注入，故此处轻量早取一次评论解析 marker（与下方反馈循环的正式取用相互独立；
     # 双取代价一次 GET，换取不重排 main 流程）。失败即空——绝不阻塞评审链路。
     guard_adjudication = ""
-    if os.environ.get("TOUCHSTONE_GUARD_CONTEXT_ENABLED", "true").lower() in ("1", "true", "yes", "on"):
+    from touchstone import guard_context as _gc0
+    if _gc0.enabled():
         try:
             _pre_comments = gh("GET", f"/repos/{owner}/{repo}/issues/{number}/comments", token)
             _pre_bodies = loop.trusted_bodies(
@@ -483,8 +484,12 @@ def main():
                     _pre_cl.get("items", []), os.environ.get("REPO_DIR", "."))
         except Exception:
             guard_adjudication = ""
+    # repo_dir 显式透传（PR#140 R2 意见 1）：guard_adjudication 用 REPO_DIR 解析，而
+    # review_provider 侧 digest 此前回退 pr_ctx.get("repo_dir",".")——REPO_DIR 非默认时
+    # 两个守卫面解析目录不一致，digest 静默扫错目录返回空。单一来源，两面同目录。
     pr_ctx_review = {"owner": owner, "repo": repo, "number": number, "sha": head_sha,
                      "token": token, "diff": diff, "standards": standards,
+                     "repo_dir": os.environ.get("REPO_DIR", "."),
                      "guard_adjudication": guard_adjudication}
     _t_rev0 = time.monotonic()
     _out = review_pr(pr_ctx_review, contract, standards)

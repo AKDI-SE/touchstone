@@ -769,7 +769,12 @@ class PRAgentProvider:
         #   B 生成侧——本次变更 hunk 的守卫摘要，降低「看 hunk 不看守卫」型误报产出；
         #   C 判后核销——上轮未销项的守卫事实（orchestrator 预取入 pr_ctx），守卫已覆盖的
         #     FP 本轮不再被重报 → 签名不再现 → reconcile 既有机制自动销项。
-        if os.environ.get("TOUCHSTONE_GUARD_CONTEXT_ENABLED", "true").lower() in ("1", "true", "yes", "on"):
+        try:
+            from touchstone import guard_context as _gc_gate
+            _guard_on = _gc_gate.enabled()               # 总开关单一判定（PR#140 R2 意见 3）
+        except Exception:
+            _guard_on = False
+        if _guard_on:
             try:
                 from touchstone import guard_context
                 _gsegs = [guard_context.render_guard_digest(pr_ctx.get("diff") or "", repo_dir),

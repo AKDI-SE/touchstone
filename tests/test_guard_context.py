@@ -183,3 +183,39 @@ def test_digest_parses_each_file_once(tmp_path, monkeypatch):
     txt = gc.render_guard_digest(wide, repo)
     assert "pkg/loader.py" in txt
     assert calls["n"] == 1                                        # 全跨度多点探测仍只 parse 一次
+
+
+# ============================ PR #140 round-2 销项回归 ============================
+def test_kill_switch_gates_attach(tmp_path, monkeypatch):
+    """R2-03：TOUCHSTONE_GUARD_CONTEXT_ENABLED=false 时 attach 面同样受控——
+    杀开关不可被任一入口绕过。"""
+    repo = _repo(tmp_path)
+    cl = {"items": [{"sig": "PRA-REVIEW:pkg/loader.py:12", "status": "open", "note": ""}]}
+    monkeypatch.setenv("TOUCHSTONE_GUARD_CONTEXT_ENABLED", "false")
+    assert gc.enabled() is False
+    gc.attach_guard_facts(cl, repo)
+    assert "guard" not in cl["items"][0]                          # 关闸 → 不附着
+    monkeypatch.setenv("TOUCHSTONE_GUARD_CONTEXT_ENABLED", "true")
+    gc.attach_guard_facts(cl, repo)
+    assert "try/except OSError" in cl["items"][0]["guard"]        # 开闸 → 正常附着
+
+
+def test_nested_set_cached_per_scope(tmp_path, monkeypatch):
+    """R2-02：多点探测下嵌套排除集按 scope 缓存——同一函数跨点只计算一次。"""
+    repo = _repo(tmp_path)
+    calls = {"n": 0}
+    real = gc._nested_set
+    def counting(scope):
+        calls["n"] += 1
+        return real(scope)
+    monkeypatch.setattr(gc, "_nested_set", counting)
+    src_lines = _SRC.splitlines()
+    body = [" " + l for l in src_lines]
+    body[11] = "-" + src_lines[11]
+    body.insert(12, "+" + src_lines[11] + "  # touched")
+    wide = ("diff --git a/pkg/loader.py b/pkg/loader.py\n--- a/pkg/loader.py\n+++ b/pkg/loader.py\n"
+            f"@@ -1,{len(src_lines)} +1,{len(src_lines)} @@\n" + "\n".join(body) + "\n")
+    txt = gc.render_guard_digest(wide, repo)
+    assert "pkg/loader.py" in txt
+    # 全跨度探测覆盖 2 个 scope（module 级空行 + loader 函数）——每 scope 至多 1 次
+    assert calls["n"] <= 2
