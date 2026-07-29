@@ -247,3 +247,35 @@ def test_continue_not_counted_as_early_exit(tmp_path):
         "    return result\n", encoding="utf-8")
     facts = gc.guard_facts(str(tmp_path), "pkg/loopy.py", 7)
     assert not any("is None" in e for e in facts["early_exits"])        # continue 不计早退
+
+
+# ============================ PR #140 round-4 销项回归 ============================
+def test_kill_switch_gates_all_entry_points(tmp_path, monkeypatch):
+    """R4-01/02：三个公共入口全部自闸——关闸后 digest/adjudication/attach 全部无输出，
+    不依赖调用方记得挂（R2 attach 教训的完全体）。"""
+    repo = _repo(tmp_path)
+    monkeypatch.setenv("TOUCHSTONE_GUARD_CONTEXT_ENABLED", "false")
+    assert gc.render_guard_digest(_DIFF, repo) == ""
+    items = [{"sig": "PRA-REVIEW:pkg/loader.py:12", "status": "open"}]
+    assert gc.render_adjudication(items, repo) == ""
+    monkeypatch.setenv("TOUCHSTONE_GUARD_CONTEXT_ENABLED", "true")
+    assert "pkg/loader.py" in gc.render_guard_digest(_DIFF, repo)       # 开闸恢复
+    assert "pkg/loader.py:12" in gc.render_adjudication(items, repo)
+
+
+def test_adjudication_parses_each_file_once(tmp_path, monkeypatch):
+    """R4-01：多个 open 项指向同一文件 → 只 parse 一次（与 digest 同款缓存口径）；
+    已附着 guard 的项走快路径不触发任何解析。"""
+    repo = _repo(tmp_path)
+    calls = {"n": 0}
+    real = gc._parse
+    def counting(repo_dir, path):
+        calls["n"] += 1
+        return real(repo_dir, path)
+    monkeypatch.setattr(gc, "_parse", counting)
+    items = [{"sig": "PRA-REVIEW:pkg/loader.py:12", "status": "open"},
+             {"sig": "PRA-GENERAL:pkg/loader.py:9", "status": "open"},
+             {"sig": "PRA-X:pkg/loader.py:15", "status": "open", "guard": "已附着事实"}]
+    txt = gc.render_adjudication(items, repo)
+    assert txt.count("pkg/loader.py") == 3
+    assert calls["n"] == 1                               # 同文件两项共享一次 parse；附着项零解析

@@ -177,7 +177,9 @@ def render_guard_digest(diff_text, repo_dir, max_chars=_DIGEST_MAX):
     hunk 解析复用 contract_check.scope_facts（unidiff），与 ScopeFacts 同一口径；
     scope_facts 解析失败（parse_ok=False）→ 摘要为空（失败即空，不另起炉灶）。
     """
-    try:
+    if not enabled():
+        return ""                                        # 入口自闸（PR#140 R4：所有入口共用判定，
+    try:                                                 # 纵深防御不依赖调用方记得挂）
         from touchstone import contract_check
         sf = contract_check.scope_facts(diff_text)
         if not sf.get("parse_ok"):
@@ -262,15 +264,24 @@ def attach_guard_facts(checklist, repo_dir):
 
 def render_adjudication(open_items, repo_dir, max_chars=_ADJ_MAX):
     """未销项 → 守卫事实核销段（注入下一轮 extra_instructions）。失败/无内容返回 ""。"""
+    if not enabled():
+        return ""                                        # 入口自闸（PR#140 R4，同 digest）
     try:
-        lines = []
-        for it in open_items or []:
+        lines, _trees, _scopes = [], {}, {}              # 每文件单次 parse + per-scope 缓存
+        for it in open_items or []:                      # （PR#140 R4：多 item 同文件不重复读盘）
             if it.get("status") != "open":
                 continue
             path, line = _sig_location(it.get("sig", ""))
             if path is None:
                 continue
-            fl = it.get("guard") or facts_line(guard_facts(repo_dir, path, line))
+            fl = it.get("guard")                         # 已附着事实直用，免任何解析
+            if not fl:
+                if path not in _trees:
+                    _trees[path] = _parse(repo_dir, path)
+                tree, src = _trees[path]
+                if tree is not None:
+                    fl = facts_line(_facts_from_tree(
+                        tree, src, line, scope_cache=_scopes.setdefault(path, {})))
             if fl:
                 lines.append(f"- {it['sig']} → {fl}")
         if not lines:
