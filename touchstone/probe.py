@@ -455,6 +455,24 @@ def _find_in_window(text, needle, span):
     return idx
 
 
+def _node_byte_span(original_bytes, span):
+    """AST col_offset/end_col_offset 是行内 UTF-8 字节偏移 → 节点在文件中的字节起止。
+    返回 (start_byte, end_byte) 或 None（行列越界）。精确注入用，免行窗口文本查找命中同名片段（133-3/4/5）。"""
+    lines = original_bytes.splitlines(keepends=True)
+    if not lines or not (1 <= span.start_line <= len(lines)):
+        return None
+    # end_line 越界（AST 节点声称跨到文件外/倒序）→ 早返回 None 触发 _find_in_window 兜底，
+    # 不静默 clamp 出错位字节区间（#137 review：invalid lines 走 graceful fallback）。
+    end_line = span.end_line or span.start_line
+    if not (span.start_line <= end_line <= len(lines)):
+        return None
+    start_byte = sum(len(l) for l in lines[: span.start_line - 1]) + max(0, span.start_col)
+    end_byte = sum(len(l) for l in lines[: end_line - 1]) + max(0, span.end_col)
+    if end_byte < start_byte:
+        return None
+    return start_byte, end_byte
+
+
 def _run_tests(test_cmd, timeout):
     """跑一次测试命令。返回 (rc, out, timed_out)。rc!=0 视为测试失败=击杀。"""
     env = dict(os.environ); env.update(test_cmd.env or {})
@@ -480,11 +498,21 @@ def _inject_and_run(mutant, test_cmd, timeout):
     except OSError:
         return Verdict(mutant.mutant_id, VerdictKind.INFRA_ERROR, None, 0.0, mutant.path, mutant.site.start_line)
     text = original_bytes.decode("utf-8", errors="replace")
-    idx = _find_in_window(text, mutant.original, mutant.site)
-    if idx < 0:
-        return Verdict(mutant.mutant_id, VerdictKind.INFRA_ERROR, None,
-                       round(time.monotonic() - t0, 3), mutant.path, mutant.site.start_line)    # 注入落点失效：判无效
-    mutated_text = text[:idx] + mutant.mutated + text[idx + len(mutant.original):]
+    # 优先 AST col_offset 精确字节切片（133-3/4/5）：消除行窗口文本查找命中同名片段的风险。
+    # 仅在切片解码恰等于 mutant.original 时采用；否则回退 _find_in_window（多字节/行列漂移兜底）。
+    mutated_text = None
+    bs = _node_byte_span(original_bytes, mutant.site)
+    if bs is not None:
+        s, e = bs
+        if original_bytes[s:e].decode("utf-8", errors="replace") == mutant.original:
+            mutated_bytes = original_bytes[:s] + mutant.mutated.encode("utf-8") + original_bytes[e:]
+            mutated_text = mutated_bytes.decode("utf-8", errors="replace")
+    if mutated_text is None:
+        idx = _find_in_window(text, mutant.original, mutant.site)
+        if idx < 0:
+            return Verdict(mutant.mutant_id, VerdictKind.INFRA_ERROR, None,
+                           round(time.monotonic() - t0, 3), mutant.path, mutant.site.start_line)    # 注入落点失效：判无效
+        mutated_text = text[:idx] + mutant.mutated + text[idx + len(mutant.original):]
     try:
         # 注入后先做语法自检：变体若不可解析 → INFRA_ERROR，不浪费一次测试运行
         try:
@@ -506,9 +534,9 @@ def _inject_and_run(mutant, test_cmd, timeout):
     finally:
         try:
             open(abspath, "wb").write(original_bytes)   # 恢复必达：崩溃也不留脏工作区
-        except OSError:
+        except OSError as err:
             print(f"[probe] 源码恢复失败，中止 run 以防级联污染：{abspath}", file=sys.stderr)
-            raise WorkspaceCorrupted(abspath)
+            raise WorkspaceCorrupted(abspath) from err    # B904：保留 OSError 链供诊断（磁盘满/权限等）
 
 
 def _kill_rate(verdicts):
