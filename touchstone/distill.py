@@ -247,7 +247,7 @@ _EXP_INJECTION_RE = re.compile(
     r"|\b(?:system|new\s+instructions)\s*:"                                 # 角色/分段（\b 不误伤 filesystem:）
     r"|\b(?:you\s+are\s+now|approve\s+all|act\s+as|override\s+previous)\b",  # 直接越权（\b 不误伤 react as）
     re.IGNORECASE)
-_EXP_MAX_TEXT_LEN = int(os.environ.get("TOUCHSTONE_EXP_MAX_TEXT_LEN", "240"))
+_EXP_MAX_TEXT_LEN = _env_num(int, "TOUCHSTONE_EXP_MAX_TEXT_LEN", 240)   # #138 review：防 malformed 值导入期崩（同 #132 _POS_* 套路）
 
 
 def _exp_injection_filter_enabled():
