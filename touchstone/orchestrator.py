@@ -467,8 +467,25 @@ def main():
     changed_files, _ = contract_check.parse_diff(diff)
 
     # 评审主链（§4.1）：PR-Agent 评审归一 + 契约核对 + 栈专项确定性规则 → 裁决映射
+    # 守卫核销预取（issue #139 方案 C）：上轮权威清单的 open 项守卫事实须在评审【前】
+    # 注入，故此处轻量早取一次评论解析 marker（与下方反馈循环的正式取用相互独立；
+    # 双取代价一次 GET，换取不重排 main 流程）。失败即空——绝不阻塞评审链路。
+    guard_adjudication = ""
+    if os.environ.get("TOUCHSTONE_GUARD_CONTEXT_ENABLED", "true").lower() in ("1", "true", "yes", "on"):
+        try:
+            _pre_comments = gh("GET", f"/repos/{owner}/{repo}/issues/{number}/comments", token)
+            _pre_bodies = loop.trusted_bodies(
+                _pre_comments if isinstance(_pre_comments, list) else [], None)
+            _pre_cl = checklist_mod.parse_latest(_pre_bodies)
+            if _pre_cl:
+                from touchstone import guard_context as _gc
+                guard_adjudication = _gc.render_adjudication(
+                    _pre_cl.get("items", []), os.environ.get("REPO_DIR", "."))
+        except Exception:
+            guard_adjudication = ""
     pr_ctx_review = {"owner": owner, "repo": repo, "number": number, "sha": head_sha,
-                     "token": token, "diff": diff, "standards": standards}
+                     "token": token, "diff": diff, "standards": standards,
+                     "guard_adjudication": guard_adjudication}
     _t_rev0 = time.monotonic()
     _out = review_pr(pr_ctx_review, contract, standards)
     _t_review = round(time.monotonic() - _t_rev0, 2)
@@ -523,6 +540,11 @@ def main():
     acks = checklist_mod.parse_acks(all_bodies)
     cur_cl = checklist_mod.reconcile(prev_cl, acks, findings, round_no=state.round + 1,
                                      review_reliable=reliable)
+    try:                                       # 守卫事实附着（issue #139 方案 C）：只附着不判断，
+        from touchstone import guard_context as _gc2   # 供人 waived 佐证 + 下一轮核销注入复用
+        _gc2.attach_guard_facts(cur_cl, os.environ.get("REPO_DIR", "."))
+    except Exception:
+        pass    # 静默豁免：守卫附着是纯增强，失败即无守卫行；抛出会阻塞收敛清单主链
     checklist_mod.snapshot(cur_cl)          # 本轮快照写入文件（供可视化与校准回放）
     n_unverified = len(checklist_mod.unverified_claims(cur_cl))   # author 自证未核准销项数
 
