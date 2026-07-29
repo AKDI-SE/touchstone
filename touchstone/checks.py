@@ -54,7 +54,8 @@ def load_config(repo_dir):
     path = os.environ.get("TOUCHSTONE_CHECKS",
                           os.path.join(repo_dir, ".touchstone", "checks.yaml"))
     try:
-        data = yaml.safe_load(open(path, encoding="utf-8")) or {}
+        with open(path, encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
     except FileNotFoundError:
         data = {}                       # 未配置：合法空策略（不挡）
     except (yaml.YAMLError, OSError) as e:
@@ -225,7 +226,8 @@ def _check_verify(pr, cfg):
     # 默认场景字节级不变；result_file 为绝对路径时 os.path.join 仍尊重之。
     path = artifact_path(cfg.get("result_file", "verify-result.json"))
     try:
-        d = json.load(open(path, encoding="utf-8"))
+        with open(path, encoding="utf-8") as f:
+            d = json.load(f)
     except (OSError, ValueError):
         return None, "verify 未运行（无结果文件）"
     if not isinstance(d, dict):
@@ -248,7 +250,8 @@ def main():
     产物路径经 artifact_path 解析：默认 CWD（Action 场景），设 TOUCHSTONE_OUTPUT_DIR 时落隔离目录。"""
     import json
     try:
-        co = json.load(open(artifact_path("touchstone-findings.json"), encoding="utf-8"))
+        with open(artifact_path("touchstone-findings.json"), encoding="utf-8") as f:
+            co = json.load(f)
     except (OSError, ValueError):
         # findings 缺失 = touchstone job 没产出结果（崩溃/被取消/artifact 下载失败）。
         # 不能静默 no-op：否则 PR 要么看起来"没事"，要么 required 总闸凭空消失且无说明。
