@@ -170,7 +170,10 @@ jobs:
           # vars. kill-switch（对齐文件既有 vars.X||default 约定，如 TOUCHSTONE_LEARNING_ENABLED）：
           # 默认 'true'（冷启动需采 A/B 数据、闭环要合上）；运维发现 shadow 注入扰乱归因、或候选池已普遍
           # active 不再需要采数时，置 repo variable TOUCHSTONE_SHADOW_INJECTION=false 即可零代码关闭（fail-safe）。
-          # GHA 表达式里非空串 "false" 为真值 → 原样透传 "false" → Python 侧 _shadow_injection_enabled() 判关。
+          # 取值语义（GHA || 把未设/空串都当 falsy → 回落默认 'true'，故）：未设 → 开；"true" → 开；
+          # "false" → 关（Python 侧 _shadow_injection_enabled() 判）；空串 "" → **开**（非关闭路径！）。
+          # 关闭【必须】显式置 "false"——置空串不会关（|| 的 falsy 回落使然，与所有兄弟 || 'true' vars 同）。
+          # 这是 default-ON 设计的代价：GHA 无法区分"未设"与"空串"，要未设即开就必然空串也开。
           # min_evidence=2（默认 1）：只 shadow 注入 source_prs≥2 的 candidate。当前池里有 150/191 条
           # 是单 PR 孤证（含 LLM 幻觉型 PRA-A/B/C/OK 等，均 source_prs=['116']），min_evidence=2 把这些
           # 孤证噪声挡在 shadow 外，只放 41 条有重复证据的进采数臂——降爆面、又不饿死臂（真规律会在
