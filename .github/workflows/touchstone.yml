@@ -157,6 +157,27 @@ jobs:
           TOUCHSTONE_EXPERIENCE: "data/experience_store.json"
           TOUCHSTONE_EXPERIENCE_ENABLED: "true"
           TOUCHSTONE_EXPERIENCE_REF: "origin/${{ github.event.pull_request.base.ref || github.event.repository.default_branch }}"  # 从受信 base ref 读经验库（防 PR 篡改工作树投毒）         # 评审路径注入开关（review_provider._experience_injection 认）
+          # ── shadow 注入（冷启动破死锁：让 candidate 采 A/B with-臂数据 → graduate→active）──
+          # 触发背景：run #6（07-27）TF-GRPO 蒸出 191 条 candidate，但全是 candidate、0 条 active，
+          # 而 render_injection 默认只注入 active → 评审侧 0 条经验、闭环没合上。开 shadow 注入让
+          # candidate 以 advisory（标灰 [shadow]、不进闸）进入评审、同时 marker 归因 shadow_types，
+          # 才能采集 lift 数据、逐步 graduate 达标转 active。
+          # 安全前提已满足：① step4 已接通——review_provider._experience_injection 与 orchestrator
+          #   _collect_injection 读【同一】_shadow_injection_enabled()，marker 归因与实际渲染同源，
+          #   不会失真（experience_store.py 早期"未接通 step4 勿开"警告现已过时）；② EXPERIENCE_REF
+          #   已配 → candidate 也走受信 ref（铁律 5，review_provider.py L473-480 已拦）。
+          TOUCHSTONE_SHADOW_INJECTION: ${{ vars.TOUCHSTONE_SHADOW_INJECTION || 'true' }}
+          # vars. kill-switch（对齐文件既有 vars.X||default 约定，如 TOUCHSTONE_LEARNING_ENABLED）：
+          # 默认 'true'（冷启动需采 A/B 数据、闭环要合上）；运维发现 shadow 注入扰乱归因、或候选池已普遍
+          # active 不再需要采数时，置 repo variable TOUCHSTONE_SHADOW_INJECTION=false 即可零代码关闭（fail-safe）。
+          # GHA 表达式里非空串 "false" 为真值 → 原样透传 "false" → Python 侧 _shadow_injection_enabled() 判关。
+          # min_evidence=2（默认 1）：只 shadow 注入 source_prs≥2 的 candidate。当前池里有 150/191 条
+          # 是单 PR 孤证（含 LLM 幻觉型 PRA-A/B/C/OK 等，均 source_prs=['116']），min_evidence=2 把这些
+          # 孤证噪声挡在 shadow 外，只放 41 条有重复证据的进采数臂——降爆面、又不饿死臂（真规律会在
+          # 后续 PR 复现、被再蒸馏补证据后入选）。ratio/max 仍走设计默认（0.5 / 3 每轮）。
+          # 经 vars. 可调（对齐 TOUCHSTONE_SHADOW_INJECTION 的 kill-switch 约定）：池子变干净后可下调到 1
+          # 扩大采数面，或上调进一步收窄。默认 '2'。
+          TOUCHSTONE_SHADOW_MIN_EVIDENCE: ${{ vars.TOUCHSTONE_SHADOW_MIN_EVIDENCE || '2' }}
           # 评审健康度看板（可选，默认关）：置 true 后，每轮在本仓开/重写一个带 label 的 issue
           # 成"活"看板（本轮快照 + 滚动趋势；body 重写不发通知，仅显著事件追加评论）。
           # 经 repo variable 配（Settings → Secrets and variables → Actions → Variables，

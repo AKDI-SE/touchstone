@@ -65,6 +65,13 @@ jobs:
           TOUCHSTONE_PROTECTED_TYPES: ${{ vars.TOUCHSTONE_PROTECTED_TYPES || '' }}
           TOUCHSTONE_LEARNING_ENABLED: ${{ vars.TOUCHSTONE_LEARNING_ENABLED || 'true' }}
           TOUCHSTONE_GROUND_TRUTH_MIN: ${{ vars.TOUCHSTONE_GROUND_TRUTH_MIN || '10' }}
+          # 类型白名单（c1：防 LLM 幻觉 finding_type 污染经验库）。默认关=现状不变：_resolve_taxonomy
+          # 读本 env，空/未设 → taxonomy=None → merge_candidates 放行所有类型。开启前须先在
+          # TOUCHSTONE_TAXONOMY_TYPES（或 pr-agent.yaml label 集）配齐规范类型——白名单非空时未知类型
+          # fail-closed 丢弃。run #6 的 191 条里混有 LLM 幻觉型（PRA-A/B/C/OK/003…），类型表确定后置
+          # vars.TOUCHSTONE_TAXONOMY_ENFORCE=true 即开始清洗（仅影响后续新蒸馏的候选，不改存量）。
+          TOUCHSTONE_TAXONOMY_ENFORCE: ${{ vars.TOUCHSTONE_TAXONOMY_ENFORCE || '' }}
+          TOUCHSTONE_TAXONOMY_TYPES: ${{ vars.TOUCHSTONE_TAXONOMY_TYPES || '' }}
           # c3 rollout 成本控制（缓存 / 预算 / 并发；默认值同设计文档 §5.1，经 vars 可调）
           TOUCHSTONE_ROLLOUT_CACHE: ${{ vars.TOUCHSTONE_ROLLOUT_CACHE || '' }}       # 空=不缓存；'memory'=进程内；路径=文件缓存
           TOUCHSTONE_ROLLOUT_BUDGET: ${{ vars.TOUCHSTONE_ROLLOUT_BUDGET || '200' }}   # 每轮总 rollout 上限

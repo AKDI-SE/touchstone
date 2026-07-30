@@ -110,6 +110,11 @@ def _resolve_taxonomy(store):
     TOUCHSTONE_TAXONOMY_ENFORCE 真值时：白名单 = pr-agent.yaml label 集 ∪ 已 active 类型 ∪ env 扩展；
     否则返回 None = 不启用（默认关 = 字节级零行为变化）。"""
     val = os.environ.get("TOUCHSTONE_TAXONOMY_ENFORCE")
+    # learn.yml 用 ${{ vars.TOUCHSTONE_TAXONOMY_ENFORCE }} 透传：vars. 未设时 GHA 求值为空串、传入
+    # "TOUCHSTONE_TAXONOMY_ENFORCE="（present-but-empty）而非不设。把空串归一到 None（=未设），
+    # 让下方 val is None 分支一致生效，避免 "空/未设 → None" 的注释语义与实际路径漂移。
+    if val is not None and not val.strip():
+        val = None
     enabled = (TAXONOMY_ENFORCE_DEFAULT if val is None
                else val.lower() in ("1", "true", "yes", "on"))
     if not enabled:

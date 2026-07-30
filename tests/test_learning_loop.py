@@ -1614,6 +1614,16 @@ def test_resolve_taxonomy_default_off(monkeypatch):
     assert L._resolve_taxonomy({"experiences": []}) is None          # 默认关 = 不启用
 
 
+def test_resolve_taxonomy_treats_present_but_empty_as_unset(monkeypatch):
+    # learn.yml 的 ${{ vars.TOUCHSTONE_TAXONOMY_ENFORCE }} 未设时 GHA 求值为空串、传入 present-but-empty
+    # 的 TOUCHSTONE_TAXONOMY_ENFORCE=（≠ 未设）。_resolve_taxonomy 须把空串/纯空白归一到 None（=未设），
+    # 让 "空/未设 → taxonomy=None" 的注释语义与实际路径一致，不靠 else 分支巧合落同结果。
+    monkeypatch.setenv("TOUCHSTONE_TAXONOMY_ENFORCE", "")
+    assert L._resolve_taxonomy({"experiences": []}) is None
+    monkeypatch.setenv("TOUCHSTONE_TAXONOMY_ENFORCE", "   ")         # 纯空白也归一
+    assert L._resolve_taxonomy({"experiences": []}) is None
+
+
 def test_resolve_taxonomy_on_reads_pragent_yaml(tmp_path, monkeypatch):
     yaml = tmp_path / "pr-agent.yaml"
     yaml.write_text("normalization:\n  label_to_category:\n    possible bug: correctness\n    typo: convention\n")
