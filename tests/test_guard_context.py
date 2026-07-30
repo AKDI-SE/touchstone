@@ -332,3 +332,54 @@ def test_conditional_nested_early_exits_not_counted(tmp_path):
     assert any("not mode" in e for e in facts["early_exits"])            # 直接子语句仍计
     assert not any("is None" in e for e in facts["early_exits"])         # 嵌套早退不计
     assert facts["asserts"] == 0                                         # 嵌套断言不计
+
+
+# ============================ PR #140 round-7 销项回归 ============================
+def test_patch_context_settings_clamps_negative_to_zero(monkeypatch):
+    """R7-02（pr_agent_runner._envi）：负的上下文行数 env 必须夹到 0，防 pr-agent
+    扩窗/补丁行计数下溢。回归锁：去 max(0,·) 即透传 -5/-1/-100。"""
+    from touchstone import pr_agent_runner as r
+    monkeypatch.setenv("TOUCHSTONE_DYNAMIC_CONTEXT_MAX", "-5")
+    monkeypatch.setenv("TOUCHSTONE_PATCH_EXTRA_BEFORE", "-1")
+    monkeypatch.setenv("TOUCHSTONE_PATCH_EXTRA_AFTER", "-100")
+    s = r._patch_context_settings()
+    assert s["max_extra_lines_before_dynamic_context"] == 0
+    assert s["patch_extra_lines_before"] == 0
+    assert s["patch_extra_lines_after"] == 0
+
+
+_CROSS_SRC = (
+    "def first(x):\n"
+    "    if x < 0:\n"
+    "        return 0\n"
+    "    return x + 1\n"                 # ← 命中行（first 末行）
+    "def second(y):\n"                    # ln+1 探测落点：second 的 def 行
+    "    assert y < 100\n"                # second 的守卫——不得借 ln+1 泄漏到 first
+    "    if y > 50:\n"
+    "        raise ValueError\n"
+    "    return y\n"
+)
+_CROSS_DIFF = (
+    "diff --git a/pkg/cross.py b/pkg/cross.py\n"
+    "--- a/pkg/cross.py\n+++ b/pkg/cross.py\n"
+    "@@ -1,7 +1,7 @@\n"
+    " def first(x):\n"
+    "     if x < 0:\n"
+    "         return 0\n"
+    "-    return x + 1\n"
+    "+    return x + 2\n"
+    " def second(y):\n"
+    "     assert y < 100\n"
+    "     if y > 50:\n"
+)
+
+
+def test_digest_no_cross_function_leak_at_boundary(tmp_path):
+    """R7-01（guard_context 跨函数边界）：变更落在 first 末行、second 紧随其后的边界，
+    ln+1 探测虽落到 second 的 def 行，但同函数不变量保证 second 的守卫不计入 first 的变更。
+    first 的前置早退被正确记；second / 其守卫字面不泄漏。"""
+    (tmp_path / "pkg").mkdir(exist_ok=True)
+    (tmp_path / "pkg" / "cross.py").write_text(_CROSS_SRC, encoding="utf-8")
+    txt = gc.render_guard_digest(_CROSS_DIFF, str(tmp_path))
+    assert "first" in txt and "if x < 0" in txt              # first 的早退正确记
+    assert "second" not in txt and "100" not in txt          # second 不跨边界泄漏

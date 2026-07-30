@@ -250,10 +250,11 @@ def _patch_context_settings():
     enclosing 函数头到命中行之间」的经验面：动态上下文上限 10→30、前置固定行 5→10、
     后置 1→3。回调消融：把三个 env 设回上游默认即得对照组。"""
     def _envi(name, default):
+        # #140 R7：clamp 到非负——负的上下文行数会让 pr-agent 扩窗/补丁行计数下溢
         try:
-            return int((os.environ.get(name) or "").strip() or default)
+            return max(0, int((os.environ.get(name) or "").strip() or default))
         except (ValueError, TypeError):
-            return default
+            return max(0, default)
     return {
         "allow_dynamic_context": True,
         "max_extra_lines_before_dynamic_context": _envi("TOUCHSTONE_DYNAMIC_CONTEXT_MAX", 30),

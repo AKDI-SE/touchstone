@@ -209,10 +209,17 @@ def render_guard_digest(diff_text, repo_dir, max_chars=_DIGEST_MAX):
             _scopes = {}                                 # per-file scope 缓存（PR#140 R2）
             best_by_fn = {}                              # fn → (score, line, facts)
             for ln in hit_lines:
-                for probe in (ln, ln + 1):
-                    f = _facts_from_tree(tree, src, probe, scope_cache=_scopes)
-                    if f is None:
-                        continue
+                # ln 为锚；ln+1 仅当落在同一函数内才采纳（#140 R7：防 ln 是某函数末行、
+                # ln+1 落到下一函数，把邻接函数的守卫事实错记到本变更行）。ln 解析失败时
+                # ln+1 仍可作兜底（无锚可比对）。
+                f_base = _facts_from_tree(tree, src, ln, scope_cache=_scopes)
+                candidates = []
+                if f_base is not None:
+                    candidates.append(f_base)
+                f_next = _facts_from_tree(tree, src, ln + 1, scope_cache=_scopes)
+                if f_next is not None and (f_base is None or f_next["fn"] == f_base["fn"]):
+                    candidates.append(f_next)
+                for f in candidates:
                     # 零守卫条目跳过（PR#140 R5）：digest 的用途是压「看 hunk 不看守卫」
                     # 型误报，「无守卫（裸路径）」不压任何误报、纯耗预算。注意 adjudication
                     # 面【保留】裸路径输出——那里「确实无守卫」对复核有信息量（提示该
