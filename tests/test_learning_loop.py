@@ -1701,7 +1701,7 @@ def test_canonicalize_store_does_not_drop_anything():
 
 
 def test_canonicalize_store_merges_evidence_across_siblings():
-    # evidence 要合并（fires 求和、group_rewards 拼接），不只 source_prs —— 防"Merge loses fields"
+    # evidence 要合并（fires 求和、group_rewards 拼接、adoption 按 fires 加权平均），不只 source_prs
     e1 = _cand("PRA-X"); e1["evidence"] = {"fires": 10, "adoption": 0.9, "group_rewards": [-2.5]}
     e2 = _cand("pra-x"); e2["evidence"] = {"fires": 5, "adoption": 0.5, "group_rewards": [-3.5]}
     store = {"experiences": [e1, e2]}
@@ -1710,7 +1710,7 @@ def test_canonicalize_store_merges_evidence_across_siblings():
     ev = store["experiences"][0]["evidence"]
     assert ev["fires"] == 15                                # 求和，不丢兄弟的累积计数
     assert sorted(ev["group_rewards"]) == [-3.5, -2.5]      # 拼接
-    assert ev["adoption"] == 0.9                            # 非合并键取代表（index 0）值
+    assert abs(ev["adoption"] - (10 * 0.9 + 5 * 0.5) / 15) < 1e-9   # fires 加权平均，与求和后的 fires 自洽
 
 
 def test_canonicalize_store_tiebreak_is_deterministic_by_index():
@@ -1722,6 +1722,28 @@ def test_canonicalize_store_tiebreak_is_deterministic_by_index():
     assert len(store["experiences"]) == 1
     assert store["experiences"][0]["text"] == "from index 0"   # 下标小者（e1）作代表
     assert sorted(store["experiences"][0]["source_prs"]) == ["1", "2"]
+
+
+def test_canonicalize_does_not_break_taxonomy_matching():
+    # _canonicalize_candidate 产下划线形（PRA-COVERAGE_GAP）；coerce_type 用 _normalize_type（全→连字符）
+    # 对称比较、分隔符无关——故 taxonomy 开时仍能软匹配白名单（无论白名单是连字符还是下划线形）。防回归。
+    s1 = {"experiences": []}
+    L.merge_candidates(s1, [_cand("PRA-COVERAGE-GAP")], taxonomy={"PRA-COVERAGE_GAP"})   # 白名单下划线
+    assert any(e["finding_type"] == "PRA-COVERAGE_GAP" for e in s1["experiences"])
+    s2 = {"experiences": []}
+    L.merge_candidates(s2, [_cand("PRA-COVERAGE_GAP")], taxonomy={"PRA-COVERAGE-GAP"})   # 白名单连字符
+    assert any(e["finding_type"] == "PRA-COVERAGE-GAP" for e in s2["experiences"])
+
+
+def test_merge_evidence_adoption_weighted_by_fires_not_rep_pick():
+    # adoption 是比率：合并时按 fires 加权平均（与求和后的 fires 自洽），不偏向代表单方面。防"Data loss"。
+    e1 = _cand("PRA-Z"); e1["evidence"] = {"fires": 8, "adoption": 1.0}   # 8/8 adopted
+    e2 = _cand("pra-z"); e2["evidence"] = {"fires": 2, "adoption": 0.0}   # 0/2 adopted
+    store = {"experiences": [e1, e2]}
+    L.canonicalize_store(store)
+    ev = store["experiences"][0]["evidence"]
+    assert ev["fires"] == 10
+    assert abs(ev["adoption"] - 0.8) < 1e-9                            # (8·1.0 + 2·0.0)/10 = 0.8，非代表的 1.0
 
 
 # ============================================================================

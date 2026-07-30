@@ -250,16 +250,24 @@ def merge_candidates(store, candidates, *, taxonomy=None):
 
 def _merge_evidence(evidences):
     """合并一组同 canonical 类型兄弟条目的 evidence，避免静默丢失累积信号（fires/group_rewards 等）。
-    evidences[0] 为代表条目的 evidence——非合并键（adoption / pr / ab_lift 等）取它的值、序优先。
-    fires（数值，排除 bool）求和、group_rewards 拼接去重、布尔标志（tfgrpo/seeded）取或。纯函数。"""
+    evidences[0] 为代表条目的 evidence——非合并键（pr / ab_lift 等）取它的值、序优先。
+    fires（数值，排除 bool）求和；adoption 是比率、不能直接求和——若有 fires 权重则按 fires 加权平均
+    （与求和后的 fires 自洽，不偏向代表单方面），否则取代表值；group_rewards 拼接去重、布尔标志
+    （tfgrpo/seeded）取或。纯函数。"""
     evs = [e for e in evidences if isinstance(e, dict)]
     if not evs:
         return {}
-    merged = dict(evs[0])                                  # 代表的键作底（adoption/pr/ab_lift 等保留）
-    fires = [e["fires"] for e in evs
-             if isinstance(e.get("fires"), int) and not isinstance(e.get("fires"), bool)]
-    if fires:
-        merged["fires"] = sum(fires)
+    merged = dict(evs[0])                                  # 代表的键作底（pr/ab_lift 等保留）
+    _num = lambda x: isinstance(x, (int, float)) and not isinstance(x, bool)
+    fires_pairs = [(e["fires"], e.get("adoption")) for e in evs if _num(e.get("fires"))]
+    if fires_pairs:
+        merged["fires"] = sum(f for f, _ in fires_pairs)
+        # adoption 加权平均：Σ(fires_i · adoption_i) / Σfires_i（仅当≥2 个兄弟同时带 fires+adoption）
+        weighted = [(f, a) for f, a in fires_pairs if _num(a)]
+        if len(weighted) >= 2:
+            tot = sum(f for f, _ in weighted)
+            if tot > 0:
+                merged["adoption"] = sum(f * a for f, a in weighted) / tot
     rewards = []
     for e in evs:
         for r in (e.get("group_rewards") or []):
