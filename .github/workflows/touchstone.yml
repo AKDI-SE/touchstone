@@ -166,7 +166,11 @@ jobs:
           #   _collect_injection 读【同一】_shadow_injection_enabled()，marker 归因与实际渲染同源，
           #   不会失真（experience_store.py 早期"未接通 step4 勿开"警告现已过时）；② EXPERIENCE_REF
           #   已配 → candidate 也走受信 ref（铁律 5，review_provider.py L473-480 已拦）。
-          TOUCHSTONE_SHADOW_INJECTION: "true"
+          TOUCHSTONE_SHADOW_INJECTION: ${{ vars.TOUCHSTONE_SHADOW_INJECTION || 'true' }}
+          # vars. kill-switch（对齐文件既有 vars.X||default 约定，如 TOUCHSTONE_LEARNING_ENABLED）：
+          # 默认 'true'（冷启动需采 A/B 数据、闭环要合上）；运维发现 shadow 注入扰乱归因、或候选池已普遍
+          # active 不再需要采数时，置 repo variable TOUCHSTONE_SHADOW_INJECTION=false 即可零代码关闭（fail-safe）。
+          # GHA 表达式里非空串 "false" 为真值 → 原样透传 "false" → Python 侧 _shadow_injection_enabled() 判关。
           # min_evidence=2（默认 1）：只 shadow 注入 source_prs≥2 的 candidate。当前池里有 150/191 条
           # 是单 PR 孤证（含 LLM 幻觉型 PRA-A/B/C/OK 等，均 source_prs=['116']），min_evidence=2 把这些
           # 孤证噪声挡在 shadow 外，只放 41 条有重复证据的进采数臂——降爆面、又不饿死臂（真规律会在
