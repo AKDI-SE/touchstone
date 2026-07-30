@@ -339,6 +339,10 @@ def canonicalize_store(store):
                                           -(len(ie[1].get("source_prs") or [])),
                                           ie[0]))
 
+    # locked / human 权威条目按原样保留，其 id 被"占用"——非权威条目规范化时不得并入这些 id，
+    # 否则会把一条非权威变体重命名成与权威条目同 id（破坏 id 唯一性）。见 test_canonicalize_store_*
+    reserved = {e.get("id") for e in exps if not _touchable(e)}
+
     out = []
     seen = set()
     merged_n = renamed_n = 0
@@ -348,6 +352,10 @@ def canonicalize_store(store):
             continue
         key = _key(e)
         group = groups[key]
+        if key in reserved:
+            # canonical id 被某 locked/human 条目占用：不规范化、不合并，本条保留原 id/finding_type（防撞）
+            out.append(e)
+            continue
         if len(group) > 1:
             if key in seen:
                 continue                       # 后续重复：已并到首个位置，跳过

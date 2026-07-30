@@ -1700,6 +1700,21 @@ def test_canonicalize_store_does_not_drop_anything():
     assert fts == ["PRA-A", "PRA-B_B"]                      # 4 → 2，无丢弃
 
 
+def test_canonicalize_store_no_id_collision_with_locked_authoritative():
+    # 非权威变体不得被 rename 成与 locked/human 权威条目同 id（破坏 id 唯一性）。
+    # 权威 locked PRA-CONSISTENCY 占用 canonical id；非权威 PRA-consistency 须保留原 id，不撞。
+    nl = _cand("PRA-consistency"); nl["source_prs"] = ["1"]
+    locked = _cand("PRA-CONSISTENCY"); locked["locked"] = True; locked["source"] = "human"
+    locked["id"] = L._exp_id("PRA-CONSISTENCY", "emphasize", "o/r", "py")
+    store = {"experiences": [nl, locked]}
+    L.canonicalize_store(store)
+    ids = [e["id"] for e in store["experiences"]]
+    assert len(ids) == len(set(ids)), f"duplicate ids: {ids}"   # id 唯一
+    # 权威条目原样保留、非权威条目未被重命名进权威 id
+    assert any(e.get("locked") and e["finding_type"] == "PRA-CONSISTENCY" for e in store["experiences"])
+    assert any(e["id"] == L._exp_id("PRA-consistency", "emphasize", "o/r", "py") for e in store["experiences"])
+
+
 def test_canonicalize_store_merges_evidence_across_siblings():
     # evidence 要合并（fires 求和、group_rewards 拼接、adoption 按 fires 加权平均），不只 source_prs
     e1 = _cand("PRA-X"); e1["evidence"] = {"fires": 10, "adoption": 0.9, "group_rewards": [-2.5]}
