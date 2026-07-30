@@ -1700,6 +1700,30 @@ def test_canonicalize_store_does_not_drop_anything():
     assert fts == ["PRA-A", "PRA-B_B"]                      # 4 → 2，无丢弃
 
 
+def test_canonicalize_store_merges_evidence_across_siblings():
+    # evidence 要合并（fires 求和、group_rewards 拼接），不只 source_prs —— 防"Merge loses fields"
+    e1 = _cand("PRA-X"); e1["evidence"] = {"fires": 10, "adoption": 0.9, "group_rewards": [-2.5]}
+    e2 = _cand("pra-x"); e2["evidence"] = {"fires": 5, "adoption": 0.5, "group_rewards": [-3.5]}
+    store = {"experiences": [e1, e2]}
+    L.canonicalize_store(store)
+    assert len(store["experiences"]) == 1
+    ev = store["experiences"][0]["evidence"]
+    assert ev["fires"] == 15                                # 求和，不丢兄弟的累积计数
+    assert sorted(ev["group_rewards"]) == [-3.5, -2.5]      # 拼接
+    assert ev["adoption"] == 0.9                            # 非合并键取代表（index 0）值
+
+
+def test_canonicalize_store_tiebreak_is_deterministic_by_index():
+    # 同 status + 同 source_prs 数：原始下标小者作代表 —— 稳定、可复现，不靠隐式迭代序
+    e1 = _cand("PRA-Y"); e1["text"] = "from index 0"; e1["source_prs"] = ["1"]
+    e2 = _cand("pra-y"); e2["text"] = "from index 1"; e2["source_prs"] = ["2"]   # 同 len=1
+    store = {"experiences": [e1, e2]}
+    L.canonicalize_store(store)
+    assert len(store["experiences"]) == 1
+    assert store["experiences"][0]["text"] == "from index 0"   # 下标小者（e1）作代表
+    assert sorted(store["experiences"][0]["source_prs"]) == ["1", "2"]
+
+
 # ============================================================================
 # c2：差分回滚 retire_on_negative_lift + lift_summary
 #    （回答"经验在帮还是在害"；与 graduate 对称）

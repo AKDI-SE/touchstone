@@ -248,14 +248,42 @@ def merge_candidates(store, candidates, *, taxonomy=None):
     return store
 
 
+def _merge_evidence(evidences):
+    """合并一组同 canonical 类型兄弟条目的 evidence，避免静默丢失累积信号（fires/group_rewards 等）。
+    evidences[0] 为代表条目的 evidence——非合并键（adoption / pr / ab_lift 等）取它的值、序优先。
+    fires（数值，排除 bool）求和、group_rewards 拼接去重、布尔标志（tfgrpo/seeded）取或。纯函数。"""
+    evs = [e for e in evidences if isinstance(e, dict)]
+    if not evs:
+        return {}
+    merged = dict(evs[0])                                  # 代表的键作底（adoption/pr/ab_lift 等保留）
+    fires = [e["fires"] for e in evs
+             if isinstance(e.get("fires"), int) and not isinstance(e.get("fires"), bool)]
+    if fires:
+        merged["fires"] = sum(fires)
+    rewards = []
+    for e in evs:
+        for r in (e.get("group_rewards") or []):
+            if r not in rewards:
+                rewards.append(r)
+    if rewards:
+        merged["group_rewards"] = rewards
+    if any(e.get("tfgrpo") for e in evs):
+        merged["tfgrpo"] = True
+    if any(e.get("seeded") for e in evs):
+        merged["seeded"] = True
+    return merged
+
+
 def canonicalize_store(store):
     """把经验库里【非 locked、非 human】条目的 finding_type 规范化为生态形，并合并由此产生的重复变体。
     幂等：再跑一次无副作用（已规范条目不变、无重复可合）。locked / source='human' 的权威条目原样不动；
     finding_type 规范后为空（罕见）也不动。**不丢弃任何条目**——仅归一化 + 合并。
 
     合并策略（同一 canonical id 的多条 → 一条）：status 取优先级最高者（active > shadow > retired >
-    candidate，不回退已推进的状态）；source_prs 取并集；text/evidence 取代表（同优先级下 source_prs 多者）；
-    时间取 created_at=min、updated_at=max。顺序保持首次出现位置（合并到首条处，后续重复删去）。
+    candidate，不回退已推进的状态）；source_prs 取并集；evidence 合并（fires 求和、group_rewards 拼接、
+    tfgrpo/seeded 取或，其余键取代表值）；text 取代表；时间取 created_at=min、updated_at=max。代表选择
+    的 ties（同 status 且同 source_prs 数）用原始下标作最终 tie-breaker——跨 run/测试稳定可复现，
+    不依赖输入条目次序。顺序保持首次出现位置（合并到首条处，后续重复删去）。
 
     典型场景：run #6 的 191 条里 LLM 把同一规律裂成 'PRA-CONSISTENCY' 与 'PRA-consistency'、
     'PRA-COVERAGE-GAP' 与 'PRA-COVERAGE_GAP'——本函数在下一次 learn.yml 运行时把它们并成单条，
@@ -271,17 +299,20 @@ def canonicalize_store(store):
         return not (e.get("locked") or e.get("source") == "human"
                     or not _canonical_type(e.get("finding_type", "")))
 
+    # 按 canonical id 分组，保留 (原始下标, 条目)：下标用作 _rep 最终稳定 tie-breaker
     groups = {}
-    for e in exps:
+    for i, e in enumerate(exps):
         if not _touchable(e):
             continue
-        groups.setdefault(_key(e), []).append(e)
+        groups.setdefault(_key(e), []).append((i, e))
 
     _rank = {"active": 0, "shadow": 1, "retired": 2, "candidate": 3}
 
     def _rep(group):
-        return min(group, key=lambda e: (_rank.get(e.get("status"), 9),
-                                         -(len(e.get("source_prs") or []))))
+        # 代表 = status 优先级高 > source_prs 多 > 原始下标小（稳定，跨 run/测试可复现）
+        return min(group, key=lambda ie: (_rank.get(ie[1].get("status"), 9),
+                                          -(len(ie[1].get("source_prs") or [])),
+                                          ie[0]))
 
     out = []
     seen = set()
@@ -296,17 +327,22 @@ def canonicalize_store(store):
             if key in seen:
                 continue                       # 后续重复：已并到首个位置，跳过
             seen.add(key)
-            rep = dict(_rep(group))
+            _ri, rep_entry = _rep(group)
+            rep = dict(rep_entry)
             spr = []
-            for g in group:
+            for _, g in group:
                 for p in (g.get("source_prs") or []):
                     if p not in spr:
                         spr.append(p)
             rep["finding_type"] = _canonical_type(rep.get("finding_type", ""))
             rep["id"] = key
             rep["source_prs"] = spr
-            rep["created_at"] = min((g.get("created_at", 0) for g in group), default=0)
-            rep["updated_at"] = max((g.get("updated_at", 0) for g in group), default=0)
+            # evidence 合并（fires 求和、group_rewards 拼接、标志或）——代表序优先，不丢兄弟累积信号
+            rep["evidence"] = _merge_evidence(
+                [rep_entry.get("evidence")]
+                + [g.get("evidence") for _, g in group if g is not rep_entry])
+            rep["created_at"] = min((g.get("created_at", 0) for _, g in group), default=0)
+            rep["updated_at"] = max((g.get("updated_at", 0) for _, g in group), default=0)
             out.append(rep)
             merged_n += len(group) - 1
         else:
