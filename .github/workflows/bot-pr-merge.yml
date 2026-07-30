@@ -34,10 +34,14 @@ jobs:
             NUM=$(gh pr list --head bot/experience-update --base main --state open --json number -q '.[0].number' 2>/dev/null || true)
           fi
           if [ -z "${NUM:-}" ]; then echo "no open bot/experience-update PR, skip"; exit 0; fi
-          # 新鲜度闸：PR head 必须等于触发本次 workflow_run 的 head_sha，否则视为 stale，不合（#141 review #4）
+          # 新鲜度闸（fail-closed）：PR head 必须等于触发本次 workflow_run 的 head_sha。
+          # 取不到 PR head（API 失败/返回空）= 无法验证新鲜度 → exit 1 拒绝合入（红、可见），
+          # 绝不静默绕过（#142 review：freshness gate bypassing on API failure）。
           TRIG_SHA="${{ github.event.workflow_run.head_sha }}"
-          PR_HEAD=$(gh pr view "$NUM" --json headRefOid -q .headRefOid 2>/dev/null || true)
-          if [ -n "${PR_HEAD:-}" ] && [ "$PR_HEAD" != "$TRIG_SHA" ]; then
+          if ! PR_HEAD=$(gh pr view "$NUM" --json headRefOid -q .headRefOid 2>/dev/null) || [ -z "${PR_HEAD:-}" ]; then
+            echo "::error::无法获取 PR #$NUM 的 head（API 失败或返回空），不能验证新鲜度，fail-closed 拒绝合入"; exit 1
+          fi
+          if [ "$PR_HEAD" != "$TRIG_SHA" ]; then
             echo "PR #$NUM head ($PR_HEAD) ≠ 触发 run head ($TRIG_SHA)，stale，跳过"; exit 0
           fi
           # 内容闸：只允许改动这两个数据文件；出现任何其它路径 → 拒绝合入

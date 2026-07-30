@@ -99,13 +99,14 @@ jobs:
           # 带 run id + 时间戳的 title/body，复用时刷新——防 stale 描述被合入（#141 review #4 Stale PR）
           TITLE="chore(bot): weekly experience store update (run $RUN_ID)"
           BODY=$(printf '由 learn.yml 定时产出。本轮 run: %s | 时间: %s\n\ngate 绿 + 仅含 data/*.json + head 匹配触发 run 时，由 bot-pr-merge.yml 自动合入（B3）。' "$RUN_ID" "$(date -u +%FT%TZ)")
-          # 区分"已存在"（刷新复用）与"真失败"（标红，不静默丢——#141 review #3 Race condition）
-          EXISTING=$(gh pr list --head "$BOT_BRANCH" --base main --state open --json number -q '.[0].number' 2>/dev/null || true)
-          if [ -n "$EXISTING" ]; then
-            gh pr edit "$EXISTING" --title "$TITLE" --body "$BODY" || true
-            echo "PR #$EXISTING 已存在，已刷新 title/body 复用"
-          elif ! gh pr create --base main --head "$BOT_BRANCH" --title "$TITLE" --body "$BODY"; then
-            echo "::error::gh pr create 失败且无 open PR，本轮经验更新未开出（push 已成功），请人工介入"
+          # force-push 后任何残留 open PR 都指向 stale commits，复用有竞态——关旧开新，
+          # 保证 PR metadata 精确反映本轮新提交（#142 review：close stale PRs before creating new）。
+          for n in $(gh pr list --head "$BOT_BRANCH" --base main --state open --json number -q '.[].number' 2>/dev/null || true); do
+            gh pr close "$n" || true
+          done
+          # 开新 PR；真失败则标红（不静默丢——#141 review #3 Race condition）
+          if ! gh pr create --base main --head "$BOT_BRANCH" --title "$TITLE" --body "$BODY"; then
+            echo "::error::gh pr create 失败，本轮经验更新未开出 PR（push 已成功），请人工介入"
             exit 1
           fi
 
