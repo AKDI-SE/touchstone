@@ -245,6 +245,24 @@ def _install_llm_call_tuning(model_override):
             _ix(f"流式启用失败: {type(e).__name__}: {e}")
 
 
+def _patch_context_settings():
+    """扩窗旋钮（issue #139 方案 A）：env 可调、纯函数可测。默认值取「守卫多在
+    enclosing 函数头到命中行之间」的经验面：动态上下文上限 10→30、前置固定行 5→10、
+    后置 1→3。回调消融：把三个 env 设回上游默认即得对照组。"""
+    def _envi(name, default):
+        # #140 R7：clamp 到非负——负的上下文行数会让 pr-agent 扩窗/补丁行计数下溢
+        try:
+            return max(0, int((os.environ.get(name) or "").strip() or default))
+        except (ValueError, TypeError):
+            return max(0, default)
+    return {
+        "allow_dynamic_context": True,
+        "max_extra_lines_before_dynamic_context": _envi("TOUCHSTONE_DYNAMIC_CONTEXT_MAX", 30),
+        "patch_extra_lines_before": _envi("TOUCHSTONE_PATCH_EXTRA_BEFORE", 10),
+        "patch_extra_lines_after": _envi("TOUCHSTONE_PATCH_EXTRA_AFTER", 3),
+    }
+
+
 def run(pr_url, mode, extra_instructions=None):
     """调 PR-Agent（不发评论）→ 返回 dict 供 touchstone 解析。
 
@@ -368,6 +386,15 @@ def run(pr_url, mode, extra_instructions=None):
     if extra_instructions:
         s.pr_code_suggestions.extra_instructions = extra_instructions
         s.pr_reviewer.extra_instructions = extra_instructions
+    # 扩窗（issue #139 方案 A）：守卫上下文缺失型误报的第一杠杆。上游默认
+    # allow_dynamic_context=true / max_extra_lines_before_dynamic_context=10 /
+    # patch_extra_lines_before=5 / after=1（0.39.0 configuration.toml:42-45）——
+    # 守卫距命中行超过 10 行即被截掉。此处调大旋钮（env 可回调做消融对比）。
+    for k, v in _patch_context_settings().items():
+        try:
+            setattr(s.config, k, v)
+        except Exception as e:                    # 键不存在（版本不符）要可见，防静默退化
+            _ix(f"扩窗配置 {k}={v} 设置失败：{type(e).__name__}: {e}")
     # 压一压 LiteLLM 的 stdout 噪音（"LiteLLM.Info / Give Feedback" 等 print），减少 stderr 干扰。
     # 需排查"LLM 到底被调了没"时设 TOUCHSTONE_LITELLM_VERBOSE=true。
     # 上游报告问题二：litellm 1.84 的 set_verbose 在【import 时】求值（litellm/__init__.py:91），
