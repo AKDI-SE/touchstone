@@ -383,3 +383,32 @@ def test_digest_no_cross_function_leak_at_boundary(tmp_path):
     txt = gc.render_guard_digest(_CROSS_DIFF, str(tmp_path))
     assert "first" in txt and "if x < 0" in txt              # first 的早退正确记
     assert "second" not in txt and "100" not in txt          # second 不跨边界泄漏
+
+
+# ============================ PR #140 round-8 销项回归 ============================
+def test_try_finally_without_except_not_a_guard(tmp_path):
+    """R8：纯 try/finally（无 except handler）只是清理、不挡异常——不得计成
+    'try/except …' 假守卫（与 R3「宁漏勿假」一致）。try/except 对照仍正常计。
+    回归锁：去 ``n.handlers`` 判定 → try/finally 被误记为 'try/except …'。"""
+    (tmp_path / "pkg").mkdir(exist_ok=True)
+    (tmp_path / "pkg" / "tf.py").write_text(
+        "def f(x):\n"
+        "    try:\n"
+        "        data = load(x)\n"            # ← 命中行：被 try 罩住，但只有 finally
+        "        result = data.strip()\n"
+        "    finally:\n"
+        "        close(x)\n"
+        "    return result\n", encoding="utf-8")
+    facts = gc.guard_facts(str(tmp_path), "pkg/tf.py", 3)
+    assert not any("try/except" in g for g in facts["path_guards"])    # try/finally 不计
+    # 对照：try/except OSError 仍正常计
+    (tmp_path / "pkg" / "te.py").write_text(
+        "def g(x):\n"
+        "    try:\n"
+        "        data = load(x)\n"
+        "        result = data.strip()\n"
+        "    except OSError:\n"
+        "        return None\n"
+        "    return result\n", encoding="utf-8")
+    facts2 = gc.guard_facts(str(tmp_path), "pkg/te.py", 3)
+    assert any("try/except" in g and "OSError" in g for g in facts2["path_guards"])

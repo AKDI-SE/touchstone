@@ -133,7 +133,9 @@ def _facts_from_tree(tree, src, line, scope_cache=None):
         if isinstance(n, (ast.If, ast.While)) and _covers(n, line) and n.lineno < line:
             facts["path_guards"].append(("while " if isinstance(n, ast.While) else "if ")
                                         + _seg(src, n.test))
-        elif isinstance(n, ast.Try) and _covers(n, line) and n.lineno < line:
+        # try/except 是异常路径守卫；纯 try/finally（无 handler）只是清理、不挡异常，
+        # 不得计成 "try/except …" 假守卫（#140 R8：与 R3「宁漏勿假」一致）。
+        elif isinstance(n, ast.Try) and n.handlers and _covers(n, line) and n.lineno < line:
             kinds = []
             for h in n.handlers:
                 kinds.append(_seg(src, h.type, 40) if h.type is not None else "Exception")
