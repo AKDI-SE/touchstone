@@ -1782,6 +1782,52 @@ def test_canonicalize_store_preserves_sibling_only_list_field():
     assert store["experiences"][0].get("extra_log") == ["a", "b"]      # sibling-only list 被保留
 
 
+def test_merge_evidence_adoption_preserved_when_carrier_has_no_fires():
+    # 兄弟只带 adoption 不带 fires（evidence={"adoption":0.5}）时，adoption 不得被静默丢弃。
+    # 代表 e1 无 adoption；e2 是唯一 adoption 载体但无 fires。合并后 adoption 仍取 e2 的值。防 :251 重开。
+    e1 = _cand("PRA-NF"); e1["evidence"] = {"fires": 10}               # 代表（index 0），无 adoption
+    e2 = _cand("pra-nf"); e2["evidence"] = {"adoption": 0.5}           # adoption 载体，无 fires
+    store = {"experiences": [e1, e2]}
+    L.canonicalize_store(store)
+    ev = store["experiences"][0]["evidence"]
+    assert ev["fires"] == 10                                           # e1 的 fires 保留（e2 无 fires 不计入）
+    assert abs(ev["adoption"] - 0.5) < 1e-9                            # e2 的 adoption 不丢
+
+
+def test_merge_evidence_adoption_averaged_when_no_fires_weights():
+    # 多个兄弟都只有 adoption（无 fires 可加权）→ 等权平均，不偏向代表、不丢任一信号。防 :251 重开。
+    e1 = _cand("PRA-NF2"); e1["evidence"] = {"adoption": 0.8}          # 代表（index 0）
+    e2 = _cand("pra-nf2"); e2["evidence"] = {"adoption": 0.4}
+    store = {"experiences": [e1, e2]}
+    L.canonicalize_store(store)
+    ev = store["experiences"][0]["evidence"]
+    assert "fires" not in ev                                           # 无 fires，不凭空造
+    assert abs(ev["adoption"] - 0.6) < 1e-9                            # (0.8+0.4)/2，非代表的 0.8
+
+
+def test_canonicalize_store_timestamp_merge_ignores_invalid_types():
+    # 手改/损坏的库可能存非数值时间戳（字符串/None）；min/max 不得 TypeError，坏值也不得污染合并时间。防 :373。
+    e1 = _cand("PRA-TS"); e1["created_at"] = 100; e1["updated_at"] = 110; e1["evidence"] = {}
+    e2 = _cand("pra-ts"); e2["created_at"] = "oops"; e2["updated_at"] = None; e2["evidence"] = {}
+    store = {"experiences": [e1, e2]}
+    L.canonicalize_store(store)                                        # 不抛 TypeError
+    merged = next(e for e in store["experiences"] if e["finding_type"] == "PRA-TS")
+    assert merged["created_at"] == 100                                 # 坏值跳过，min=唯一数值 100
+    assert merged["updated_at"] == 110                                 # 坏值跳过，max=唯一数值 110
+
+
+def test_canonical_type_folds_separator_variants_not_distinct_types():
+    # 分隔符【样式噪声】折叠（有意）：'PRA-A-B' / 'PRA-A_B' / 'PRA-A--B' / 'PRA-A B' → 同一规范形。
+    assert L._canonical_type("PRA-A-B") == "PRA-A_B"
+    assert L._canonical_type("PRA-A_B") == "PRA-A_B"
+    assert L._canonical_type("PRA-A--B") == "PRA-A_B"   # 连续分隔符折叠（样式噪声，非语义区分）
+    assert L._canonical_type("PRA-A B") == "PRA-A_B"
+    # 真正不同的类型【不撞】：分隔符有无仍区分、不同 token 亦然（折叠不损失信息）。确认归一化不 lossy。防 :155。
+    assert L._canonical_type("PRA-AB") != L._canonical_type("PRA-A_B")
+    assert L._canonical_type("PRA-FOO") != L._canonical_type("PRA-BAR")
+    assert L._canonical_type("PRA-A") != L._canonical_type("PRA-B")
+
+
 # ============================================================================
 # c2：差分回滚 retire_on_negative_lift + lift_summary
 #    （回答"经验在帮还是在害"；与 graduate 对称）

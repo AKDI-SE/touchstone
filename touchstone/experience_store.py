@@ -150,6 +150,12 @@ def _canonical_type(ftype):
     仅供 coerce_type 的对称软匹配用（两端同函数即可，分隔符字符无所谓）；本函数保留 'PRA-' 前缀连字符、
     只归一化其后部分，产出的是要【写进 store】的规范形。纯函数。
 
+    分隔符折叠是【有意】的：rest 部分大小写、分隔符字符（-/_/空格/斜杠）与连续个数都折成单个下划线。
+    这些差异是 LLM 产 finding_type 时的样式噪声（'PRA-A-B'/'PRA-A_B'/'PRA-A--B' 同一规律），不是 PRA
+    分类法里区分语义的分隔——故折叠不损失信息。真正不同的类型不会撞：分隔符的【有无】仍被区分
+    （'PRA-AB' ≠ 'PRA-A_B'），不同 token 亦然（'PRA-FOO' ≠ 'PRA-BAR'）。见
+    test_canonical_type_folds_separator_variants_not_distinct_types。
+
     例：'PRA-consistency'/'PRA-CONSISTENCY' → 'PRA-CONSISTENCY'；
         'PRA-COVERAGE-GAP'/'PRA-COVERAGE_GAP'/'PRA-coverage gap' → 'PRA-COVERAGE_GAP'。"""
     s = str(ftype or "").strip()
@@ -248,26 +254,36 @@ def merge_candidates(store, candidates, *, taxonomy=None):
     return store
 
 
+def _is_number(x):
+    """数值判定（int/float，排除 bool——True/False 既是 int 子类又不该当计数/时间戳）。
+    evidence 合并（fires/adoption）与时间戳合并（created_at/updated_at）的健壮过滤共用：手改/损坏
+    的库可能出现非数值（字符串/None），直接 sum/min/max 会 TypeError。纯函数。"""
+    return isinstance(x, (int, float)) and not isinstance(x, bool)
+
+
 def _merge_evidence(evidences):
     """合并一组同 canonical 类型兄弟条目的 evidence，避免静默丢失累积信号（fires/group_rewards 等）。
     evidences[0] 为代表条目的 evidence——非合并键（pr / ab_lift 等）取它的值、序优先。
-    fires（数值，排除 bool）求和；adoption 是比率、不能直接求和——若有 fires 权重则按 fires 加权平均
-    （与求和后的 fires 自洽，不偏向代表单方面），否则取代表值；group_rewards 拼接去重、布尔标志
-    （tfgrpo/seeded）取或。纯函数。"""
+    fires（数值，排除 bool）求和；adoption 是比率、不能直接求和——优先按 fires 加权平均（与求和后的
+    fires 自洽，不偏向代表单方面）；若无 fires 权重可用却仍有 adoption 载体（如某兄弟只带 adoption
+    不带 fires——evidence={"adoption":0.5}），退化为等权平均以【不静默丢弃】adoption 信号；group_rewards
+    拼接去重、布尔标志（tfgrpo/seeded）取或。纯函数。"""
     evs = [e for e in evidences if isinstance(e, dict)]
     if not evs:
         return {}
     merged = dict(evs[0])                                  # 代表的键作底（pr/ab_lift 等保留）
-    _num = lambda x: isinstance(x, (int, float)) and not isinstance(x, bool)
-    fires_pairs = [(e["fires"], e.get("adoption")) for e in evs if _num(e.get("fires"))]
+    fires_pairs = [(e["fires"], e.get("adoption")) for e in evs if _is_number(e.get("fires"))]
     if fires_pairs:
         merged["fires"] = sum(f for f, _ in fires_pairs)
-        # adoption 加权平均：Σ(fires_i · adoption_i) / Σfires_i（仅当≥2 个兄弟同时带 fires+adoption）
-        weighted = [(f, a) for f, a in fires_pairs if _num(a)]
-        if len(weighted) >= 1:                      # 任一兄弟带 adoption 即按 fires 加权重算（≥1 即可）
-            tot = sum(f for f, _ in weighted)
-            if tot > 0:
-                merged["adoption"] = sum(f * a for f, a in weighted) / tot
+    # adoption 合并（比率，不直接求和）：优先 fires 加权平均；无 fires 权重时退化等权平均，绝不静默丢载体。
+    # weighted = 同时带 fires+adoption 的兄弟（可按 fires 加权）；all_adopt = 全部 adoption 载体（含无 fires 的）。
+    weighted = [(f, a) for f, a in fires_pairs if _is_number(a)]
+    all_adopt = [a for a in (e.get("adoption") for e in evs) if _is_number(a)]
+    tot = sum(f for f, _ in weighted)
+    if weighted and tot > 0:
+        merged["adoption"] = sum(f * a for f, a in weighted) / tot
+    elif all_adopt:                        # 无 fires 权重但有 adoption 载体：等权平均，不丢信号（防 :251 重开）
+        merged["adoption"] = sum(all_adopt) / len(all_adopt)
     rewards = []
     for e in evs:
         for r in (e.get("group_rewards") or []):
@@ -370,8 +386,12 @@ def canonicalize_store(store):
             rep["evidence"] = _merge_evidence(
                 [rep_entry.get("evidence")]
                 + [g.get("evidence") for _, g in group if g is not rep_entry])
-            rep["created_at"] = min((g.get("created_at", 0) for _, g in group), default=0)
-            rep["updated_at"] = max((g.get("updated_at", 0) for _, g in group), default=0)
+            # 时间合并：created_at=最早、updated_at=最晚。仅取数值时间戳——手改/损坏的库可能存非数值
+            # （字符串/None），直接 min/max 会 TypeError；缺失或非数值的自然跳过，全空回落 default=0。
+            created = [g.get("created_at") for _, g in group if _is_number(g.get("created_at"))]
+            updated = [g.get("updated_at") for _, g in group if _is_number(g.get("updated_at"))]
+            rep["created_at"] = min(created, default=0)
+            rep["updated_at"] = max(updated, default=0)
             # 通用防御：跨【所有兄弟】扫顶层 list 字段（不只 rep 的键——否则 sibling-only 列表字段被静默丢）
             # 并集保序。schema 今日仅 source_prs（已上方处理），故今日为 no-op；防未来新增累积型列表字段。
             _list_keys = {k for _, g in group for k, v in g.items()
