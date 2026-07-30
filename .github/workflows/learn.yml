@@ -23,7 +23,7 @@ jobs:
 
     permissions:
       contents: write        # 写入经验库
-      pull-requests: read    # 读取 PR 数据
+      pull-requests: write   # 开经验库更新 PR（B3）
       issues: read           # 读取评论/审查数据
 
     steps:
@@ -78,14 +78,29 @@ jobs:
             --calib-agg calibration.json \
             --output data/learning_report.json
 
-      - name: Commit experience store if changed
+      - name: Push experience update to bot branch + open PR
+        # B3：不再直接 git push origin main（07-13/07-20 两次 non-fast-forward 失败根因：
+        # job 跑 ~4h 期间有 PR 合入推进 main）。改推滚动分支 + 开 PR，由 bot-pr-merge.yml
+        # 在 gate 绿 + 仅 data/*.json 时自动合入（人审不强制；内容闸兜底）。
         if: steps.learn.outputs.changed == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -u
           git config user.name "Touchstone Bot"
           git config user.email "touchstone-bot@users.noreply.github.com"
+          BOT_BRANCH="bot/experience-update"
+          git checkout -B "$BOT_BRANCH"
           git add data/experience_store.json data/ground_truth.json
-          git commit -m "chore: update experience store + ground truth [skip ci]" || true
-          git push origin main
+          # 不加 [skip ci]：要让 touchstone 评审在此 PR 上跑，gate 绿才触发自动合入
+          git commit -m "chore(bot): weekly experience store + ground truth update" || { echo "无改动"; exit 0; }
+          # 滚动分支：force-push 覆盖上一轮未合残留（learn.yml 有 concurrency 组，无并发）
+          git push -f origin "$BOT_BRANCH"
+          # 开 PR（已存在则 gh 报错，|| 容错复用同一 PR）
+          gh pr create --base main --head "$BOT_BRANCH" \
+            --title "chore(bot): weekly experience store update" \
+            --body "由 learn.yml 周一定时产出。gate 绿 + 仅含 data/*.json 时由 bot-pr-merge.yml 自动合入（B3）。" \
+            || echo "PR 已存在（复用）或创建失败（确认 repo 设置 Allow Actions to create and approve PRs 已开）"
 
       - name: Upload learning report
         if: always()
