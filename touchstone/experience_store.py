@@ -264,7 +264,7 @@ def _merge_evidence(evidences):
         merged["fires"] = sum(f for f, _ in fires_pairs)
         # adoption 加权平均：Σ(fires_i · adoption_i) / Σfires_i（仅当≥2 个兄弟同时带 fires+adoption）
         weighted = [(f, a) for f, a in fires_pairs if _num(a)]
-        if len(weighted) >= 2:
+        if len(weighted) >= 1:                      # 任一兄弟带 adoption 即按 fires 加权重算（≥1 即可）
             tot = sum(f for f, _ in weighted)
             if tot > 0:
                 merged["adoption"] = sum(f * a for f, a in weighted) / tot
@@ -372,9 +372,11 @@ def canonicalize_store(store):
                 + [g.get("evidence") for _, g in group if g is not rep_entry])
             rep["created_at"] = min((g.get("created_at", 0) for _, g in group), default=0)
             rep["updated_at"] = max((g.get("updated_at", 0) for _, g in group), default=0)
-            # 通用防御：代表上【其它】顶层 list 字段（schema 今日仅 source_prs，已上方处理；防未来新增
-            # 累积型列表字段被静默丢）也跨兄弟并集保序——review "Possible Data Loss"。今日为 no-op。
-            for k in [k for k, v in rep.items() if isinstance(v, list) and k != "source_prs"]:
+            # 通用防御：跨【所有兄弟】扫顶层 list 字段（不只 rep 的键——否则 sibling-only 列表字段被静默丢）
+            # 并集保序。schema 今日仅 source_prs（已上方处理），故今日为 no-op；防未来新增累积型列表字段。
+            _list_keys = {k for _, g in group for k, v in g.items()
+                          if isinstance(v, list) and k != "source_prs"}
+            for k in _list_keys:
                 rep[k] = _union_list(group, k)
             # 防御性保留最强保护标志：_touchable 已把 locked / source='human' 挡在 groups 之外（故组内
             # 必无此类条目、本段今日是 no-op），但若日后 _touchable 回归把它们误放进组，合并结果仍须继承

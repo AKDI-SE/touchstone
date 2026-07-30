@@ -1761,6 +1761,27 @@ def test_merge_evidence_adoption_weighted_by_fires_not_rep_pick():
     assert abs(ev["adoption"] - 0.8) < 1e-9                            # (8·1.0 + 2·0.0)/10 = 0.8，非代表的 1.0
 
 
+def test_merge_evidence_adoption_from_single_carrier_not_rep_none():
+    # 仅一个兄弟带 adoption 时（代表 e1 不带）：adoption 仍取该载体值，不被代表的 None 覆盖、不丢。防"Data loss"。
+    e1 = _cand("PRA-W"); e1["evidence"] = {"fires": 10}                 # 代表（index 0），无 adoption
+    e2 = _cand("pra-w"); e2["evidence"] = {"fires": 5, "adoption": 0.6} # 唯一 adoption 载体
+    store = {"experiences": [e1, e2]}
+    L.canonicalize_store(store)
+    ev = store["experiences"][0]["evidence"]
+    assert ev["fires"] == 15
+    assert abs(ev["adoption"] - 0.6) < 1e-9                            # 载体 e2 的 0.6，非代表缺失
+
+
+def test_canonicalize_store_preserves_sibling_only_list_field():
+    # 兄弟独有的顶层 list 字段（rep 没有）也要并集保留，不静默丢。防"Scan all siblings"。
+    e1 = _cand("PRA-V"); e1["evidence"] = {}                           # 代表（index 0），无 extra_log
+    e2 = _cand("pra-v"); e2["evidence"] = {}; e2["extra_log"] = ["a", "b"]   # sibling-only list
+    store = {"experiences": [e1, e2]}
+    L.canonicalize_store(store)
+    assert len(store["experiences"]) == 1
+    assert store["experiences"][0].get("extra_log") == ["a", "b"]      # sibling-only list 被保留
+
+
 # ============================================================================
 # c2：差分回滚 retire_on_negative_lift + lift_summary
 #    （回答"经验在帮还是在害"；与 graduate 对称）
