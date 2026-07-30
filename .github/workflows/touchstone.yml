@@ -175,7 +175,9 @@ jobs:
           # 是单 PR 孤证（含 LLM 幻觉型 PRA-A/B/C/OK 等，均 source_prs=['116']），min_evidence=2 把这些
           # 孤证噪声挡在 shadow 外，只放 41 条有重复证据的进采数臂——降爆面、又不饿死臂（真规律会在
           # 后续 PR 复现、被再蒸馏补证据后入选）。ratio/max 仍走设计默认（0.5 / 3 每轮）。
-          TOUCHSTONE_SHADOW_MIN_EVIDENCE: "2"
+          # 经 vars. 可调（对齐 TOUCHSTONE_SHADOW_INJECTION 的 kill-switch 约定）：池子变干净后可下调到 1
+          # 扩大采数面，或上调进一步收窄。默认 '2'。
+          TOUCHSTONE_SHADOW_MIN_EVIDENCE: ${{ vars.TOUCHSTONE_SHADOW_MIN_EVIDENCE || '2' }}
           # 评审健康度看板（可选，默认关）：置 true 后，每轮在本仓开/重写一个带 label 的 issue
           # 成"活"看板（本轮快照 + 滚动趋势；body 重写不发通知，仅显著事件追加评论）。
           # 经 repo variable 配（Settings → Secrets and variables → Actions → Variables，
