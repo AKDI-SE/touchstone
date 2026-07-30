@@ -41,12 +41,12 @@ from touchstone.experience_store import (  # noqa: F401
     SHADOW_RATIO_DEFAULT, SHADOW_MAX_PER_REVIEW_DEFAULT, SHADOW_MIN_EVIDENCE_DEFAULT,
     BOOTSTRAP_SEED_DEFAULT, BOOTSTRAP_MIN_FIRES_DEFAULT, BOOTSTRAP_MIN_ADOPT_DEFAULT,
     _read_store_text, load_store, save_store, _is_review_type, _exp_id,
-    _protected_types, seed_experience, merge_candidates, graduate, retire,
+    _protected_types, seed_experience, merge_candidates, canonicalize_store, graduate, retire,
     disable, _resolve_conflicts, _evidence_strength, render_injection, active_types, active_ids,
     _shadow_hash, _shadow_env_params, _shadow_injection_enabled,
     shadow_candidates, shadow_types, shadow_ids,
     _bootstrap_enabled, bootstrap_from_calibrate,
-    TAXONOMY_ENFORCE_DEFAULT, _normalize_type, coerce_type, known_types,
+    TAXONOMY_ENFORCE_DEFAULT, _normalize_type, _canonical_type, coerce_type, known_types,
     RETIRE_NEGATIVE_LIFT_DEFAULT, retire_on_negative_lift)
 from touchstone.distill import (  # noqa: F401
     DISTILL_MIN_FIRES,
@@ -239,6 +239,15 @@ def main(argv=None):
                                f"{len(bootstrapped)} 条 {bootstrapped}")
 
     merge_candidates(store, cands, taxonomy=_resolve_taxonomy(store))
+
+    # ③.6 归一化存量：合并大小写/分隔符变体造成的重复条目（PRA-CONSISTENCY 与 PRA-consistency 等）。
+    # merge_candidates 已对【新进】候选规范化；本步清【存量】历史重复——TF-GRPO 的 LLM 自由产 finding_type
+    # 时曾把同一规律裂成多条。幂等，已干净则无副作用。不丢弃任何条目。（条目数减少=有合并；rename 不减数）
+    _n_before = len(store.get("experiences", []))
+    canonicalize_store(store)
+    if len(store.get("experiences", [])) < _n_before:
+        report["steps"].append(
+            f"canonicalize_store: 合并 {_n_before - len(store['experiences'])} 条重复 finding_type 变体")
 
     # ④ candidate → active（shadow A/B 达标）
     ab = None

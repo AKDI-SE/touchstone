@@ -140,6 +140,41 @@ def coerce_type(ftype, known):
     return None
 
 
+def _canonical_type(ftype):
+    """finding_type 的【生态规范形】：'PRA-' 前缀保留 + 其后部分大写、分隔符统一为下划线。
+    与 review_provider.normalize 的 rid = 'PRA-' + label.replace(' ','_').upper() 一致——保证 store 里的
+    finding_type 与 calibrate by_rule 键 / aggregate_ab 键 / 注入 marker（injected_types、shadow_types）
+    【同形】，使 graduate/retire/ground_truth 的按类型查找不因大小写或分隔符漂移失配。
+
+    与 _normalize_type 的区别：_normalize_type 把【所有】分隔符（含 'PRA-' 前缀那个连字符）折成连字符，
+    仅供 coerce_type 的对称软匹配用（两端同函数即可，分隔符字符无所谓）；本函数保留 'PRA-' 前缀连字符、
+    只归一化其后部分，产出的是要【写进 store】的规范形。纯函数。
+
+    例：'PRA-consistency'/'PRA-CONSISTENCY' → 'PRA-CONSISTENCY'；
+        'PRA-COVERAGE-GAP'/'PRA-COVERAGE_GAP'/'PRA-coverage gap' → 'PRA-COVERAGE_GAP'。"""
+    s = str(ftype or "").strip()
+    if not s:
+        return ""
+    prefix, sep, rest = s.partition("-")
+    if sep and prefix.upper() == "PRA":
+        rest_u = rest.upper().replace(" ", "_").replace("-", "_").replace("/", "_")
+        rest_u = "_".join(p for p in rest_u.split("_") if p)   # 折叠连续下划线 + 去首尾
+        return f"PRA-{rest_u}" if rest_u else "PRA"
+    # 非 'PRA-' 形（'pr-agent-*' 等罕见，或无连字符）：保守地只大写 + 折叠空格/斜杠，不改命名空间连字符
+    whole = s.upper().replace(" ", "_").replace("/", "_")
+    return "_".join(p for p in whole.split("_") if p)
+
+
+def _canonicalize_candidate(c):
+    """把候选的 finding_type 规范化为生态形并同步重算 id（id 含 finding_type）。不丢弃——仅归一化。
+    已规范或 finding_type 为空 → 原样返回。纯函数（返回新 dict，不改输入）。"""
+    ft = _canonical_type(c.get("finding_type", ""))
+    if ft and ft != c.get("finding_type"):
+        return dict(c, finding_type=ft,
+                    id=_exp_id(ft, c.get("kind", ""), c.get("repo", ""), c.get("stack", "")))
+    return c
+
+
 def known_types(store, extra=()):
     """经验库的有效 finding_type 白名单（taxonomy）。
     = 已 active 的类型 ∪ extra（调用方传入，如 pr-agent.yaml 的 label 集）∪ env TOUCHSTONE_TAXONOMY_TYPES。
@@ -177,10 +212,15 @@ def seed_experience(store, finding_type, kind, text, *, repo="", stack="",
 def merge_candidates(store, candidates, *, taxonomy=None):
     """把候选并入经验库的 candidate 池：同 id 已存在则更新证据（不降级 active/retired 的状态）。
     taxonomy（集合，默认 None=不启用 = 零行为变化）：非空时，finding_type 不在白名单的候选经
-    coerce_type 软映射；仍未知 → 丢弃并 stderr 留痕（fail-closed 防 LLM 幻觉类型污染经验库；不静默）。"""
+    coerce_type 软映射；仍未知 → 丢弃并 stderr 留痕（fail-closed 防 LLM 幻觉类型污染经验库；不静默）。
+
+    总是先做 _canonicalize_candidate（大小写/分隔符→生态规范形，合并重复变体，不丢弃任何候选）——
+    即便 taxonomy 关。防 TF-GRPO 的 LLM 自由产 finding_type（'PRA-COVERAGE-GAP' vs 'PRA-COVERAGE_GAP'
+    vs 'PRA-consistency'）把同一规律裂成多条、互相稀释证据。"""
     idx = {e["id"]: e for e in store.get("experiences", [])}
     dropped = []
     for c in candidates:
+        c = _canonicalize_candidate(c)              # 先规范化 finding_type/id（合并重复变体，不丢弃）
         if taxonomy is not None:
             ft = coerce_type(c.get("finding_type", ""), taxonomy)
             if ft is None:
@@ -205,6 +245,82 @@ def merge_candidates(store, candidates, *, taxonomy=None):
         print(f"[experience_store] taxonomy 白名单丢弃 {len(dropped)} 个未知 finding_type："
               f"{sorted(set(d for d in dropped if d))}（TOUCHSTONE_TAXONOMY_ENFORCE 开时生效）",
               file=_sys.stderr)
+    return store
+
+
+def canonicalize_store(store):
+    """把经验库里【非 locked、非 human】条目的 finding_type 规范化为生态形，并合并由此产生的重复变体。
+    幂等：再跑一次无副作用（已规范条目不变、无重复可合）。locked / source='human' 的权威条目原样不动；
+    finding_type 规范后为空（罕见）也不动。**不丢弃任何条目**——仅归一化 + 合并。
+
+    合并策略（同一 canonical id 的多条 → 一条）：status 取优先级最高者（active > shadow > retired >
+    candidate，不回退已推进的状态）；source_prs 取并集；text/evidence 取代表（同优先级下 source_prs 多者）；
+    时间取 created_at=min、updated_at=max。顺序保持首次出现位置（合并到首条处，后续重复删去）。
+
+    典型场景：run #6 的 191 条里 LLM 把同一规律裂成 'PRA-CONSISTENCY' 与 'PRA-consistency'、
+    'PRA-COVERAGE-GAP' 与 'PRA-COVERAGE_GAP'——本函数在下一次 learn.yml 运行时把它们并成单条，
+    让证据不再互相稀释、graduate/retire 的按类型判定不再错位。"""
+    exps = store.get("experiences", [])
+
+    def _key(e):
+        return _exp_id(_canonical_type(e.get("finding_type", "")),
+                       e.get("kind", ""), e.get("repo", ""), e.get("stack", ""))
+
+    def _touchable(e):
+        # locked / human / 规范后为空 → 不动（权威或无法规范）
+        return not (e.get("locked") or e.get("source") == "human"
+                    or not _canonical_type(e.get("finding_type", "")))
+
+    groups = {}
+    for e in exps:
+        if not _touchable(e):
+            continue
+        groups.setdefault(_key(e), []).append(e)
+
+    _rank = {"active": 0, "shadow": 1, "retired": 2, "candidate": 3}
+
+    def _rep(group):
+        return min(group, key=lambda e: (_rank.get(e.get("status"), 9),
+                                         -(len(e.get("source_prs") or []))))
+
+    out = []
+    seen = set()
+    merged_n = renamed_n = 0
+    for e in exps:
+        if not _touchable(e):
+            out.append(e)
+            continue
+        key = _key(e)
+        group = groups[key]
+        if len(group) > 1:
+            if key in seen:
+                continue                       # 后续重复：已并到首个位置，跳过
+            seen.add(key)
+            rep = dict(_rep(group))
+            spr = []
+            for g in group:
+                for p in (g.get("source_prs") or []):
+                    if p not in spr:
+                        spr.append(p)
+            rep["finding_type"] = _canonical_type(rep.get("finding_type", ""))
+            rep["id"] = key
+            rep["source_prs"] = spr
+            rep["created_at"] = min((g.get("created_at", 0) for g in group), default=0)
+            rep["updated_at"] = max((g.get("updated_at", 0) for g in group), default=0)
+            out.append(rep)
+            merged_n += len(group) - 1
+        else:
+            ft = _canonical_type(e.get("finding_type", ""))
+            if ft != e.get("finding_type") or key != e.get("id"):
+                out.append(dict(e, finding_type=ft, id=key))
+                renamed_n += 1
+            else:
+                out.append(e)
+    store["experiences"] = out
+    if merged_n or renamed_n:
+        import sys as _sys
+        print(f"[experience_store] canonicalize_store：合并 {merged_n} 条重复变体、"
+              f"规范 {renamed_n} 条 finding_type", file=_sys.stderr)
     return store
 
 

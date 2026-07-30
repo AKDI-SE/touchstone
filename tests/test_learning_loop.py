@@ -1624,6 +1624,83 @@ def test_resolve_taxonomy_on_reads_pragent_yaml(tmp_path, monkeypatch):
 
 
 # ============================================================================
+# finding_type 归一化（合并大小写/分隔符变体，不丢弃）—— c2/c3 之外的独立卫生层
+# ============================================================================
+def test_canonical_type_preserves_pra_prefix_and_normalizes_rest():
+    # 'PRA-' 前缀连字符保留；rest 大写 + 分隔符→下划线（对齐 review_provider.normalize）
+    assert L._canonical_type("PRA-POSSIBLE_BUG") == "PRA-POSSIBLE_BUG"   # 已规范 → 不变
+    assert L._canonical_type("PRA-possible bug") == "PRA-POSSIBLE_BUG"
+    assert L._canonical_type("PRA-COVERAGE-GAP") == "PRA-COVERAGE_GAP"
+    assert L._canonical_type("PRA-COVERAGE_GAP") == "PRA-COVERAGE_GAP"
+    assert L._canonical_type("PRA-consistency") == "PRA-CONSISTENCY"
+    assert L._canonical_type("pra-coverage/scope") == "PRA-COVERAGE_SCOPE"
+    assert L._canonical_type("") == ""
+    # 非 'PRA-' 形（罕见 'pr-agent-*'）：保守，只大写 + 折叠空格/斜杠，不改命名空间连字符
+    assert L._canonical_type("pr-agent-foo") == "PR-AGENT-FOO"
+
+
+def test_merge_candidates_canonicalizes_incoming_variants():
+    # 两个大小写/分隔符变体经 merge 后应落到同一条目（同 canonical id），不是两条
+    store = {"experiences": []}
+    L.merge_candidates(store, [_cand("PRA-COVERAGE-GAP"), _cand("PRA-coverage_gap")])
+    fts = [e["finding_type"] for e in store["experiences"]]
+    assert fts == ["PRA-COVERAGE_GAP"]                      # 合并成一条规范形
+
+
+def test_merge_candidates_still_passes_unknown_when_taxonomy_off():
+    # 回归：归一化不改变"taxonomy 关时放行未知类型"的向后兼容（只是把它规范化）
+    store = {"experiences": []}
+    L.merge_candidates(store, [_cand("pra-whatever-thing")], taxonomy=None)
+    assert len(store["experiences"]) == 1
+    assert store["experiences"][0]["finding_type"] == "PRA-WHATEVER_THING"
+
+
+def test_canonicalize_store_merges_existing_dup_variants():
+    # 存量里同规律的多个变体 → 合一条，source_prs 并集、created_at=min/updated_at=max
+    e1 = _cand("PRA-CONSISTENCY"); e1["source_prs"] = ["10", "11"]; e1["created_at"] = 100; e1["updated_at"] = 110
+    e2 = _cand("PRA-consistency"); e2["source_prs"] = ["11", "12"]; e2["created_at"] = 90;  e2["updated_at"] = 200
+    e3 = _cand("PRA-COVERAGE_GAP")  # 无重复的规范条目（单条组：仅就地规范化校验）
+    store = {"experiences": [e1, e2, e3]}
+    L.canonicalize_store(store)
+    fts = sorted(e["finding_type"] for e in store["experiences"])
+    assert fts == ["PRA-CONSISTENCY", "PRA-COVERAGE_GAP"]   # e1/e2 合并成一条
+    merged = next(e for e in store["experiences"] if e["finding_type"] == "PRA-CONSISTENCY")
+    assert sorted(merged["source_prs"]) == ["10", "11", "12"]
+    assert merged["created_at"] == 90 and merged["updated_at"] == 200
+
+
+def test_canonicalize_store_idempotent():
+    e1 = _cand("PRA-consistency"); e1["source_prs"] = ["1"]
+    e2 = _cand("PRA-CONSISTENCY"); e2["source_prs"] = ["2"]
+    store = {"experiences": [e1, e2]}
+    L.canonicalize_store(store)
+    snap = json.dumps(store, sort_keys=True)
+    L.canonicalize_store(store)                              # 再跑一次
+    assert json.dumps(store, sort_keys=True) == snap         # 幂等：无二次变化
+
+
+def test_canonicalize_store_leaves_locked_and_human_untouched():
+    locked = _cand("PRA-consistency"); locked["locked"] = True
+    human = _cand("PRA-consistency"); human["source"] = "human"
+    plain = _cand("PRA-CONSISTENCY"); plain["source_prs"] = ["1"]
+    store = {"experiences": [locked, human, plain]}
+    L.canonicalize_store(store)
+    # locked / human 原样保留（不被合并、finding_type 不改）；plain 也不与其合并
+    assert any(e.get("locked") and e["finding_type"] == "PRA-consistency" for e in store["experiences"])
+    assert any(e.get("source") == "human" and e["finding_type"] == "PRA-consistency" for e in store["experiences"])
+    assert any(e["finding_type"] == "PRA-CONSISTENCY" and not e.get("locked") for e in store["experiences"])
+
+
+def test_canonicalize_store_does_not_drop_anything():
+    # 任何条目都不丢：合并减数、rename 不减数；总量 = 去重后
+    exps = [_cand("PRA-A"), _cand("pra-a"), _cand("PRA-B-b"), _cand("PRA-B_B")]
+    store = {"experiences": exps}
+    L.canonicalize_store(store)
+    fts = sorted(e["finding_type"] for e in store["experiences"])
+    assert fts == ["PRA-A", "PRA-B_B"]                      # 4 → 2，无丢弃
+
+
+# ============================================================================
 # c2：差分回滚 retire_on_negative_lift + lift_summary
 #    （回答"经验在帮还是在害"；与 graduate 对称）
 # ============================================================================
