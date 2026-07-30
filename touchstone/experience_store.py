@@ -343,6 +343,13 @@ def canonicalize_store(store):
                 + [g.get("evidence") for _, g in group if g is not rep_entry])
             rep["created_at"] = min((g.get("created_at", 0) for _, g in group), default=0)
             rep["updated_at"] = max((g.get("updated_at", 0) for _, g in group), default=0)
+            # 防御性保留最强保护标志：_touchable 已把 locked / source='human' 挡在 groups 之外（故组内
+            # 必无此类条目、本段今日是 no-op），但若日后 _touchable 回归把它们误放进组，合并结果仍须继承
+            # locked=True / source='human'——权威条目不得被静默抹掉保护。（review round-2 销项）
+            if any(g.get("locked") for _, g in group):
+                rep["locked"] = True
+            if any(g.get("source") == "human" for _, g in group):
+                rep["source"] = "human"
             out.append(rep)
             merged_n += len(group) - 1
         else:
