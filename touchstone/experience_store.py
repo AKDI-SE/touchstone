@@ -282,6 +282,23 @@ def _merge_evidence(evidences):
     return merged
 
 
+def _union_list(group, key):
+    """跨 group 的兄弟条目并集某个 list 字段，保序去重——O(1) 查找（辅助 set）；元素不可哈希时回退线性。
+    group = [(i, e), ...]。缺失或非 list 字段自然跳过（产出空 list）。纯函数。"""
+    out, seen = [], set()
+    for _, g in group:
+        for item in (g.get(key) or []):
+            try:
+                if item in seen:
+                    continue
+                seen.add(item)
+            except TypeError:                    # 不可哈希（dict/list 元素）→ 回退线性扫描保去重
+                if item in out:
+                    continue
+            out.append(item)
+    return out
+
+
 def canonicalize_store(store):
     """把经验库里【非 locked、非 human】条目的 finding_type 规范化为生态形，并合并由此产生的重复变体。
     幂等：再跑一次无副作用（已规范条目不变、无重复可合）。locked / source='human' 的权威条目原样不动；
@@ -337,20 +354,20 @@ def canonicalize_store(store):
             seen.add(key)
             _ri, rep_entry = _rep(group)
             rep = dict(rep_entry)
-            spr = []
-            for _, g in group:
-                for p in (g.get("source_prs") or []):
-                    if p not in spr:
-                        spr.append(p)
             rep["finding_type"] = _canonical_type(rep.get("finding_type", ""))
             rep["id"] = key
-            rep["source_prs"] = spr
+            # source_prs 并集保序去重：辅助 set 做 O(1) 查找，避免大库（千条×百 PR）退化成 O(N·M)。
+            rep["source_prs"] = _union_list(group, "source_prs")
             # evidence 合并（fires 求和、group_rewards 拼接、标志或）——代表序优先，不丢兄弟累积信号
             rep["evidence"] = _merge_evidence(
                 [rep_entry.get("evidence")]
                 + [g.get("evidence") for _, g in group if g is not rep_entry])
             rep["created_at"] = min((g.get("created_at", 0) for _, g in group), default=0)
             rep["updated_at"] = max((g.get("updated_at", 0) for _, g in group), default=0)
+            # 通用防御：代表上【其它】顶层 list 字段（schema 今日仅 source_prs，已上方处理；防未来新增
+            # 累积型列表字段被静默丢）也跨兄弟并集保序——review "Possible Data Loss"。今日为 no-op。
+            for k in [k for k, v in rep.items() if isinstance(v, list) and k != "source_prs"]:
+                rep[k] = _union_list(group, k)
             # 防御性保留最强保护标志：_touchable 已把 locked / source='human' 挡在 groups 之外（故组内
             # 必无此类条目、本段今日是 no-op），但若日后 _touchable 回归把它们误放进组，合并结果仍须继承
             # locked=True / source='human'——权威条目不得被静默抹掉保护。（review round-2 销项）
