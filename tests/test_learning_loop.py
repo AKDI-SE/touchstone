@@ -706,6 +706,117 @@ def test_make_gt_entry_carries_injected_and_raised():
     assert e["injected_types"] == ["PRA-A", "PRA-C"]
 
 
+# ---------------- waived（author 豁免 + 人合入）→ 确认噪声标签（Phase 1：仅采集透传）----------------
+def _result_marker(findings, **extra):
+    return "<!-- touchstone-result: " + json.dumps({"findings": findings, **extra}) + " -->"
+
+
+def _checklist_marker(items):
+    cl = {"round": 1, "items": items, "resolved_rate": 1.0}
+    return "<!-- touchstone-checklist: " + json.dumps(cl, ensure_ascii=False) + " -->"
+
+
+def _bg_patch_single_pr(monkeypatch, *, comment_body, merged=True, threads=None, pr_number=1):
+    """给 build_ground_truth 打桩：单 PR，给定评论正文（含 marker）+ 合入态 + 评审线程。
+    comment_body 以 github-actions[bot] 身份发出（受信 marker 作者）。"""
+    from touchstone import calibrate as C
+    def fake_gh(path, token, accept="application/vnd.github+json"):
+        if "state=closed" in path:
+            return [{"number": pr_number, "title": "t",
+                     "merged_at": "2026-01-01" if merged else None}]
+        if f"issues/{pr_number}/comments" in path:
+            return [{"body": comment_body, "user": {"login": "github-actions[bot]"}}]
+        if f"pulls/{pr_number}/reviews" in path:
+            return []
+        if f"pulls/{pr_number}/files" in path:
+            return [{"filename": "a.py"}]
+        if path.endswith(f"/pulls/{pr_number}") and accept.endswith("diff"):
+            return "+x"
+        return []
+    monkeypatch.setattr(GT, "_gh_get", fake_gh)
+    monkeypatch.setattr(C, "gql", lambda q, v, t: threads or {"data": {}})
+
+
+def test_make_gt_entry_human_waived_is_optional_and_independent():
+    # 不传 human_waived → 无该字段（向后兼容）
+    e = L.make_gt_entry(1, "o/r", "py", "t", "d", [{"rule_id": "PRA-A"}], set(), "APPROVED", True)
+    assert "human_waived" not in e
+    # 传 → 排序去空；与 adopted/ignored 独立（waived 是 ignored 的带信心子集标注，不改它们）
+    e2 = L.make_gt_entry(1, "o/r", "py", "t", "d",
+                         [{"rule_id": "PRA-A"}, {"rule_id": "PRA-B"}],
+                         {"PRA-A"}, "APPROVED", True, human_waived={"PRA-B", "PRA-C", ""})
+    assert e2["human_waived"] == ["PRA-B", "PRA-C"]
+    assert e2["human_adopted"] == ["PRA-A"]
+    assert e2["human_ignored"] == ["PRA-B"]      # PRA-B 仍在 ignored（waived 不把它移走）
+
+
+def test_build_ground_truth_records_waived_when_merged(monkeypatch):
+    """waived + 人合入 → 进 human_waived（确认噪声标签）。信任根③：merge 闸。"""
+    body = _result_marker([{"rule_id": "PRA-W"}]) + "\n" + _checklist_marker(
+        [{"sig": "PRA-W:src/a.py:10", "status": "waived", "note": "测试夹具"}])
+    _bg_patch_single_pr(monkeypatch, merged=True, comment_body=body)
+    entry = L.build_ground_truth("o", "r", "tok")[0]
+    assert entry.get("human_waived") == ["PRA-W"]
+
+
+def test_build_ground_truth_no_waived_when_not_merged(monkeypatch):
+    """waived 是 author 自证：未合入 → 不采信、不产 human_waived 字段。"""
+    body = _result_marker([{"rule_id": "PRA-W"}]) + "\n" + _checklist_marker(
+        [{"sig": "PRA-W:src/a.py:10", "status": "waived", "note": "测试夹具"}])
+    _bg_patch_single_pr(monkeypatch, merged=False, comment_body=body)
+    entry = L.build_ground_truth("o", "r", "tok")[0]
+    assert "human_waived" not in entry
+
+
+def test_build_ground_truth_waived_scoped_to_raised_types(monkeypatch):
+    """waived 仅限本 PR 真挑过的类型：waived 了没挑过的 → 不进 human_waived。信任根④。"""
+    body = _result_marker([{"rule_id": "PRA-W"}]) + "\n" + _checklist_marker([
+        {"sig": "PRA-W:src/a.py:10", "status": "waived", "note": "x"},
+        {"sig": "PRA-OTHER:src/b.py:3", "status": "waived", "note": "y"}])
+    _bg_patch_single_pr(monkeypatch, merged=True, comment_body=body)
+    entry = L.build_ground_truth("o", "r", "tok")[0]
+    assert entry.get("human_waived") == ["PRA-W"]    # PRA-OTHER 未挑过 → 不进
+
+
+def test_build_ground_truth_waived_ignores_untrusted_marker(monkeypatch):
+    """非 bot 发的清单 marker 不信（信任根①：只信 bot 评论里的 marker，防伪造豁免污染负例）。"""
+    from touchstone import calibrate as C
+    body = _result_marker([{"rule_id": "PRA-W"}]) + "\n" + _checklist_marker(
+        [{"sig": "PRA-W:src/a.py:10", "status": "waived", "note": "x"}])
+    def fake_gh(path, token, accept="application/vnd.github+json"):
+        if "state=closed" in path:
+            return [{"number": 1, "title": "t", "merged_at": "2026-01-01"}]
+        if "issues/1/comments" in path:
+            return [{"body": body, "user": {"login": "alice"}}]   # 非 bot 发的假清单
+        if "pulls/1/reviews" in path:
+            return []
+        if "pulls/1/files" in path:
+            return [{"filename": "a.py"}]
+        if path.endswith("/pulls/1") and accept.endswith("diff"):
+            return "+x"
+        return []
+    monkeypatch.setattr(GT, "_gh_get", fake_gh)
+    monkeypatch.setattr(C, "gql", lambda q, v, t: {"data": {}})
+    entry = L.build_ground_truth("o", "r", "tok")[0]
+    assert "human_waived" not in entry
+
+
+def test_build_ground_truth_waived_does_not_change_adopted_or_ignored(monkeypatch):
+    """Phase 1 向后兼容：采信 waived 不改 human_adopted / human_ignored，仅新增标注字段。"""
+    finding_marker = "<!-- touchstone-finding: " + json.dumps({"rule_id": "PRA-ADOPT"}) + " -->"
+    threads = {"data": {"repository": {"pullRequest": {"reviewThreads": {"nodes": [
+        {"isResolved": True, "comments": {"nodes": [
+            {"author": {"login": "github-actions[bot]"}, "body": finding_marker}]}}
+    ]}}}}}
+    body = (_result_marker([{"rule_id": "PRA-ADOPT"}, {"rule_id": "PRA-W"}]) + "\n"
+            + _checklist_marker([{"sig": "PRA-W:src/a.py:10", "status": "waived", "note": "x"}]))
+    _bg_patch_single_pr(monkeypatch, merged=True, comment_body=body, threads=threads)
+    entry = L.build_ground_truth("o", "r", "tok")[0]
+    assert entry["human_adopted"] == ["PRA-ADOPT"]     # 不变
+    assert entry["human_ignored"] == ["PRA-W"]         # PRA-W 仍在 ignored（未移走）
+    assert entry.get("human_waived") == ["PRA-W"]      # 额外标注：PRA-W 是确认豁免
+
+
 # -------- shadow 注入采 A/B with 臂（冷启动破死锁 step2：aggregate_ab 拓宽 with 臂判据）--------
 def test_aggregate_ab_shadow_counts_as_with_arm():
     """shadow_types 让 candidate 进 with 臂（破死锁数据侧）：同类型在 injected_types 或

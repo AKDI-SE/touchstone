@@ -60,7 +60,7 @@ def _stack_of(filenames):
 def make_gt_entry(pr_number, repo, stack, summary, diff, touchstone_findings,
                   resolved_types, human_state, merged, injected_types=None,
                   shadow_types=None, *, trust_weight=1.0, truth_signals=None,
-                  resolved_findings=None):
+                  resolved_findings=None, human_waived=None):
     """纯函数：单个 PR → TF-GRPO 真值条目。
     human_adopted = 人 resolve 了线程的发现类型（正例：值得挑）；
     human_ignored = touchstone 挑了但人没采纳的（噪声负例）。
@@ -74,6 +74,10 @@ def make_gt_entry(pr_number, repo, stack, summary, diff, touchstone_findings,
     供 score_review 位置级部分信用。来源：calibrate.thread_findings 现已带 thread 锚定的 file/line
     （parse_review_threads 从 GraphQL reviewThread.path/line 解出），build_ground_truth 据此传 resolved 发现。
     缺失（无位置 / 线程无锚点）即无此字段，向后兼容。与 score_review schema 对齐。
+    human_waived（可选，Phase 1）：本 PR【author waived 且人合入】的发现类型——确认噪声标签。
+    是 human_ignored 的一个带信心子集（"人明确豁免并合入" vs "模糊忽略"）。来源：build_ground_truth 从
+    受信清单 marker 提取 status=='waived' 的项、经 merge 闸采信（waived 是 author 自证，merge = 人背书）。
+    Phase 1 仅采集+透传，不改 score_review/distill（默认字节零变化）；缺失即无此字段，向后兼容。
     与 _distill_via_llm 期望的 ground_truth schema 对齐（human_adopted_positions 喂 score_review）。"""
     adopted = sorted({t for t in (resolved_types or []) if t})
     ts_types = {(f.get("rule_id") or f.get("finding_type")) for f in (touchstone_findings or [])}
@@ -93,6 +97,8 @@ def make_gt_entry(pr_number, repo, stack, summary, diff, touchstone_findings,
              "file": f.get("file"), "line": (f.get("line") or f.get("line_start"))}
             for f in resolved_findings
             if (f.get("rule_id") or f.get("finding_type"))]
+    if human_waived:                       # 确认噪声标签（author waived + 人合入）；缺失即无此字段，向后兼容
+        entry["human_waived"] = sorted({t for t in human_waived if t})
     return entry
 
 
@@ -165,6 +171,36 @@ def _trust_weight(signals):
     return round(max(0.0, 1.0 - penalty * active), 3)
 
 
+def _waived_types(comments, bot_login, touchstone_findings, *, merged):
+    """从（受信）评论里的权威清单 marker 提取【人合入】的 waived 发现类型（确认噪声标签，纯函数）。
+
+    信任根（四锚）：
+      ① 只取 bot 评论里的 touchstone-checklist marker——calibrate._trusted_bodies 过滤 + checklist.parse_latest，
+         非 bot 发的假清单 marker 一律不认（防 author/攻击者伪造豁免污染 TF-GRPO 负例）；
+      ② 用 marker 里 bot 复核后的 status=='waived'（reconcile 已要求带理由），不吃原始 touchstone-ack；
+      ③ 仅当 PR 已合入才采信——waived 是 author 自证，merge = 人对豁免的隐式背书
+         （autonomy 已保证 waived/split 不自动放行 → merged 即人放行，无自合并口子）；
+      ④ 限定本 PR 真挑过的类型（raised_types）——waived 了一个没挑过的类型不产幻影标签。
+    未合入 / 无清单 / 非受信 marker / 无 waived 项 → 空集（不产 human_waived 字段，向后兼容）。"""
+    if not merged:
+        return set()
+    from touchstone import checklist as CK
+    from touchstone import calibrate as C
+    cl = CK.parse_latest(C._trusted_bodies(comments, bot_login))
+    raised = {(f.get("rule_id") or f.get("finding_type"))
+              for f in (touchstone_findings or [])}
+    raised = {t for t in raised if t}
+    out = set()
+    for it in (cl or {}).get("items", []):
+        if it.get("status") != "waived":
+            continue
+        sig = it.get("sig") or ""
+        rtype = sig.split(":", 1)[0] if ":" in sig else sig    # sig = rule_id:file:line → rule_id
+        if rtype in raised:
+            out.add(rtype)
+    return out
+
+
 def build_ground_truth(owner, repo, token, *, window=GT_WINDOW, bot_login=None,
                        diff_budget=GT_DIFF_BUDGET):
     """从 GitHub 重建 TF-GRPO 真值集（离线学习的数据入口，需 GITHUB_TOKEN）。
@@ -187,6 +223,10 @@ def build_ground_truth(owner, repo, token, *, window=GT_WINDOW, bot_login=None,
             if not result:
                 continue                          # 未经过 touchstone 评审，无学习信号
             ts_findings = result.get("findings", []) or []
+            # author waived + 人合入 → 确认噪声标签（Phase 1：仅采集透传，不改 reward/distill）。
+            # 信任根见 _waived_types：只信 bot 清单 marker 的 status=='waived'、且经 merge 闸采信。
+            human_waived = _waived_types(comments, bot_login, ts_findings,
+                                         merged=bool(pr.get("merged_at")))
             try:
                 threads = C.parse_review_threads(
                     C.gql(C._GQL_THREADS, {"owner": owner, "repo": repo, "num": n}, token))
@@ -238,7 +278,8 @@ def build_ground_truth(owner, repo, token, *, window=GT_WINDOW, bot_login=None,
                                      injected_types=result.get("injected_types"),
                                      shadow_types=result.get("shadow_types"),
                                      trust_weight=weight, truth_signals=signals,
-                                     resolved_findings=resolved_findings))
+                                     resolved_findings=resolved_findings,
+                                     human_waived=human_waived))
         except Exception as e:
             print(f"[learn] PR #{n} 取数失败，跳过：{e}", file=sys.stderr)
             continue
