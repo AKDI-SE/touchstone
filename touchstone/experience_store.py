@@ -140,6 +140,47 @@ def coerce_type(ftype, known):
     return None
 
 
+def _canonical_type(ftype):
+    """finding_type 的【生态规范形】：'PRA-' 前缀保留 + 其后部分大写、分隔符统一为下划线。
+    与 review_provider.normalize 的 rid = 'PRA-' + label.replace(' ','_').upper() 一致——保证 store 里的
+    finding_type 与 calibrate by_rule 键 / aggregate_ab 键 / 注入 marker（injected_types、shadow_types）
+    【同形】，使 graduate/retire/ground_truth 的按类型查找不因大小写或分隔符漂移失配。
+
+    与 _normalize_type 的区别：_normalize_type 把【所有】分隔符（含 'PRA-' 前缀那个连字符）折成连字符，
+    仅供 coerce_type 的对称软匹配用（两端同函数即可，分隔符字符无所谓）；本函数保留 'PRA-' 前缀连字符、
+    只归一化其后部分，产出的是要【写进 store】的规范形。纯函数。
+
+    分隔符折叠是【有意】的：rest 部分大小写、分隔符字符（-/_/空格/斜杠）与连续个数都折成单个下划线。
+    这些差异是 LLM 产 finding_type 时的样式噪声（'PRA-A-B'/'PRA-A_B'/'PRA-A--B' 同一规律），不是 PRA
+    分类法里区分语义的分隔——故折叠不损失信息。真正不同的类型不会撞：分隔符的【有无】仍被区分
+    （'PRA-AB' ≠ 'PRA-A_B'），不同 token 亦然（'PRA-FOO' ≠ 'PRA-BAR'）。见
+    test_canonical_type_folds_separator_variants_not_distinct_types。
+
+    例：'PRA-consistency'/'PRA-CONSISTENCY' → 'PRA-CONSISTENCY'；
+        'PRA-COVERAGE-GAP'/'PRA-COVERAGE_GAP'/'PRA-coverage gap' → 'PRA-COVERAGE_GAP'。"""
+    s = str(ftype or "").strip()
+    if not s:
+        return ""
+    prefix, sep, rest = s.partition("-")
+    if sep and prefix.upper() == "PRA":
+        rest_u = rest.upper().replace(" ", "_").replace("-", "_").replace("/", "_")
+        rest_u = "_".join(p for p in rest_u.split("_") if p)   # 折叠连续下划线 + 去首尾
+        return f"PRA-{rest_u}" if rest_u else "PRA"
+    # 非 'PRA-' 形（'pr-agent-*' 等罕见，或无连字符）：保守地只大写 + 折叠空格/斜杠，不改命名空间连字符
+    whole = s.upper().replace(" ", "_").replace("/", "_")
+    return "_".join(p for p in whole.split("_") if p)
+
+
+def _canonicalize_candidate(c):
+    """把候选的 finding_type 规范化为生态形并同步重算 id（id 含 finding_type）。不丢弃——仅归一化。
+    已规范或 finding_type 为空 → 原样返回。纯函数（返回新 dict，不改输入）。"""
+    ft = _canonical_type(c.get("finding_type", ""))
+    if ft and ft != c.get("finding_type"):
+        return dict(c, finding_type=ft,
+                    id=_exp_id(ft, c.get("kind", ""), c.get("repo", ""), c.get("stack", "")))
+    return c
+
+
 def known_types(store, extra=()):
     """经验库的有效 finding_type 白名单（taxonomy）。
     = 已 active 的类型 ∪ extra（调用方传入，如 pr-agent.yaml 的 label 集）∪ env TOUCHSTONE_TAXONOMY_TYPES。
@@ -177,10 +218,15 @@ def seed_experience(store, finding_type, kind, text, *, repo="", stack="",
 def merge_candidates(store, candidates, *, taxonomy=None):
     """把候选并入经验库的 candidate 池：同 id 已存在则更新证据（不降级 active/retired 的状态）。
     taxonomy（集合，默认 None=不启用 = 零行为变化）：非空时，finding_type 不在白名单的候选经
-    coerce_type 软映射；仍未知 → 丢弃并 stderr 留痕（fail-closed 防 LLM 幻觉类型污染经验库；不静默）。"""
+    coerce_type 软映射；仍未知 → 丢弃并 stderr 留痕（fail-closed 防 LLM 幻觉类型污染经验库；不静默）。
+
+    总是先做 _canonicalize_candidate（大小写/分隔符→生态规范形，合并重复变体，不丢弃任何候选）——
+    即便 taxonomy 关。防 TF-GRPO 的 LLM 自由产 finding_type（'PRA-COVERAGE-GAP' vs 'PRA-COVERAGE_GAP'
+    vs 'PRA-consistency'）把同一规律裂成多条、互相稀释证据。"""
     idx = {e["id"]: e for e in store.get("experiences", [])}
     dropped = []
     for c in candidates:
+        c = _canonicalize_candidate(c)              # 先规范化 finding_type/id（合并重复变体，不丢弃）
         if taxonomy is not None:
             ft = coerce_type(c.get("finding_type", ""), taxonomy)
             if ft is None:
@@ -205,6 +251,174 @@ def merge_candidates(store, candidates, *, taxonomy=None):
         print(f"[experience_store] taxonomy 白名单丢弃 {len(dropped)} 个未知 finding_type："
               f"{sorted(set(d for d in dropped if d))}（TOUCHSTONE_TAXONOMY_ENFORCE 开时生效）",
               file=_sys.stderr)
+    return store
+
+
+def _is_number(x):
+    """数值判定（int/float，排除 bool——True/False 既是 int 子类又不该当计数/时间戳）。
+    evidence 合并（fires/adoption）与时间戳合并（created_at/updated_at）的健壮过滤共用：手改/损坏
+    的库可能出现非数值（字符串/None），直接 sum/min/max 会 TypeError。纯函数。"""
+    return isinstance(x, (int, float)) and not isinstance(x, bool)
+
+
+def _merge_evidence(evidences):
+    """合并一组同 canonical 类型兄弟条目的 evidence，避免静默丢失累积信号（fires/group_rewards 等）。
+    evidences[0] 为代表条目的 evidence——非合并键（pr / ab_lift 等）取它的值、序优先。
+    fires（数值，排除 bool）求和；adoption 是比率、不能直接求和——优先按 fires 加权平均（与求和后的
+    fires 自洽，不偏向代表单方面）；若无 fires 权重可用却仍有 adoption 载体（如某兄弟只带 adoption
+    不带 fires——evidence={"adoption":0.5}），退化为等权平均以【不静默丢弃】adoption 信号；group_rewards
+    拼接去重、布尔标志（tfgrpo/seeded）取或。纯函数。"""
+    evs = [e for e in evidences if isinstance(e, dict)]
+    if not evs:
+        return {}
+    merged = dict(evs[0])                                  # 代表的键作底（pr/ab_lift 等保留）
+    fires_pairs = [(e["fires"], e.get("adoption")) for e in evs if _is_number(e.get("fires"))]
+    if fires_pairs:
+        merged["fires"] = sum(f for f, _ in fires_pairs)
+    # adoption 合并（比率，不直接求和）：优先 fires 加权平均；无 fires 权重时退化等权平均，绝不静默丢载体。
+    # weighted = 同时带 fires+adoption 的兄弟（可按 fires 加权）；all_adopt = 全部 adoption 载体（含无 fires 的）。
+    weighted = [(f, a) for f, a in fires_pairs if _is_number(a)]
+    all_adopt = [a for a in (e.get("adoption") for e in evs) if _is_number(a)]
+    tot = sum(f for f, _ in weighted)
+    if weighted and tot > 0:
+        merged["adoption"] = sum(f * a for f, a in weighted) / tot
+    elif all_adopt:                        # 无 fires 权重但有 adoption 载体：等权平均，不丢信号（防 :251 重开）
+        merged["adoption"] = sum(all_adopt) / len(all_adopt)
+    rewards = []
+    for e in evs:
+        for r in (e.get("group_rewards") or []):
+            if r not in rewards:
+                rewards.append(r)
+    if rewards:
+        merged["group_rewards"] = rewards
+    if any(e.get("tfgrpo") for e in evs):
+        merged["tfgrpo"] = True
+    if any(e.get("seeded") for e in evs):
+        merged["seeded"] = True
+    return merged
+
+
+def _union_list(group, key):
+    """跨 group 的兄弟条目并集某个 list 字段，保序去重——O(1) 查找（辅助 set）；元素不可哈希时回退线性。
+    group = [(i, e), ...]。缺失或非 list 字段自然跳过（产出空 list）。纯函数。"""
+    out, seen = [], set()
+    for _, g in group:
+        for item in (g.get(key) or []):
+            try:
+                if item in seen:
+                    continue
+                seen.add(item)
+            except TypeError:                    # 不可哈希（dict/list 元素）→ 回退线性扫描保去重
+                if item in out:
+                    continue
+            out.append(item)
+    return out
+
+
+def canonicalize_store(store):
+    """把经验库里【非 locked、非 human】条目的 finding_type 规范化为生态形，并合并由此产生的重复变体。
+    幂等：再跑一次无副作用（已规范条目不变、无重复可合）。locked / source='human' 的权威条目原样不动；
+    finding_type 规范后为空（罕见）也不动。**不丢弃任何条目**——仅归一化 + 合并。
+
+    合并策略（同一 canonical id 的多条 → 一条）：status 取优先级最高者（active > shadow > retired >
+    candidate，不回退已推进的状态）；source_prs 取并集；evidence 合并（fires 求和、group_rewards 拼接、
+    tfgrpo/seeded 取或，其余键取代表值）；text 取代表；时间取 created_at=min、updated_at=max。代表选择
+    的 ties（同 status 且同 source_prs 数）用原始下标作最终 tie-breaker——跨 run/测试稳定可复现，
+    不依赖输入条目次序。顺序保持首次出现位置（合并到首条处，后续重复删去）。
+
+    典型场景：run #6 的 191 条里 LLM 把同一规律裂成 'PRA-CONSISTENCY' 与 'PRA-consistency'、
+    'PRA-COVERAGE-GAP' 与 'PRA-COVERAGE_GAP'——本函数在下一次 learn.yml 运行时把它们并成单条，
+    让证据不再互相稀释、graduate/retire 的按类型判定不再错位。"""
+    exps = store.get("experiences", [])
+
+    def _key(e):
+        return _exp_id(_canonical_type(e.get("finding_type", "")),
+                       e.get("kind", ""), e.get("repo", ""), e.get("stack", ""))
+
+    def _touchable(e):
+        # locked / human / 规范后为空 → 不动（权威或无法规范）
+        return not (e.get("locked") or e.get("source") == "human"
+                    or not _canonical_type(e.get("finding_type", "")))
+
+    # 按 canonical id 分组，保留 (原始下标, 条目)：下标用作 _rep 最终稳定 tie-breaker
+    groups = {}
+    for i, e in enumerate(exps):
+        if not _touchable(e):
+            continue
+        groups.setdefault(_key(e), []).append((i, e))
+
+    _rank = {"active": 0, "shadow": 1, "retired": 2, "candidate": 3}
+
+    def _rep(group):
+        # 代表 = status 优先级高 > source_prs 多 > 原始下标小（稳定，跨 run/测试可复现）
+        return min(group, key=lambda ie: (_rank.get(ie[1].get("status"), 9),
+                                          -(len(ie[1].get("source_prs") or [])),
+                                          ie[0]))
+
+    # locked / human 权威条目按原样保留，其 id 被"占用"——非权威条目规范化时不得并入这些 id，
+    # 否则会把一条非权威变体重命名成与权威条目同 id（破坏 id 唯一性）。见 test_canonicalize_store_*
+    reserved = {e.get("id") for e in exps if not _touchable(e)}
+
+    out = []
+    seen = set()
+    merged_n = renamed_n = 0
+    for e in exps:
+        if not _touchable(e):
+            out.append(e)
+            continue
+        key = _key(e)
+        group = groups[key]
+        if key in reserved:
+            # canonical id 被某 locked/human 条目占用：不规范化、不合并，本条保留原 id/finding_type（防撞）
+            out.append(e)
+            continue
+        if len(group) > 1:
+            if key in seen:
+                continue                       # 后续重复：已并到首个位置，跳过
+            seen.add(key)
+            _ri, rep_entry = _rep(group)
+            rep = dict(rep_entry)
+            rep["finding_type"] = _canonical_type(rep.get("finding_type", ""))
+            rep["id"] = key
+            # source_prs 并集保序去重：辅助 set 做 O(1) 查找，避免大库（千条×百 PR）退化成 O(N·M)。
+            rep["source_prs"] = _union_list(group, "source_prs")
+            # evidence 合并（fires 求和、group_rewards 拼接、标志或）——代表序优先，不丢兄弟累积信号
+            rep["evidence"] = _merge_evidence(
+                [rep_entry.get("evidence")]
+                + [g.get("evidence") for _, g in group if g is not rep_entry])
+            # 时间合并：created_at=最早、updated_at=最晚。仅取数值时间戳——手改/损坏的库可能存非数值
+            # （字符串/None），直接 min/max 会 TypeError；缺失或非数值的自然跳过，全空回落 default=0。
+            created = [g.get("created_at") for _, g in group if _is_number(g.get("created_at"))]
+            updated = [g.get("updated_at") for _, g in group if _is_number(g.get("updated_at"))]
+            rep["created_at"] = min(created, default=0)
+            rep["updated_at"] = max(updated, default=0)
+            # 通用防御：跨【所有兄弟】扫顶层 list 字段（不只 rep 的键——否则 sibling-only 列表字段被静默丢）
+            # 并集保序。schema 今日仅 source_prs（已上方处理），故今日为 no-op；防未来新增累积型列表字段。
+            _list_keys = {k for _, g in group for k, v in g.items()
+                          if isinstance(v, list) and k != "source_prs"}
+            for k in _list_keys:
+                rep[k] = _union_list(group, k)
+            # 防御性保留最强保护标志：_touchable 已把 locked / source='human' 挡在 groups 之外（故组内
+            # 必无此类条目、本段今日是 no-op），但若日后 _touchable 回归把它们误放进组，合并结果仍须继承
+            # locked=True / source='human'——权威条目不得被静默抹掉保护。（review round-2 销项）
+            if any(g.get("locked") for _, g in group):
+                rep["locked"] = True
+            if any(g.get("source") == "human" for _, g in group):
+                rep["source"] = "human"
+            out.append(rep)
+            merged_n += len(group) - 1
+        else:
+            ft = _canonical_type(e.get("finding_type", ""))
+            if ft != e.get("finding_type") or key != e.get("id"):
+                out.append(dict(e, finding_type=ft, id=key))
+                renamed_n += 1
+            else:
+                out.append(e)
+    store["experiences"] = out
+    if merged_n or renamed_n:
+        import sys as _sys
+        print(f"[experience_store] canonicalize_store：合并 {merged_n} 条重复变体、"
+              f"规范 {renamed_n} 条 finding_type", file=_sys.stderr)
     return store
 
 

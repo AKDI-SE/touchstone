@@ -1634,6 +1634,211 @@ def test_resolve_taxonomy_on_reads_pragent_yaml(tmp_path, monkeypatch):
 
 
 # ============================================================================
+# finding_type 归一化（合并大小写/分隔符变体，不丢弃）—— c2/c3 之外的独立卫生层
+# ============================================================================
+def test_canonical_type_preserves_pra_prefix_and_normalizes_rest():
+    # 'PRA-' 前缀连字符保留；rest 大写 + 分隔符→下划线（对齐 review_provider.normalize）
+    assert L._canonical_type("PRA-POSSIBLE_BUG") == "PRA-POSSIBLE_BUG"   # 已规范 → 不变
+    assert L._canonical_type("PRA-possible bug") == "PRA-POSSIBLE_BUG"
+    assert L._canonical_type("PRA-COVERAGE-GAP") == "PRA-COVERAGE_GAP"
+    assert L._canonical_type("PRA-COVERAGE_GAP") == "PRA-COVERAGE_GAP"
+    assert L._canonical_type("PRA-consistency") == "PRA-CONSISTENCY"
+    assert L._canonical_type("pra-coverage/scope") == "PRA-COVERAGE_SCOPE"
+    assert L._canonical_type("") == ""
+    # 非 'PRA-' 形（罕见 'pr-agent-*'）：保守，只大写 + 折叠空格/斜杠，不改命名空间连字符
+    assert L._canonical_type("pr-agent-foo") == "PR-AGENT-FOO"
+
+
+def test_merge_candidates_canonicalizes_incoming_variants():
+    # 两个大小写/分隔符变体经 merge 后应落到同一条目（同 canonical id），不是两条
+    store = {"experiences": []}
+    L.merge_candidates(store, [_cand("PRA-COVERAGE-GAP"), _cand("PRA-coverage_gap")])
+    fts = [e["finding_type"] for e in store["experiences"]]
+    assert fts == ["PRA-COVERAGE_GAP"]                      # 合并成一条规范形
+
+
+def test_merge_candidates_still_passes_unknown_when_taxonomy_off():
+    # 回归：归一化不改变"taxonomy 关时放行未知类型"的向后兼容（只是把它规范化）
+    store = {"experiences": []}
+    L.merge_candidates(store, [_cand("pra-whatever-thing")], taxonomy=None)
+    assert len(store["experiences"]) == 1
+    assert store["experiences"][0]["finding_type"] == "PRA-WHATEVER_THING"
+
+
+def test_canonicalize_store_merges_existing_dup_variants():
+    # 存量里同规律的多个变体 → 合一条，source_prs 并集、created_at=min/updated_at=max
+    e1 = _cand("PRA-CONSISTENCY"); e1["source_prs"] = ["10", "11"]; e1["created_at"] = 100; e1["updated_at"] = 110
+    e2 = _cand("PRA-consistency"); e2["source_prs"] = ["11", "12"]; e2["created_at"] = 90;  e2["updated_at"] = 200
+    e3 = _cand("PRA-COVERAGE_GAP")  # 无重复的规范条目（单条组：仅就地规范化校验）
+    store = {"experiences": [e1, e2, e3]}
+    L.canonicalize_store(store)
+    fts = sorted(e["finding_type"] for e in store["experiences"])
+    assert fts == ["PRA-CONSISTENCY", "PRA-COVERAGE_GAP"]   # e1/e2 合并成一条
+    merged = next(e for e in store["experiences"] if e["finding_type"] == "PRA-CONSISTENCY")
+    assert sorted(merged["source_prs"]) == ["10", "11", "12"]
+    assert merged["created_at"] == 90 and merged["updated_at"] == 200
+
+
+def test_canonicalize_store_idempotent():
+    e1 = _cand("PRA-consistency"); e1["source_prs"] = ["1"]
+    e2 = _cand("PRA-CONSISTENCY"); e2["source_prs"] = ["2"]
+    store = {"experiences": [e1, e2]}
+    L.canonicalize_store(store)
+    snap = json.dumps(store, sort_keys=True)
+    L.canonicalize_store(store)                              # 再跑一次
+    assert json.dumps(store, sort_keys=True) == snap         # 幂等：无二次变化
+
+
+def test_canonicalize_store_leaves_locked_and_human_untouched():
+    locked = _cand("PRA-consistency"); locked["locked"] = True
+    human = _cand("PRA-consistency"); human["source"] = "human"
+    plain = _cand("PRA-CONSISTENCY"); plain["source_prs"] = ["1"]
+    store = {"experiences": [locked, human, plain]}
+    L.canonicalize_store(store)
+    # locked / human 原样保留（不被合并、finding_type 不改）；plain 也不与其合并
+    assert any(e.get("locked") and e["finding_type"] == "PRA-consistency" for e in store["experiences"])
+    assert any(e.get("source") == "human" and e["finding_type"] == "PRA-consistency" for e in store["experiences"])
+    assert any(e["finding_type"] == "PRA-CONSISTENCY" and not e.get("locked") for e in store["experiences"])
+
+
+def test_canonicalize_store_does_not_drop_anything():
+    # 任何条目都不丢：合并减数、rename 不减数；总量 = 去重后
+    exps = [_cand("PRA-A"), _cand("pra-a"), _cand("PRA-B-b"), _cand("PRA-B_B")]
+    store = {"experiences": exps}
+    L.canonicalize_store(store)
+    fts = sorted(e["finding_type"] for e in store["experiences"])
+    assert fts == ["PRA-A", "PRA-B_B"]                      # 4 → 2，无丢弃
+
+
+def test_canonicalize_store_no_id_collision_with_locked_authoritative():
+    # 非权威变体不得被 rename 成与 locked/human 权威条目同 id（破坏 id 唯一性）。
+    # 权威 locked PRA-CONSISTENCY 占用 canonical id；非权威 PRA-consistency 须保留原 id，不撞。
+    nl = _cand("PRA-consistency"); nl["source_prs"] = ["1"]
+    locked = _cand("PRA-CONSISTENCY"); locked["locked"] = True; locked["source"] = "human"
+    locked["id"] = L._exp_id("PRA-CONSISTENCY", "emphasize", "o/r", "py")
+    store = {"experiences": [nl, locked]}
+    L.canonicalize_store(store)
+    ids = [e["id"] for e in store["experiences"]]
+    assert len(ids) == len(set(ids)), f"duplicate ids: {ids}"   # id 唯一
+    # 权威条目原样保留、非权威条目未被重命名进权威 id
+    assert any(e.get("locked") and e["finding_type"] == "PRA-CONSISTENCY" for e in store["experiences"])
+    assert any(e["id"] == L._exp_id("PRA-consistency", "emphasize", "o/r", "py") for e in store["experiences"])
+
+
+def test_canonicalize_store_merges_evidence_across_siblings():
+    # evidence 要合并（fires 求和、group_rewards 拼接、adoption 按 fires 加权平均），不只 source_prs
+    e1 = _cand("PRA-X"); e1["evidence"] = {"fires": 10, "adoption": 0.9, "group_rewards": [-2.5]}
+    e2 = _cand("pra-x"); e2["evidence"] = {"fires": 5, "adoption": 0.5, "group_rewards": [-3.5]}
+    store = {"experiences": [e1, e2]}
+    L.canonicalize_store(store)
+    assert len(store["experiences"]) == 1
+    ev = store["experiences"][0]["evidence"]
+    assert ev["fires"] == 15                                # 求和，不丢兄弟的累积计数
+    assert sorted(ev["group_rewards"]) == [-3.5, -2.5]      # 拼接
+    assert abs(ev["adoption"] - (10 * 0.9 + 5 * 0.5) / 15) < 1e-9   # fires 加权平均，与求和后的 fires 自洽
+
+
+def test_canonicalize_store_tiebreak_is_deterministic_by_index():
+    # 同 status + 同 source_prs 数：原始下标小者作代表 —— 稳定、可复现，不靠隐式迭代序
+    e1 = _cand("PRA-Y"); e1["text"] = "from index 0"; e1["source_prs"] = ["1"]
+    e2 = _cand("pra-y"); e2["text"] = "from index 1"; e2["source_prs"] = ["2"]   # 同 len=1
+    store = {"experiences": [e1, e2]}
+    L.canonicalize_store(store)
+    assert len(store["experiences"]) == 1
+    assert store["experiences"][0]["text"] == "from index 0"   # 下标小者（e1）作代表
+    assert sorted(store["experiences"][0]["source_prs"]) == ["1", "2"]
+
+
+def test_canonicalize_does_not_break_taxonomy_matching():
+    # _canonicalize_candidate 产下划线形（PRA-COVERAGE_GAP）；coerce_type 用 _normalize_type（全→连字符）
+    # 对称比较、分隔符无关——故 taxonomy 开时仍能软匹配白名单（无论白名单是连字符还是下划线形）。防回归。
+    s1 = {"experiences": []}
+    L.merge_candidates(s1, [_cand("PRA-COVERAGE-GAP")], taxonomy={"PRA-COVERAGE_GAP"})   # 白名单下划线
+    assert any(e["finding_type"] == "PRA-COVERAGE_GAP" for e in s1["experiences"])
+    s2 = {"experiences": []}
+    L.merge_candidates(s2, [_cand("PRA-COVERAGE_GAP")], taxonomy={"PRA-COVERAGE-GAP"})   # 白名单连字符
+    assert any(e["finding_type"] == "PRA-COVERAGE-GAP" for e in s2["experiences"])
+
+
+def test_merge_evidence_adoption_weighted_by_fires_not_rep_pick():
+    # adoption 是比率：合并时按 fires 加权平均（与求和后的 fires 自洽），不偏向代表单方面。防"Data loss"。
+    e1 = _cand("PRA-Z"); e1["evidence"] = {"fires": 8, "adoption": 1.0}   # 8/8 adopted
+    e2 = _cand("pra-z"); e2["evidence"] = {"fires": 2, "adoption": 0.0}   # 0/2 adopted
+    store = {"experiences": [e1, e2]}
+    L.canonicalize_store(store)
+    ev = store["experiences"][0]["evidence"]
+    assert ev["fires"] == 10
+    assert abs(ev["adoption"] - 0.8) < 1e-9                            # (8·1.0 + 2·0.0)/10 = 0.8，非代表的 1.0
+
+
+def test_merge_evidence_adoption_from_single_carrier_not_rep_none():
+    # 仅一个兄弟带 adoption 时（代表 e1 不带）：adoption 仍取该载体值，不被代表的 None 覆盖、不丢。防"Data loss"。
+    e1 = _cand("PRA-W"); e1["evidence"] = {"fires": 10}                 # 代表（index 0），无 adoption
+    e2 = _cand("pra-w"); e2["evidence"] = {"fires": 5, "adoption": 0.6} # 唯一 adoption 载体
+    store = {"experiences": [e1, e2]}
+    L.canonicalize_store(store)
+    ev = store["experiences"][0]["evidence"]
+    assert ev["fires"] == 15
+    assert abs(ev["adoption"] - 0.6) < 1e-9                            # 载体 e2 的 0.6，非代表缺失
+
+
+def test_canonicalize_store_preserves_sibling_only_list_field():
+    # 兄弟独有的顶层 list 字段（rep 没有）也要并集保留，不静默丢。防"Scan all siblings"。
+    e1 = _cand("PRA-V"); e1["evidence"] = {}                           # 代表（index 0），无 extra_log
+    e2 = _cand("pra-v"); e2["evidence"] = {}; e2["extra_log"] = ["a", "b"]   # sibling-only list
+    store = {"experiences": [e1, e2]}
+    L.canonicalize_store(store)
+    assert len(store["experiences"]) == 1
+    assert store["experiences"][0].get("extra_log") == ["a", "b"]      # sibling-only list 被保留
+
+
+def test_merge_evidence_adoption_preserved_when_carrier_has_no_fires():
+    # 兄弟只带 adoption 不带 fires（evidence={"adoption":0.5}）时，adoption 不得被静默丢弃。
+    # 代表 e1 无 adoption；e2 是唯一 adoption 载体但无 fires。合并后 adoption 仍取 e2 的值。防 :251 重开。
+    e1 = _cand("PRA-NF"); e1["evidence"] = {"fires": 10}               # 代表（index 0），无 adoption
+    e2 = _cand("pra-nf"); e2["evidence"] = {"adoption": 0.5}           # adoption 载体，无 fires
+    store = {"experiences": [e1, e2]}
+    L.canonicalize_store(store)
+    ev = store["experiences"][0]["evidence"]
+    assert ev["fires"] == 10                                           # e1 的 fires 保留（e2 无 fires 不计入）
+    assert abs(ev["adoption"] - 0.5) < 1e-9                            # e2 的 adoption 不丢
+
+
+def test_merge_evidence_adoption_averaged_when_no_fires_weights():
+    # 多个兄弟都只有 adoption（无 fires 可加权）→ 等权平均，不偏向代表、不丢任一信号。防 :251 重开。
+    e1 = _cand("PRA-NF2"); e1["evidence"] = {"adoption": 0.8}          # 代表（index 0）
+    e2 = _cand("pra-nf2"); e2["evidence"] = {"adoption": 0.4}
+    store = {"experiences": [e1, e2]}
+    L.canonicalize_store(store)
+    ev = store["experiences"][0]["evidence"]
+    assert "fires" not in ev                                           # 无 fires，不凭空造
+    assert abs(ev["adoption"] - 0.6) < 1e-9                            # (0.8+0.4)/2，非代表的 0.8
+
+
+def test_canonicalize_store_timestamp_merge_ignores_invalid_types():
+    # 手改/损坏的库可能存非数值时间戳（字符串/None）；min/max 不得 TypeError，坏值也不得污染合并时间。防 :373。
+    e1 = _cand("PRA-TS"); e1["created_at"] = 100; e1["updated_at"] = 110; e1["evidence"] = {}
+    e2 = _cand("pra-ts"); e2["created_at"] = "oops"; e2["updated_at"] = None; e2["evidence"] = {}
+    store = {"experiences": [e1, e2]}
+    L.canonicalize_store(store)                                        # 不抛 TypeError
+    merged = next(e for e in store["experiences"] if e["finding_type"] == "PRA-TS")
+    assert merged["created_at"] == 100                                 # 坏值跳过，min=唯一数值 100
+    assert merged["updated_at"] == 110                                 # 坏值跳过，max=唯一数值 110
+
+
+def test_canonical_type_folds_separator_variants_not_distinct_types():
+    # 分隔符【样式噪声】折叠（有意）：'PRA-A-B' / 'PRA-A_B' / 'PRA-A--B' / 'PRA-A B' → 同一规范形。
+    assert L._canonical_type("PRA-A-B") == "PRA-A_B"
+    assert L._canonical_type("PRA-A_B") == "PRA-A_B"
+    assert L._canonical_type("PRA-A--B") == "PRA-A_B"   # 连续分隔符折叠（样式噪声，非语义区分）
+    assert L._canonical_type("PRA-A B") == "PRA-A_B"
+    # 真正不同的类型【不撞】：分隔符有无仍区分、不同 token 亦然（折叠不损失信息）。确认归一化不 lossy。防 :155。
+    assert L._canonical_type("PRA-AB") != L._canonical_type("PRA-A_B")
+    assert L._canonical_type("PRA-FOO") != L._canonical_type("PRA-BAR")
+    assert L._canonical_type("PRA-A") != L._canonical_type("PRA-B")
+
+
+# ============================================================================
 # c2：差分回滚 retire_on_negative_lift + lift_summary
 #    （回答"经验在帮还是在害"；与 graduate 对称）
 # ============================================================================
