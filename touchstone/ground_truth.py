@@ -227,8 +227,12 @@ def build_ground_truth(owner, repo, token, *, window=GT_WINDOW, bot_login=None,
             ts_findings = result.get("findings", []) or []
             # author waived + 人合入 → 确认噪声标签（Phase 1：仅采集透传，不改 reward/distill）。
             # 信任根见 _waived_types：只信 bot 清单 marker 的 status=='waived'、且经 merge 闸采信。
-            human_waived = _waived_types(comments, bot_login, ts_findings,
-                                         merged=bool(pr.get("merged_at")))
+            # 未合入短路（PRA-GENERAL:ground_truth.py:230）：merged=False 时不进入 _waived_types 的
+            # checklist/_trusted_bodies 解析——守卫前置更省、且不易因内部守卫误删而泄漏；与数据边界
+            # merge 闸（make_gt_entry 的 `human_waived and merged`）双保险。
+            merged = bool(pr.get("merged_at"))
+            human_waived = (_waived_types(comments, bot_login, ts_findings, merged=True)
+                            if merged else set())
             try:
                 threads = C.parse_review_threads(
                     C.gql(C._GQL_THREADS, {"owner": owner, "repo": repo, "num": n}, token))
@@ -276,7 +280,7 @@ def build_ground_truth(owner, repo, token, *, window=GT_WINDOW, bot_login=None,
                 signals, weight = None, 1.0
             out.append(make_gt_entry(n, repo, _stack_of(files), pr.get("title", ""),
                                      diff, ts_findings, resolved_types, human_state,
-                                     bool(pr.get("merged_at")),
+                                     merged,
                                      injected_types=result.get("injected_types"),
                                      shadow_types=result.get("shadow_types"),
                                      trust_weight=weight, truth_signals=signals,

@@ -779,6 +779,24 @@ def test_build_ground_truth_no_waived_when_not_merged(monkeypatch):
     assert "human_waived" not in entry
 
 
+def test_build_ground_truth_short_circuits_waived_parsing_when_unmerged(monkeypatch):
+    """PRA-GENERAL:ground_truth.py:230——未合入时守卫前置，不进入 _waived_types 的清单解析。
+    防：内部守卫（_waived_types 的 `if not merged: return set()`）一旦被误删即泄漏 + 白跑
+    parse_latest/_trusted_bodies；调用点短路 = 第二道闸，且更省。"""
+    body = _result_marker([{"rule_id": "PRA-W"}]) + "\n" + _checklist_marker(
+        [{"sig": "PRA-W:src/a.py:10", "status": "waived", "note": "测试夹具"}])
+    _bg_patch_single_pr(monkeypatch, merged=False, comment_body=body)
+    calls = []
+    orig = GT._waived_types
+    def spy(*a, **k):
+        calls.append((a, k))
+        return orig(*a, **k)
+    monkeypatch.setattr(GT, "_waived_types", spy)
+    entry = L.build_ground_truth("o", "r", "tok")[0]
+    assert calls == []                      # 未合入 → _waived_types 根本不被调用（守卫前置）
+    assert "human_waived" not in entry      # 数据边界 merge 闸亦兜底
+
+
 def test_build_ground_truth_waived_scoped_to_raised_types(monkeypatch):
     """waived 仅限本 PR 真挑过的类型：waived 了没挑过的 → 不进 human_waived。信任根④。"""
     body = _result_marker([{"rule_id": "PRA-W"}]) + "\n" + _checklist_marker([
