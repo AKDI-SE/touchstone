@@ -97,7 +97,9 @@ def make_gt_entry(pr_number, repo, stack, summary, diff, touchstone_findings,
              "file": f.get("file"), "line": (f.get("line") or f.get("line_start"))}
             for f in resolved_findings
             if (f.get("rule_id") or f.get("finding_type"))]
-    if human_waived:                       # 确认噪声标签（author waived + 人合入）；缺失即无此字段，向后兼容
+    # merge 闸在【数据边界】强制（信任根③）：即便外部调用方绕过 _waived_types 直接传 human_waived，
+    # 未合入的 PR 也不得带"确认噪声"标签——waived 是 author 自证，须有 merge（人背书）才采信。
+    if human_waived and merged:
         entry["human_waived"] = sorted({t for t in human_waived if t})
     return entry
 

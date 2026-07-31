@@ -750,6 +750,17 @@ def test_make_gt_entry_human_waived_is_optional_and_independent():
     assert e2["human_ignored"] == ["PRA-B"]      # PRA-B 仍在 ignored（waived 不把它移走）
 
 
+def test_make_gt_entry_waived_requires_merged_gate():
+    # merge 闸在【数据边界】强制（信任根③）：外部调用方绕过 _waived_types 直接传 human_waived 时，
+    # 未合入的 PR 也不得带"确认噪声"标签（waived 是 author 自证，须 merge 背书）。防 :100 重开。
+    unmerged = L.make_gt_entry(1, "o/r", "py", "t", "d", [{"rule_id": "PRA-W"}], set(),
+                               "APPROVED", False, human_waived={"PRA-W"})
+    assert "human_waived" not in unmerged         # merged=False → 不发，即便传了 human_waived
+    merged = L.make_gt_entry(1, "o/r", "py", "t", "d", [{"rule_id": "PRA-W"}], set(),
+                             "APPROVED", True, human_waived={"PRA-W"})
+    assert merged["human_waived"] == ["PRA-W"]    # merged=True → 发
+
+
 def test_build_ground_truth_records_waived_when_merged(monkeypatch):
     """waived + 人合入 → 进 human_waived（确认噪声标签）。信任根③：merge 闸。"""
     body = _result_marker([{"rule_id": "PRA-W"}]) + "\n" + _checklist_marker(
