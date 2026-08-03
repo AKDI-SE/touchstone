@@ -686,7 +686,10 @@ def append_lift_history(trend, ab_results, *, ts=None, max_history=None):
                  "without_seen": ab.get("without_seen", 0), "without_adopted": ab.get("without_adopted", 0)}
         series = trend.get(ftype) or []
         series.append(entry)
-        if len(series) > max_history:
+        # max_history<=0 显式视为"不限"（PRA round-5 experience_store.py:680）：0 因 Python 切片
+        # `[-0:]≡[0:]` 本就保留全部，但负值 `[-(-1):]=[1:]` 会误丢首条——边界无定义致运维误配静默
+        # 丢数据。统一：<=0 不封顶（与 0 的现状一致，并修复负值 bug）。
+        if max_history > 0 and len(series) > max_history:
             series = series[-max_history:]
         trend[ftype] = series
     return trend

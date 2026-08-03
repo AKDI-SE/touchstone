@@ -2913,3 +2913,48 @@ def test_trend_written_when_differential_on(monkeypatch, tmp_path):
     assert "PRA-X" in data                        # ab 数据流通 → 有 per-type 条目（非空 {}）
     assert data["PRA-X"][0]["lift"] == 0.3        # 10/20 - 4/20 = 0.3
     assert data["PRA-X"][0]["with_seen"] == 20
+
+
+def test_trend_bare_relative_path_writes_to_cwd(monkeypatch, tmp_path):
+    """PRA round-6（learning_loop.py:474 "cwd-sensitive path"）：--trend 传裸文件名（无目录分量）
+    时 `os.path.dirname→''`，`or '.'` 回落到 CWD。锁此语义：相对路径 → CWD 落盘，未来重构不得静默
+    改变文件位置。`os.makedirs('.', exist_ok=True)` 是安全 no-op（不会失败）；落盘位置由调用方传的
+    相对路径决定（learn.yml 用 data/adoption-trend.json 有目录分量，走另一分支）。"""
+    import os
+    import touchstone.learning_loop as LL
+    monkeypatch.setenv("TOUCHSTONE_DIFFERENTIAL_METRICS", "true")
+    monkeypatch.setenv("GITHUB_TOKEN", "tok")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "o/r")
+    monkeypatch.setattr(LL, "build_ground_truth", lambda *a, **k: [{"pr_id": 1}])
+    monkeypatch.setattr(LL, "aggregate_ab", lambda gt: {
+        "PRA-X": {"with_seen": 20, "with_adopted": 10, "without_seen": 20, "without_adopted": 4}})
+    # 切到隔离 CWD：裸相对名 → 必落在该 CWD（证明 dirname='' → '.' 回落语义端到端成立）
+    monkeypatch.chdir(tmp_path)
+    LL.main(["--build-ground-truth", "--ground-truth", str(tmp_path / "gt.json"),
+             "--store", str(tmp_path / "store.json"),
+             "--trend", "adoption-trend.json",        # 裸文件名（无目录分量）
+             "--output", str(tmp_path / "report.json")])
+    import json
+    written = tmp_path / "adoption-trend.json"          # 落在 CWD（=tmp_path）
+    assert written.exists()
+    data = json.loads(written.read_text())
+    assert "PRA-X" in data
+
+
+def test_append_lift_history_max_history_zero_or_negative_means_uncapped(monkeypatch):
+    """PRA round-6（experience_store.py:680 "zero max_history silently dropping types"）：
+    评审担心 max_history=0 丢整个 type——证伪：Python `[-0:]≡[0:]` 本保留全部。但负值 `[-(-1):]=[1:]`
+    确误丢首条（真 bug）。硬化：<=0 统一=不限（与 0 现状一致 + 修复负值）。0/负均保留全部条目。"""
+    monkeypatch.setenv("TOUCHSTONE_DIFFERENTIAL_METRICS", "true")
+    ab = _ab("PRA-X", with_seen=20, with_adopted=10, without_seen=20, without_adopted=4)
+    for mh in (0, -1, -5):
+        trend = {}
+        for i in range(5):
+            L.append_lift_history(trend, ab, ts=i, max_history=mh)
+        # <=0 视为不限 → 5 条全保留（不被封顶/不丢首条）
+        assert len(trend["PRA-X"]) == 5, f"max_history={mh} 应不限，实际 {len(trend['PRA-X'])}"
+    # 对照：max_history=2 封顶到 2（正路径不受影响）
+    trend = {}
+    for i in range(5):
+        L.append_lift_history(trend, ab, ts=i, max_history=2)
+    assert len(trend["PRA-X"]) == 2
