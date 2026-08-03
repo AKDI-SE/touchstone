@@ -726,7 +726,12 @@ def retire_on_lift_decline(store, trend, *, m_decline=None, drift=None):
         if not isinstance(e.get("evidence"), dict):
             e["evidence"] = {}
         e["evidence"]["rollback_reason"] = "auto_rollback_lift_decline"
-        e["evidence"]["lift_trace"] = [round(s.get("lift", 0), 4) for s in series[-(m_decline + 1):]]
+        # PRA round-3（experience_store.py:720）：旧 `s.get("lift", 0)` 把缺失/None 的 lift 掩成 0，
+        # 误导 lift_trace（如 [0.3,0.2,None] 显示成 [0.3,0.2,0.0]）。且 round(None) 会 TypeError。
+        # 忠实记录：None→None（供人复核见真实数据），非 None 才 round。
+        e["evidence"]["lift_trace"] = [
+            round(s["lift"], 4) if s.get("lift") is not None else None
+            for s in series[-(m_decline + 1):]]
         e["updated_at"] = int(time.time())
         retired.append(e["id"])
     return retired

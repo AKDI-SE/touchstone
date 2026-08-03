@@ -2889,17 +2889,27 @@ def test_trend_not_written_when_differential_off(monkeypatch, tmp_path):
 
 
 def test_trend_written_when_differential_on(monkeypatch, tmp_path):
-    """对照：TOUCHSTONE_DIFFERENTIAL_METRICS=true 时，即便 trend 文件初不存在（except OSError→trend={}），
-    line 431 也会写出一个合法 dict（非 None）。证 None 永不落盘。"""
+    """TOUCHSTONE_DIFFERENTIAL_METRICS=true + 有 ab 数据 → trend 文件写出且含 per-type 条目（非空 {}）。
+    PRA round-3（tests/test_learning_loop.py:2767）：强化断言覆盖门控回归（如 `if trend_path:` 误替
+    `if _differential_enabled() and trend_path:` 时，仅验"文件存在"仍过——现验数据端到端流通）。"""
     import touchstone.learning_loop as LL
     monkeypatch.setenv("TOUCHSTONE_DIFFERENTIAL_METRICS", "true")
     monkeypatch.setenv("GITHUB_TOKEN", "tok")
     monkeypatch.setenv("GITHUB_REPOSITORY", "o/r")
+    # mock build_ground_truth 返回非空（触发 aggregate_ab 路径）+ aggregate_ab 返回已知 ab（lift=0.3）
+    monkeypatch.setattr(LL, "build_ground_truth", lambda *a, **k: [{"pr_id": 1}])
+    monkeypatch.setattr(LL, "aggregate_ab",
+                        lambda gt: _ab("PRA-X", with_seen=20, with_adopted=10,
+                                       without_seen=20, without_adopted=4))
     trend_path = tmp_path / "adoption-trend.json"
-    LL.main(["--store", str(tmp_path / "store.json"),
+    LL.main(["--build-ground-truth", "--ground-truth", str(tmp_path / "gt.json"),
+             "--store", str(tmp_path / "store.json"),
              "--trend", str(trend_path),
              "--output", str(tmp_path / "report.json")])
     assert trend_path.exists()
     import json
     data = json.loads(trend_path.read_text())
-    assert isinstance(data, dict)               # 合法 dict（{} 或含历史），绝非 None
+    assert isinstance(data, dict)
+    assert "PRA-X" in data                        # ab 数据流通 → 有 per-type 条目（非空 {}）
+    assert data["PRA-X"][0]["lift"] == 0.3        # 10/20 - 4/20 = 0.3
+    assert data["PRA-X"][0]["with_seen"] == 20
