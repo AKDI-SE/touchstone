@@ -221,7 +221,10 @@ def build_ground_truth(owner, repo, token, *, window=GT_WINDOW, bot_login=None,
             continue
         try:
             comments = _gh_get(f"/repos/{owner}/{repo}/issues/{n}/comments?per_page=100", token) or []
-            result = C._parse_result([c.get("body", "") for c in comments], bot_login)
+            # 信任根①：result marker 只信受信作者（与 calibrate.py 既有调用点同口径）——此前传全部评论
+            # body，非受信作者（author/任意 [bot] 账号）发的假 result marker 会伪造 raised_types/
+            # injected_types 核心信号。改经 _trusted_bodies 过滤（_is_trusted_marker_author 已收紧）。
+            result = C._parse_result(C._trusted_bodies(comments, bot_login), bot_login)
             if not result:
                 continue                          # 未经过 touchstone 评审，无学习信号
             ts_findings = result.get("findings", []) or []

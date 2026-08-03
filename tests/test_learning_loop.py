@@ -614,7 +614,7 @@ def test_build_ground_truth_from_human_verdicts(tmp_path, monkeypatch):
             return [{"number": 1, "title": "fix bug", "merged_at": "2026-01-01"},
                     {"number": 2, "title": "docs", "merged_at": None}]
         if "issues/1/comments" in path:
-            return [{"body": marker}]
+            return [{"body": marker, "user": {"login": "github-actions[bot]"}}]
         if "issues/2/comments" in path:
             return []                                                       # 无 marker → 跳过
         if "pulls/1/reviews" in path:
@@ -655,7 +655,7 @@ def test_build_ground_truth_excludes_author_self_resolve(tmp_path, monkeypatch):
             return [{"number": 1, "title": "fix", "merged_at": "2026-01-01",
                      "user": {"login": "author1"}}]      # PR 作者 = author1 = 线程解决者
         if "issues/1/comments" in path:
-            return [{"body": marker}]
+            return [{"body": marker, "user": {"login": "github-actions[bot]"}}]
         if "pulls/1/reviews" in path:
             return []
         if "pulls/1/files" in path:
@@ -683,7 +683,7 @@ def test_build_ground_truth_carries_injected_types_from_marker(tmp_path, monkeyp
         if "state=closed" in path:
             return [{"number": 1, "title": "t", "merged_at": "2026-01-01"}]
         if "issues/1/comments" in path:
-            return [{"body": marker}]
+            return [{"body": marker, "user": {"login": "github-actions[bot]"}}]
         if "pulls/1/reviews" in path:
             return [{"state": "APPROVED", "user": {"login": "alice"}}]
         if "pulls/1/files" in path:
@@ -810,13 +810,19 @@ def test_build_ground_truth_waived_scoped_to_raised_types(monkeypatch):
 def test_build_ground_truth_waived_ignores_untrusted_marker(monkeypatch):
     """非 bot 发的清单 marker 不信（信任根①：只信 bot 评论里的 marker，防伪造豁免污染负例）。"""
     from touchstone import calibrate as C
-    body = _result_marker([{"rule_id": "PRA-W"}]) + "\n" + _checklist_marker(
-        [{"sig": "PRA-W:src/a.py:10", "status": "waived", "note": "x"}])
     def fake_gh(path, token, accept="application/vnd.github+json"):
         if "state=closed" in path:
             return [{"number": 1, "title": "t", "merged_at": "2026-01-01"}]
         if "issues/1/comments" in path:
-            return [{"body": body, "user": {"login": "alice"}}]   # 非 bot 发的假清单
+            # result marker 由受信 bot 发（保证 entry 存在、可断言 waived 字段）；
+            # checklist（waived）marker 由 alice 发——非 bot，须被丢，不产 human_waived。
+            return [
+                {"body": _result_marker([{"rule_id": "PRA-W"}]),
+                 "user": {"login": "github-actions[bot]"}},
+                {"body": _checklist_marker(
+                    [{"sig": "PRA-W:src/a.py:10", "status": "waived", "note": "x"}]),
+                 "user": {"login": "alice"}},            # 非 bot 发的假清单
+            ]
         if "pulls/1/reviews" in path:
             return []
         if "pulls/1/files" in path:
@@ -828,6 +834,34 @@ def test_build_ground_truth_waived_ignores_untrusted_marker(monkeypatch):
     monkeypatch.setattr(C, "gql", lambda q, v, t: {"data": {}})
     entry = L.build_ground_truth("o", "r", "tok")[0]
     assert "human_waived" not in entry
+
+
+def test_build_ground_truth_result_marker_from_other_bot_rejected(monkeypatch):
+    """信任根①（result marker）：dependabot[bot] 等同 repo 其它 [bot] 账号冒充 touchstone 发的
+    假 result marker 不得伪造 raised_types/injected_types 核心信号。
+
+    此前两道口子叠加：① build_ground_truth 把【全部评论 body】喂给 _parse_result（不过滤作者）；
+    ② _is_trusted_marker_author 即便 bot_login 已知也宽认 [bot] 后缀。两修合璧后 dependabot[bot]
+    的 result marker 被丢 → 无受信 result → 跳 PR → 空真值集。锁死端到端不 regression。"""
+    from touchstone import calibrate as C
+    body = _result_marker([{"rule_id": "PRA-X"}])     # dependabot[bot] 冒充发的假 result marker
+    def fake_gh(path, token, accept="application/vnd.github+json"):
+        if "state=closed" in path:
+            return [{"number": 1, "title": "t", "merged_at": "2026-01-01"}]
+        if "issues/1/comments" in path:
+            return [{"body": body, "user": {"login": "dependabot[bot]"}}]  # 非 touchstone 的 [bot]
+        if "pulls/1/reviews" in path:
+            return []
+        if "pulls/1/files" in path:
+            return [{"filename": "a.py"}]
+        if path.endswith("/pulls/1") and accept.endswith("diff"):
+            return "+x"
+        return []
+    monkeypatch.setattr(GT, "_gh_get", fake_gh)
+    monkeypatch.setattr(C, "gql", lambda q, v, t: {"data": {}})
+    # dependabot[bot] != 默认 bot_login(github-actions[bot]) → result marker 不被信 → _parse_result
+    # 返回 None → build_ground_truth 跳过该 PR → 空列表（无伪造 raised_types 进真值集）
+    assert L.build_ground_truth("o", "r", "tok") == []
 
 
 def test_build_ground_truth_waived_does_not_change_adopted_or_ignored(monkeypatch):
@@ -921,7 +955,7 @@ def test_build_ground_truth_carries_shadow_types_from_marker(tmp_path, monkeypat
         if "state=closed" in path:
             return [{"number": 1, "title": "t", "merged_at": "2026-01-01"}]
         if "issues/1/comments" in path:
-            return [{"body": marker}]
+            return [{"body": marker, "user": {"login": "github-actions[bot]"}}]
         if "pulls/1/reviews" in path:
             return [{"state": "APPROVED", "user": {"login": "alice"}}]
         if "pulls/1/files" in path:
@@ -1574,7 +1608,7 @@ def test_truth_quality_disabled_by_default(monkeypatch):
         if "state=closed" in path:
             return [{"number": 1, "title": "t", "merged_at": "x"}]
         if "issues/1/comments" in path:
-            return [{"body": result_marker}]
+            return [{"body": result_marker, "user": {"login": "github-actions[bot]"}}]
         if "pulls/1/reviews" in path:
             return [{"state": "APPROVED", "user": {"login": "alice"}, "body": "lgtm"}]  # 命中 B
         if "pulls/1/files" in path:
@@ -1613,7 +1647,7 @@ def test_hard_drop_removes_entry(monkeypatch, capsys):
             return [{"number": 1, "title": "t1", "merged_at": "x"},
                     {"number": 2, "title": "t2", "merged_at": "x"}]
         if "issues/1/comments" in path or "issues/2/comments" in path:
-            return [{"body": result_marker}]
+            return [{"body": result_marker, "user": {"login": "github-actions[bot]"}}]
         if "pulls/1/reviews" in path or "pulls/2/reviews" in path:
             return [{"state": "APPROVED", "user": {"login": "alice"}, "body": "lgtm"}]  # B
         if "pulls/1/files" in path or "pulls/2/files" in path:
@@ -2364,7 +2398,8 @@ def test_build_ground_truth_carries_positions_to_gt_entry(tmp_path, monkeypatch)
         if path.endswith("/issues/1/comments?per_page=100"):                      # result marker（合法 JSON）
             return [{"body": ('<!-- touchstone-result: '
                               '{"findings":[{"rule_id":"PRA-A"}],'
-                              '"injected_types":["PRA-A"]} -->')}]
+                              '"injected_types":["PRA-A"]} -->'),
+                     "user": {"login": "github-actions[bot]"}}]
         if "/pulls/1/reviews" in path:
             return []
         if path.endswith("/pulls/1") and accept.endswith("diff"):
@@ -2402,7 +2437,8 @@ def test_build_ground_truth_drops_findings_with_null_line(tmp_path, monkeypatch)
         if path.endswith("/issues/1/comments?per_page=100"):   # result marker（合法 JSON）
             return [{"body": ('<!-- touchstone-result: '
                               '{"findings":[{"rule_id":"PRA-A"}],'
-                              '"injected_types":["PRA-A"]} -->')}]
+                              '"injected_types":["PRA-A"]} -->'),
+                     "user": {"login": "github-actions[bot]"}}]
         if "/pulls/1/reviews" in path:
             return []
         if path.endswith("/pulls/1") and accept.endswith("diff"):
