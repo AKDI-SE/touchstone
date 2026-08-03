@@ -2659,3 +2659,59 @@ def test_watermark_never_resets_on_full_rebuild_with_low_pr_ids(monkeypatch, tmp
              "--output", str(tmp_path / "report.json")])
     # 水位不得回退到 51；应保持 100，round 推进到 5
     assert LL._read_watermark(str(wm_path)) == {"watermark": 100, "round": 5}
+
+
+def test_pr_id_int_safe_extraction():
+    """PRA round-2（learning_loop.py:400 "Silent Exception Risk"）：_pr_id_int 必须对
+    缺失/非数字/int 型/str 型 pr_id 都安全返回 int 或 None，绝不抛 KeyError/ValueError/AttributeError。"""
+    assert L._pr_id_int({"pr_id": 100}) == 100                 # int 型
+    assert L._pr_id_int({"pr_id": "100"}) == 100               # str 型
+    assert L._pr_id_int({"pr_id": "  42 "}) == 42              # 带空白
+    assert L._pr_id_int({}) is None                            # 缺失
+    assert L._pr_id_int({"pr_id": None}) is None               # 显式 None
+    assert L._pr_id_int({"pr_id": ""}) is None                 # 空串
+    assert L._pr_id_int({"pr_id": "abc"}) is None              # 非数字
+    assert L._pr_id_int({"pr_id": "-1"}) is None               # 负数（isdigit 拒 '-')
+    assert L._pr_id_int({"pr_id": "12.5"}) is None             # 浮点串
+
+
+def test_watermark_advances_round_on_empty_ground_truth(monkeypatch, tmp_path):
+    """PRA round-2（learning_loop.py:399 "round counter never advancing"）：空 ground_truth
+    时 round 必须仍前进。旧门控 `if wm_state is not None and ground_truth:`（truthy）在 [] 时
+    跳过整块 → round 不增；若 round 卡在周期性全量边界（%full_every==0）会陷入反复全量死循环。
+    修复：门控改 `ground_truth is not None`，空列表也推进 round、保持水位。"""
+    import touchstone.learning_loop as LL
+    # round=4 → 4%4==0 周期性全量；build_ground_truth 返回 []（窗口内无信号 PR）
+    wm_path = tmp_path / "wm.json"
+    LL._write_watermark(str(wm_path), 100, 4)
+    monkeypatch.setattr(LL, "build_ground_truth", lambda *a, **k: [])
+    monkeypatch.setenv("GITHUB_TOKEN", "tok")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "o/r")
+    monkeypatch.setenv("TOUCHSTONE_INCREMENTAL", "true")
+    LL.main(["--build-ground-truth", "--ground-truth", str(tmp_path / "gt.json"),
+             "--store", str(tmp_path / "store.json"),
+             "--watermark", str(wm_path),
+             "--output", str(tmp_path / "report.json")])
+    # round 必须推进到 5（脱离周期性全量边界）；水位保持 100（无新条目，不前进也不回退）
+    assert LL._read_watermark(str(wm_path)) == {"watermark": 100, "round": 5}
+
+
+def test_build_ground_truth_since_pr_all_filtered_returns_empty(monkeypatch):
+    """PRA round-2（ground_truth.py:2615 "Add tests for edge cases"）：since_pr 指向的 PR
+    不在返回窗口内（所有返回 PR 的 number 均 <= since_pr）→ 全部被过滤 → 返回 [] 且无 per-PR
+    取数副作用。证水位有效但本轮无新 PR 时，调用方拿到空列表（非异常），下游水位逻辑正确处理。"""
+    calls = []
+
+    def fake_gh_get(url, token, **kw):
+        calls.append(url)
+        if "state=closed" in url:                          # PR 列表：全部 <= since_pr=200
+            return [{"number": 100}, {"number": 150}, {"number": 200}]
+        return []
+
+    monkeypatch.setattr(GT, "_gh_get", fake_gh_get)
+    monkeypatch.setenv("TOUCHSTONE_BOT_LOGIN", "github-actions[bot]")
+    out = GT.build_ground_truth("o", "r", "tok", window=10, since_pr=200)
+    # 全部 number<=200 被过滤 → 空列表（无异常）
+    assert out == []
+    # 不该有任何 per-PR 取数（全部在列表阶段过滤）
+    assert not [u for u in calls if "/issues/" in u]

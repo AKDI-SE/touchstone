@@ -200,6 +200,21 @@ def _write_watermark(path, watermark, rnd):
     atomic_write_json(path, {"watermark": int(watermark or 0), "round": int(rnd)})
 
 
+def _pr_id_int(entry):
+    """安全提取 ground_truth 条目的 pr_id 为 int。
+
+    PRA round-2（learning_loop.py:400 "Silent Exception Risk"）：旧裸表达式
+    `int(e["pr_id"])` 依赖外层 `str(e.get("pr_id","")).isdigit()` 守卫，但守卫与
+    取值分两处、且 `e["pr_id"]` 用下标——若 pr_id 缺失会 KeyError、非数字非空串
+    （负数 "-1" 等）会 ValueError。提取为纯函数：缺失/非数字→None，调用方过滤。
+    兼容 pr_id 为 int 型（100）或 str 型（"100"）——str() 归一再判 isdigit，无 AttributeError。"""
+    v = entry.get("pr_id")
+    if v is None:
+        return None
+    s = str(v).strip()
+    return int(s) if s.isdigit() else None
+
+
 def _decide_since_pr(wm_state, *, force_full=False, full_every=None):
     """纯函数：据水位状态决定本轮 since_pr（None=全量；正整数=增量只取 number>since_pr）。
     返回 (since_pr, mode)：
@@ -392,17 +407,19 @@ def main(argv=None):
     report["total"] = len(store["experiences"])
 
     # 差距3b：save_store 成功后才推进水位（同 atomic 纪律——失败不推进，下轮重取，幂等）。
-    # 新水位 = max(本轮返回条目的 pr_id, 旧水位)——【永不回退】含全量重建轮（since_pr=None）：
-    # PRA round-1（learning_loop.py:399）：旧守卫 `if since_pr and new_wm < since_pr` 在全量轮被跳过
-    # （since_pr=None 为假），空窗口（default=0）会把水位重置为 0 → 下轮 since_pr=0 全量重跑。
-    # 改用旧水位作下限，增量轮与全量轮一致生效。
-    if wm_state is not None and ground_truth:
-        new_wm = max((int(e["pr_id"]) for e in ground_truth
-                     if str(e.get("pr_id", "")).isdigit()), default=0)
-        old_wm = wm_state.get("watermark") or 0
-        if new_wm < old_wm:
-            new_wm = old_wm                       # 永不回退：增量无新 PR / 全量空窗口 都不把水位往下拨
-        new_round = (wm_state.get("round", 0) + 1)
+    # PRA round-1：新水位 = max(本轮条目 pr_id, 旧水位)——永不回退（含全量轮 since_pr=None）。
+    # PRA round-2（learning_loop.py:399 "round counter never advancing"）：旧门控
+    #   `if wm_state is not None and ground_truth:`（truthy）在空 ground_truth（[]）时整块
+    #   跳过 → round 不前进。若 round 卡在周期性全量边界（round%full_every==0），下轮仍判
+    #   periodic_full，陷入"反复全量、永不前进"的死循环。改门控为 `ground_truth is not None`
+    #   （列表存在即推进 round，无论是否空）；水位仅在非空时计算，空则保持旧值。
+    if wm_state is not None and ground_truth is not None:
+        new_round = (wm_state.get("round", 0) + 1)              # round 始终推进（驱动周期性全量调度）
+        new_wm = wm_state.get("watermark") or 0                  # 默认保持旧水位
+        if ground_truth:                                         # 非空才算新水位
+            # _pr_id_int 安全提取（缺失/非数字→None，过滤；兼容 int/str 型 pr_id）
+            pids = [p for e in ground_truth if (p := _pr_id_int(e)) is not None]
+            new_wm = max(new_wm, max(pids, default=0))
         _write_watermark(wm_path, new_wm, new_round)
         report["steps"].append(f"learn_watermark: 推进至 pr={new_wm}（round {wm_state.get('round', 0)}→{new_round}）")
 
