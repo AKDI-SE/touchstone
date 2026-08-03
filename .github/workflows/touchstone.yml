@@ -227,12 +227,18 @@ jobs:
       # 整条 gate job（checkout + setup-python + pip install -e . + download-artifact + 再 upload）
       # 的串行开销——36 run 实测默认路径占 100%（verify/auto_merge 全 skipped），gate job 恒跑却
       # 只做"读本地 findings → 发一个 check"。本步与 gate job 互斥（下方 gate.if 收紧为
-      # verify‖autonomy 才跑），保证【对外仍只发一个总闸】不变式。
+      # verify‖autonomy 才跑），保证【对外仍只发一个总闸】不变式。互斥由 if 条件保证：
+      #   本步 = `!V && !A`（De Morgan），gate job = `V || A`——两者必有一个为假、不会双发闸。
       # findings.json 已由 Run review 写在 cwd；checks.py 缺失时据 TOUCHSTONE_HEAD_SHA 发
-      # "未产出结果" failure check（与 gate job 行为逐字一致）。verify/autonomy 任一开则本步跳过、
-      # 仍由独立 gate job 聚合 verify 结果发闸——凭据隔离设计（§6.6）零变化。
+      # "未产出结果" failure check（与 gate job 行为逐字一致）。verify-result.json 在默认路径
+      # （verify 关）从不产出：checks._check_verify 的 `except (OSError, ValueError)` 把"文件
+      # 不存在"（本步）与"artifact 下载 continue-on-error 静默失败"（gate job）归一为同一中性
+      # 结论 → 两路逐字一致。verify/autonomy 任一开则本步跳过、仍由独立 gate job 聚合 verify
+      # 结果发闸——凭据隔离设计（§6.6）零变化。
+      # `!cancelled()`：与 gate job 的 `if: !cancelled() && ...` 对齐——被取消时不发 check
+      # （否则 `always()` 含取消态、会对每个被取消的 run 发"未产出结果" failure check，偏离旧行为）。
       - name: "Post gate (default path: verify + autonomy off)"
-        if: ${{ always() && vars.VERIFY_ENABLED != 'true' && vars.AUTONOMY_ENABLED != 'true' }}
+        if: ${{ always() && !cancelled() && vars.VERIFY_ENABLED != 'true' && vars.AUTONOMY_ENABLED != 'true' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
