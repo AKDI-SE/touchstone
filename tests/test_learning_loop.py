@@ -2573,6 +2573,21 @@ def test_convergence_lift_unavailable_holds_rounds(monkeypatch):
     assert store["experiences"][0]["convergence"]["last_lift"] is None
 
 
+def test_convergence_holds_on_sample_recovery(monkeypatch):
+    """PRA round-4（experience_store.py:589）：上轮样本不足（last_lift=None），本轮 lift 恢复可得、
+    text 不变 → stable_rounds 应维持（不归零）。旧实现此情况落 else 归零，惩罚了临时样本不足的臂。"""
+    monkeypatch.setenv("TOUCHSTONE_CONVERGENCE", "true")
+    store = {"experiences": [_active_text_exp("PRA-X", "same text")]}
+    ab_full = _ab("PRA-X", with_seen=20, with_adopted=10, without_seen=20, without_adopted=4)
+    ab_thin = _ab("PRA-X", with_seen=1, with_adopted=1, without_seen=20, without_adopted=4)  # with<min → None
+    L.update_convergence(store, ab_full); L.update_convergence(store, ab_full)   # stable_rounds=1
+    L.update_convergence(store, ab_thin)      # 样本不足 → last_lift=None，维持 1
+    assert store["experiences"][0]["convergence"]["last_lift"] is None
+    L.update_convergence(store, ab_full)      # 恢复：lift 可得但 prev_lift=None → 维持 1（不归零）
+    assert store["experiences"][0]["convergence"]["stable_rounds"] == 1
+    assert store["experiences"][0]["convergence"]["last_lift"] == 0.3
+
+
 def test_distill_candidates_skips_converged_types():
     """counting 蒸馏跳过 skip_types（active 已稳定，不必产新候选）。"""
     agg = _agg({"PRA-KEEP": {"fires": 12, "adoption_rate": 0.90},     # emphasize

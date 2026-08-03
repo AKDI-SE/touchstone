@@ -432,7 +432,6 @@ def main(argv=None):
             # PRA round-3（learning_loop.py:416 "Missing Minimum-Sample Guard"）：真值非空但
             # pids 为空（所有 pr_id 异常）→ 水位静默停滞在 old_wm。发声提醒（API schema 变更等）。
             if not pids:
-                import sys
                 print(f"[learn] 警告：{len(ground_truth)} 条真值均无有效 pr_id，"
                       f"水位停滞在 {old_wm}（检查 ground_truth 的 pr_id 字段）", file=sys.stderr)
             new_wm = max(new_wm, max(pids, default=0))

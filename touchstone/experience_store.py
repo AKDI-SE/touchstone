@@ -587,12 +587,19 @@ def update_convergence(store, ab_results):
         prev_hash = conv.get("last_text_hash")
         prev_lift = conv.get("last_lift")
         text_same = prev_hash is not None and prev_hash == text_hash
-        if text_same and lift is not None and prev_lift is not None and abs(lift - prev_lift) < drift:
-            conv["stable_rounds"] = int(conv.get("stable_rounds", 0)) + 1      # text+lift 都稳 → +1
-        elif text_same and lift is None:
-            conv["stable_rounds"] = int(conv.get("stable_rounds", 0))          # 样本不足：维持，不奖不罚
+        if text_same and lift is not None and prev_lift is not None:
+            # text 不变 + 双方 lift 可得 → 比 drift
+            if abs(lift - prev_lift) < drift:
+                conv["stable_rounds"] = int(conv.get("stable_rounds", 0)) + 1  # 稳 → +1
+            else:
+                conv["stable_rounds"] = 0                                      # lift 漂移 → 归零
+        elif text_same:
+            # PRA round-4（experience_store.py:589）：text 不变但本轮或上轮 lift 缺（样本不足 /
+            # 从不足中恢复）→ 维持，不奖不罚。旧实现此分支（prev_lift None）落 else 归零，惩罚了
+            # 临时样本不足的 baseline 臂。现与"本轮 lift None"同处置：hold。
+            conv["stable_rounds"] = int(conv.get("stable_rounds", 0))
         else:
-            conv["stable_rounds"] = 0                                          # text 变或 lift 漂移 → 归零
+            conv["stable_rounds"] = 0                                          # text 变 → 归零
         conv["last_text_hash"] = text_hash
         conv["last_lift"] = round(lift, 4) if lift is not None else None
         was_stable = conv.get("state") == "stable"
