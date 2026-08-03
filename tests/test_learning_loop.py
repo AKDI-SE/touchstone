@@ -2800,12 +2800,14 @@ def test_filter_by_consistency_drops_high_variance():
     assert ids == {"consistent"}                 # erratic 方差大 → 丢
 
 
-def test_filter_by_consistency_single_pr_skips_var_check():
-    """仅 1 PR 时不算方差（数据不足不轻动）——只受 min_source_prs 约束。"""
+def test_filter_by_consistency_single_pr_zero_variance_passes():
+    """PRA round-1/2：仅 1 PR 的 candidate，pvariance([single])≡0，自然 ≤ max_var 必留——
+    不是"绕过方差检查"，是方差对单点无信息量（单点无离散度可言）。其证据充分性由
+    min_source_prs 管。故 1 PR + min=1 + var=0.01 → 留（pvariance=0 ≤ 0.01）。"""
     acc = {"a": {"id": "a", "source_prs": ["1"]}}
     rh = {"a": {"1": 0.5}}
     out = L._filter_by_consistency(acc, rh, min_source_prs=1, max_reward_var=0.01)
-    assert len(out) == 1                         # 1 PR + min=1 → 留（var 检查跳过）
+    assert len(out) == 1                         # 1 PR + min=1 → 留（pvariance=0 ≤ 0.01）
 
 
 def test_distill_max_reward_var_env_parsing(monkeypatch):

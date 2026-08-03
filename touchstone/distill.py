@@ -602,11 +602,16 @@ def _filter_by_consistency(acc, reward_hist, min_source_prs, max_reward_var):
         n_prs = len(rh) or len(c.get("source_prs") or [])   # rh 优先（按 pr_id 去重）；fallback source_prs
         if min_sp > 1 and n_prs < min_sp:
             dropped.append((cid, f"<{min_sp} PRs ({n_prs})")); continue
-        # 注：len(rh)>1 跳过单 PR 候选——方差需 ≥2 点才有意义（单点 pvariance≡0 必过）。
-        # 单 PR 候选是否"证据不足"由上面 min_source_prs 闸管（正交职责：min_sp=样本量门槛、
-        # max_var=既有样本一致性门槛）。两闸可组合，不在此强行耦合（否则拿走操作者"保留单 PR
-        # 但仍查方差"的选择）。
-        if max_var is not None and len(rh) > 1 and _pvariance(list(rh.values())) > max_var:
+        # PRA round-1/2（distill.py:583/594 "单 PR 绕过方差"）：单 PR 候选 pvariance≡0（单点
+        # 无方差），自然 ≤ max_var 必留——不是"绕过"，是方差对单点无信息量。其"证据是否充足"
+        # 由上面 min_source_prs 闸管（正交职责：min_sp=样本量门槛、max_var=既有样本一致性门槛）。
+        # 两闸可组合覆盖全部意图（无缺失功能）：
+        #   min_sp=1 + var=None  → 不过滤（默认）
+        #   min_sp=1 + var=0.1   → 留单 PR，多 PR 按方差过滤
+        #   min_sp=2 + var=None  → 丢单 PR（样本量门槛）
+        #   min_sp=2 + var=0.1   → 丢单 PR + 多 PR 按方差过滤
+        # 评审所谓"variance-only 且丢单 PR"= 第 4 行（min_sp=2），可达。
+        if max_var is not None and _pvariance(list(rh.values())) > max_var:
             dropped.append((cid, f"reward_var>{max_var}")); continue
         kept.append(c)
     if dropped:
