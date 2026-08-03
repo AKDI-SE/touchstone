@@ -47,7 +47,9 @@ from touchstone.experience_store import (  # noqa: F401
     shadow_candidates, shadow_types, shadow_ids,
     _bootstrap_enabled, bootstrap_from_calibrate,
     TAXONOMY_ENFORCE_DEFAULT, _normalize_type, _canonical_type, coerce_type, known_types,
-    RETIRE_NEGATIVE_LIFT_DEFAULT, retire_on_negative_lift)
+    RETIRE_NEGATIVE_LIFT_DEFAULT, retire_on_negative_lift,
+    CONVERGE_N_STABLE_DEFAULT, CONVERGE_LIFT_DRIFT_DEFAULT, CONVERGENCE_ENABLED_DEFAULT,
+    update_convergence, converged_types)
 from touchstone.distill import (  # noqa: F401
     DISTILL_MIN_FIRES,
     TFGRPO_GROUP_SIZE, _W_NOISE, _W_MISS,
@@ -139,8 +141,83 @@ def _parse_cli(argv):
     p.add_argument("--build-ground-truth", dest="build_ground_truth", action="store_true",
                    help="从 GitHub 人审裁决重建真值集（需 GITHUB_TOKEN / GITHUB_REPOSITORY）")
     p.add_argument("--window", type=int, default=GT_WINDOW, help="重建真值集时回看的最近已关闭 PR 数")
+    p.add_argument("--watermark", dest="watermark",
+                   help="增量水位 JSON 路径（差距3b；配合 --build-ground-truth，记录上次处理到的 PR 编号）")
     p.add_argument("--distiller", help="蒸馏器名(counting/tfgrpo/自定义)；缺省自动：有真值集+旗舰端点→tfgrpo")
     return p.parse_args(argv)
+
+
+# --- 差距3b：增量水位（opt-in，默认关 = 零行为变化）------------------------------
+# learn.yml 每周一全量重建 GT_WINDOW=30 个 PR；增量水位记录上次处理到的 PR 编号，下轮只取数
+# number>水位 的新 PR（省 per-PR ~5 次 API 调用）。周期性全量对账（FULL_REFRESH_EVERY）兜底
+# 漂移：旧 PR 新增评审信号、或信号-less PR 滞留的误差，每 N 轮一次全量重建消化掉。
+# 水位文件随经验库一起 git 提交（learn.yml 已 commit data/*.json）→ 下轮 checkout 即可用，
+# 与 save_store 同纪律（save_store 成功后才写水位——失败不推进，下轮重取，幂等）。
+INCREMENTAL_DEFAULT   = "false"     # vars/未设 → off（全量=现状）
+FULL_REFRESH_EVERY_DFLT = 4         # 每 N 轮强制全量对账一次
+
+
+def _incremental_enabled():
+    """TOUCHSTONE_INCREMENTAL 真值时开增量水位（默认关 = 全量重建=现状）。"""
+    return os.environ.get("TOUCHSTONE_INCREMENTAL", INCREMENTAL_DEFAULT).lower() in ("1", "true", "yes", "on")
+
+
+def _full_refresh_every():
+    """TOUCHSTONE_FULL_REFRESH_EVERY：每 N 轮全量对账一次（默认 4）；非正 → 永不全量（纯增量）。"""
+    try:
+        n = int((os.environ.get("TOUCHSTONE_FULL_REFRESH_EVERY") or "").strip() or str(FULL_REFRESH_EVERY_DFLT))
+    except ValueError:
+        n = FULL_REFRESH_EVERY_DFLT
+    return n if n > 0 else 0
+
+
+def _read_watermark(path):
+    """读水位文件 → {"watermark": int, "round": int} 或 None（缺/损坏→None=首轮全量）。"""
+    if not path:
+        return None
+    try:
+        with open(path, encoding="utf-8") as f:
+            d = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(d, dict):
+        return None
+    wm = d.get("watermark")
+    rnd = d.get("round", 0)
+    try:                                    # 防脏值（字符串/null）→ int 或视为缺失
+        wm = int(wm) if wm is not None else None
+        rnd = int(rnd)
+    except (TypeError, ValueError):
+        wm, rnd = None, 0
+    return {"watermark": wm, "round": rnd} if wm is not None else {"watermark": None, "round": rnd}
+
+
+def _write_watermark(path, watermark, rnd):
+    """原子写水位（与 atomic_write_json 同纪律——崩溃留半文件会让下轮读到损坏 JSON）。"""
+    if not path:
+        return
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    atomic_write_json(path, {"watermark": int(watermark or 0), "round": int(rnd)})
+
+
+def _decide_since_pr(wm_state, *, force_full=False, full_every=None):
+    """纯函数：据水位状态决定本轮 since_pr（None=全量；正整数=增量只取 number>since_pr）。
+    返回 (since_pr, mode)：
+      - mode="first"        首轮（无水位）→ 全量重建，建立基线。
+      - mode="force_full"   FORCE_REBUILD / 手动触发 → 全量。
+      - mode="periodic_full" round % full_every == 0 → 周期性全量对账（兜底漂移）。
+      - mode="incremental"  otherwise → 增量，since_pr=水位。
+    full_every<=0 视作"永不全量对账"（纯增量，mode 不会是 periodic_full）。"""
+    full_every = full_every if full_every is not None else _full_refresh_every()
+    rnd = (wm_state or {}).get("round", 0)
+    wm = (wm_state or {}).get("watermark")
+    if force_full:
+        return None, "force_full"
+    if wm is None:
+        return None, "first"
+    if full_every > 0 and rnd > 0 and rnd % full_every == 0:
+        return None, "periodic_full"
+    return wm, "incremental"
 
 
 def main(argv=None):
@@ -157,6 +234,7 @@ def main(argv=None):
         build_gt = a.build_ground_truth
         window = a.window
         distiller = a.distiller
+        wm_path = a.watermark
     else:                                      # 环境变量路径（库/测试）
         store_path = STORE_PATH
         agg_path = os.environ.get("TOUCHSTONE_CALIB_AGG")
@@ -166,6 +244,7 @@ def main(argv=None):
         build_gt = os.environ.get("TOUCHSTONE_BUILD_GROUND_TRUTH", "").lower() in ("1", "true", "yes")
         window = GT_WINDOW
         distiller = None
+        wm_path = os.environ.get("TOUCHSTONE_WATERMARK_PATH")
 
     report = {"steps": [], "distiller": None, "candidates": 0, "graduated": [],
               "retired": [], "active": 0, "total": 0, "ground_truth": 0}
@@ -174,13 +253,24 @@ def main(argv=None):
 
     # ① 真值集：按需从 GitHub 人审裁决重建（"人工合入好坏" → TF-GRPO 学习信号）
     ground_truth = None
+    # 差距3b 增量水位（opt-in，默认关=全量=现状）：开时读水位、只取数 number>水位 的新 PR；
+    # 周期性全量对账（round % FULL_REFRESH_EVERY == 0）或 FORCE_REBUILD 时回全量，消化漂移。
+    wm_state = _read_watermark(wm_path) if (build_gt and _incremental_enabled()) else None
+    since_pr = None
+    if wm_state is not None:
+        force_full = os.environ.get("FORCE_REBUILD", "").lower() in ("1", "true", "yes")
+        since_pr, mode = _decide_since_pr(wm_state, force_full=force_full, full_every=_full_refresh_every())
+        if mode == "incremental":
+            report["steps"].append(f"build_ground_truth 增量模式：since_pr={since_pr}（round={wm_state.get('round', 0)}）")
+        else:
+            report["steps"].append(f"build_ground_truth 全量模式（{mode}）")
     if build_gt:
         token = os.environ.get("GITHUB_TOKEN")
         repo_full = os.environ.get("GITHUB_REPOSITORY") or ""
         if token and "/" in repo_full:
             owner, repo_name = repo_full.split("/", 1)
             try:
-                ground_truth = build_ground_truth(owner, repo_name, token, window=window)
+                ground_truth = build_ground_truth(owner, repo_name, token, window=window, since_pr=since_pr)
                 if gt_path:
                     os.makedirs(os.path.dirname(gt_path) or ".", exist_ok=True)
                     # 原子写：真值喂校准（决策相邻态），崩溃留半文件会让下轮校准
@@ -216,10 +306,15 @@ def main(argv=None):
             agg = None
 
     # ③ 蒸馏：有真值集 + 旗舰端点 → TF-GRPO（语义优势）；否则计数式
+    # 差距3a：收敛检测（默认关）开时，已 stable 的 type 不再蒸馏（active 已稳定，省候选产出/rollout）。
+    skip = converged_types(store)
+    if skip:
+        report["steps"].append(f"converged_types: 跳过 {len(skip)} 个稳定 type 的蒸馏：{sorted(skip)}")
     name = distiller or os.environ.get("TOUCHSTONE_DISTILLER")
     ctx = {"calib_agg": agg or {}, "ground_truth": ground_truth,
            "store": store, "repo": os.environ.get("REPO_DIR", ""),
-           "stack": os.environ.get("TOUCHSTONE_STACK", "")}
+           "stack": os.environ.get("TOUCHSTONE_STACK", ""),
+           "skip_types": skip}
     if not name:
         name = "tfgrpo" if (ground_truth and _flagship_configured()) else "counting"
     try:
@@ -285,9 +380,27 @@ def main(argv=None):
         if retired:
             report["steps"].append(f"retire 退役：{len(retired)} 条 {retired}")
 
+    # ⑤.5 差距3a：收敛检测——据本轮 ab lift 更新 active 经验的 stable 状态（默认关=零行为变化）。
+    # 放 graduate/retire 之后：用最终 active 集合的 lift 判收敛；新 active（刚 graduate）从 0 计起。
+    if ab:
+        newly_stable = update_convergence(store, ab)
+        if newly_stable:
+            report["steps"].append(f"update_convergence: 新标 stable {len(newly_stable)} type：{sorted(newly_stable)}")
+
     save_store(store, store_path)
     report["active"] = sum(1 for e in store["experiences"] if e["status"] == "active")
     report["total"] = len(store["experiences"])
+
+    # 差距3b：save_store 成功后才推进水位（同 atomic 纪律——失败不推进，下轮重取，幂等）。
+    # 新水位 = max(本轮返回条目的 pr_id)；无新条目则不前进（保持旧水位，round 仍 +1 以驱动对账周期）。
+    if wm_state is not None and ground_truth:
+        new_wm = max((int(e["pr_id"]) for e in ground_truth
+                     if str(e.get("pr_id", "")).isdigit()), default=0)
+        if since_pr and new_wm < since_pr:
+            new_wm = since_pr                       # 不回退：本轮无新 PR 也不把水位往回拨
+        new_round = (wm_state.get("round", 0) + 1)
+        _write_watermark(wm_path, new_wm, new_round)
+        report["steps"].append(f"learn_watermark: 推进至 pr={new_wm}（round {wm_state.get('round', 0)}→{new_round}）")
 
     # ⑥ 学习报告 + changed 输出（供 workflow 决定是否提交经验库）
     if out_path:

@@ -26,16 +26,20 @@ from touchstone.experience_store import (_exp_id, _is_review_type,           # n
 DISTILL_MIN_FIRES   = 8      # 命中样本下限，才考虑蒸馏成候选经验
 
 # --- 蒸馏：calibrate 奖励 → 候选经验（训练-free 计数式）--------------------------
-def distill_candidates(calib_agg, repo="", stack=""):
+def distill_candidates(calib_agg, repo="", stack="", skip_types=None):
     """从 calibrate.aggregate 的 by_rule 统计蒸馏候选经验（无 LLM、无权重）。
     低采纳→suppress（别挑）、高采纳→emphasize（该挑）。只对 PR-Agent 源类型；确定性 contract 类型被跳过。
-    更丰富的 TF-GRPO 语义优势蒸馏见 _distill_via_llm（已实现，需旗舰模型端点）。"""
+    更丰富的 TF-GRPO 语义优势蒸馏见 _distill_via_llm（已实现，需旗舰模型端点）。
+    skip_types（差距3a）：已收敛稳定的 type 集合，跳过其候选产出（active 已稳定，不必反复改写）。"""
     now = int(time.time())
     protected = _protected_types()
+    skip_types = skip_types or set()
     out = []
     for ftype, v in (calib_agg.get("by_rule") or {}).items():
         if not _is_review_type(ftype):
             continue                      # 确定性 contract 类型不进经验（固定基准）
+        if ftype in skip_types:
+            continue                      # 收敛稳定：跳过（省候选产出；active 不变）
         fires = v.get("fires", 0)
         adopt = v.get("adoption_rate")
         if adopt is None:
@@ -440,7 +444,7 @@ class _Budget:
 def _distill_via_llm(ground_truth, store, llm=None, *, group_size=TFGRPO_GROUP_SIZE,
                      epochs=1, repo="", stack="",
                      rollout=None, score=None, distill_advantage=None,
-                     cache=None, max_llm_calls=None, max_workers=None):
+                     cache=None, max_llm_calls=None, max_workers=None, skip_types=None):
     """TF-GRPO 入口（实现）。机制设计见 docs/learning-loop-design.html §3。
     ground_truth: 最小真值集 [{pr_id, repo, stack, summary, diff, human_adopted:[finding_type]}]
                   —— 历史已合 PR + 人审裁决（生产由 calibrate 从 GitHub 重建）。
@@ -475,6 +479,11 @@ def _distill_via_llm(ground_truth, store, llm=None, *, group_size=TFGRPO_GROUP_S
             cond = {"experiences": base_active + [dict(c, status="active") for c in acc.values()]}
             experience_text = render_injection(cond)
             for pr in ground_truth or []:
+                # 差距3a 收敛跳过：本 PR 所有 raised_types 都已 stable → 跳过 rollout+内省（省 G+1 次旗舰
+                # 调用）。混合 type（部分未收敛）仍照常处理——不能因一个稳定 type 牺牲同 PR 其他 type 信号。
+                pr_types = {t for t in (pr.get("raised_types") or []) if t}
+                if skip_types and pr_types and pr_types <= skip_types:
+                    continue
                 key = (_rollout_cache_key(pr, experience_text, group_size, rollout_tag=rollout_tag)
                        if cache_obj is not None else None)
                 if cache_obj is not None and key in cache_obj:
@@ -534,7 +543,8 @@ def _distill_via_llm(ground_truth, store, llm=None, *, group_size=TFGRPO_GROUP_S
 # --- 蒸馏器分发：按名选实现 + 注册自定义（照搬 review_provider 的分发风格）---------------
 #   蒸馏上下文 ctx（统一入参，各实现按需取用）：{calib_agg, ground_truth, store, llm, repo, stack}
 def _counting_distiller(ctx):
-    return distill_candidates(ctx.get("calib_agg") or {}, ctx.get("repo", ""), ctx.get("stack", ""))
+    return distill_candidates(ctx.get("calib_agg") or {}, ctx.get("repo", ""), ctx.get("stack", ""),
+                             skip_types=ctx.get("skip_types"))
 
 
 def _env_rollout_cache():
@@ -563,7 +573,8 @@ def _tfgrpo_distiller(ctx):
     workers = ctx.get("max_workers", _env_int_opt("TOUCHSTONE_ROLLOUT_WORKERS"))
     return _distill_via_llm(ctx.get("ground_truth") or [], ctx.get("store") or {"experiences": []},
                             ctx.get("llm"), repo=ctx.get("repo", ""), stack=ctx.get("stack", ""),
-                            cache=cache, max_llm_calls=budget, max_workers=workers)
+                            cache=cache, max_llm_calls=budget, max_workers=workers,
+                            skip_types=ctx.get("skip_types"))
 
 
 _DISTILLERS = {"counting": _counting_distiller, "tfgrpo": _tfgrpo_distiller}
