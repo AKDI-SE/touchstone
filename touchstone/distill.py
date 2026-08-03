@@ -34,9 +34,11 @@ DISTILL_MIN_SOURCE_PRS_DEFAULT = 1     # 1 = 不限（每条 candidate 至少来
 def _distill_min_source_prs():
     """TOUCHSTONE_DISTILL_MIN_SOURCE_PRS：candidate 至少来自 N 个 PR 才入池（默认 1=不限=现状）。"""
     try:
-        n = int((os.environ.get("TOUCHSTONE_DISTILL_MIN_SOURCE_PRS") or "").strip()
-                or str(DISTILL_MIN_SOURCE_PRS_DEFAULT))
-    except ValueError:
+        # int(float(...)) 兜底 "2.0" 等合法 float 串——int("2.0") 抛 ValueError 会静默退默认值
+        # （PRA round-4 distill.py:34），让 TOUCHSTONE_DISTILL_MIN_SOURCE_PRS=2.0 悄悄变 1 难排查。
+        n = int(float((os.environ.get("TOUCHSTONE_DISTILL_MIN_SOURCE_PRS") or "").strip()
+               or str(DISTILL_MIN_SOURCE_PRS_DEFAULT)))
+    except (ValueError, TypeError):
         n = DISTILL_MIN_SOURCE_PRS_DEFAULT
     return n if n > 0 else DISTILL_MIN_SOURCE_PRS_DEFAULT
 
@@ -55,7 +57,9 @@ def _distill_max_reward_var():
 
 
 def _pvariance(values):
-    """总体方差（纯函数；values 至少 2 个才有意义）。避免顶层 import statistics（仅此处用）。"""
+    """总体方差（纯函数）。n<2 返回 0.0——单点方差定义性为 0（恒 ≤ max_var → pass），并非"无意义"：
+    单 PR 候选的样本量把关由 min_source_prs 闸负责（正交职责），方差闸只度量既有 ≥2 PR 的一致性
+    （PRA round-4 distill.py:57）。避免顶层 import statistics（仅此处用）。"""
     n = len(values)
     if n < 2:
         return 0.0
@@ -592,7 +596,11 @@ def _distill_via_llm(ground_truth, store, llm=None, *, group_size=TFGRPO_GROUP_S
 def _filter_by_consistency(acc, reward_hist, min_source_prs, max_reward_var):
     """差距2a：按跨 PR 一致性过滤蒸馏候选。纯函数。
     min_source_prs<=1 且 max_reward_var is None → 不过滤（默认=零行为变化）。"""
-    min_sp = DISTILL_MIN_SOURCE_PRS_DEFAULT if min_source_prs is None else min_source_prs
+    # 两闸 None 均回退各自 env reader（对称）：PRA round-4 distill.py:595——旧 min_source_prs=None
+    # 回退常量 DEFAULT（忽略 env），而 max_reward_var=None 回退 env reader，不对称致直接调用
+    # _distill_via_llm(min_source_prs=None) 时 env 覆盖被静默忽略。生产 _tfgrpo_distiller 已显式
+    # 解析两 env 传入不受影响；env 未设时 _distill_min_source_prs() 返回 DEFAULT(1)，零行为变化。
+    min_sp = _distill_min_source_prs() if min_source_prs is None else min_source_prs
     max_var = max_reward_var if max_reward_var is not None else _distill_max_reward_var()
     if min_sp <= 1 and max_var is None:
         return list(acc.values())             # 默认关：不过滤

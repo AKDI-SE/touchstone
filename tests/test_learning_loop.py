@@ -2819,3 +2819,34 @@ def test_distill_max_reward_var_env_parsing(monkeypatch):
     assert L._distill_max_reward_var() is None    # 非法 → None
     monkeypatch.setenv("TOUCHSTONE_DISTILL_MAX_REWARD_VAR", "-1")
     assert L._distill_max_reward_var() is None    # 负 → None
+
+
+def test_distill_min_source_prs_env_parsing(monkeypatch):
+    """PRA round-4（distill.py:34 "Float 字符串静默回退"）：int("2.0") 抛 ValueError 会让
+    TOUCHSTONE_DISTILL_MIN_SOURCE_PRS=2.0 悄悄退默认值 1。int(float(...)) 兜底解析。"""
+    monkeypatch.delenv("TOUCHSTONE_DISTILL_MIN_SOURCE_PRS", raising=False)
+    assert L._distill_min_source_prs() == 1          # 未设 → 默认 1
+    monkeypatch.setenv("TOUCHSTONE_DISTILL_MIN_SOURCE_PRS", "3")
+    assert L._distill_min_source_prs() == 3          # 整数串
+    monkeypatch.setenv("TOUCHSTONE_DISTILL_MIN_SOURCE_PRS", "2.0")
+    assert L._distill_min_source_prs() == 2          # float 串 → int(float())=2（不再静默退 1）
+    monkeypatch.setenv("TOUCHSTONE_DISTILL_MIN_SOURCE_PRS", "not-a-number")
+    assert L._distill_min_source_prs() == 1          # 非法 → 默认
+    monkeypatch.setenv("TOUCHSTONE_DISTILL_MIN_SOURCE_PRS", "0")
+    assert L._distill_min_source_prs() == 1          # 非正 → 默认（不限）
+    monkeypatch.setenv("TOUCHSTONE_DISTILL_MIN_SOURCE_PRS", "-2")
+    assert L._distill_min_source_prs() == 1          # 负 → 默认
+
+
+def test_filter_by_consistency_min_source_prs_none_honors_env(monkeypatch):
+    """PRA round-4（distill.py:595 "Silent override"）：min_source_prs=None 应与 max_reward_var=None
+    对称——回退 env reader，而非常量 DEFAULT。直接调 _distill_via_llm(min_source_prs=None) 时
+    env 覆盖须生效。env 未设 → _distill_min_source_prs()=DEFAULT(1)，默认零行为变化。"""
+    monkeypatch.setenv("TOUCHSTONE_DISTILL_MIN_SOURCE_PRS", "3")
+    # min_source_prs=None → 回退 env reader → 3：acc 中 2-PR candidate 应被丢（< 3）
+    acc = {"few": {"id": "few", "source_prs": ["1", "2"]},
+           "many": {"id": "many", "source_prs": ["1", "2", "3", "4"]}}
+    rh = {cid: {p: 0.5 for p in c["source_prs"]} for cid, c in acc.items()}
+    out = L._filter_by_consistency(acc, rh, min_source_prs=None, max_reward_var=None)
+    ids = {c["id"] for c in out}
+    assert ids == {"many"}                          # few(2 PRs) < 3 → 丢；env 被尊重（非 DEFAULT 1）
