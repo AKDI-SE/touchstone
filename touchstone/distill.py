@@ -578,8 +578,12 @@ def _distill_via_llm(ground_truth, store, llm=None, *, group_size=TFGRPO_GROUP_S
                         acc[c["id"]] = c
                     # 差距2a：记录本 PR 对该 candidate 的组均 reward（按 pr_id 去重）
                     if rewards:
-                        rh = reward_hist.setdefault(c["id"], {})
-                        rh[str(pr.get("pr_id"))] = round(sum(rewards) / len(rewards), 4)
+                        pid = pr.get("pr_id")
+                        # PRA round-5：pr_id 缺失时 str(None)="None" 会把多个无 id 的 PR 奖励
+                        # 合并到同一 key，污染方差。跳过缺失 pr_id 的记录（不污染 reward_hist）。
+                        if pid is not None:
+                            rh = reward_hist.setdefault(c["id"], {})
+                            rh[str(pid)] = round(sum(rewards) / len(rewards), 4)
             if budget.exhausted:
                 break                              # 预算耗尽：不再开下一 epoch
     finally:
@@ -619,6 +623,11 @@ def _filter_by_consistency(acc, reward_hist, min_source_prs, max_reward_var):
         #   min_sp=2 + var=None  → 丢单 PR（样本量门槛）
         #   min_sp=2 + var=0.1   → 丢单 PR + 多 PR 按方差过滤
         # 评审所谓"variance-only 且丢单 PR"= 第 4 行（min_sp=2），可达。
+        # PRA round-5：方差闸要求既有 reward 数据——rh 空时 _pvariance([])=0.0 恒 ≤ max_var 会
+        # 静默放行无证据候选（rewards 未录 / score 返空 / pr_id 缺失被跳过）。fail-closed：
+        # max_var 启用且 rh 空时丢弃（无可校验一致性的数据）。默认 max_var=None 不入此支，零行为变化。
+        if max_var is not None and not rh:
+            dropped.append((cid, "no reward history for variance check")); continue
         if max_var is not None and _pvariance(list(rh.values())) > max_var:
             dropped.append((cid, f"reward_var>{max_var}")); continue
         kept.append(c)

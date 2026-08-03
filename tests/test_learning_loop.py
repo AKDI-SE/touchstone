@@ -2850,3 +2850,51 @@ def test_filter_by_consistency_min_source_prs_none_honors_env(monkeypatch):
     out = L._filter_by_consistency(acc, rh, min_source_prs=None, max_reward_var=None)
     ids = {c["id"] for c in out}
     assert ids == {"many"}                          # few(2 PRs) < 3 → 丢；env 被尊重（非 DEFAULT 1）
+
+
+def test_filter_drops_no_reward_history_when_variance_active():
+    """PRA round-5（distill.py:603/579）：max_var 启用但 rh 空（rewards 未录 / score 返空 /
+    pr_id 缺失）时 _pvariance([])=0.0 恒 ≤ max_var 会静默放行无证据候选。fail-closed：丢弃。"""
+    # many 有 4 source_prs 但 rh 空（reward 全未录）→ max_var 启用时必丢（无一致性证据）
+    acc = {"many": {"id": "many", "source_prs": ["1", "2", "3", "4"]}}
+    rh = {}                                         # 空：无 reward 记录
+    out = L._filter_by_consistency(acc, rh, min_source_prs=1, max_reward_var=0.1)
+    assert out == []                                # rh 空 + max_var 启用 → fail-closed 丢
+
+
+def test_filter_keeps_no_reward_history_when_variance_off():
+    """对照：max_var=None（默认关）时 rh 空仍放行——默认零行为变化（仅 min_sp 样本量闸生效）。"""
+    acc = {"many": {"id": "many", "source_prs": ["1", "2"]}}
+    rh = {}
+    out = L._filter_by_consistency(acc, rh, min_source_prs=1, max_reward_var=None)
+    ids = {c["id"] for c in out}
+    assert ids == {"many"}                          # max_var 关 → 不要求 reward 证据
+
+
+def test_reward_hist_skips_missing_pr_id(monkeypatch):
+    """PRA round-5（distill.py:None 'Guard against missing pr_id'）：pr_id 缺失时 str(None)="None"
+    会把多个无 id PR 的奖励合并到同一 key，污染方差。_distill_via_llm 对 pr_id 缺失的 PR 跳过
+    reward 记录。验法：两 pr_id=None 的 PR 产同一 candidate——守护后 rh 空 → max_var 启用时
+    fail-closed 丢弃（若无守护，"None" key 合并写入 → rh 非空 → pvariance=0 → 放行）。"""
+    monkeypatch.setenv("TOUCHSTONE_DISTILL_MAX_REWARD_VAR", "0.1")
+
+    def my_rollout(pr, E, llm, G):
+        return [[{"finding_type": "PRA-Z"}]]
+
+    def my_score(review, adopted):
+        return 1.0
+
+    def my_distill(pr, group, llm, repo, stack):
+        return [{"id": "emphasize:PRA-Z", "finding_type": "PRA-Z", "kind": "emphasize",
+                 "text": "x", "evidence": {}, "status": "candidate",
+                 "source_prs": [pr.get("pr_id")], "repo": repo, "stack": stack,
+                 "created_at": 0, "updated_at": 0}]
+
+    # 两 pr_id=None 的 PR 产同一 candidate
+    gt = [{"pr_id": None, "human_adopted": ["PRA-Z"], "repo": "o/r", "stack": "py"},
+          {"pr_id": None, "human_adopted": ["PRA-Z"], "repo": "o/r", "stack": "py"}]
+    out = L._distill_via_llm(gt, {"experiences": []}, llm=lambda m: "[]",
+                             rollout=my_rollout, score=my_score, distill_advantage=my_distill,
+                             max_reward_var=0.1)
+    # pr_id 缺失被跳过 → reward_hist 空 → fail-closed 丢弃（无 "None" key 合并污染）
+    assert out == []                                # 守护生效：不写 "None" key，rh 空，被丢
