@@ -204,12 +204,17 @@ def _waived_types(comments, bot_login, touchstone_findings, *, merged):
 
 
 def build_ground_truth(owner, repo, token, *, window=GT_WINDOW, bot_login=None,
-                       diff_budget=GT_DIFF_BUDGET):
+                       diff_budget=GT_DIFF_BUDGET, since_pr=None):
     """从 GitHub 重建 TF-GRPO 真值集（离线学习的数据入口，需 GITHUB_TOKEN）。
     复用 calibrate：touchstone 发现来自 <!-- touchstone-result: --> marker；
     人采纳来自该发现的评审线程被 resolved（GraphQL isResolved）；
     PR 级好坏来自人审 state(APPROVED/CHANGES_REQUESTED) + 是否合入。
-    返回 [make_gt_entry ...]。任一 PR 取数失败仅跳过该 PR，不中断整体。"""
+    返回 [make_gt_entry ...]。任一 PR 取数失败仅跳过该 PR，不中断整体。
+
+    since_pr（差距3b 增量水位，opt-in）：设为某 PR 编号时，number <= since_pr 的 PR 在取数前
+    跳过（省 per-PR 的 comments/threads/reviews/diff/files 共 ~5 次 API 调用）。返回的条目仍按
+    pr_id 降序混杂；调用方据返回条目的 max(pr_id) 推进水位。零信号的新 PR 会被取数但不产条目，
+    不推进水位——这类 PR 下轮重取（廉价，仅 list 1 次 API；full-refresh 对账兜底漂移）。"""
     from touchstone import calibrate as C
     bot_login = bot_login or os.environ.get("TOUCHSTONE_BOT_LOGIN", "github-actions[bot]")
     prs = _gh_get(f"/repos/{owner}/{repo}/pulls?state=closed&sort=updated&direction=desc"
@@ -219,6 +224,8 @@ def build_ground_truth(owner, repo, token, *, window=GT_WINDOW, bot_login=None,
         n = pr.get("number")
         if not n:
             continue
+        if since_pr and n <= since_pr:
+            continue                  # 增量水位：已处理的 PR 跳过取数（省 ~5 次 per-PR API 调用）
         try:
             comments = _gh_get(f"/repos/{owner}/{repo}/issues/{n}/comments?per_page=100", token) or []
             # 信任根①：result marker 只信受信作者（与 calibrate.py 既有调用点同口径）——此前传全部评论

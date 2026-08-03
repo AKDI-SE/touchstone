@@ -76,6 +76,15 @@ jobs:
           TOUCHSTONE_ROLLOUT_CACHE: ${{ vars.TOUCHSTONE_ROLLOUT_CACHE || '' }}       # 空=不缓存；'memory'=进程内；路径=文件缓存
           TOUCHSTONE_ROLLOUT_BUDGET: ${{ vars.TOUCHSTONE_ROLLOUT_BUDGET || '200' }}   # 每轮总 rollout 上限
           TOUCHSTONE_ROLLOUT_WORKERS: ${{ vars.TOUCHSTONE_ROLLOUT_WORKERS || '4' }}   # variant 批并发数
+          # 差距3a 收敛检测（默认关=全量蒸馏=现状）。开 vars.TOUCHSTONE_CONVERGENCE=true 后：连续
+          # N_STABLE 轮 text+lift 不变的 active 经验标 stable，下轮蒸馏跳过该 type。vars 可调阈值。
+          TOUCHSTONE_CONVERGENCE: ${{ vars.TOUCHSTONE_CONVERGENCE || '' }}
+          TOUCHSTONE_CONVERGE_N_STABLE: ${{ vars.TOUCHSTONE_CONVERGE_N_STABLE || '3' }}
+          TOUCHSTONE_CONVERGE_LIFT_DRIFT: ${{ vars.TOUCHSTONE_CONVERGE_LIFT_DRIFT || '0.05' }}
+          # 差距3b 增量水位（默认关=全量重建=现状）。开 vars.TOUCHSTONE_INCREMENTAL=true 后：只取数
+          # number>水位 的新 PR（省 per-PR ~5 次 API 调用）；每 FULL_REFRESH_EVERY 轮强制全量对账兜底漂移。
+          TOUCHSTONE_INCREMENTAL: ${{ vars.TOUCHSTONE_INCREMENTAL || '' }}
+          TOUCHSTONE_FULL_REFRESH_EVERY: ${{ vars.TOUCHSTONE_FULL_REFRESH_EVERY || '4' }}
           FORCE_REBUILD: ${{ github.event.inputs.force_ground_truth_rebuild || 'false' }}
         run: |
           python -m touchstone.learning_loop \
@@ -83,6 +92,7 @@ jobs:
             --build-ground-truth \
             --ground-truth data/ground_truth.json \
             --calib-agg calibration.json \
+            --watermark data/learn_watermark.json \
             --output data/learning_report.json
 
       - name: Push experience update to bot branch + open PR
@@ -98,7 +108,16 @@ jobs:
           git config user.email "touchstone-bot@users.noreply.github.com"
           BOT_BRANCH="bot/experience-update"
           git checkout -B "$BOT_BRANCH"
-          git add data/experience_store.json data/ground_truth.json
+          # PRA round-2（learn.yml:122 "Assert mandatory outputs exist before committing"）：
+          # experience_store.json 是 save_store 恒产——缺失即 learn 异常静默退出。若仍按存在性
+          # add，会漏掉这个关键产物而提交空 commit（误报"经验已更新"）。强制断言：缺失即显式失败。
+          [ -f data/experience_store.json ] || { echo "::error::data/experience_store.json 缺失：learn 异常未产出主产物，拒绝空提交"; exit 1; }
+          git add data/experience_store.json
+          # 可选产物按存在性 add（ground_truth 取决于 --build-ground-truth；learn_watermark 仅
+          # TOUCHSTONE_INCREMENTAL=true 时写）。非条件 git add 缺失文件会非零退出致步骤失败。
+          for f in data/ground_truth.json data/learn_watermark.json; do
+            [ -f "$f" ] && git add "$f"
+          done
           # 不加 [skip ci]：要让 touchstone 评审在此 PR 上跑，gate 绿才触发自动合入
           git commit -m "chore(bot): weekly experience store + ground truth update" || { echo "无改动"; exit 0; }
           # 滚动分支：force-push 覆盖上一轮未合残留（learn.yml 有 concurrency 组，无并发）

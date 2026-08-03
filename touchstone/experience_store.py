@@ -517,6 +517,116 @@ def retire_on_negative_lift(store, ab_results, *, min_samples=None, threshold=No
     return retired
 
 
+# --- 差距3a：收敛检测（opt-in，默认关 = 零行为变化）------------------------------
+# 某 active 经验连续 N_STABLE 轮 text 不变 + ab_lift 变化 < LIFT_DRIFT → 标 convergence_state=
+# "stable"，下轮蒸馏跳过该 type（已稳定，不必反复改写）；新增信号（text 变 / lift 漂移）打破稳定。
+# 状态记在经验条目 convergence 字段（随 store 持久化），不另起文件。
+#   convergence = {"stable_rounds": int, "last_text_hash": str, "last_lift": float|None,
+#                  "state": "stable"|None}
+# 与 retire_on_negative_lift 同源 lift（ab_results 逐字同 schema），但只读不改 status——
+# 收敛是"跳过蒸馏"的优化，不是生命周期变更（retire/disable 仍照常触发）。
+CONVERGE_N_STABLE_DEFAULT   = 3        # 连续 N 轮稳定 → 标 stable
+CONVERGE_LIFT_DRIFT_DEFAULT = 0.05     # lift 变化阈值（绝对值）
+CONVERGENCE_ENABLED_DEFAULT = "false"  # vars/未设 → off（全量蒸馏=现状）
+
+
+def _convergence_enabled():
+    return os.environ.get("TOUCHSTONE_CONVERGENCE", CONVERGENCE_ENABLED_DEFAULT).lower() in (
+        "1", "true", "yes", "on")
+
+
+def _converge_n_stable():
+    try:
+        n = int((os.environ.get("TOUCHSTONE_CONVERGE_N_STABLE") or "").strip()
+                or str(CONVERGE_N_STABLE_DEFAULT))
+    except ValueError:
+        n = CONVERGE_N_STABLE_DEFAULT
+    return n if n > 0 else CONVERGE_N_STABLE_DEFAULT
+
+
+def _converge_lift_drift():
+    try:
+        d = float((os.environ.get("TOUCHSTONE_CONVERGE_LIFT_DRIFT") or "").strip()
+                  or str(CONVERGE_LIFT_DRIFT_DEFAULT))
+    except ValueError:
+        d = CONVERGE_LIFT_DRIFT_DEFAULT
+    return d if d >= 0 else CONVERGE_LIFT_DRIFT_DEFAULT
+
+
+def _lift_from_ab(ab):
+    """从单 type 的 ab dict 算 lift = with_rate - without_rate；样本不足/缺 → None。"""
+    if not isinstance(ab, dict):
+        return None
+    ws, wa = ab.get("with_seen", 0), ab.get("with_adopted", 0)
+    os_, oa = ab.get("without_seen", 0), ab.get("without_adopted", 0)
+    if ws < GRADUATE_MIN_SAMPLES or os_ < GRADUATE_MIN_SAMPLES:
+        return None
+    return (wa / ws) - (oa / os_)
+
+
+def update_convergence(store, ab_results):
+    """逐 active 经验更新收敛状态（差距3a）。text 哈希不变 + lift 可算且漂移 < 阈值 → stable_rounds+1；
+    否则归零。stable_rounds 达 N_STABLE → state="stable"。lift 不可算（样本不足）时只看 text：text 变
+    则归零，text 不变则维持（不 +1，也不归零——样本不足不该单方面确认收敛，但也不因无数据惩罚）。
+    返回本轮新标 stable 的 type 集（可观测）。纯增量改 convergence 字段，不动 status/text/evidence。"""
+    if not _convergence_enabled():
+        return set()
+    n_stable = _converge_n_stable()
+    drift = _converge_lift_drift()
+    ab_results = ab_results or {}
+    newly_stable = set()
+    for e in store.get("experiences", []):
+        if e.get("status") != "active":
+            continue                                  # 非 active 不跟踪（candidate 还在变、retired 已下线）
+        ftype = e.get("finding_type")
+        text_hash = hashlib.sha256((e.get("text") or "").encode("utf-8")).hexdigest()
+        lift = _lift_from_ab(ab_results.get(ftype))
+        conv = e.get("convergence")
+        if not isinstance(conv, dict):
+            conv = {}
+        prev_hash = conv.get("last_text_hash")
+        prev_lift = conv.get("last_lift")
+        text_same = prev_hash is not None and prev_hash == text_hash
+        if text_same and lift is not None and prev_lift is not None:
+            # text 不变 + 双方 lift 可得 → 比 drift
+            if abs(lift - prev_lift) < drift:
+                conv["stable_rounds"] = int(conv.get("stable_rounds", 0)) + 1  # 稳 → +1
+            else:
+                conv["stable_rounds"] = 0                                      # lift 漂移 → 归零
+        elif text_same:
+            # PRA round-4（experience_store.py:589）：text 不变但本轮或上轮 lift 缺（样本不足 /
+            # 从不足中恢复）→ 维持，不奖不罚。旧实现此分支（prev_lift None）落 else 归零，惩罚了
+            # 临时样本不足的 baseline 臂。现与"本轮 lift None"同处置：hold。
+            conv["stable_rounds"] = int(conv.get("stable_rounds", 0))
+        else:
+            conv["stable_rounds"] = 0                                          # text 变 → 归零
+        conv["last_text_hash"] = text_hash
+        conv["last_lift"] = round(lift, 4) if lift is not None else None
+        was_stable = conv.get("state") == "stable"
+        conv["state"] = "stable" if conv["stable_rounds"] >= n_stable else None
+        e["convergence"] = conv
+        if conv["state"] == "stable" and not was_stable:
+            newly_stable.add(ftype)
+    return newly_stable
+
+
+def converged_types(store):
+    """返回【所有 active 经验均已 stable】的 finding_type 集（distill skip_types 用）。
+    PRA round-3（experience_store.py:606 "Lossy Normalization"）：旧实现"≥1 条 stable 即收入"
+    会让同 type 下仍有非 stable 兄弟经验时整 type 被跳过——丢失其候选蒸馏（两条不同 text 的
+    active 经验共享 finding_type 时，一条 stable 就 suppress 了另一条的演化）。改为"该 type 的
+    所有 active 经验均 stable"才收入：保守不跳过任何仍在演化的 type。未开收敛检测时返回空集。"""
+    if not _convergence_enabled():
+        return set()
+    by_type = {}                              # ftype -> list[bool]（每条 active 是否 stable）
+    for e in store.get("experiences", []):
+        if e.get("status") != "active" or not e.get("finding_type"):
+            continue
+        conv = e.get("convergence") if isinstance(e.get("convergence"), dict) else {}
+        by_type.setdefault(e["finding_type"], []).append(conv.get("state") == "stable")
+    return {ftype for ftype, sts in by_type.items() if all(sts)}
+
+
 def disable(store, exp_id):
     """人工单条停用（→retired），可回退。每条经验留来源/证据，便于抽检与回退。"""
     for e in store.get("experiences", []):

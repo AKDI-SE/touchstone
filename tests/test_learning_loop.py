@@ -2486,3 +2486,285 @@ def test_resolve_conflicts_recency_tiebreak_when_evidence_equal():
          "text": "NEW", "status": "active", "updated_at": 200, "source_prs": [], "evidence": {}}]}
     out = L.render_injection(store)
     assert "NEW" in out and "OLD" not in out
+
+
+# ---------------- 差距3a 收敛检测 ----------------
+
+def _active_text_exp(ftype, text, eid=None):
+    """一条 active 经验（无 convergence 字段——update_convergence 从无到有建立）。
+    与文件上方 _active_exp（retire 测试用）签名不同——本helper 显式带 text（收敛跟踪 text 哈希）。"""
+    return {"id": eid or f"emphasize:{ftype}", "repo": "", "stack": "",
+            "finding_type": ftype, "kind": "emphasize", "text": text,
+            "status": "active", "locked": False, "source_prs": [], "evidence": {},
+            "created_at": 1, "updated_at": 1}
+
+
+def _ab(ftype, *, with_seen, with_adopted, without_seen, without_adopted):
+    """构造单 type 的 ab_results（lift = with_adopted/with_seen - without_adopted/without_seen）。"""
+    return {ftype: {"with_seen": with_seen, "with_adopted": with_adopted,
+                    "without_seen": without_seen, "without_adopted": without_adopted}}
+
+
+def test_convergence_disabled_by_default(monkeypatch):
+    monkeypatch.delenv("TOUCHSTONE_CONVERGENCE", raising=False)
+    store = {"experiences": [_active_text_exp("PRA-X", "t")]}
+    ab = _ab("PRA-X", with_seen=20, with_adopted=10, without_seen=20, without_adopted=4)
+    assert L.update_convergence(store, ab) == set()
+    assert "convergence" not in store["experiences"][0]            # 未开 → 字段都不写
+    assert L.converged_types(store) == set()
+
+
+def test_convergence_marks_stable_after_n_stable_rounds(monkeypatch):
+    monkeypatch.setenv("TOUCHSTONE_CONVERGENCE", "true")
+    monkeypatch.delenv("TOUCHSTONE_CONVERGE_N_STABLE", raising=False)   # 默认 3
+    store = {"experiences": [_active_text_exp("PRA-X", "stable text")]}
+    ab = _ab("PRA-X", with_seen=20, with_adopted=10, without_seen=20, without_adopted=4)   # lift=0.30
+    # 第 1 轮：无 prev → stable_rounds=0（建立基线，不能首轮就宣称稳定）
+    L.update_convergence(store, ab)
+    assert store["experiences"][0]["convergence"]["stable_rounds"] == 0
+    # 第 2、3 轮：text+lift 都不变 → +1 每次
+    L.update_convergence(store, ab)
+    assert store["experiences"][0]["convergence"]["stable_rounds"] == 1
+    L.update_convergence(store, ab)
+    assert store["experiences"][0]["convergence"]["stable_rounds"] == 2
+    assert store["experiences"][0]["convergence"]["state"] is None  # 2 < 3
+    # 第 4 轮：+1 → 3 → 标 stable
+    newly = L.update_convergence(store, ab)
+    assert store["experiences"][0]["convergence"]["stable_rounds"] == 3
+    assert store["experiences"][0]["convergence"]["state"] == "stable"
+    assert newly == {"PRA-X"}
+    assert L.converged_types(store) == {"PRA-X"}
+
+
+def test_convergence_resets_on_text_change(monkeypatch):
+    monkeypatch.setenv("TOUCHSTONE_CONVERGENCE", "true")
+    store = {"experiences": [_active_text_exp("PRA-X", "v1")]}
+    ab = _ab("PRA-X", with_seen=20, with_adopted=10, without_seen=20, without_adopted=4)
+    L.update_convergence(store, ab); L.update_convergence(store, ab)   # rounds 1-2 → stable_rounds=1
+    assert store["experiences"][0]["convergence"]["stable_rounds"] == 1
+    store["experiences"][0]["text"] = "v2-changed"                     # text 变 → 打破稳定
+    L.update_convergence(store, ab)
+    assert store["experiences"][0]["convergence"]["stable_rounds"] == 0
+    assert store["experiences"][0]["convergence"]["state"] is None
+
+
+def test_convergence_resets_on_lift_drift(monkeypatch):
+    monkeypatch.setenv("TOUCHSTONE_CONVERGENCE", "true")
+    monkeypatch.setenv("TOUCHSTONE_CONVERGE_LIFT_DRIFT", "0.05")
+    store = {"experiences": [_active_text_exp("PRA-X", "same text")]}
+    ab_hi = _ab("PRA-X", with_seen=20, with_adopted=10, without_seen=20, without_adopted=4)   # lift=0.30
+    ab_lo = _ab("PRA-X", with_seen=20, with_adopted=6, without_seen=20, without_adopted=4)    # lift=0.10
+    L.update_convergence(store, ab_hi); L.update_convergence(store, ab_hi)   # stable_rounds=1
+    assert store["experiences"][0]["convergence"]["stable_rounds"] == 1
+    L.update_convergence(store, ab_lo)      # lift 0.30→0.10，漂移 0.20 > 0.05 → 归零
+    assert store["experiences"][0]["convergence"]["stable_rounds"] == 0
+    assert store["experiences"][0]["convergence"]["state"] is None
+
+
+def test_convergence_lift_unavailable_holds_rounds(monkeypatch):
+    """样本不足（lift=None）时：text 不变维持 stable_rounds（不 +1 也不归零）。"""
+    monkeypatch.setenv("TOUCHSTONE_CONVERGENCE", "true")
+    store = {"experiences": [_active_text_exp("PRA-X", "same text")]}
+    ab_full = _ab("PRA-X", with_seen=20, with_adopted=10, without_seen=20, without_adopted=4)
+    ab_thin = _ab("PRA-X", with_seen=1, with_adopted=1, without_seen=20, without_adopted=4)  # with<min → None
+    L.update_convergence(store, ab_full); L.update_convergence(store, ab_full)   # stable_rounds=1
+    L.update_convergence(store, ab_thin)      # lift=None、text 不变 → 维持 1（不奖不罚）
+    assert store["experiences"][0]["convergence"]["stable_rounds"] == 1
+    assert store["experiences"][0]["convergence"]["last_lift"] is None
+
+
+def test_convergence_holds_on_sample_recovery(monkeypatch):
+    """PRA round-4（experience_store.py:589）：上轮样本不足（last_lift=None），本轮 lift 恢复可得、
+    text 不变 → stable_rounds 应维持（不归零）。旧实现此情况落 else 归零，惩罚了临时样本不足的臂。"""
+    monkeypatch.setenv("TOUCHSTONE_CONVERGENCE", "true")
+    store = {"experiences": [_active_text_exp("PRA-X", "same text")]}
+    ab_full = _ab("PRA-X", with_seen=20, with_adopted=10, without_seen=20, without_adopted=4)
+    ab_thin = _ab("PRA-X", with_seen=1, with_adopted=1, without_seen=20, without_adopted=4)  # with<min → None
+    L.update_convergence(store, ab_full); L.update_convergence(store, ab_full)   # stable_rounds=1
+    L.update_convergence(store, ab_thin)      # 样本不足 → last_lift=None，维持 1
+    assert store["experiences"][0]["convergence"]["last_lift"] is None
+    L.update_convergence(store, ab_full)      # 恢复：lift 可得但 prev_lift=None → 维持 1（不归零）
+    assert store["experiences"][0]["convergence"]["stable_rounds"] == 1
+    assert store["experiences"][0]["convergence"]["last_lift"] == 0.3
+
+
+def test_distill_candidates_skips_converged_types():
+    """counting 蒸馏跳过 skip_types（active 已稳定，不必产新候选）。"""
+    agg = _agg({"PRA-KEEP": {"fires": 12, "adoption_rate": 0.90},     # emphasize
+                "PRA-SKIP": {"fires": 15, "adoption_rate": 0.85}})    # emphasize but converged
+    out = L.distill_candidates(agg, "", "", skip_types={"PRA-SKIP"})
+    ftypes = {c["finding_type"] for c in out}
+    assert "PRA-KEEP" in ftypes and "PRA-SKIP" not in ftypes
+
+
+# ---------------- 差距3b 增量水位 ----------------
+
+def test_watermark_round_trip(tmp_path):
+    p = str(tmp_path / "wm.json")
+    L._write_watermark(p, 142, 7)
+    wm = L._read_watermark(p)
+    assert wm == {"watermark": 142, "round": 7}
+
+
+def test_read_watermark_missing_or_corrupt_returns_none(tmp_path):
+    assert L._read_watermark(str(tmp_path / "nope.json")) is None
+    bad = tmp_path / "bad.json"
+    bad.write_text("{not json")
+    assert L._read_watermark(str(bad)) is None
+
+
+def test_decide_since_pr_modes():
+    # 首轮：无水位 → 全量
+    assert L._decide_since_pr(None, force_full=False, full_every=4) == (None, "first")
+    assert L._decide_since_pr({"watermark": None, "round": 0}, force_full=False, full_every=4) == (None, "first")
+    # 增量：有水位、非对账轮
+    assert L._decide_since_pr({"watermark": 100, "round": 1}, force_full=False, full_every=4) == (100, "incremental")
+    # 周期性全量：round % every == 0
+    assert L._decide_since_pr({"watermark": 100, "round": 4}, force_full=False, full_every=4) == (None, "periodic_full")
+    # FORCE_REBUILD 优先 → 全量（即便非对账轮）
+    assert L._decide_since_pr({"watermark": 100, "round": 1}, force_full=True, full_every=4) == (None, "force_full")
+    # full_every<=0：永不周期性全量（纯增量）
+    assert L._decide_since_pr({"watermark": 100, "round": 4}, force_full=False, full_every=0) == (100, "incremental")
+
+
+def test_build_ground_truth_since_pr_filters_old_prs(monkeypatch):
+    """since_pr=N 时 number<=N 的 PR 不触发 per-PR 取数（省 ~5 次 API 调用）。"""
+    calls = []
+
+    def fake_gh_get(url, token, **kw):
+        calls.append(url)
+        if "state=closed" in url:                       # PR 列表
+            return [{"number": 100}, {"number": 101}, {"number": 102}]
+        return []                                        # per-PR 数据空 → result=None → continue
+
+    monkeypatch.setattr(GT, "_gh_get", fake_gh_get)
+    monkeypatch.setenv("TOUCHSTONE_BOT_LOGIN", "github-actions[bot]")
+
+    GT.build_ground_truth("o", "r", "tok", window=10, since_pr=100)
+    # PR 100 被过滤（100<=100）→ 不该出现任何 /100/ 的 per-PR 取数；101、102 应出现 comments 取数
+    per_pr_nums = {u.split("/issues/")[1].split("/")[0] for u in calls if "/issues/" in u}
+    assert "100" not in per_pr_nums
+    assert per_pr_nums == {"101", "102"}
+
+    # 对照：since_pr=None → 三个 PR 都取数
+    calls.clear()
+    GT.build_ground_truth("o", "r", "tok", window=10, since_pr=None)
+    per_pr_nums = {u.split("/issues/")[1].split("/")[0] for u in calls if "/issues/" in u}
+    assert per_pr_nums == {"100", "101", "102"}
+
+
+def test_watermark_never_resets_on_full_rebuild_with_low_pr_ids(monkeypatch, tmp_path):
+    """PRA round-1 回归（learning_loop.py:399）：周期性全量轮 since_pr=None，旧守卫
+    `if since_pr and new_wm < since_pr` 被跳过（since_pr=None 为假）→ 若本轮返回条目的 pr_id
+    均低于旧水位（窗口漂移 / pr_id 异常），水位被回写到更小值 → 下轮 since_pr 变小触发全量重跑，
+    丢失增量收益。修复：以旧水位为下限，增量轮与全量轮一致生效。"""
+    import touchstone.learning_loop as LL
+    # 预置水位 {100, round=4}：round 4 % full_every(4) == 0 → 周期性全量 → since_pr=None
+    wm_path = tmp_path / "wm.json"
+    LL._write_watermark(str(wm_path), 100, 4)
+    # 全量轮返回的条目 pr_id 均低于旧水位 100（模拟窗口漂移 / pr_id 异常 / 全量切片不含最新 PR）
+    monkeypatch.setattr(LL, "build_ground_truth",
+                        lambda *a, **k: [{"pr_id": 50}, {"pr_id": 51}])
+    monkeypatch.setenv("GITHUB_TOKEN", "tok")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "o/r")
+    monkeypatch.setenv("TOUCHSTONE_INCREMENTAL", "true")          # 开增量 → 读水位
+    LL.main(["--build-ground-truth", "--ground-truth", str(tmp_path / "gt.json"),
+             "--store", str(tmp_path / "store.json"),
+             "--watermark", str(wm_path),
+             "--output", str(tmp_path / "report.json")])
+    # 水位不得回退到 51；应保持 100，round 推进到 5
+    assert LL._read_watermark(str(wm_path)) == {"watermark": 100, "round": 5}
+
+
+def test_pr_id_int_safe_extraction():
+    """PRA round-2（learning_loop.py:400 "Silent Exception Risk"）：_pr_id_int 必须对
+    缺失/非数字/int 型/str 型 pr_id 都安全返回 int 或 None，绝不抛 KeyError/ValueError/AttributeError。"""
+    assert L._pr_id_int({"pr_id": 100}) == 100                 # int 型
+    assert L._pr_id_int({"pr_id": "100"}) == 100               # str 型
+    assert L._pr_id_int({"pr_id": "  42 "}) == 42              # 带空白
+    assert L._pr_id_int({}) is None                            # 缺失
+    assert L._pr_id_int({"pr_id": None}) is None               # 显式 None
+    assert L._pr_id_int({"pr_id": ""}) is None                 # 空串
+    assert L._pr_id_int({"pr_id": "abc"}) is None              # 非数字
+    assert L._pr_id_int({"pr_id": "-1"}) is None               # 负数（isdigit 拒 '-')
+    assert L._pr_id_int({"pr_id": "12.5"}) is None             # 浮点串
+
+
+def test_watermark_advances_round_on_empty_ground_truth(monkeypatch, tmp_path):
+    """PRA round-2（learning_loop.py:399 "round counter never advancing"）：空 ground_truth
+    时 round 必须仍前进。旧门控 `if wm_state is not None and ground_truth:`（truthy）在 [] 时
+    跳过整块 → round 不增；若 round 卡在周期性全量边界（%full_every==0）会陷入反复全量死循环。
+    修复：门控改 `ground_truth is not None`，空列表也推进 round、保持水位。"""
+    import touchstone.learning_loop as LL
+    # round=4 → 4%4==0 周期性全量；build_ground_truth 返回 []（窗口内无信号 PR）
+    wm_path = tmp_path / "wm.json"
+    LL._write_watermark(str(wm_path), 100, 4)
+    monkeypatch.setattr(LL, "build_ground_truth", lambda *a, **k: [])
+    monkeypatch.setenv("GITHUB_TOKEN", "tok")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "o/r")
+    monkeypatch.setenv("TOUCHSTONE_INCREMENTAL", "true")
+    LL.main(["--build-ground-truth", "--ground-truth", str(tmp_path / "gt.json"),
+             "--store", str(tmp_path / "store.json"),
+             "--watermark", str(wm_path),
+             "--output", str(tmp_path / "report.json")])
+    # round 必须推进到 5（脱离周期性全量边界）；水位保持 100（无新条目，不前进也不回退）
+    assert LL._read_watermark(str(wm_path)) == {"watermark": 100, "round": 5}
+
+
+def test_build_ground_truth_since_pr_all_filtered_returns_empty(monkeypatch):
+    """PRA round-2（ground_truth.py:2615 "Add tests for edge cases"）：since_pr 指向的 PR
+    不在返回窗口内（所有返回 PR 的 number 均 <= since_pr）→ 全部被过滤 → 返回 [] 且无 per-PR
+    取数副作用。证水位有效但本轮无新 PR 时，调用方拿到空列表（非异常），下游水位逻辑正确处理。"""
+    calls = []
+
+    def fake_gh_get(url, token, **kw):
+        calls.append(url)
+        if "state=closed" in url:                          # PR 列表：全部 <= since_pr=200
+            return [{"number": 100}, {"number": 150}, {"number": 200}]
+        return []
+
+    monkeypatch.setattr(GT, "_gh_get", fake_gh_get)
+    monkeypatch.setenv("TOUCHSTONE_BOT_LOGIN", "github-actions[bot]")
+    out = GT.build_ground_truth("o", "r", "tok", window=10, since_pr=200)
+    # 全部 number<=200 被过滤 → 空列表（无异常）
+    assert out == []
+    # 不该有任何 per-PR 取数（全部在列表阶段过滤）
+    assert not [u for u in calls if "/issues/" in u]
+
+
+def test_watermark_bootstraps_on_first_run(monkeypatch, tmp_path):
+    """PRA round-3（learning_loop.py:273/233 "bootstrap"）：首轮水位文件不存在 → wm_state=None，
+    旧写块门控 `wm_state is not None` 跳过 → 文件永不创建 → 增量特性永不激活（每轮都 first）。
+    修复：门控改 wm_active（= wm_path + build_gt + 增量开），首轮 wm_state=None 也 bootstrap
+    写出水位（old_wm/round 取 0）。"""
+    import touchstone.learning_loop as LL
+    wm_path = tmp_path / "wm.json"               # 不存在 → 模拟首次运行
+    monkeypatch.setattr(LL, "build_ground_truth",
+                        lambda *a, **k: [{"pr_id": 50}, {"pr_id": 60}])
+    monkeypatch.setenv("GITHUB_TOKEN", "tok")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "o/r")
+    monkeypatch.setenv("TOUCHSTONE_INCREMENTAL", "true")
+    LL.main(["--build-ground-truth", "--ground-truth", str(tmp_path / "gt.json"),
+             "--store", str(tmp_path / "store.json"),
+             "--watermark", str(wm_path),
+             "--output", str(tmp_path / "report.json")])
+    # 首轮必须 bootstrap 写出水位文件（旧代码此处不写 → 增量永不激活）
+    assert wm_path.exists()
+    assert LL._read_watermark(str(wm_path)) == {"watermark": 60, "round": 1}
+
+
+def test_converged_types_requires_all_active_exps_stable(monkeypatch):
+    """PRA round-3（experience_store.py:606 "Lossy Normalization"）：同 finding_type 下两条
+    active 经验（不同 text），仅一条 stable 时，converged_types 不应收入该 type——否则 distill
+    skip_types 会跳过整 type，丢失非 stable 兄弟的候选蒸馏。旧实现"≥1 stable 即收入"会 conflate。"""
+    monkeypatch.setenv("TOUCHSTONE_CONVERGENCE", "true")
+    stable_exp = _active_text_exp("PRA-DUP", "advice A")
+    stable_exp["convergence"] = {"state": "stable", "stable_rounds": 3}
+    evolving_exp = _active_text_exp("PRA-DUP", "advice B")          # 同 type 不同 text
+    evolving_exp["convergence"] = {"state": None, "stable_rounds": 1}
+    store = {"experiences": [stable_exp, evolving_exp]}
+    # 仅一条 stable → 不得收入（仍有兄弟在演化）
+    assert L.converged_types(store) == set()
+    # 两条都 stable 才收入
+    evolving_exp["convergence"]["state"] = "stable"
+    assert L.converged_types(store) == {"PRA-DUP"}
