@@ -25,6 +25,43 @@ from touchstone.experience_store import (_exp_id, _is_review_type,           # n
 # --- 阈值 ---------------------------------------------------------------------
 DISTILL_MIN_FIRES   = 8      # 命中样本下限，才考虑蒸馏成候选经验
 
+# 差距2a：跨 PR 一致性（opt-in，默认关 = 零行为变化）
+#   仅 1 PR 高 reward 的 candidate 是"运气"非"能力"——入池前要求 source_prs ≥ K 且 reward_var 小。
+#   默认 K=1（=不限=现状）、max_var 未设（=不检查）；开启需 vars 显式设更紧值。
+DISTILL_MIN_SOURCE_PRS_DEFAULT = 1     # 1 = 不限（每条 candidate 至少来自 1 PR，恒满足）
+
+
+def _distill_min_source_prs():
+    """TOUCHSTONE_DISTILL_MIN_SOURCE_PRS：candidate 至少来自 N 个 PR 才入池（默认 1=不限=现状）。"""
+    try:
+        n = int((os.environ.get("TOUCHSTONE_DISTILL_MIN_SOURCE_PRS") or "").strip()
+                or str(DISTILL_MIN_SOURCE_PRS_DEFAULT))
+    except ValueError:
+        n = DISTILL_MIN_SOURCE_PRS_DEFAULT
+    return n if n > 0 else DISTILL_MIN_SOURCE_PRS_DEFAULT
+
+
+def _distill_max_reward_var():
+    """TOUCHSTONE_DISTILL_MAX_REWARD_VAR：跨 PR reward 方差上限（默认未设=不检查）。
+    非负 float 启用；空/非法/负 → None（不检查）。设计推荐 0.15。"""
+    v = (os.environ.get("TOUCHSTONE_DISTILL_MAX_REWARD_VAR") or "").strip()
+    if not v:
+        return None
+    try:
+        f = float(v)
+    except ValueError:
+        return None
+    return f if f >= 0 else None
+
+
+def _pvariance(values):
+    """总体方差（纯函数；values 至少 2 个才有意义）。避免顶层 import statistics（仅此处用）。"""
+    n = len(values)
+    if n < 2:
+        return 0.0
+    mean = sum(values) / n
+    return sum((x - mean) ** 2 for x in values) / n
+
 # --- 蒸馏：calibrate 奖励 → 候选经验（训练-free 计数式）--------------------------
 def distill_candidates(calib_agg, repo="", stack="", skip_types=None):
     """从 calibrate.aggregate 的 by_rule 统计蒸馏候选经验（无 LLM、无权重）。
@@ -444,7 +481,8 @@ class _Budget:
 def _distill_via_llm(ground_truth, store, llm=None, *, group_size=TFGRPO_GROUP_SIZE,
                      epochs=1, repo="", stack="",
                      rollout=None, score=None, distill_advantage=None,
-                     cache=None, max_llm_calls=None, max_workers=None, skip_types=None):
+                     cache=None, max_llm_calls=None, max_workers=None, skip_types=None,
+                     min_source_prs=None, max_reward_var=None):
     """TF-GRPO 入口（实现）。机制设计见 docs/learning-loop-design.html §3。
     ground_truth: 最小真值集 [{pr_id, repo, stack, summary, diff, human_adopted:[finding_type]}]
                   —— 历史已合 PR + 人审裁决（生产由 calibrate 从 GitHub 重建）。
@@ -473,6 +511,10 @@ def _distill_via_llm(ground_truth, store, llm=None, *, group_size=TFGRPO_GROUP_S
     cache_obj = _load_cache(cache)
     budget = _Budget(max_llm_calls)
     acc = {}
+    # 差距2a：跨 PR 一致性——按 candidate id 记每个【unique pr_id】的组均 reward（瞬态，不进 store）。
+    # 用 {pr_id: reward} 去重：同一 PR 多 epoch 的 rollout 只算一个跨 PR 样本（design 要"跨 PR 一致"，
+    # 非"跨 epoch 一致"）。下方 return 前据此过滤运气型 outlier。
+    reward_hist = {}
     try:                                    # 评审 item 3：循环中途失败也落盘已采缓存（finally）
         for _ in range(max(1, epochs)):
             # 每轮用「已有 active + 本轮已蒸出候选」重渲染 E，下一轮在更新后的 E 上 rollout（I2）
@@ -530,6 +572,10 @@ def _distill_via_llm(ground_truth, store, llm=None, *, group_size=TFGRPO_GROUP_S
                         prev["updated_at"] = c["updated_at"]
                     else:
                         acc[c["id"]] = c
+                    # 差距2a：记录本 PR 对该 candidate 的组均 reward（按 pr_id 去重）
+                    if rewards:
+                        rh = reward_hist.setdefault(c["id"], {})
+                        rh[str(pr.get("pr_id"))] = round(sum(rewards) / len(rewards), 4)
             if budget.exhausted:
                 break                              # 预算耗尽：不再开下一 epoch
     finally:
@@ -537,7 +583,32 @@ def _distill_via_llm(ground_truth, store, llm=None, *, group_size=TFGRPO_GROUP_S
             print(f"[distill] LLM 预算耗尽，跳过 {len(budget.skipped_prs)} 个 PR："
                   f"{budget.skipped_prs}（调 TOUCHSTONE_ROLLOUT_BUDGET / 增量水位）", file=sys.stderr)
         _save_cache(cache_obj, cache)              # 中途失败也落盘（评审 item 3）
-    return list(acc.values())
+    # 差距2a 跨 PR 一致性过滤（默认 min_source_prs=1、max_var=None → 不过滤=现状）：
+    #   ① source_prs 数 < min_source_prs → 丢（仅 1 PR 的运气型 outlier）。
+    #   ② 跨 PR reward 方差 > max_reward_var → 丢（跨 PR 不一致：某 type 仅个别 PR 高 reward）。
+    return _filter_by_consistency(acc, reward_hist, min_source_prs, max_reward_var)
+
+
+def _filter_by_consistency(acc, reward_hist, min_source_prs, max_reward_var):
+    """差距2a：按跨 PR 一致性过滤蒸馏候选。纯函数。
+    min_source_prs<=1 且 max_reward_var is None → 不过滤（默认=零行为变化）。"""
+    min_sp = DISTILL_MIN_SOURCE_PRS_DEFAULT if min_source_prs is None else min_source_prs
+    max_var = max_reward_var if max_reward_var is not None else _distill_max_reward_var()
+    if min_sp <= 1 and max_var is None:
+        return list(acc.values())             # 默认关：不过滤
+    kept, dropped = [], []
+    for cid, c in acc.items():
+        rh = reward_hist.get(cid, {})
+        n_prs = len(rh) or len(c.get("source_prs") or [])   # rh 优先（按 pr_id 去重）；fallback source_prs
+        if min_sp > 1 and n_prs < min_sp:
+            dropped.append((cid, f"<{min_sp} PRs ({n_prs})")); continue
+        if max_var is not None and len(rh) > 1 and _pvariance(list(rh.values())) > max_var:
+            dropped.append((cid, f"reward_var>{max_var}")); continue
+        kept.append(c)
+    if dropped:
+        print(f"[distill] 差距2a 一致性过滤：丢弃 {len(dropped)} 条运气/不一致 candidate："
+              f"{dropped}（调 TOUCHSTONE_DISTILL_MIN_SOURCE_PRS / _MAX_REWARD_VAR）", file=sys.stderr)
+    return kept
 
 
 # --- 蒸馏器分发：按名选实现 + 注册自定义（照搬 review_provider 的分发风格）---------------
@@ -571,10 +642,14 @@ def _tfgrpo_distiller(ctx):
     cache = ctx.get("cache", _env_rollout_cache())
     budget = ctx.get("max_llm_calls", _env_int_opt("TOUCHSTONE_ROLLOUT_BUDGET"))
     workers = ctx.get("max_workers", _env_int_opt("TOUCHSTONE_ROLLOUT_WORKERS"))
+    # 差距2a 跨 PR 一致性：ctx 显式传入优先，否则读 env（默认 min=1/var=None=不过滤=现状）。
+    min_sp = ctx.get("min_source_prs", _distill_min_source_prs())
+    max_var = ctx.get("max_reward_var", _distill_max_reward_var())
     return _distill_via_llm(ctx.get("ground_truth") or [], ctx.get("store") or {"experiences": []},
                             ctx.get("llm"), repo=ctx.get("repo", ""), stack=ctx.get("stack", ""),
                             cache=cache, max_llm_calls=budget, max_workers=workers,
-                            skip_types=ctx.get("skip_types"))
+                            skip_types=ctx.get("skip_types"),
+                            min_source_prs=min_sp, max_reward_var=max_var)
 
 
 _DISTILLERS = {"counting": _counting_distiller, "tfgrpo": _tfgrpo_distiller}

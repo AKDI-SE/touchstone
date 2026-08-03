@@ -2768,3 +2768,52 @@ def test_converged_types_requires_all_active_exps_stable(monkeypatch):
     # 两条都 stable 才收入
     evolving_exp["convergence"]["state"] = "stable"
     assert L.converged_types(store) == {"PRA-DUP"}
+
+
+# ---------------- 差距2a 跨 PR 一致性 ----------------
+
+def test_filter_by_consistency_default_no_filter():
+    """默认 min_source_prs=1、max_var=None → 不过滤（零行为变化）。"""
+    acc = {"a": {"id": "a", "source_prs": ["1"]}, "b": {"id": "b", "source_prs": ["1", "2"]}}
+    rh = {"a": {"1": 0.9}, "b": {"1": 0.9, "2": 0.1}}
+    out = L._filter_by_consistency(acc, rh, min_source_prs=None, max_reward_var=None)
+    assert len(out) == 2                         # 默认不过滤
+
+
+def test_filter_by_consistency_drops_single_pr_outlier():
+    """min_source_prs=2：仅 1 PR 的 candidate 被丢（运气非能力）。"""
+    acc = {"a": {"id": "a", "source_prs": ["1"]}, "b": {"id": "b", "source_prs": ["1", "2"]}}
+    rh = {"a": {"1": 0.9}, "b": {"1": 0.8, "2": 0.7}}
+    out = L._filter_by_consistency(acc, rh, min_source_prs=2, max_reward_var=None)
+    ids = {c["id"] for c in out}
+    assert ids == {"b"}                          # a 仅 1 PR → 丢
+
+
+def test_filter_by_consistency_drops_high_variance():
+    """max_reward_var=0.10：跨 PR reward 方差大的 candidate 被丢（不一致）。"""
+    acc = {"consistent": {"id": "consistent", "source_prs": ["1", "2"]},
+           "erratic": {"id": "erratic", "source_prs": ["1", "2"]}}
+    rh = {"consistent": {"1": 0.80, "2": 0.75},   # var 小
+          "erratic": {"1": 0.95, "2": 0.10}}      # var 大（0.95 vs 0.10）
+    out = L._filter_by_consistency(acc, rh, min_source_prs=1, max_reward_var=0.10)
+    ids = {c["id"] for c in out}
+    assert ids == {"consistent"}                 # erratic 方差大 → 丢
+
+
+def test_filter_by_consistency_single_pr_skips_var_check():
+    """仅 1 PR 时不算方差（数据不足不轻动）——只受 min_source_prs 约束。"""
+    acc = {"a": {"id": "a", "source_prs": ["1"]}}
+    rh = {"a": {"1": 0.5}}
+    out = L._filter_by_consistency(acc, rh, min_source_prs=1, max_reward_var=0.01)
+    assert len(out) == 1                         # 1 PR + min=1 → 留（var 检查跳过）
+
+
+def test_distill_max_reward_var_env_parsing(monkeypatch):
+    monkeypatch.delenv("TOUCHSTONE_DISTILL_MAX_REWARD_VAR", raising=False)
+    assert L._distill_max_reward_var() is None    # 未设 → None（不检查）
+    monkeypatch.setenv("TOUCHSTONE_DISTILL_MAX_REWARD_VAR", "0.15")
+    assert L._distill_max_reward_var() == 0.15
+    monkeypatch.setenv("TOUCHSTONE_DISTILL_MAX_REWARD_VAR", "not-a-number")
+    assert L._distill_max_reward_var() is None    # 非法 → None
+    monkeypatch.setenv("TOUCHSTONE_DISTILL_MAX_REWARD_VAR", "-1")
+    assert L._distill_max_reward_var() is None    # 负 → None

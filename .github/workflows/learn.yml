@@ -92,6 +92,10 @@ jobs:
           # number>水位 的新 PR（省 per-PR ~5 次 API 调用）；每 FULL_REFRESH_EVERY 轮强制全量对账兜底漂移。
           TOUCHSTONE_INCREMENTAL: ${{ vars.TOUCHSTONE_INCREMENTAL || '' }}
           TOUCHSTONE_FULL_REFRESH_EVERY: ${{ vars.TOUCHSTONE_FULL_REFRESH_EVERY || '4' }}
+          # 差距2a 跨 PR 一致性（默认关=现状）。candidate 入池前要求来自≥N 个 PR 且跨 PR reward 方差小
+          # （防"仅 1 PR 高 reward"的运气型 outlier 污染经验库）。默认 MIN=1（不限）、MAX_VAR 空（不检查）。
+          TOUCHSTONE_DISTILL_MIN_SOURCE_PRS: ${{ vars.TOUCHSTONE_DISTILL_MIN_SOURCE_PRS || '1' }}
+          TOUCHSTONE_DISTILL_MAX_REWARD_VAR: ${{ vars.TOUCHSTONE_DISTILL_MAX_REWARD_VAR || '' }}
           FORCE_REBUILD: ${{ github.event.inputs.force_ground_truth_rebuild || 'false' }}
         run: |
           python -m touchstone.learning_loop \
