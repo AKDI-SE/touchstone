@@ -2829,6 +2829,16 @@ def test_is_declining_noise_below_drift_does_not_trigger():
     assert L._is_declining(series, m=2, drift=0.05) is False
 
 
+def test_is_declining_non_positive_m_returns_false():
+    """PRA round-8（experience_store.py:None "non-positive m"）：m<=0 时 range(m)=[] → all([])=True
+    （空真值）——语义错误（"0 步下降"应为 False）。显式 m<=0 → False，不依赖调用方守卫。
+    retire_on_lift_decline 的 m_decline<=0 守卫在生产中阻此路径，但函数须自洽。"""
+    series = [{"lift": 0.30}, {"lift": 0.20}, {"lift": 0.10}]   # 正常下降序列
+    assert L._is_declining(series, m=0, drift=0.05) is False      # m=0 → False（非空真值 True）
+    assert L._is_declining(series, m=-1, drift=0.05) is False     # m<0 → False
+    assert L._is_declining(series, m=-2, drift=0.05) is False
+
+
 def test_retire_on_lift_decline_retires_declining_active(monkeypatch):
     monkeypatch.setenv("TOUCHSTONE_AUTO_ROLLBACK_M", "2")
     store = {"experiences": [_active_text_exp("PRA-X", "t")]}

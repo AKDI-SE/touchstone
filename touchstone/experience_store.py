@@ -697,8 +697,11 @@ def append_lift_history(trend, ab_results, *, ts=None, max_history=None):
 
 def _is_declining(series, m, drift):
     """纯函数：series 最后 m+1 条 lift 是否连续 m 步下降（每步降幅 > drift，防噪声抖动）。
-    数据不足（< m+1 条）/ 含 None → False（不轻动）。"""
-    if not series or len(series) < m + 1:
+    数据不足（< m+1 条）/ 含 None / m 非正 → False（不轻动）。
+    PRA round-8（experience_store.py:None "non-positive m"）：m<=0 时 range(m)=range(0或负)=[]
+    → all([])=True（空真值）——语义错误（"0 步下降"应为 False 而非 True）。retire_on_lift_decline
+    的 m_decline<=0 守卫（:716）在生产中阻此路径，但函数应自洽。显式 m<=0 → False。"""
+    if m <= 0 or not series or len(series) < m + 1:
         return False
     tail = [s.get("lift") for s in series[-(m + 1):]]
     if any(l is None for l in tail):
