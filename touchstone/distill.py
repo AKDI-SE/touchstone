@@ -602,6 +602,10 @@ def _filter_by_consistency(acc, reward_hist, min_source_prs, max_reward_var):
         n_prs = len(rh) or len(c.get("source_prs") or [])   # rh 优先（按 pr_id 去重）；fallback source_prs
         if min_sp > 1 and n_prs < min_sp:
             dropped.append((cid, f"<{min_sp} PRs ({n_prs})")); continue
+        # 注：len(rh)>1 跳过单 PR 候选——方差需 ≥2 点才有意义（单点 pvariance≡0 必过）。
+        # 单 PR 候选是否"证据不足"由上面 min_source_prs 闸管（正交职责：min_sp=样本量门槛、
+        # max_var=既有样本一致性门槛）。两闸可组合，不在此强行耦合（否则拿走操作者"保留单 PR
+        # 但仍查方差"的选择）。
         if max_var is not None and len(rh) > 1 and _pvariance(list(rh.values())) > max_var:
             dropped.append((cid, f"reward_var>{max_var}")); continue
         kept.append(c)
