@@ -2865,3 +2865,35 @@ def test_retire_on_lift_decline_disabled_when_m_zero(monkeypatch):
     trend = {"PRA-X": [{"lift": 0.30}, {"lift": 0.20}, {"lift": 0.10}]}
     assert L.retire_on_lift_decline(store, trend) == []      # m=0 → 趋势闸关
     assert store["experiences"][0]["status"] == "active"
+
+
+def test_trend_not_written_when_differential_off(monkeypatch, tmp_path):
+    """PRA round-1 回归（learning_loop.py:431）：--trend 传入但 TOUCHSTONE_DIFFERENTIAL_METRICS
+    关（默认）时，trend 恒 None（line 275 init；line 276 门控 `_differential_enabled() and trend_path`
+    不入），line 431 `if trend is not None and trend_path` 跳过 → 不写空/None 文件。锁此不变式。"""
+    import touchstone.learning_loop as LL
+    monkeypatch.delenv("TOUCHSTONE_DIFFERENTIAL_METRICS", raising=False)
+    monkeypatch.setenv("GITHUB_TOKEN", "tok")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "o/r")
+    trend_path = tmp_path / "adoption-trend.json"
+    LL.main(["--store", str(tmp_path / "store.json"),
+             "--trend", str(trend_path),
+             "--output", str(tmp_path / "report.json")])
+    assert not trend_path.exists()              # 差分关 → 不落 trend 文件（trend=None 被 431 守卫挡）
+
+
+def test_trend_written_when_differential_on(monkeypatch, tmp_path):
+    """对照：TOUCHSTONE_DIFFERENTIAL_METRICS=true 时，即便 trend 文件初不存在（except OSError→trend={}），
+    line 431 也会写出一个合法 dict（非 None）。证 None 永不落盘。"""
+    import touchstone.learning_loop as LL
+    monkeypatch.setenv("TOUCHSTONE_DIFFERENTIAL_METRICS", "true")
+    monkeypatch.setenv("GITHUB_TOKEN", "tok")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "o/r")
+    trend_path = tmp_path / "adoption-trend.json"
+    LL.main(["--store", str(tmp_path / "store.json"),
+             "--trend", str(trend_path),
+             "--output", str(tmp_path / "report.json")])
+    assert trend_path.exists()
+    import json
+    data = json.loads(trend_path.read_text())
+    assert isinstance(data, dict)               # 合法 dict（{} 或含历史），绝非 None
