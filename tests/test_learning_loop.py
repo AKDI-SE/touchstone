@@ -2768,3 +2768,100 @@ def test_converged_types_requires_all_active_exps_stable(monkeypatch):
     # 两条都 stable 才收入
     evolving_exp["convergence"]["state"] = "stable"
     assert L.converged_types(store) == {"PRA-DUP"}
+
+
+# ---------------- 差距3b 差分时序 + 趋势回滚 ----------------
+
+def test_differential_disabled_by_default(monkeypatch):
+    monkeypatch.delenv("TOUCHSTONE_DIFFERENTIAL_METRICS", raising=False)
+    assert L._differential_enabled() is False
+    assert L._auto_rollback_m() == 2          # 默认值仍可读（只是 main 不调用）
+
+
+def test_append_lift_history_appends_per_type(monkeypatch):
+    monkeypatch.setenv("TOUCHSTONE_DIFFERENTIAL_METRICS", "true")
+    trend = {}
+    ab = _ab("PRA-X", with_seen=20, with_adopted=10, without_seen=20, without_adopted=4)   # lift=0.30
+    L.append_lift_history(trend, ab, ts=1000)
+    assert len(trend["PRA-X"]) == 1
+    e = trend["PRA-X"][0]
+    assert e["lift"] == 0.3 and e["ts"] == 1000
+    assert e["with_seen"] == 20 and e["without_adopted"] == 4
+    # 第二轮 → 两条
+    L.append_lift_history(trend, ab, ts=2000)
+    assert len(trend["PRA-X"]) == 2
+
+
+def test_append_lift_history_skips_insufficient_samples(monkeypatch):
+    monkeypatch.setenv("TOUCHSTONE_DIFFERENTIAL_METRICS", "true")
+    trend = {}
+    ab_thin = _ab("PRA-X", with_seen=1, with_adopted=1, without_seen=20, without_adopted=4)   # with<min
+    L.append_lift_history(trend, ab_thin)
+    assert "PRA-X" not in trend              # 样本不足 → 不进时序
+
+
+def test_append_lift_history_caps_max_history(monkeypatch):
+    monkeypatch.setenv("TOUCHSTONE_DIFFERENTIAL_METRICS", "true")
+    trend = {}
+    ab = _ab("PRA-X", with_seen=20, with_adopted=10, without_seen=20, without_adopted=4)
+    for i in range(25):
+        L.append_lift_history(trend, ab, ts=i, max_history=10)
+    assert len(trend["PRA-X"]) == 10         # cap 到 10
+    assert trend["PRA-X"][0]["ts"] == 15     # FIFO 丢旧，保留最后 10 条（15..24）
+
+
+def test_is_declining_detects_monotonic_drop():
+    series = [{"lift": 0.30}, {"lift": 0.20}, {"lift": 0.10}]   # 两步各降 0.10 > drift
+    assert L._is_declining(series, m=2, drift=0.05) is True
+    # 数据不足（< m+1 条）
+    assert L._is_declining(series[:-1], m=2, drift=0.05) is False
+
+
+def test_is_declining_noise_below_drift_does_not_trigger():
+    # 每步降幅 0.02 < drift 0.05 → 噪声，不算趋势下降
+    series = [{"lift": 0.30}, {"lift": 0.28}, {"lift": 0.26}]
+    assert L._is_declining(series, m=2, drift=0.05) is False
+
+
+def test_retire_on_lift_decline_retires_declining_active(monkeypatch):
+    monkeypatch.setenv("TOUCHSTONE_AUTO_ROLLBACK_M", "2")
+    store = {"experiences": [_active_text_exp("PRA-X", "t")]}
+    # 时序：0.30 → 0.20 → 0.10（两步各降 0.10 > drift）→ 触发
+    trend = {"PRA-X": [{"lift": 0.30}, {"lift": 0.20}, {"lift": 0.10}]}
+    retired = L.retire_on_lift_decline(store, trend, drift=0.05)
+    assert retired == ["emphasize:PRA-X"]
+    e = store["experiences"][0]
+    assert e["status"] == "retired"
+    assert e["evidence"]["rollback_reason"] == "auto_rollback_lift_decline"
+    assert e["evidence"]["lift_trace"] == [0.3, 0.2, 0.1]
+
+
+def test_retire_on_lift_decline_skips_when_not_declining(monkeypatch):
+    monkeypatch.setenv("TOUCHSTONE_AUTO_ROLLBACK_M", "2")
+    store = {"experiences": [_active_text_exp("PRA-X", "t")]}
+    # 时序上升 → 不退役
+    trend = {"PRA-X": [{"lift": 0.10}, {"lift": 0.20}, {"lift": 0.30}]}
+    assert L.retire_on_lift_decline(store, trend, drift=0.05) == []
+    assert store["experiences"][0]["status"] == "active"
+
+
+def test_retire_on_lift_decline_skips_locked_and_human(monkeypatch):
+    monkeypatch.setenv("TOUCHSTONE_AUTO_ROLLBACK_M", "2")
+    trend = {"PRA-X": [{"lift": 0.30}, {"lift": 0.20}, {"lift": 0.10}]}
+    locked_exp = _active_text_exp("PRA-X", "locked text", eid="locked")
+    locked_exp["locked"] = True                                  # 真 locked → 不动
+    store = {"experiences": [
+        locked_exp,
+        {"id": "human", "finding_type": "PRA-X", "kind": "emphasize", "text": "h",
+         "status": "active", "locked": False, "source": "human",                 # 人手 seed → 不动
+         "source_prs": [], "evidence": {}}]}
+    assert L.retire_on_lift_decline(store, trend, drift=0.05) == []
+    assert all(e["status"] == "active" for e in store["experiences"])
+
+
+def test_retire_on_lift_decline_disabled_when_m_zero(monkeypatch):
+    monkeypatch.setenv("TOUCHSTONE_AUTO_ROLLBACK_M", "0")
+    store = {"experiences": [_active_text_exp("PRA-X", "t")]}
+    trend = {"PRA-X": [{"lift": 0.30}, {"lift": 0.20}, {"lift": 0.10}]}
+    assert L.retire_on_lift_decline(store, trend) == []      # m=0 → 趋势闸关
+    assert store["experiences"][0]["status"] == "active"

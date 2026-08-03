@@ -49,7 +49,10 @@ from touchstone.experience_store import (  # noqa: F401
     TAXONOMY_ENFORCE_DEFAULT, _normalize_type, _canonical_type, coerce_type, known_types,
     RETIRE_NEGATIVE_LIFT_DEFAULT, retire_on_negative_lift,
     CONVERGE_N_STABLE_DEFAULT, CONVERGE_LIFT_DRIFT_DEFAULT, CONVERGENCE_ENABLED_DEFAULT,
-    update_convergence, converged_types)
+    update_convergence, converged_types,
+    TREND_MAX_HISTORY_DEFAULT, AUTO_ROLLBACK_M_DEFAULT, DIFFERENTIAL_METRICS_DEFAULT,
+    append_lift_history, retire_on_lift_decline,
+    _differential_enabled, _auto_rollback_m, _trend_max_history, _is_declining)
 from touchstone.distill import (  # noqa: F401
     DISTILL_MIN_FIRES,
     TFGRPO_GROUP_SIZE, _W_NOISE, _W_MISS,
@@ -143,6 +146,8 @@ def _parse_cli(argv):
     p.add_argument("--window", type=int, default=GT_WINDOW, help="重建真值集时回看的最近已关闭 PR 数")
     p.add_argument("--watermark", dest="watermark",
                    help="增量水位 JSON 路径（差距3b；配合 --build-ground-truth，记录上次处理到的 PR 编号）")
+    p.add_argument("--trend", dest="trend",
+                   help="差分时序 JSON 路径（差距3b；adoption-trend.json，记录 per-type lift 跨轮趋势）")
     p.add_argument("--distiller", help="蒸馏器名(counting/tfgrpo/自定义)；缺省自动：有真值集+旗舰端点→tfgrpo")
     return p.parse_args(argv)
 
@@ -253,6 +258,7 @@ def main(argv=None):
         window = a.window
         distiller = a.distiller
         wm_path = a.watermark
+        trend_path = a.trend
     else:                                      # 环境变量路径（库/测试）
         store_path = STORE_PATH
         agg_path = os.environ.get("TOUCHSTONE_CALIB_AGG")
@@ -263,6 +269,7 @@ def main(argv=None):
         window = GT_WINDOW
         distiller = None
         wm_path = os.environ.get("TOUCHSTONE_WATERMARK_PATH")
+        trend_path = os.environ.get("TOUCHSTONE_TREND_PATH")
 
     report = {"steps": [], "distiller": None, "candidates": 0, "graduated": [],
               "retired": [], "active": 0, "total": 0, "ground_truth": 0}
@@ -288,6 +295,16 @@ def main(argv=None):
             report["steps"].append(f"build_ground_truth 全量模式（{mode}）")
     elif wm_active:
         report["steps"].append("build_ground_truth 全量模式（first：水位未建，本轮 bootstrap）")
+    # 差距3b 差分时序（opt-in，默认关）：读历史 trend，本轮 append 后判趋势回滚（下方 ab 就绪后）。
+    trend = None
+    if _differential_enabled() and trend_path:
+        try:
+            with open(trend_path, encoding="utf-8") as f:
+                trend = json.load(f)
+            if not isinstance(trend, dict):
+                trend = {}
+        except (OSError, json.JSONDecodeError):
+            trend = {}
     if build_gt:
         token = os.environ.get("GITHUB_TOKEN")
         repo_full = os.environ.get("GITHUB_REPOSITORY") or ""
@@ -411,6 +428,14 @@ def main(argv=None):
         if newly_stable:
             report["steps"].append(f"update_convergence: 新标 stable {len(newly_stable)} type：{sorted(newly_stable)}")
 
+    # ⑤.6 差距3b 差分时序 + 趋势回滚（默认关=零行为变化）。先 append 本轮 lift 到时序，再据趋势退役。
+    # 放收敛检测后、retire 后：用最终 lift 时序判"持续恶化"；与 retire_on_negative_lift（静态阈值）互补。
+    if trend is not None and ab:
+        append_lift_history(trend, ab)
+        declined = retire_on_lift_decline(store, trend)
+        if declined:
+            report["steps"].append(f"retire_on_lift_decline 趋势退役：{len(declined)} 条 {declined}")
+
     save_store(store, store_path)
     report["active"] = sum(1 for e in store["experiences"] if e["status"] == "active")
     report["total"] = len(store["experiences"])
@@ -437,6 +462,11 @@ def main(argv=None):
             new_wm = max(new_wm, max(pids, default=0))
         _write_watermark(wm_path, new_wm, new_round)
         report["steps"].append(f"learn_watermark: 推进至 pr={new_wm}（round {old_round}→{new_round}）")
+
+    # 差距3b：save_store 成功后才持久化时序（同 atomic 纪律——失败不写半文件，下轮从旧 trend 继续）。
+    if trend is not None and trend_path:
+        os.makedirs(os.path.dirname(trend_path) or ".", exist_ok=True)
+        atomic_write_json(trend_path, trend)
 
     # ⑥ 学习报告 + changed 输出（供 workflow 决定是否提交经验库）
     if out_path:

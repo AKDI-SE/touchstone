@@ -627,6 +627,111 @@ def converged_types(store):
     return {ftype for ftype, sts in by_type.items() if all(sts)}
 
 
+# --- 差距3b：差分时序持久化 + 趋势回滚（opt-in，默认关 = 零行为变化）------------------
+# retire_on_negative_lift 是【静态阈值闸】（lift ≤ -0.05 退役）；本节补【趋势闸】与【时序可观测】：
+#   ① append_lift_history：把本轮 per-type lift 追加到时序文件（adoption-trend.json），回答"经验在帮
+#      还是在害"的时序变化（_lift_summary 只给本轮快照，看不出趋势）。
+#   ② retire_on_lift_decline：active 经验的 type 时序连续 M_DECLINE 轮下降 → 提前退役（不必等
+#      lift 跌破 -0.05）。与静态闸互补：趋势闸在 lift 仍正但持续恶化时下线，防"慢性毒药"经验。
+# 时序文件随经验库 git 提交（learn.yml commit data/*.json），跨轮持久；lift=None（样本不足）的类型
+# 不进时序（无法判趋势，不污染）。趋势判据复用收敛漂移阈值（每步降幅 > drift，防噪声抖动误触发）。
+TREND_MAX_HISTORY_DEFAULT   = 20      # 每 type 保留的最大时序条数（防无界增长）
+AUTO_ROLLBACK_M_DEFAULT     = 2       # 连续 M 轮下降 → 趋势退役（0 = 关闭，仅静态闸）
+DIFFERENTIAL_METRICS_DEFAULT = "false"  # vars/未设 → off（不记时序=现状）
+
+
+def _differential_enabled():
+    """TOUCHSTONE_DIFFERENTIAL_METRICS 真值时开时序持久化+趋势回滚（默认关）。"""
+    return os.environ.get("TOUCHSTONE_DIFFERENTIAL_METRICS", DIFFERENTIAL_METRICS_DEFAULT).lower() in (
+        "1", "true", "yes", "on")
+
+
+def _auto_rollback_m():
+    """TOUCHSTONE_AUTO_ROLLBACK_M：连续 M 轮下降触发趋势退役（默认 2）；0/非正 → 关闭趋势闸。"""
+    try:
+        m = int((os.environ.get("TOUCHSTONE_AUTO_ROLLBACK_M") or "").strip()
+                or str(AUTO_ROLLBACK_M_DEFAULT))
+    except ValueError:
+        m = AUTO_ROLLBACK_M_DEFAULT
+    return m if m > 0 else 0
+
+
+def _trend_max_history():
+    try:
+        n = int((os.environ.get("TOUCHSTONE_TREND_MAX_HISTORY") or "").strip()
+                or str(TREND_MAX_HISTORY_DEFAULT))
+    except ValueError:
+        n = TREND_MAX_HISTORY_DEFAULT
+    return n if n > 0 else TREND_MAX_HISTORY_DEFAULT
+
+
+def append_lift_history(trend, ab_results, *, ts=None, max_history=None):
+    """纯函数：把本轮 ab 的 per-type lift 追加到时序（trend = {type: [entries]}，原地改 + 返回）。
+    每条 = {ts, lift, with_seen, with_adopted, without_seen, without_adopted}；cap 到 max_history 条/type
+    （FIFO 丢旧）。lift=None（样本不足 < GRADUATE_MIN_SAMPLES）的类型不 append——无法判趋势、不污染时序。
+    复用 _lift_from_ab（与收敛同源 lift 口径，逐字同 schema）。"""
+    if max_history is None:
+        max_history = _trend_max_history()
+    ts = ts if ts is not None else int(time.time())
+    if not isinstance(trend, dict):
+        trend = {}
+    for ftype, ab in (ab_results or {}).items():
+        if not isinstance(ab, dict):
+            continue
+        lift = _lift_from_ab(ab)
+        if lift is None:
+            continue
+        entry = {"ts": ts, "lift": round(lift, 4),
+                 "with_seen": ab.get("with_seen", 0), "with_adopted": ab.get("with_adopted", 0),
+                 "without_seen": ab.get("without_seen", 0), "without_adopted": ab.get("without_adopted", 0)}
+        series = trend.get(ftype) or []
+        series.append(entry)
+        if len(series) > max_history:
+            series = series[-max_history:]
+        trend[ftype] = series
+    return trend
+
+
+def _is_declining(series, m, drift):
+    """纯函数：series 最后 m+1 条 lift 是否连续 m 步下降（每步降幅 > drift，防噪声抖动）。
+    数据不足（< m+1 条）/ 含 None → False（不轻动）。"""
+    if not series or len(series) < m + 1:
+        return False
+    tail = [s.get("lift") for s in series[-(m + 1):]]
+    if any(l is None for l in tail):
+        return False
+    return all(tail[i] - tail[i + 1] > drift for i in range(m))
+
+
+def retire_on_lift_decline(store, trend, *, m_decline=None, drift=None):
+    """趋势回滚（差距3b）：active 经验的 type 时序连续 m_decline 轮下降 → 退役。
+    与 retire_on_negative_lift（静态阈值）互补——趋势闸在 lift 仍正但持续恶化时提前下线。
+    样本不足/时序不足（< m+1 条）不动；locked/人手 seed 不动。返回退役 id 列表。
+    留 evidence.rollback_reason='auto_rollback_lift_decline' + lift_trace 供人复核。"""
+    if m_decline is None:
+        m_decline = _auto_rollback_m()
+    if m_decline <= 0:
+        return []
+    if drift is None:
+        drift = _converge_lift_drift()
+    retired = []
+    for e in store.get("experiences", []):
+        if e.get("status") != "active" or e.get("locked") or e.get("source") == "human":
+            continue
+        ftype = e.get("finding_type")
+        series = (trend or {}).get(ftype) or []
+        if not _is_declining(series, m_decline, drift):
+            continue
+        e["status"] = "retired"
+        if not isinstance(e.get("evidence"), dict):
+            e["evidence"] = {}
+        e["evidence"]["rollback_reason"] = "auto_rollback_lift_decline"
+        e["evidence"]["lift_trace"] = [round(s.get("lift", 0), 4) for s in series[-(m_decline + 1):]]
+        e["updated_at"] = int(time.time())
+        retired.append(e["id"])
+    return retired
+
+
 def disable(store, exp_id):
     """人工单条停用（→retired），可回退。每条经验留来源/证据，便于抽检与回退。"""
     for e in store.get("experiences", []):
