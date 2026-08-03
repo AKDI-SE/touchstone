@@ -72,6 +72,13 @@ jobs:
           # vars.TOUCHSTONE_TAXONOMY_ENFORCE=true 即开始清洗（仅影响后续新蒸馏的候选，不改存量）。
           TOUCHSTONE_TAXONOMY_ENFORCE: ${{ vars.TOUCHSTONE_TAXONOMY_ENFORCE || '' }}
           TOUCHSTONE_TAXONOMY_TYPES: ${{ vars.TOUCHSTONE_TAXONOMY_TYPES || '' }}
+          # 差距1a 位置级奖励（默认关=类型集合匹配=现状）。机制+数据管线+测试已就位（514f1ae）：
+          # thread_findings 带 file/line → build_ground_truth 产 resolved_findings → make_gt_entry 产
+          # human_adopted_positions → score_review 走位置级部分信用。仅留本 env 接通生产 run-path。
+          # 开 vars.TOUCHSTONE_POSITIONAL_REWARD=true 即生效；部分信用权重经 POS_PARTIAL_* 可调。
+          TOUCHSTONE_POSITIONAL_REWARD: ${{ vars.TOUCHSTONE_POSITIONAL_REWARD || '' }}
+          TOUCHSTONE_POS_PARTIAL_SAMEFILE: ${{ vars.TOUCHSTONE_POS_PARTIAL_SAMEFILE || '0.5' }}  # 同 file 行距远的部分信用
+          TOUCHSTONE_POS_PARTIAL_NOFILE: ${{ vars.TOUCHSTONE_POS_PARTIAL_NOFILE || '0.5' }}      # 无 file 可比时的部分信用
           # c3 rollout 成本控制（缓存 / 预算 / 并发；默认值同设计文档 §5.1，经 vars 可调）
           TOUCHSTONE_ROLLOUT_CACHE: ${{ vars.TOUCHSTONE_ROLLOUT_CACHE || '' }}       # 空=不缓存；'memory'=进程内；路径=文件缓存
           TOUCHSTONE_ROLLOUT_BUDGET: ${{ vars.TOUCHSTONE_ROLLOUT_BUDGET || '200' }}   # 每轮总 rollout 上限
