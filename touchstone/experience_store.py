@@ -668,8 +668,10 @@ def _trend_max_history():
 def append_lift_history(trend, ab_results, *, ts=None, max_history=None):
     """纯函数：把本轮 ab 的 per-type lift 追加到时序（trend = {type: [entries]}，原地改 + 返回）。
     每条 = {ts, lift, with_seen, with_adopted, without_seen, without_adopted}；cap 到 max_history 条/type
-    （FIFO 丢旧）。lift=None（样本不足 < GRADUATE_MIN_SAMPLES）的类型不 append——无法判趋势、不污染时序。
-    复用 _lift_from_ab（与收敛同源 lift 口径，逐字同 schema）。"""
+    （FIFO 丢旧）。lift=None（样本不足 < GRADUATE_MIN_SAMPLES）时仍记录条目（lift=null + 计数）——
+    PRA round-2（experience_store.py:659）：旧实现 `if lift is None: continue` 让样本不足的类型完全
+    不可见，运维无法区分"样本不足"与"type 缺失"。现保留条目，_is_declining 对 tail 含 None 返回
+    False（不轻动），故 null 条目不污染趋势判定、只增可见性。复用 _lift_from_ab（同源 lift 口径）。"""
     if max_history is None:
         max_history = _trend_max_history()
     ts = ts if ts is not None else int(time.time())
@@ -679,9 +681,7 @@ def append_lift_history(trend, ab_results, *, ts=None, max_history=None):
         if not isinstance(ab, dict):
             continue
         lift = _lift_from_ab(ab)
-        if lift is None:
-            continue
-        entry = {"ts": ts, "lift": round(lift, 4),
+        entry = {"ts": ts, "lift": round(lift, 4) if lift is not None else None,
                  "with_seen": ab.get("with_seen", 0), "with_adopted": ab.get("with_adopted", 0),
                  "without_seen": ab.get("without_seen", 0), "without_adopted": ab.get("without_adopted", 0)}
         series = trend.get(ftype) or []

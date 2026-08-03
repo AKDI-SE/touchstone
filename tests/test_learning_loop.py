@@ -2792,12 +2792,18 @@ def test_append_lift_history_appends_per_type(monkeypatch):
     assert len(trend["PRA-X"]) == 2
 
 
-def test_append_lift_history_skips_insufficient_samples(monkeypatch):
+def test_append_lift_history_records_insufficient_samples_with_null_lift(monkeypatch):
+    """PRA round-2（experience_store.py:659）：样本不足（with_seen<min）的类型仍记录条目
+    （lift=null + 计数），让运维可区分"样本不足"与"type 缺失"。_is_declining 对 tail 含 None
+    返回 False，故 null 条目不污染趋势判定。"""
     monkeypatch.setenv("TOUCHSTONE_DIFFERENTIAL_METRICS", "true")
     trend = {}
     ab_thin = _ab("PRA-X", with_seen=1, with_adopted=1, without_seen=20, without_adopted=4)   # with<min
     L.append_lift_history(trend, ab_thin)
-    assert "PRA-X" not in trend              # 样本不足 → 不进时序
+    assert "PRA-X" in trend                   # 仍记录（非跳过）
+    e = trend["PRA-X"][0]
+    assert e["lift"] is None                  # 样本不足 → lift=null（非丢弃）
+    assert e["with_seen"] == 1 and e["without_seen"] == 20    # 计数保留（可见性）
 
 
 def test_append_lift_history_caps_max_history(monkeypatch):
