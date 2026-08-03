@@ -302,9 +302,17 @@ def main(argv=None):
             with open(trend_path, encoding="utf-8") as f:
                 trend = json.load(f)
             if not isinstance(trend, dict):
+                print(f"[learn] 警告：trend 文件非 dict（{type(trend).__name__}），重置为 {{}}——"
+                      f"历史时序丢失，请检查 {trend_path}", file=sys.stderr)
                 trend = {}
-        except (OSError, json.JSONDecodeError):
+        except json.JSONDecodeError:
+            # PRA round-4（learning_loop.py:275）：损坏的 trend 文件静默重置会丢全部历史时序，无信号。
+            # 发声提醒运维调查（数据丢失可见），仍重置为 {} 以不阻断本轮。
+            print(f"[learn] 警告：trend 文件 JSON 损坏，重置为 {{}}——历史时序丢失，请检查 {trend_path}",
+                  file=sys.stderr)
             trend = {}
+        except OSError:
+            trend = {}                                # 文件不存在（首轮）——正常，不警示
     if build_gt:
         token = os.environ.get("GITHUB_TOKEN")
         repo_full = os.environ.get("GITHUB_REPOSITORY") or ""

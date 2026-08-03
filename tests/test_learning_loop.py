@@ -2896,11 +2896,11 @@ def test_trend_written_when_differential_on(monkeypatch, tmp_path):
     monkeypatch.setenv("TOUCHSTONE_DIFFERENTIAL_METRICS", "true")
     monkeypatch.setenv("GITHUB_TOKEN", "tok")
     monkeypatch.setenv("GITHUB_REPOSITORY", "o/r")
-    # mock build_ground_truth 返回非空（触发 aggregate_ab 路径）+ aggregate_ab 返回已知 ab（lift=0.3）
+    # mock build_ground_truth 返回非空（触发 aggregate_ab 路径）+ aggregate_ab 返回已知 {ftype: arm}
+    # （_ab 已返回 {ftype: arm} 嵌套结构；此处显式展开，避免对 _ab 返回形状的误读）
     monkeypatch.setattr(LL, "build_ground_truth", lambda *a, **k: [{"pr_id": 1}])
-    monkeypatch.setattr(LL, "aggregate_ab",
-                        lambda gt: _ab("PRA-X", with_seen=20, with_adopted=10,
-                                       without_seen=20, without_adopted=4))
+    monkeypatch.setattr(LL, "aggregate_ab", lambda gt: {
+        "PRA-X": {"with_seen": 20, "with_adopted": 10, "without_seen": 20, "without_adopted": 4}})
     trend_path = tmp_path / "adoption-trend.json"
     LL.main(["--build-ground-truth", "--ground-truth", str(tmp_path / "gt.json"),
              "--store", str(tmp_path / "store.json"),
