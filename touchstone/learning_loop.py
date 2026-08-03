@@ -230,7 +230,10 @@ def _decide_since_pr(wm_state, *, force_full=False, full_every=None):
         return None, "force_full"
     if wm is None:
         return None, "first"
-    if full_every > 0 and rnd > 0 and rnd % full_every == 0:
+    # PRA round-3（learning_loop.py:233 "rnd>0 gate"）：去掉 `rnd > 0` 前置——bootstrap 修复后首轮
+    # 写 round=1（round=0 不再持久化），该门控原本排除的 round=0 场景已不可达；保留它只会让
+    # 外部构造的 round=0 文件错走增量。rnd%full_every==0（含 rnd=0）→ periodic_full（安全全量）。
+    if full_every > 0 and rnd % full_every == 0:
         return None, "periodic_full"
     return wm, "incremental"
 
@@ -270,7 +273,11 @@ def main(argv=None):
     ground_truth = None
     # 差距3b 增量水位（opt-in，默认关=全量=现状）：开时读水位、只取数 number>水位 的新 PR；
     # 周期性全量对账（round % FULL_REFRESH_EVERY == 0）或 FORCE_REBUILD 时回全量，消化漂移。
-    wm_state = _read_watermark(wm_path) if (build_gt and _incremental_enabled()) else None
+    # wm_active 与 wm_state 分离：wm_state 在首轮（水位文件未建）为 None，但 wm_active 仍真——
+    # PRA round-3：旧写块门控 `wm_state is not None` 让首轮跳过写水位 → 文件永不创建 → 增量特性
+    # 永不激活（每轮都 first 模式）。wm_active 独立判增量是否启用，首轮也能 bootstrap 写出水位。
+    wm_active = bool(wm_path) and build_gt and _incremental_enabled()
+    wm_state = _read_watermark(wm_path) if wm_active else None
     since_pr = None
     if wm_state is not None:
         force_full = os.environ.get("FORCE_REBUILD", "").lower() in ("1", "true", "yes")
@@ -279,6 +286,8 @@ def main(argv=None):
             report["steps"].append(f"build_ground_truth 增量模式：since_pr={since_pr}（round={wm_state.get('round', 0)}）")
         else:
             report["steps"].append(f"build_ground_truth 全量模式（{mode}）")
+    elif wm_active:
+        report["steps"].append("build_ground_truth 全量模式（first：水位未建，本轮 bootstrap）")
     if build_gt:
         token = os.environ.get("GITHUB_TOKEN")
         repo_full = os.environ.get("GITHUB_REPOSITORY") or ""
@@ -408,20 +417,27 @@ def main(argv=None):
 
     # 差距3b：save_store 成功后才推进水位（同 atomic 纪律——失败不推进，下轮重取，幂等）。
     # PRA round-1：新水位 = max(本轮条目 pr_id, 旧水位)——永不回退（含全量轮 since_pr=None）。
-    # PRA round-2（learning_loop.py:399 "round counter never advancing"）：旧门控
-    #   `if wm_state is not None and ground_truth:`（truthy）在空 ground_truth（[]）时整块
-    #   跳过 → round 不前进。若 round 卡在周期性全量边界（round%full_every==0），下轮仍判
-    #   periodic_full，陷入"反复全量、永不前进"的死循环。改门控为 `ground_truth is not None`
-    #   （列表存在即推进 round，无论是否空）；水位仅在非空时计算，空则保持旧值。
-    if wm_state is not None and ground_truth is not None:
-        new_round = (wm_state.get("round", 0) + 1)              # round 始终推进（驱动周期性全量调度）
-        new_wm = wm_state.get("watermark") or 0                  # 默认保持旧水位
-        if ground_truth:                                         # 非空才算新水位
+    # PRA round-2：门控 `ground_truth is not None`（列表存在即推进 round，空也前进，防空轮死循环）。
+    # PRA round-3（learning_loop.py:273/233 "bootstrap"）：旧门控 `wm_state is not None` 在首轮
+    #   （水位文件未建）为假 → 写块跳过 → 文件永不创建 → 增量永不激活。改门控为 `wm_active`
+    #   （= wm_path 设 + build_gt + 增量开），首轮 wm_state=None 也 bootstrap：old_wm/round 取 0。
+    if wm_active and ground_truth is not None:
+        old_wm = (wm_state or {}).get("watermark") or 0          # 首轮 wm_state=None → old_wm=0
+        old_round = (wm_state or {}).get("round", 0)              # 首轮 → old_round=0
+        new_round = old_round + 1                                 # round 始终推进（驱动周期性全量调度）
+        new_wm = old_wm                                           # 默认保持旧水位
+        if ground_truth:                                          # 非空才算新水位
             # _pr_id_int 安全提取（缺失/非数字→None，过滤；兼容 int/str 型 pr_id）
             pids = [p for e in ground_truth if (p := _pr_id_int(e)) is not None]
+            # PRA round-3（learning_loop.py:416 "Missing Minimum-Sample Guard"）：真值非空但
+            # pids 为空（所有 pr_id 异常）→ 水位静默停滞在 old_wm。发声提醒（API schema 变更等）。
+            if not pids:
+                import sys
+                print(f"[learn] 警告：{len(ground_truth)} 条真值均无有效 pr_id，"
+                      f"水位停滞在 {old_wm}（检查 ground_truth 的 pr_id 字段）", file=sys.stderr)
             new_wm = max(new_wm, max(pids, default=0))
         _write_watermark(wm_path, new_wm, new_round)
-        report["steps"].append(f"learn_watermark: 推进至 pr={new_wm}（round {wm_state.get('round', 0)}→{new_round}）")
+        report["steps"].append(f"learn_watermark: 推进至 pr={new_wm}（round {old_round}→{new_round}）")
 
     # ⑥ 学习报告 + changed 输出（供 workflow 决定是否提交经验库）
     if out_path:

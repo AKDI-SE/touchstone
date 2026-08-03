@@ -604,18 +604,20 @@ def update_convergence(store, ab_results):
 
 
 def converged_types(store):
-    """返回有≥1条 active stable 经验的 finding_type 集（distill skip_types 用）。
-    未开收敛检测时返回空集（默认关 = 不跳过任何 type = 现状）。"""
+    """返回【所有 active 经验均已 stable】的 finding_type 集（distill skip_types 用）。
+    PRA round-3（experience_store.py:606 "Lossy Normalization"）：旧实现"≥1 条 stable 即收入"
+    会让同 type 下仍有非 stable 兄弟经验时整 type 被跳过——丢失其候选蒸馏（两条不同 text 的
+    active 经验共享 finding_type 时，一条 stable 就 suppress 了另一条的演化）。改为"该 type 的
+    所有 active 经验均 stable"才收入：保守不跳过任何仍在演化的 type。未开收敛检测时返回空集。"""
     if not _convergence_enabled():
         return set()
-    out = set()
+    by_type = {}                              # ftype -> list[bool]（每条 active 是否 stable）
     for e in store.get("experiences", []):
-        if (e.get("status") == "active"
-                and isinstance(e.get("convergence"), dict)
-                and e["convergence"].get("state") == "stable"):
-            if e.get("finding_type"):
-                out.add(e["finding_type"])
-    return out
+        if e.get("status") != "active" or not e.get("finding_type"):
+            continue
+        conv = e.get("convergence") if isinstance(e.get("convergence"), dict) else {}
+        by_type.setdefault(e["finding_type"], []).append(conv.get("state") == "stable")
+    return {ftype for ftype, sts in by_type.items() if all(sts)}
 
 
 def disable(store, exp_id):

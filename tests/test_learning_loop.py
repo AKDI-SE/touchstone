@@ -2715,3 +2715,41 @@ def test_build_ground_truth_since_pr_all_filtered_returns_empty(monkeypatch):
     assert out == []
     # 不该有任何 per-PR 取数（全部在列表阶段过滤）
     assert not [u for u in calls if "/issues/" in u]
+
+
+def test_watermark_bootstraps_on_first_run(monkeypatch, tmp_path):
+    """PRA round-3（learning_loop.py:273/233 "bootstrap"）：首轮水位文件不存在 → wm_state=None，
+    旧写块门控 `wm_state is not None` 跳过 → 文件永不创建 → 增量特性永不激活（每轮都 first）。
+    修复：门控改 wm_active（= wm_path + build_gt + 增量开），首轮 wm_state=None 也 bootstrap
+    写出水位（old_wm/round 取 0）。"""
+    import touchstone.learning_loop as LL
+    wm_path = tmp_path / "wm.json"               # 不存在 → 模拟首次运行
+    monkeypatch.setattr(LL, "build_ground_truth",
+                        lambda *a, **k: [{"pr_id": 50}, {"pr_id": 60}])
+    monkeypatch.setenv("GITHUB_TOKEN", "tok")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "o/r")
+    monkeypatch.setenv("TOUCHSTONE_INCREMENTAL", "true")
+    LL.main(["--build-ground-truth", "--ground-truth", str(tmp_path / "gt.json"),
+             "--store", str(tmp_path / "store.json"),
+             "--watermark", str(wm_path),
+             "--output", str(tmp_path / "report.json")])
+    # 首轮必须 bootstrap 写出水位文件（旧代码此处不写 → 增量永不激活）
+    assert wm_path.exists()
+    assert LL._read_watermark(str(wm_path)) == {"watermark": 60, "round": 1}
+
+
+def test_converged_types_requires_all_active_exps_stable(monkeypatch):
+    """PRA round-3（experience_store.py:606 "Lossy Normalization"）：同 finding_type 下两条
+    active 经验（不同 text），仅一条 stable 时，converged_types 不应收入该 type——否则 distill
+    skip_types 会跳过整 type，丢失非 stable 兄弟的候选蒸馏。旧实现"≥1 stable 即收入"会 conflate。"""
+    monkeypatch.setenv("TOUCHSTONE_CONVERGENCE", "true")
+    stable_exp = _active_text_exp("PRA-DUP", "advice A")
+    stable_exp["convergence"] = {"state": "stable", "stable_rounds": 3}
+    evolving_exp = _active_text_exp("PRA-DUP", "advice B")          # 同 type 不同 text
+    evolving_exp["convergence"] = {"state": None, "stable_rounds": 1}
+    store = {"experiences": [stable_exp, evolving_exp]}
+    # 仅一条 stable → 不得收入（仍有兄弟在演化）
+    assert L.converged_types(store) == set()
+    # 两条都 stable 才收入
+    evolving_exp["convergence"]["state"] = "stable"
+    assert L.converged_types(store) == {"PRA-DUP"}
