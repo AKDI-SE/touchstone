@@ -2636,3 +2636,26 @@ def test_build_ground_truth_since_pr_filters_old_prs(monkeypatch):
     GT.build_ground_truth("o", "r", "tok", window=10, since_pr=None)
     per_pr_nums = {u.split("/issues/")[1].split("/")[0] for u in calls if "/issues/" in u}
     assert per_pr_nums == {"100", "101", "102"}
+
+
+def test_watermark_never_resets_on_full_rebuild_with_low_pr_ids(monkeypatch, tmp_path):
+    """PRA round-1 回归（learning_loop.py:399）：周期性全量轮 since_pr=None，旧守卫
+    `if since_pr and new_wm < since_pr` 被跳过（since_pr=None 为假）→ 若本轮返回条目的 pr_id
+    均低于旧水位（窗口漂移 / pr_id 异常），水位被回写到更小值 → 下轮 since_pr 变小触发全量重跑，
+    丢失增量收益。修复：以旧水位为下限，增量轮与全量轮一致生效。"""
+    import touchstone.learning_loop as LL
+    # 预置水位 {100, round=4}：round 4 % full_every(4) == 0 → 周期性全量 → since_pr=None
+    wm_path = tmp_path / "wm.json"
+    LL._write_watermark(str(wm_path), 100, 4)
+    # 全量轮返回的条目 pr_id 均低于旧水位 100（模拟窗口漂移 / pr_id 异常 / 全量切片不含最新 PR）
+    monkeypatch.setattr(LL, "build_ground_truth",
+                        lambda *a, **k: [{"pr_id": 50}, {"pr_id": 51}])
+    monkeypatch.setenv("GITHUB_TOKEN", "tok")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "o/r")
+    monkeypatch.setenv("TOUCHSTONE_INCREMENTAL", "true")          # 开增量 → 读水位
+    LL.main(["--build-ground-truth", "--ground-truth", str(tmp_path / "gt.json"),
+             "--store", str(tmp_path / "store.json"),
+             "--watermark", str(wm_path),
+             "--output", str(tmp_path / "report.json")])
+    # 水位不得回退到 51；应保持 100，round 推进到 5
+    assert LL._read_watermark(str(wm_path)) == {"watermark": 100, "round": 5}

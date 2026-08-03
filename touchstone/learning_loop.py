@@ -392,12 +392,16 @@ def main(argv=None):
     report["total"] = len(store["experiences"])
 
     # 差距3b：save_store 成功后才推进水位（同 atomic 纪律——失败不推进，下轮重取，幂等）。
-    # 新水位 = max(本轮返回条目的 pr_id)；无新条目则不前进（保持旧水位，round 仍 +1 以驱动对账周期）。
+    # 新水位 = max(本轮返回条目的 pr_id, 旧水位)——【永不回退】含全量重建轮（since_pr=None）：
+    # PRA round-1（learning_loop.py:399）：旧守卫 `if since_pr and new_wm < since_pr` 在全量轮被跳过
+    # （since_pr=None 为假），空窗口（default=0）会把水位重置为 0 → 下轮 since_pr=0 全量重跑。
+    # 改用旧水位作下限，增量轮与全量轮一致生效。
     if wm_state is not None and ground_truth:
         new_wm = max((int(e["pr_id"]) for e in ground_truth
                      if str(e.get("pr_id", "")).isdigit()), default=0)
-        if since_pr and new_wm < since_pr:
-            new_wm = since_pr                       # 不回退：本轮无新 PR 也不把水位往回拨
+        old_wm = wm_state.get("watermark") or 0
+        if new_wm < old_wm:
+            new_wm = old_wm                       # 永不回退：增量无新 PR / 全量空窗口 都不把水位往下拨
         new_round = (wm_state.get("round", 0) + 1)
         _write_watermark(wm_path, new_wm, new_round)
         report["steps"].append(f"learn_watermark: 推进至 pr={new_wm}（round {wm_state.get('round', 0)}→{new_round}）")

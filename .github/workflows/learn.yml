@@ -108,7 +108,12 @@ jobs:
           git config user.email "touchstone-bot@users.noreply.github.com"
           BOT_BRANCH="bot/experience-update"
           git checkout -B "$BOT_BRANCH"
-          git add data/experience_store.json data/ground_truth.json data/learn_watermark.json
+          # 差距3a/3b 产物均为可选：experience_store 恒产，ground_truth 取决于 --build-ground-truth，
+          # learn_watermark 仅在 TOUCHSTONE_INCREMENTAL=true 时写。非条件 git add 任一缺失文件即非零退出
+          # 导致整个 push 步骤失败（PRA round-1 learn.yml:111）。逐个按存在性 add，规避空指针。
+          for f in data/experience_store.json data/ground_truth.json data/learn_watermark.json; do
+            [ -f "$f" ] && git add "$f"
+          done
           # 不加 [skip ci]：要让 touchstone 评审在此 PR 上跑，gate 绿才触发自动合入
           git commit -m "chore(bot): weekly experience store + ground truth update" || { echo "无改动"; exit 0; }
           # 滚动分支：force-push 覆盖上一轮未合残留（learn.yml 有 concurrency 组，无并发）
