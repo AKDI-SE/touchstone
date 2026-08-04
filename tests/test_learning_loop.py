@@ -2898,3 +2898,203 @@ def test_reward_hist_skips_missing_pr_id(monkeypatch):
                              max_reward_var=0.1)
     # pr_id 缺失被跳过 → reward_hist 空 → fail-closed 丢弃（无 "None" key 合并污染）
     assert out == []                                # 守护生效：不写 "None" key，rh 空，被丢
+
+
+# ---------------- 差距3b 差分时序 + 趋势回滚 ----------------
+
+def test_differential_disabled_by_default(monkeypatch):
+    monkeypatch.delenv("TOUCHSTONE_DIFFERENTIAL_METRICS", raising=False)
+    assert L._differential_enabled() is False
+    assert L._auto_rollback_m() == 2          # 默认值仍可读（只是 main 不调用）
+
+
+def test_append_lift_history_appends_per_type(monkeypatch):
+    monkeypatch.setenv("TOUCHSTONE_DIFFERENTIAL_METRICS", "true")
+    trend = {}
+    ab = _ab("PRA-X", with_seen=20, with_adopted=10, without_seen=20, without_adopted=4)   # lift=0.30
+    L.append_lift_history(trend, ab, ts=1000)
+    assert len(trend["PRA-X"]) == 1
+    e = trend["PRA-X"][0]
+    assert e["lift"] == 0.3 and e["ts"] == 1000
+    assert e["with_seen"] == 20 and e["without_adopted"] == 4
+    # 第二轮 → 两条
+    L.append_lift_history(trend, ab, ts=2000)
+    assert len(trend["PRA-X"]) == 2
+
+
+def test_append_lift_history_records_insufficient_samples_with_null_lift(monkeypatch):
+    """PRA round-2（experience_store.py:659）：样本不足（with_seen<min）的类型仍记录条目
+    （lift=null + 计数），让运维可区分"样本不足"与"type 缺失"。_is_declining 对 tail 含 None
+    返回 False，故 null 条目不污染趋势判定。"""
+    monkeypatch.setenv("TOUCHSTONE_DIFFERENTIAL_METRICS", "true")
+    trend = {}
+    ab_thin = _ab("PRA-X", with_seen=1, with_adopted=1, without_seen=20, without_adopted=4)   # with<min
+    L.append_lift_history(trend, ab_thin)
+    assert "PRA-X" in trend                   # 仍记录（非跳过）
+    e = trend["PRA-X"][0]
+    assert e["lift"] is None                  # 样本不足 → lift=null（非丢弃）
+    assert e["with_seen"] == 1 and e["without_seen"] == 20    # 计数保留（可见性）
+
+
+def test_append_lift_history_caps_max_history(monkeypatch):
+    monkeypatch.setenv("TOUCHSTONE_DIFFERENTIAL_METRICS", "true")
+    trend = {}
+    ab = _ab("PRA-X", with_seen=20, with_adopted=10, without_seen=20, without_adopted=4)
+    for i in range(25):
+        L.append_lift_history(trend, ab, ts=i, max_history=10)
+    assert len(trend["PRA-X"]) == 10         # cap 到 10
+    assert trend["PRA-X"][0]["ts"] == 15     # FIFO 丢旧，保留最后 10 条（15..24）
+
+
+def test_is_declining_detects_monotonic_drop():
+    series = [{"lift": 0.30}, {"lift": 0.20}, {"lift": 0.10}]   # 两步各降 0.10 > drift
+    assert L._is_declining(series, m=2, drift=0.05) is True
+    # 数据不足（< m+1 条）
+    assert L._is_declining(series[:-1], m=2, drift=0.05) is False
+
+
+def test_is_declining_noise_below_drift_does_not_trigger():
+    # 每步降幅 0.02 < drift 0.05 → 噪声，不算趋势下降
+    series = [{"lift": 0.30}, {"lift": 0.28}, {"lift": 0.26}]
+    assert L._is_declining(series, m=2, drift=0.05) is False
+
+
+def test_is_declining_non_positive_m_returns_false():
+    """PRA round-8（experience_store.py:None "non-positive m"）：m<=0 时 range(m)=[] → all([])=True
+    （空真值）——语义错误（"0 步下降"应为 False）。显式 m<=0 → False，不依赖调用方守卫。
+    retire_on_lift_decline 的 m_decline<=0 守卫在生产中阻此路径，但函数须自洽。"""
+    series = [{"lift": 0.30}, {"lift": 0.20}, {"lift": 0.10}]   # 正常下降序列
+    assert L._is_declining(series, m=0, drift=0.05) is False      # m=0 → False（非空真值 True）
+    assert L._is_declining(series, m=-1, drift=0.05) is False     # m<0 → False
+    assert L._is_declining(series, m=-2, drift=0.05) is False
+
+
+def test_retire_on_lift_decline_retires_declining_active(monkeypatch):
+    monkeypatch.setenv("TOUCHSTONE_AUTO_ROLLBACK_M", "2")
+    store = {"experiences": [_active_text_exp("PRA-X", "t")]}
+    # 时序：0.30 → 0.20 → 0.10（两步各降 0.10 > drift）→ 触发
+    trend = {"PRA-X": [{"lift": 0.30}, {"lift": 0.20}, {"lift": 0.10}]}
+    retired = L.retire_on_lift_decline(store, trend, drift=0.05)
+    assert retired == ["emphasize:PRA-X"]
+    e = store["experiences"][0]
+    assert e["status"] == "retired"
+    assert e["evidence"]["rollback_reason"] == "auto_rollback_lift_decline"
+    assert e["evidence"]["lift_trace"] == [0.3, 0.2, 0.1]
+
+
+def test_retire_on_lift_decline_skips_when_not_declining(monkeypatch):
+    monkeypatch.setenv("TOUCHSTONE_AUTO_ROLLBACK_M", "2")
+    store = {"experiences": [_active_text_exp("PRA-X", "t")]}
+    # 时序上升 → 不退役
+    trend = {"PRA-X": [{"lift": 0.10}, {"lift": 0.20}, {"lift": 0.30}]}
+    assert L.retire_on_lift_decline(store, trend, drift=0.05) == []
+    assert store["experiences"][0]["status"] == "active"
+
+
+def test_retire_on_lift_decline_skips_locked_and_human(monkeypatch):
+    monkeypatch.setenv("TOUCHSTONE_AUTO_ROLLBACK_M", "2")
+    trend = {"PRA-X": [{"lift": 0.30}, {"lift": 0.20}, {"lift": 0.10}]}
+    locked_exp = _active_text_exp("PRA-X", "locked text", eid="locked")
+    locked_exp["locked"] = True                                  # 真 locked → 不动
+    store = {"experiences": [
+        locked_exp,
+        {"id": "human", "finding_type": "PRA-X", "kind": "emphasize", "text": "h",
+         "status": "active", "locked": False, "source": "human",                 # 人手 seed → 不动
+         "source_prs": [], "evidence": {}}]}
+    assert L.retire_on_lift_decline(store, trend, drift=0.05) == []
+    assert all(e["status"] == "active" for e in store["experiences"])
+
+
+def test_retire_on_lift_decline_disabled_when_m_zero(monkeypatch):
+    monkeypatch.setenv("TOUCHSTONE_AUTO_ROLLBACK_M", "0")
+    store = {"experiences": [_active_text_exp("PRA-X", "t")]}
+    trend = {"PRA-X": [{"lift": 0.30}, {"lift": 0.20}, {"lift": 0.10}]}
+    assert L.retire_on_lift_decline(store, trend) == []      # m=0 → 趋势闸关
+    assert store["experiences"][0]["status"] == "active"
+
+
+def test_trend_not_written_when_differential_off(monkeypatch, tmp_path):
+    """PRA round-1 回归（learning_loop.py:431）：--trend 传入但 TOUCHSTONE_DIFFERENTIAL_METRICS
+    关（默认）时，trend 恒 None（line 275 init；line 276 门控 `_differential_enabled() and trend_path`
+    不入），line 431 `if trend is not None and trend_path` 跳过 → 不写空/None 文件。锁此不变式。"""
+    import touchstone.learning_loop as LL
+    monkeypatch.delenv("TOUCHSTONE_DIFFERENTIAL_METRICS", raising=False)
+    monkeypatch.setenv("GITHUB_TOKEN", "tok")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "o/r")
+    trend_path = tmp_path / "adoption-trend.json"
+    LL.main(["--store", str(tmp_path / "store.json"),
+             "--trend", str(trend_path),
+             "--output", str(tmp_path / "report.json")])
+    assert not trend_path.exists()              # 差分关 → 不落 trend 文件（trend=None 被 431 守卫挡）
+
+
+def test_trend_written_when_differential_on(monkeypatch, tmp_path):
+    """TOUCHSTONE_DIFFERENTIAL_METRICS=true + 有 ab 数据 → trend 文件写出且含 per-type 条目（非空 {}）。
+    PRA round-3（tests/test_learning_loop.py:2767）：强化断言覆盖门控回归（如 `if trend_path:` 误替
+    `if _differential_enabled() and trend_path:` 时，仅验"文件存在"仍过——现验数据端到端流通）。"""
+    import touchstone.learning_loop as LL
+    monkeypatch.setenv("TOUCHSTONE_DIFFERENTIAL_METRICS", "true")
+    monkeypatch.setenv("GITHUB_TOKEN", "tok")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "o/r")
+    # mock build_ground_truth 返回非空（触发 aggregate_ab 路径）+ aggregate_ab 返回已知 {ftype: arm}
+    # （_ab 已返回 {ftype: arm} 嵌套结构；此处显式展开，避免对 _ab 返回形状的误读）
+    monkeypatch.setattr(LL, "build_ground_truth", lambda *a, **k: [{"pr_id": 1}])
+    monkeypatch.setattr(LL, "aggregate_ab", lambda gt: {
+        "PRA-X": {"with_seen": 20, "with_adopted": 10, "without_seen": 20, "without_adopted": 4}})
+    trend_path = tmp_path / "adoption-trend.json"
+    LL.main(["--build-ground-truth", "--ground-truth", str(tmp_path / "gt.json"),
+             "--store", str(tmp_path / "store.json"),
+             "--trend", str(trend_path),
+             "--output", str(tmp_path / "report.json")])
+    assert trend_path.exists()
+    import json
+    data = json.loads(trend_path.read_text())
+    assert isinstance(data, dict)
+    assert "PRA-X" in data                        # ab 数据流通 → 有 per-type 条目（非空 {}）
+    assert data["PRA-X"][0]["lift"] == 0.3        # 10/20 - 4/20 = 0.3
+    assert data["PRA-X"][0]["with_seen"] == 20
+
+
+def test_trend_bare_relative_path_writes_to_cwd(monkeypatch, tmp_path):
+    """PRA round-6（learning_loop.py:474 "cwd-sensitive path"）：--trend 传裸文件名（无目录分量）
+    时 `os.path.dirname→''`，`or '.'` 回落到 CWD。锁此语义：相对路径 → CWD 落盘，未来重构不得静默
+    改变文件位置。`os.makedirs('.', exist_ok=True)` 是安全 no-op（不会失败）；落盘位置由调用方传的
+    相对路径决定（learn.yml 用 data/adoption-trend.json 有目录分量，走另一分支）。"""
+    import os
+    import touchstone.learning_loop as LL
+    monkeypatch.setenv("TOUCHSTONE_DIFFERENTIAL_METRICS", "true")
+    monkeypatch.setenv("GITHUB_TOKEN", "tok")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "o/r")
+    monkeypatch.setattr(LL, "build_ground_truth", lambda *a, **k: [{"pr_id": 1}])
+    monkeypatch.setattr(LL, "aggregate_ab", lambda gt: {
+        "PRA-X": {"with_seen": 20, "with_adopted": 10, "without_seen": 20, "without_adopted": 4}})
+    # 切到隔离 CWD：裸相对名 → 必落在该 CWD（证明 dirname='' → '.' 回落语义端到端成立）
+    monkeypatch.chdir(tmp_path)
+    LL.main(["--build-ground-truth", "--ground-truth", str(tmp_path / "gt.json"),
+             "--store", str(tmp_path / "store.json"),
+             "--trend", "adoption-trend.json",        # 裸文件名（无目录分量）
+             "--output", str(tmp_path / "report.json")])
+    import json
+    written = tmp_path / "adoption-trend.json"          # 落在 CWD（=tmp_path）
+    assert written.exists()
+    data = json.loads(written.read_text())
+    assert "PRA-X" in data
+
+
+def test_append_lift_history_max_history_zero_or_negative_means_uncapped(monkeypatch):
+    """PRA round-6（experience_store.py:680 "zero max_history silently dropping types"）：
+    评审担心 max_history=0 丢整个 type——证伪：Python `[-0:]≡[0:]` 本保留全部。但负值 `[-(-1):]=[1:]`
+    确误丢首条（真 bug）。硬化：<=0 统一=不限（与 0 现状一致 + 修复负值）。0/负均保留全部条目。"""
+    monkeypatch.setenv("TOUCHSTONE_DIFFERENTIAL_METRICS", "true")
+    ab = _ab("PRA-X", with_seen=20, with_adopted=10, without_seen=20, without_adopted=4)
+    for mh in (0, -1, -5):
+        trend = {}
+        for i in range(5):
+            L.append_lift_history(trend, ab, ts=i, max_history=mh)
+        # <=0 视为不限 → 5 条全保留（不被封顶/不丢首条）
+        assert len(trend["PRA-X"]) == 5, f"max_history={mh} 应不限，实际 {len(trend['PRA-X'])}"
+    # 对照：max_history=2 封顶到 2（正路径不受影响）
+    trend = {}
+    for i in range(5):
+        L.append_lift_history(trend, ab, ts=i, max_history=2)
+    assert len(trend["PRA-X"]) == 2

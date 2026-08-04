@@ -96,6 +96,12 @@ jobs:
           # （防"仅 1 PR 高 reward"的运气型 outlier 污染经验库）。默认 MIN=1（不限）、MAX_VAR 空（不检查）。
           TOUCHSTONE_DISTILL_MIN_SOURCE_PRS: ${{ vars.TOUCHSTONE_DISTILL_MIN_SOURCE_PRS || '1' }}
           TOUCHSTONE_DISTILL_MAX_REWARD_VAR: ${{ vars.TOUCHSTONE_DISTILL_MAX_REWARD_VAR || '' }}
+          # 差距3b 差分时序 + 趋势回滚（默认关=现状）。开 vars.TOUCHSTONE_DIFFERENTIAL_METRICS=true 后：
+          # 每轮 per-type lift 追加到 adoption-trend.json（时序可观测）；active 经验 lift 连续 AUTO_ROLLBACK_M
+          # 轮下降 → 趋势退役（与 retire_on_negative_lift 静态阈值互补，提前下线慢性恶化经验）。
+          TOUCHSTONE_DIFFERENTIAL_METRICS: ${{ vars.TOUCHSTONE_DIFFERENTIAL_METRICS || '' }}
+          TOUCHSTONE_AUTO_ROLLBACK_M: ${{ vars.TOUCHSTONE_AUTO_ROLLBACK_M || '2' }}
+          TOUCHSTONE_TREND_MAX_HISTORY: ${{ vars.TOUCHSTONE_TREND_MAX_HISTORY || '20' }}
           FORCE_REBUILD: ${{ github.event.inputs.force_ground_truth_rebuild || 'false' }}
         run: |
           python -m touchstone.learning_loop \
@@ -104,6 +110,7 @@ jobs:
             --ground-truth data/ground_truth.json \
             --calib-agg calibration.json \
             --watermark data/learn_watermark.json \
+            --trend data/adoption-trend.json \
             --output data/learning_report.json
 
       - name: Push experience update to bot branch + open PR
@@ -125,8 +132,8 @@ jobs:
           [ -f data/experience_store.json ] || { echo "::error::data/experience_store.json 缺失：learn 异常未产出主产物，拒绝空提交"; exit 1; }
           git add data/experience_store.json
           # 可选产物按存在性 add（ground_truth 取决于 --build-ground-truth；learn_watermark 仅
-          # TOUCHSTONE_INCREMENTAL=true 时写）。非条件 git add 缺失文件会非零退出致步骤失败。
-          for f in data/ground_truth.json data/learn_watermark.json; do
+          # TOUCHSTONE_INCREMENTAL=true 时写；adoption-trend 仅 TOUCHSTONE_DIFFERENTIAL_METRICS=true 时写）。
+          for f in data/ground_truth.json data/learn_watermark.json data/adoption-trend.json; do
             [ -f "$f" ] && git add "$f"
           done
           # 不加 [skip ci]：要让 touchstone 评审在此 PR 上跑，gate 绿才触发自动合入
