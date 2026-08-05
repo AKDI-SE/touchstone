@@ -62,7 +62,9 @@ from touchstone.distill import (  # noqa: F401
     distill, _flagship_configured,
     _rollout_cache_key, _load_cache, _save_cache, _Budget, _looks_injected,
     _env_rollout_cache, _env_int_opt,
-    _positional_reward_enabled, _is_positional_signal, _position_credit, _score_positional)
+    _positional_reward_enabled, _is_positional_signal, _position_credit, _score_positional,
+    DISTILL_MIN_SOURCE_PRS_DEFAULT, _distill_min_source_prs, _distill_max_reward_var,
+    _pvariance, _filter_by_consistency)
 from touchstone.ground_truth import (  # noqa: F401
     GT_WINDOW, GT_DIFF_BUDGET, _gh_get, _stack_of, aggregate_ab,
     make_gt_entry, build_ground_truth,

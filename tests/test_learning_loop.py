@@ -2770,6 +2770,136 @@ def test_converged_types_requires_all_active_exps_stable(monkeypatch):
     assert L.converged_types(store) == {"PRA-DUP"}
 
 
+# ---------------- 差距2a 跨 PR 一致性 ----------------
+
+def test_filter_by_consistency_default_no_filter():
+    """默认 min_source_prs=1、max_var=None → 不过滤（零行为变化）。"""
+    acc = {"a": {"id": "a", "source_prs": ["1"]}, "b": {"id": "b", "source_prs": ["1", "2"]}}
+    rh = {"a": {"1": 0.9}, "b": {"1": 0.9, "2": 0.1}}
+    out = L._filter_by_consistency(acc, rh, min_source_prs=None, max_reward_var=None)
+    assert len(out) == 2                         # 默认不过滤
+
+
+def test_filter_by_consistency_drops_single_pr_outlier():
+    """min_source_prs=2：仅 1 PR 的 candidate 被丢（运气非能力）。"""
+    acc = {"a": {"id": "a", "source_prs": ["1"]}, "b": {"id": "b", "source_prs": ["1", "2"]}}
+    rh = {"a": {"1": 0.9}, "b": {"1": 0.8, "2": 0.7}}
+    out = L._filter_by_consistency(acc, rh, min_source_prs=2, max_reward_var=None)
+    ids = {c["id"] for c in out}
+    assert ids == {"b"}                          # a 仅 1 PR → 丢
+
+
+def test_filter_by_consistency_drops_high_variance():
+    """max_reward_var=0.10：跨 PR reward 方差大的 candidate 被丢（不一致）。"""
+    acc = {"consistent": {"id": "consistent", "source_prs": ["1", "2"]},
+           "erratic": {"id": "erratic", "source_prs": ["1", "2"]}}
+    rh = {"consistent": {"1": 0.80, "2": 0.75},   # var 小
+          "erratic": {"1": 0.95, "2": 0.10}}      # var 大（0.95 vs 0.10）
+    out = L._filter_by_consistency(acc, rh, min_source_prs=1, max_reward_var=0.10)
+    ids = {c["id"] for c in out}
+    assert ids == {"consistent"}                 # erratic 方差大 → 丢
+
+
+def test_filter_by_consistency_single_pr_zero_variance_passes():
+    """PRA round-1/2：仅 1 PR 的 candidate，pvariance([single])≡0，自然 ≤ max_var 必留——
+    不是"绕过方差检查"，是方差对单点无信息量（单点无离散度可言）。其证据充分性由
+    min_source_prs 管。故 1 PR + min=1 + var=0.01 → 留（pvariance=0 ≤ 0.01）。"""
+    acc = {"a": {"id": "a", "source_prs": ["1"]}}
+    rh = {"a": {"1": 0.5}}
+    out = L._filter_by_consistency(acc, rh, min_source_prs=1, max_reward_var=0.01)
+    assert len(out) == 1                         # 1 PR + min=1 → 留（pvariance=0 ≤ 0.01）
+
+
+def test_distill_max_reward_var_env_parsing(monkeypatch):
+    monkeypatch.delenv("TOUCHSTONE_DISTILL_MAX_REWARD_VAR", raising=False)
+    assert L._distill_max_reward_var() is None    # 未设 → None（不检查）
+    monkeypatch.setenv("TOUCHSTONE_DISTILL_MAX_REWARD_VAR", "0.15")
+    assert L._distill_max_reward_var() == 0.15
+    monkeypatch.setenv("TOUCHSTONE_DISTILL_MAX_REWARD_VAR", "not-a-number")
+    assert L._distill_max_reward_var() is None    # 非法 → None
+    monkeypatch.setenv("TOUCHSTONE_DISTILL_MAX_REWARD_VAR", "-1")
+    assert L._distill_max_reward_var() is None    # 负 → None
+
+
+def test_distill_min_source_prs_env_parsing(monkeypatch):
+    """PRA round-4（distill.py:34 "Float 字符串静默回退"）：int("2.0") 抛 ValueError 会让
+    TOUCHSTONE_DISTILL_MIN_SOURCE_PRS=2.0 悄悄退默认值 1。int(float(...)) 兜底解析。"""
+    monkeypatch.delenv("TOUCHSTONE_DISTILL_MIN_SOURCE_PRS", raising=False)
+    assert L._distill_min_source_prs() == 1          # 未设 → 默认 1
+    monkeypatch.setenv("TOUCHSTONE_DISTILL_MIN_SOURCE_PRS", "3")
+    assert L._distill_min_source_prs() == 3          # 整数串
+    monkeypatch.setenv("TOUCHSTONE_DISTILL_MIN_SOURCE_PRS", "2.0")
+    assert L._distill_min_source_prs() == 2          # float 串 → int(float())=2（不再静默退 1）
+    monkeypatch.setenv("TOUCHSTONE_DISTILL_MIN_SOURCE_PRS", "not-a-number")
+    assert L._distill_min_source_prs() == 1          # 非法 → 默认
+    monkeypatch.setenv("TOUCHSTONE_DISTILL_MIN_SOURCE_PRS", "0")
+    assert L._distill_min_source_prs() == 1          # 非正 → 默认（不限）
+    monkeypatch.setenv("TOUCHSTONE_DISTILL_MIN_SOURCE_PRS", "-2")
+    assert L._distill_min_source_prs() == 1          # 负 → 默认
+
+
+def test_filter_by_consistency_min_source_prs_none_honors_env(monkeypatch):
+    """PRA round-4（distill.py:595 "Silent override"）：min_source_prs=None 应与 max_reward_var=None
+    对称——回退 env reader，而非常量 DEFAULT。直接调 _distill_via_llm(min_source_prs=None) 时
+    env 覆盖须生效。env 未设 → _distill_min_source_prs()=DEFAULT(1)，默认零行为变化。"""
+    monkeypatch.setenv("TOUCHSTONE_DISTILL_MIN_SOURCE_PRS", "3")
+    # min_source_prs=None → 回退 env reader → 3：acc 中 2-PR candidate 应被丢（< 3）
+    acc = {"few": {"id": "few", "source_prs": ["1", "2"]},
+           "many": {"id": "many", "source_prs": ["1", "2", "3", "4"]}}
+    rh = {cid: {p: 0.5 for p in c["source_prs"]} for cid, c in acc.items()}
+    out = L._filter_by_consistency(acc, rh, min_source_prs=None, max_reward_var=None)
+    ids = {c["id"] for c in out}
+    assert ids == {"many"}                          # few(2 PRs) < 3 → 丢；env 被尊重（非 DEFAULT 1）
+
+
+def test_filter_drops_no_reward_history_when_variance_active():
+    """PRA round-5（distill.py:603/579）：max_var 启用但 rh 空（rewards 未录 / score 返空 /
+    pr_id 缺失）时 _pvariance([])=0.0 恒 ≤ max_var 会静默放行无证据候选。fail-closed：丢弃。"""
+    # many 有 4 source_prs 但 rh 空（reward 全未录）→ max_var 启用时必丢（无一致性证据）
+    acc = {"many": {"id": "many", "source_prs": ["1", "2", "3", "4"]}}
+    rh = {}                                         # 空：无 reward 记录
+    out = L._filter_by_consistency(acc, rh, min_source_prs=1, max_reward_var=0.1)
+    assert out == []                                # rh 空 + max_var 启用 → fail-closed 丢
+
+
+def test_filter_keeps_no_reward_history_when_variance_off():
+    """对照：max_var=None（默认关）时 rh 空仍放行——默认零行为变化（仅 min_sp 样本量闸生效）。"""
+    acc = {"many": {"id": "many", "source_prs": ["1", "2"]}}
+    rh = {}
+    out = L._filter_by_consistency(acc, rh, min_source_prs=1, max_reward_var=None)
+    ids = {c["id"] for c in out}
+    assert ids == {"many"}                          # max_var 关 → 不要求 reward 证据
+
+
+def test_reward_hist_skips_missing_pr_id(monkeypatch):
+    """PRA round-5（distill.py:None 'Guard against missing pr_id'）：pr_id 缺失时 str(None)="None"
+    会把多个无 id PR 的奖励合并到同一 key，污染方差。_distill_via_llm 对 pr_id 缺失的 PR 跳过
+    reward 记录。验法：两 pr_id=None 的 PR 产同一 candidate——守护后 rh 空 → max_var 启用时
+    fail-closed 丢弃（若无守护，"None" key 合并写入 → rh 非空 → pvariance=0 → 放行）。"""
+    monkeypatch.setenv("TOUCHSTONE_DISTILL_MAX_REWARD_VAR", "0.1")
+
+    def my_rollout(pr, E, llm, G):
+        return [[{"finding_type": "PRA-Z"}]]
+
+    def my_score(review, adopted):
+        return 1.0
+
+    def my_distill(pr, group, llm, repo, stack):
+        return [{"id": "emphasize:PRA-Z", "finding_type": "PRA-Z", "kind": "emphasize",
+                 "text": "x", "evidence": {}, "status": "candidate",
+                 "source_prs": [pr.get("pr_id")], "repo": repo, "stack": stack,
+                 "created_at": 0, "updated_at": 0}]
+
+    # 两 pr_id=None 的 PR 产同一 candidate
+    gt = [{"pr_id": None, "human_adopted": ["PRA-Z"], "repo": "o/r", "stack": "py"},
+          {"pr_id": None, "human_adopted": ["PRA-Z"], "repo": "o/r", "stack": "py"}]
+    out = L._distill_via_llm(gt, {"experiences": []}, llm=lambda m: "[]",
+                             rollout=my_rollout, score=my_score, distill_advantage=my_distill,
+                             max_reward_var=0.1)
+    # pr_id 缺失被跳过 → reward_hist 空 → fail-closed 丢弃（无 "None" key 合并污染）
+    assert out == []                                # 守护生效：不写 "None" key，rh 空，被丢
+
+
 # ---------------- 差距3b 差分时序 + 趋势回滚 ----------------
 
 def test_differential_disabled_by_default(monkeypatch):
