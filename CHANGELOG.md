@@ -5,6 +5,28 @@
 
 ## [未发布]
 
+（下个版本的新变更记于此。）
+
+## [0.2.1] — 2026-08-06（TF-GRPO 生产化全部差距 + Probe + 运维加固）
+
+本版本汇集 TF-GRPO 离线自演化生产化的全部 4 个差距、Probe 测试有效性探针新模块、以及集成方 CI 耗时上游报告驱动的运维加固。4 个 TF-GRPO 差距遵循同一纪律：**env-default-off = 字节级零行为变化**，纯函数 + 离线可测，无 layer-contract 变更。
+
+### TF-GRPO 生产化差距（3a + 1a + 3b + 2a，皆 opt-in、默认零行为变化）
+
+- **差距 3a 收敛检测 + 增量水位**（#151）：连续 `N_STABLE` 轮 text+lift 不变的 active 经验标 `stable`，下轮蒸馏跳过该 type（省 LLM 调用）；增量水位（`TOUCHSTONE_INCREMENTAL`）只取 number>水位的新 PR，每 `FULL_REFRESH_EVERY` 轮强制全量对账兜底漂移。
+- **差距 1a 位置级奖励 env 接通**（#152）：thread_findings 带 file/line → `build_ground_truth` 产 resolved_findings → `make_gt_entry` 产 `human_adopted_positions` → `score_review` 走位置级部分信用。机制 + 数据管线 + 测试就位，本 env 接通生产 run-path（`TOUCHSTONE_POSITIONAL_REWARD`）。
+- **差距 3b 差分时序 + 趋势回滚**（#153，merge `4cdfd42`）：开 `TOUCHSTONE_DIFFERENTIAL_METRICS=true` 后每轮 per-type lift 追加到 `adoption-trend.json`（时序可观测）；active 经验 lift 连续 `AUTO_ROLLBACK_M` 轮下降 → 趋势退役（与 `retire_on_negative_lift` 静态阈值互补，提前下线慢性恶化经验）。
+- **差距 2a 跨 PR 一致性过滤**（#154，merge `3e83d3c`）：candidate 入池前要求来自 ≥`MIN_SOURCE_PRS` 个 PR 且跨 PR reward 方差 ≤`MAX_REWARD_VAR`（防"仅 1 PR 高 reward"的运气型 outlier 污染经验库）。默认 MIN=1（不限）、MAX_VAR 空（不检查）= 不过滤。
+
+### TF-GRPO 闭环 + 经验库改进（本版本同步收口）
+
+- **TF-GRPO 闭环合上**（#143）：开 shadow 注入 + 接通 taxonomy 清洗开关（`TOUCHSTONE_TAXONOMY_ENFORCE`）。
+- **finding_type 归一化**（#144）：合并大小写/分隔符变体（不丢弃），稳定 tiebreak + 兄弟 evidence 合并。
+- **waived 噪声标签采集**（#146）：采集 waived+merged 为确认噪声标签（Phase 1，零行为变化）。
+- **marker 信任根收紧**（#147）：`bot_login` 已知时精确匹配（系统级安全加固）。
+- **聚合单侧失败轮数**（#148）：run-285 盲区——improve 挂而 review 仍可信时不再隐身。
+- **CI 耗时优化**（#149）：内联 gate + pip 下载缓存 + 文档化 verify-result.json 缺失一致性。
+
 ### Probe：测试有效性探针（新模块）
 
 补上 Touchstone 缺失的「测试相对于行为」审查层——回答「『测试全绿』本身可信吗」。对标 dev-loop 变异探针实践与 AKDI fail-open 实证（lint 零文件检查恒 exit 0、冒烟 11/63 skip 计通过）。设计见 `docs/touchstone-probe-design.md`（随 docs/probe-design 分支独立 PR 交付，SIZE-001 拆分）。
@@ -25,8 +47,6 @@
 - **预检 ping 开关（问题五）**：`TOUCHSTONE_LLM_PING=false` 可关（默认开，保留防静默故障的观测点）。
 - **Python ≥3.13 下限（问题六）**：`pragent-constraints.txt` 头部显式标注；DEPLOYMENT 新增「部署效率与踩坑」节，把 `TOUCHSTONE_LLM_THINKING`/`REFLECT_MODEL` 升为必配项（集成方数据：213s→31s）。
 - 测试 +5（空串回落 / SIZE 门禁 / ping 开关 / 日志时间戳 / metrics 耗时字段）。
-
-（首个公开发布 [0.1.0] 之后的新变更记于此。）
 
 ## [0.1.0] — 2026-07-18（首个公开发布）
 
