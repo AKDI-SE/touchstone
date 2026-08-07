@@ -104,7 +104,39 @@ def test_review_source_gets_review_done_criteria():
         "issue_header": "边界未处理", "issue_content": "空输入分支缺失", "label": "possible issue"}]}}
     f = rp.normalize(rp.parse_pr_agent(raw))[0]
     assert f["done_criteria"]["kind"] == "review"
-    assert "边界未处理" in f["done_criteria"]["spec"]["question"]
+    # 诚实降级（见 review_provider.normalize 注释）：model 来源给不出具体复核问题，
+    # question 留空而非复读 direction。direction 仍在 fix_direction 字段（不丢）。
+    assert f["done_criteria"]["spec"]["question"] == ""
+    assert f["fix_direction"] == "边界未处理"           # 方向不丢，仅判据不复读
+
+
+def test_review_done_criteria_renders_honest_degradation():
+    """model 来源判据 question 留空 → 渲染诚实降级行（不套 direction 模板复读）。
+
+    设计意见 1 要求 review 类带「一句可回答的具体复核问题」（示例：回滚路径是否覆盖跨模块
+    调用失败）。normalize 层给不出 → 诚实留空。渲染层退为「下一轮复检不再命中即销项」
+    （reconcile 实际机制：sig 不再现即自动销项）。对比：确定性来源渲染「规则 X 复检不再命中」。"""
+    from touchstone.render import _finding_entry
+    # model 来源：question 空 → 诚实降级
+    f_model = {"rule_id": "PRA-X", "file": "a.py", "line": 1, "rationale": "问题",
+               "fix_direction": "方向", "fix_reasoning": "",
+               "done_criteria": {"kind": "review", "spec": {"question": ""}},
+               "severity": "warn", "confidence": 0.7, "agent": "pr-agent:review"}
+    entry = _finding_entry(1, f_model)
+    assert "下一轮复检不再命中即销项" in entry
+    assert "是否已按方向解决" not in entry             # 不复读 direction
+    # 带具体复核问题的 review（如 guard_context / 未来 prompt 工程产出）→ 渲染「需人工复核」
+    f_specific = dict(f_model, done_criteria={"kind": "review",
+                                              "spec": {"question": "回滚路径是否覆盖跨模块调用失败？"}})
+    entry2 = _finding_entry(1, f_specific)
+    assert "需人工复核：回滚路径是否覆盖跨模块调用失败？" in entry2
+    # 确定性来源不变：规则复检
+    f_det = {"rule_id": "SCOPE-001", "file": "a.py", "line": 1, "rationale": "越界",
+             "fix_direction": "收进 docs/", "fix_reasoning": "",
+             "done_criteria": {"kind": "deterministic", "spec": {"recheck": "SCOPE-001"}},
+             "severity": "warn", "confidence": 1.0, "agent": "contract-check"}
+    entry3 = _finding_entry(1, f_det)
+    assert "规则 `SCOPE-001` 复检不再命中" in entry3
 
 
 # ---------------- 意见 3：收敛清单 ----------------
