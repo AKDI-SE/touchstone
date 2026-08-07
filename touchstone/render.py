@@ -66,6 +66,26 @@ def render_unreliable_callout(engine_status, ai_raw_count=0, added_lines=0, engi
     ])
 
 
+_REASONING_COLLAPSE_THRESHOLD = 200
+
+
+def _render_reasoning(reasoning):
+    """渲染依据字段——长文折叠进 <details>（借鉴 pr-agent 上游 #2510 的 Agent Prompt 折叠）。
+
+    pr-agent #2510 评审把详细 Issue description / Issue Context 放 <details> 折叠，默认只露
+    标题 + 一句后果，降低视觉噪声。本系统同理：依据 ≤200 字符平铺（短依据是快速判读信号），
+    超阈值折叠为「依据（点击展开）」——author 一眼扫清单时只看标题 + 方向，需要细节再展开。
+
+    纯函数：输入字符串，输出 markdown 片段（空输入返回空串）。"""
+    if not reasoning:
+        return ""
+    if len(reasoning) <= _REASONING_COLLAPSE_THRESHOLD:
+        return f"   - 依据：{reasoning}"
+    # 折叠：summary 行露字数，body 完整保留（author 需要细节时展开）
+    return ("\n   - <details><summary>依据（{len} 字，点击展开）</summary>\n\n"
+            "   {body}\n\n   </details>").format(len=len(reasoning), body=reasoning)
+
+
 def _finding_entry(i, f):
     """单条发现的渲染（规则命中与 AI 建议共用）：位置 — 问题 + 修复方向/依据/达成判据 + 行尾元数据。"""
     direction = f.get("fix_direction") or f.get("suggested_fix") or ""
@@ -82,7 +102,7 @@ def _finding_entry(i, f):
     e = (f"{i}. **`{f.get('file','?')}:{f.get('line','?')}`** — {f.get('rationale','')}\n"
          f"   - 修复方向：{direction}")
     if reasoning and reasoning != f.get("rationale"):
-        e += f"\n   - 依据：{reasoning}"
+        e += "\n" + _render_reasoning(reasoning)
     if dc_line:
         e += f"\n   - 达成判据：{dc_line}"
     e += (f"\n   - <sub>`{f['rule_id']}` · {f.get('severity','')} · "

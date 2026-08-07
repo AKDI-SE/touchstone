@@ -115,6 +115,57 @@ def _finding(rid, file="a.py", line=1, direction="改这里", kind="deterministi
             "fix_reasoning": "依据", "done_criteria": dc}
 
 
+# ---------------- 借鉴 pr-agent #2510：折叠长依据 ----------------
+def _rf(rid, rationale="问题", direction="方向", reasoning="", line=1):
+    """render._finding_entry 用的最小 finding dict。"""
+    return {"rule_id": rid, "file": "a.py", "line": line, "rationale": rationale,
+            "fix_direction": direction, "fix_reasoning": reasoning,
+            "done_criteria": {"kind": "review", "spec": {"question": "?"}},
+            "severity": "warn", "confidence": 0.7, "agent": "pr-agent:review"}
+
+
+def test_short_reasoning_rendered_inline():
+    """短依据（≤200 字符）平铺不折叠——短依据是快速判读信号，折叠反而增操作。"""
+    from touchstone.render import _finding_entry
+    short = "这是一条短依据。" * 5   # ~45 字符
+    f = _rf("PRA-X", reasoning=short)
+    entry = _finding_entry(1, f)
+    assert f"   - 依据：{short}" in entry
+    assert "<details>" not in entry
+
+
+def test_long_reasoning_collapsed_into_details():
+    """长依据（>200 字符）折叠进 <details>——降低清单视觉噪声（借鉴 pr-agent #2510）。
+
+    author 一眼扫清单只看标题+方向；需要依据细节时再点开。pr-agent 上游 #2510 同样把
+    Issue description / Issue Context 放 <details> 折叠，默认只露标题 + 一句后果。"""
+    from touchstone.render import _finding_entry
+    long = "x" * 250
+    f = _rf("PRA-X", reasoning=long)
+    entry = _finding_entry(1, f)
+    assert "<details>" in entry and "</details>" in entry
+    assert f"依据（{len(long)} 字，点击展开）" in entry   # summary 露字数
+    assert long in entry                                  # 全文在 details body 内
+
+
+def test_reasoning_equal_to_rationale_not_rendered():
+    """依据与 rationale 同文时不渲染（既有去重守卫，折叠改动不破坏此不变式）。"""
+    from touchstone.render import _finding_entry
+    same = "同文" * 150                                   # rationale 与 reasoning 完全相同（>200 字符）
+    f = _rf("PRA-X", rationale=same, direction="方向", reasoning=same)
+    entry = _finding_entry(1, f)
+    assert "依据" not in entry                            # 与 rationale 同文→不渲染
+    assert "<details>" not in entry
+
+
+def test_empty_reasoning_omitted():
+    """空依据不渲染（既不显式露行也不显式露 details）。"""
+    from touchstone.render import _finding_entry
+    f = _rf("PRA-X", reasoning="")
+    entry = _finding_entry(1, f)
+    assert "依据" not in entry and "<details>" not in entry
+
+
 def test_checklist_from_findings_all_open_and_dedup():
     f = _finding("R-1")
     c = cl.from_findings([f, dict(f)])          # 同签名去重
