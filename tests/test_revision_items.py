@@ -179,6 +179,18 @@ def test_normalize_line_prefers_start_when_both_present():
     assert f["line"] == 10
 
 
+def test_normalize_line_zero_start_not_treated_as_missing():
+    """line_start=0 不被当缺失（`is not None` 而非 `or`，与 render._location 一致）。
+
+    GitHub diff 行号 1-based，0 罕见；但 0 是 falsy，若用 `or` 会被误判缺失→错误回退
+    line_end。用 `is not None` 判定，0 作为真实行号保留。"""
+    raw = {"code_suggestions": [{
+        "relevant_file": "a.py", "relevant_lines_start": 0, "relevant_lines_end": 5,
+        "one_sentence_summary": "s", "label": "Possible issue"}]}
+    f = rp.normalize(rp.parse_pr_agent(raw))[0]
+    assert f["line"] == 0                            # 0 不当缺失，不回退 end
+
+
 def test_checklist_from_findings_all_open_and_dedup():
     f = _finding("R-1")
     c = cl.from_findings([f, dict(f)])          # 同签名去重
