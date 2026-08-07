@@ -115,6 +115,70 @@ def _finding(rid, file="a.py", line=1, direction="改这里", kind="deterministi
             "fix_reasoning": "依据", "done_criteria": dc}
 
 
+# ---------------- 借鉴 pr-agent #2510：字段去冗余 + 定位精度 ----------------
+def test_finding_entry_omits_direction_when_equal_to_rationale():
+    """修复方向与 rationale 同文时不复读（去字段冗余）。
+
+    pr-agent 归一化层 normalize() 对 model 来源 finding 设 rationale=fix_direction=summary，
+    此前渲染为「标题=rationale」+「修复方向：rationale」（完全重复=纯噪声）。
+    借鉴 pr-agent 上游 #2510 评审写作：标题已含一句话问题，方向同文即不再单列。"""
+    from touchstone.render import _finding_entry
+    f = {"rule_id": "PRA-X", "file": "a.py", "line": 5, "rationale": "边界未处理",
+         "fix_direction": "边界未处理", "fix_reasoning": "",
+         "done_criteria": {"kind": "review", "spec": {"question": "?"}},
+         "severity": "warn", "confidence": 0.7, "agent": "pr-agent:review"}
+    entry = _finding_entry(1, f)
+    assert entry.count("边界未处理") == 1           # 标题里出现一次，不再复读
+    assert "修复方向" not in entry                  # 同文→整行省略
+
+
+def test_finding_entry_keeps_direction_when_distinct_from_rationale():
+    """确定性来源 rationale≠fix_direction → 修复方向保留（去冗余不误杀信息）。"""
+    from touchstone.render import _finding_entry
+    f = {"rule_id": "SCOPE-001", "file": "a.py", "line": 1, "rationale": "改动越界",
+         "fix_direction": "收到 docs/ 下", "fix_reasoning": "",
+         "done_criteria": {"kind": "deterministic", "spec": {"recheck": "SCOPE-001"}},
+         "severity": "warn", "confidence": 1.0, "agent": "contract-check"}
+    entry = _finding_entry(1, f)
+    assert "修复方向：收到 docs/ 下" in entry       # 不同→保留
+
+
+def test_finding_entry_no_colon_None_when_line_missing():
+    """行号缺失时不渲染 `file:None`（定位精度）。
+
+    pr-agent review 类偶不返回 start_line → line=None → 此前 f.get('line','?') 得 None
+    （键在值 None，default 不生效）渲染 `a.py:None`。应退为只显示文件名。"""
+    from touchstone.render import _finding_entry
+    f = {"rule_id": "PRA-Y", "file": "a.py", "line": None, "rationale": "问题",
+         "fix_direction": "", "fix_reasoning": "",
+         "done_criteria": {"kind": "review", "spec": {"question": "?"}},
+         "severity": "warn", "confidence": 0.7, "agent": "pr-agent:review"}
+    entry = _finding_entry(1, f)
+    assert "a.py:None" not in entry
+    assert "`a.py`" in entry                        # 行号缺失→只显示文件名
+
+
+def test_normalize_line_falls_back_to_line_end():
+    """line_start 缺失时 line_end 回退（定位精度，数据层兜底）。
+
+    pr-agent review key_issues 偶带 end_line 不带 start_line；line=None 既丑（file:None）
+    又让 sig 塌缩到 :None 字面量、跨轮 reconcile 全靠文件名。line_end 回退让 sig 带真实行号。"""
+    raw = {"review": {"key_issues_to_review": [{
+        "relevant_file": "a.py", "end_line": 42, "start_line": None,
+        "issue_header": "X", "issue_content": "Y", "label": "possible issue"}]}}
+    f = rp.normalize(rp.parse_pr_agent(raw))[0]
+    assert f["line"] == 42                          # start 缺→用 end
+
+
+def test_normalize_line_prefers_start_when_both_present():
+    """line_start 与 line_end 都在→用 start（line_end 仅作 fallback，不替代）。"""
+    raw = {"code_suggestions": [{
+        "relevant_file": "a.py", "relevant_lines_start": 10, "relevant_lines_end": 20,
+        "one_sentence_summary": "s", "label": "Possible issue"}]}
+    f = rp.normalize(rp.parse_pr_agent(raw))[0]
+    assert f["line"] == 10
+
+
 def test_checklist_from_findings_all_open_and_dedup():
     f = _finding("R-1")
     c = cl.from_findings([f, dict(f)])          # 同签名去重

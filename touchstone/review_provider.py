@@ -931,7 +931,12 @@ def normalize(items, nmap=None):
         findings.append({
             "rule_id": rid,
             "file": it.get("file"),
-            "line": it.get("line_start"),
+            # line_start 缺失时回退 line_end（借鉴 pr-agent 上游 #2510 评审定位精度）：
+            # pr-agent review 类的 key_issues 偶不带 start_line 但带 end_line；此前 line=None
+            # → 渲染 `file:None` + sig 含 `:None` 字面量。line_end 回退让 sig 有真实行号、
+            # 跨轮 reconcile 更稳（行号稳定而非全部塌缩到 :None）。两层兜底：此处取值 +
+            # render._location 渲染侧仍防 `:None`。
+            "line": it.get("line_start") or it.get("line_end"),
             "category": cat,
             "severity": nmap.get("default_severity", "warn"),
             "confidence": nmap.get("default_confidence", 0.7),

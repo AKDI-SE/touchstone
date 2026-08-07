@@ -66,10 +66,29 @@ def render_unreliable_callout(engine_status, ai_raw_count=0, added_lines=0, engi
     ])
 
 
+def _location(f):
+    """渲染位置串——行号缺失时不显示 `:None`（借鉴 pr-agent 上游 #2510 评审的定位精度）。
+
+    pr-agent 偶不返回 relevant_lines_start（review 类 key_issues 的 start_line 缺失），
+    此前 f.get('line','?') 对 line=None 返回 None（键在但值为 None），渲染为 `file:None`——
+    既丑又让 author 误以为「行号是字面量 None」。行号缺失时只显示文件名，干净且不误导。
+
+    review_provider.normalize 已做 line_start→line_end 回退（本 PR 配套），此处是渲染侧的
+    最终兜底：两层联合保证 `:None` 永不出现在评审报告里。"""
+    file_ = f.get("file") or "?"
+    line_ = f.get("line")
+    return f"{file_}:{line_}" if line_ is not None else file_
+
+
 def _finding_entry(i, f):
-    """单条发现的渲染（规则命中与 AI 建议共用）：位置 — 问题 + 修复方向/依据/达成判据 + 行尾元数据。"""
+    """单条发现的渲染（规则命中与 AI 建议共用）：位置 — 问题 + 修复方向/依据/达成判据 + 行尾元数据。
+
+    字段去冗余（借鉴 pr-agent 上游 #2510 评审写作）：title 行已含 rationale（一句话问题），
+    修复方向若与 rationale 同文则不再复读（此前的「修复方向：<与标题完全相同的文字>」纯噪声）。
+    依据字段早有同等去重守卫（reasoning != rationale 才显示），本处补齐对称。"""
     direction = f.get("fix_direction") or f.get("suggested_fix") or ""
     reasoning = f.get("fix_reasoning") or ""
+    rationale = f.get("rationale") or ""
     dc = f.get("done_criteria") or {}
     _spec = dc.get("spec") or {}
     if dc.get("kind") == "deterministic":
@@ -79,9 +98,10 @@ def _finding_entry(i, f):
         dc_line = f"需人工复核：{q}" if q else "定向复核通过"
     else:
         dc_line = ""
-    e = (f"{i}. **`{f.get('file','?')}:{f.get('line','?')}`** — {f.get('rationale','')}\n"
-         f"   - 修复方向：{direction}")
-    if reasoning and reasoning != f.get("rationale"):
+    e = f"{i}. **`{_location(f)}`** — {rationale}"
+    if direction and direction != rationale:
+        e += f"\n   - 修复方向：{direction}"
+    if reasoning and reasoning != rationale:
         e += f"\n   - 依据：{reasoning}"
     if dc_line:
         e += f"\n   - 达成判据：{dc_line}"
