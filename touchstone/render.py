@@ -99,7 +99,9 @@ def _render_reasoning(reasoning):
     # 用 f-string 而非 .format()：reasoning 含 { 或 } 时（代码片段/JSON 示例），
     # .format(body=reasoning) 虽不解析值里的 {}（值不被二次扫描），但 .format() 调用
     # 形态易让评审/读者误判会炸——f-string 直接内联，无此视觉歧义（评审两轮均提此点）。
-    return (f"\n   - <details><summary>依据（{len(reasoning)} 字，点击展开）</summary>\n\n"
+    # return 串开头不带 \n：调用方 `"\n" + _render_reasoning(...)` 已加换行，与短依据分支
+    # （`f"   - 依据：..."` 开头也无 \n）保持一致——避免折叠分支双换行（评审第三轮提）。
+    return (f"   - <details><summary>依据（{len(reasoning)} 字，点击展开）</summary>\n\n"
             f"   {reasoning}\n\n   </details>")
 
 
