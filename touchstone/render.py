@@ -95,9 +95,12 @@ def _render_reasoning(reasoning):
         return ""
     if len(reasoning) <= _REASONING_COLLAPSE_THRESHOLD:
         return f"   - 依据：{reasoning}"
-    # 折叠：summary 行露字数，body 完整保留（author 需要细节时展开）
-    return ("\n   - <details><summary>依据（{len} 字，点击展开）</summary>\n\n"
-            "   {body}\n\n   </details>").format(len=len(reasoning), body=reasoning)
+    # 折叠：summary 行露字数，body 完整保留（author 需要细节时展开）。
+    # 用 f-string 而非 .format()：reasoning 含 { 或 } 时（代码片段/JSON 示例），
+    # .format(body=reasoning) 虽不解析值里的 {}（值不被二次扫描），但 .format() 调用
+    # 形态易让评审/读者误判会炸——f-string 直接内联，无此视觉歧义（评审两轮均提此点）。
+    return (f"\n   - <details><summary>依据（{len(reasoning)} 字，点击展开）</summary>\n\n"
+            f"   {reasoning}\n\n   </details>")
 
 
 def _finding_entry(i, f):
