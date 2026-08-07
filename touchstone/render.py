@@ -80,6 +80,31 @@ def _location(f):
     return f"{file_}:{line_}" if line_ is not None else file_
 
 
+_REASONING_COLLAPSE_THRESHOLD = 200
+
+
+def _render_reasoning(reasoning):
+    """渲染依据字段——长文折叠进 <details>（借鉴 pr-agent 上游 #2510 的 Agent Prompt 折叠）。
+
+    pr-agent #2510 评审把详细 Issue description / Issue Context 放 <details> 折叠，默认只露
+    标题 + 一句后果，降低视觉噪声。本系统同理：依据 ≤200 字符平铺（短依据是快速判读信号），
+    超阈值折叠为「依据（点击展开）」——author 一眼扫清单时只看标题 + 方向，需要细节再展开。
+
+    纯函数：输入字符串，输出 markdown 片段（空输入返回空串）。"""
+    if not reasoning:
+        return ""
+    if len(reasoning) <= _REASONING_COLLAPSE_THRESHOLD:
+        return f"   - 依据：{reasoning}"
+    # 折叠：summary 行露字数，body 完整保留（author 需要细节时展开）。
+    # 用 f-string 而非 .format()：reasoning 含 { 或 } 时（代码片段/JSON 示例），
+    # .format(body=reasoning) 虽不解析值里的 {}（值不被二次扫描），但 .format() 调用
+    # 形态易让评审/读者误判会炸——f-string 直接内联，无此视觉歧义（评审两轮均提此点）。
+    # return 串开头不带 \n：调用方 `"\n" + _render_reasoning(...)` 已加换行，与短依据分支
+    # （`f"   - 依据：..."` 开头也无 \n）保持一致——避免折叠分支双换行（评审第三轮提）。
+    return (f"   - <details><summary>依据（{len(reasoning)} 字，点击展开）</summary>\n\n"
+            f"   {reasoning}\n\n   </details>")
+
+
 def _finding_entry(i, f):
     """单条发现的渲染（规则命中与 AI 建议共用）：位置 — 问题 + 修复方向/依据/达成判据 + 行尾元数据。
 
@@ -105,7 +130,7 @@ def _finding_entry(i, f):
     if direction and direction != rationale:
         e += f"\n   - 修复方向：{direction}"
     if reasoning and reasoning != rationale:
-        e += f"\n   - 依据：{reasoning}"
+        e += "\n" + _render_reasoning(reasoning)
     if dc_line:
         e += f"\n   - 达成判据：{dc_line}"
     e += (f"\n   - <sub>`{f['rule_id']}` · {f.get('severity','')} · "
