@@ -76,7 +76,10 @@ def _finding_entry(i, f):
         dc_line = f"规则 `{_spec.get('recheck', '?')}` 复检不再命中"
     elif dc.get("kind") == "review":
         q = _spec.get("question", "")
-        dc_line = f"需人工复核：{q}" if q else "定向复核通过"
+        # q 非空=有具体复核问题（设计意见 1 的复核判据，如「回滚路径是否覆盖跨模块调用失败」）；
+        # q 空=诚实降级（model 来源在 normalize 层给不出具体问题，不再用「{direction}是否已解决」
+        # 模板复读）。降级时如实描述 reconcile 实际机制：下一轮 sig 不再现即自动销项。
+        dc_line = f"需人工复核：{q}" if q else "下一轮复检不再命中即销项"
     else:
         dc_line = ""
     e = (f"{i}. **`{f.get('file','?')}:{f.get('line','?')}`** — {f.get('rationale','')}\n"
