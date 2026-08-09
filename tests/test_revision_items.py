@@ -180,6 +180,25 @@ def test_long_reasoning_collapsed_into_details():
     assert long in entry                                  # 全文在 details body 内
 
 
+def test_details_block_has_no_blank_lines_inside():
+    """回归 #167 review：<details> 是 CommonMark type-6 HTML block，遇空行即终止。
+    若 </summary> 与 body、body 与 </details> 之间有空行，<details> 在首个空行处被截断成
+    孤立开标签——body 变成列表项里的松散段落（始终可见、不在折叠区）、</details> 变孤立闭
+    标签，表现即「点击展开」无反应（展开后空、正文跑到外面）。整段 <details>...</details>
+    须留在同一 HTML block 内（无空行）才是完整可折叠元素。"""
+    from touchstone.render import _render_reasoning
+    long = "依据正文内容。" * 30          # > 200 字符阈值，触发折叠分支
+    out = _render_reasoning(long)
+    assert "<details>" in out and "</details>" in out
+    # 取 <details> 到 </details> 的片段，断言其内无空行（无连续两个 \n）
+    details_block = out[out.index("<details>"):out.index("</details>") + len("</details>")]
+    assert "\n\n" not in details_block, (
+        "<details> 块内含空行 → HTML block 在首个空行处截断，折叠失效（#167 回归）")
+
+
+
+
+
 def test_reasoning_equal_to_rationale_not_rendered():
     """依据与 rationale 同文时不渲染（既有去重守卫，折叠改动不破坏此不变式）。"""
     from touchstone.render import _finding_entry

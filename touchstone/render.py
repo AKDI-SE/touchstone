@@ -101,8 +101,15 @@ def _render_reasoning(reasoning):
     # 形态易让评审/读者误判会炸——f-string 直接内联，无此视觉歧义（评审两轮均提此点）。
     # return 串开头不带 \n：调用方 `"\n" + _render_reasoning(...)` 已加换行，与短依据分支
     # （`f"   - 依据：..."` 开头也无 \n）保持一致——避免折叠分支双换行（评审第三轮提）。
-    return (f"   - <details><summary>依据（{len(reasoning)} 字，点击展开）</summary>\n\n"
-            f"   {reasoning}\n\n   </details>")
+    #
+    # <details> 是 CommonMark type-6 HTML block，遇到空行即终止。此前 summary 与 body 之间、
+    # body 与 </details> 之间各有一空行 → <details> 在第一个空行处被截断成孤立开标签，
+    # body 变成列表项里的松散段落（始终可见、不在折叠区内）、</details> 变孤立闭标签——
+    # 表现为「点击展开」点了没反应（展开后空、正文跑到外面）。去空行让整段留在同一 HTML
+    # block 内，<details> 才是完整可折叠元素（#167 review 实测回归）。
+    return (f"   - <details><summary>依据（{len(reasoning)} 字，点击展开）</summary>\n"
+            f"   {reasoning}\n"
+            f"   </details>")
 
 
 def _finding_entry(i, f):
