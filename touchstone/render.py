@@ -81,6 +81,29 @@ def _location(f):
 
 
 _REASONING_COLLAPSE_THRESHOLD = 200
+_TEASER_MAX = 60                          # <details> summary 露首句/前 N 字（不展开也露关键点）
+# 句末标点：CJK 全角（。！？）无条件算句末；ASCII 半角（.!?）仅在后接空白/串尾时算句末
+# —— 否则版本号（0.2.3）、小数、缩写（e.g.）、域名里的 . 会被误判为句末，teaser 在
+# 「版本号从 0.」处截断（实测）。CJK 文本无词间空格，全角句号后直接接下一句，故全角
+# 不设边界条件。
+_SENTENCE_END = re.compile(r"[。！？]|[.!?](?=\s|$)")
+
+
+def _reasoning_teaser(reasoning, max_len=_TEASER_MAX):
+    """取 reasoning 首句（或前 max_len 字）作 <details> summary 的关键信息预览。
+
+    summary 不再是无信息标签「依据（N 字）」，而是露核心论断（如「版本号 0.2.3→0.2.5
+    跳过了 0.2.4」）——author 扫清单时不展开也能判断这条依据是否值得细读（用户 #168 续：
+    「把关键信息的 summary 展示出来」）。纯函数：截断处加 …；换行折叠为空格（summary 是
+    单行内联文本，换行会破坏 CommonMark type-6 HTML block 的单块性）。"""
+    s = reasoning.strip().replace("\n", " ").replace("\r", "")
+    m = _SENTENCE_END.search(s)
+    # 首句在预算内（含标点，留 5 字余量容标点）→ 取整句；首句超长 → 硬截断到 max_len
+    first = s[:m.end()] if (m and m.end() <= max_len + 5) else s[:max_len]
+    first = first.rstrip()
+    if len(first) < len(s):
+        first += "…"
+    return first
 
 
 def _render_reasoning(reasoning):
@@ -88,14 +111,20 @@ def _render_reasoning(reasoning):
 
     pr-agent #2510 评审把详细 Issue description / Issue Context 放 <details> 折叠，默认只露
     标题 + 一句后果，降低视觉噪声。本系统同理：依据 ≤200 字符平铺（短依据是快速判读信号），
-    超阈值折叠为「依据（点击展开）」——author 一眼扫清单时只看标题 + 方向，需要细节再展开。
+    超阈值折叠——summary 露首句/前若干字（关键信息预览，author 不展开也能判读），body 完整
+    保留（author 需要细节时展开）。
+
+    约束（用户 #168 续——「不能是动态获取，不能影响通过 api 获取全量 review 意见信息」）：
+    summary 与 body 均静态嵌入 markdown（非动态获取，点击展开无网络请求）；全文始终在
+    details body 内——API 取评论原文即得全量 review 意见，折叠仅影响 GitHub UI 默认展开态、
+    不丢一字；机器可读的 <!-- touchstone-checklist --> 结构化标记不在本函数，不受影响。
 
     纯函数：输入字符串，输出 markdown 片段（空输入返回空串）。"""
     if not reasoning:
         return ""
     if len(reasoning) <= _REASONING_COLLAPSE_THRESHOLD:
         return f"   - 依据：{reasoning}"
-    # 折叠：summary 行露字数，body 完整保留（author 需要细节时展开）。
+    # 折叠：summary 露字数 + 首句预览（关键信息），body 完整保留（author 需细节时展开）。
     # 用 f-string 而非 .format()：reasoning 含 { 或 } 时（代码片段/JSON 示例），
     # .format(body=reasoning) 虽不解析值里的 {}（值不被二次扫描），但 .format() 调用
     # 形态易让评审/读者误判会炸——f-string 直接内联，无此视觉歧义（评审两轮均提此点）。
@@ -107,7 +136,8 @@ def _render_reasoning(reasoning):
     # body 变成列表项里的松散段落（始终可见、不在折叠区内）、</details> 变孤立闭标签——
     # 表现为「点击展开」点了没反应（展开后空、正文跑到外面）。去空行让整段留在同一 HTML
     # block 内，<details> 才是完整可折叠元素（#167 review 实测回归）。
-    return (f"   - <details><summary>依据（{len(reasoning)} 字，点击展开）</summary>\n"
+    teaser = _reasoning_teaser(reasoning)
+    return (f"   - <details><summary>依据（{len(reasoning)} 字）：{teaser}</summary>\n"
             f"   {reasoning}\n"
             f"   </details>")
 
