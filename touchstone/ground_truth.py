@@ -300,7 +300,16 @@ def build_ground_truth(owner, repo, token, *, window=GT_WINDOW, bot_login=None,
             # 与 _waived_types 对称（waived+merged→ignored）；放宽 adopted 口径——只认 thread
             # resolved 致 human_adopted 恒空（touchstone 工作流用 ack 不用 thread resolve），
             # 加 done 信号破 graduate 死锁（见 _ack_done_types 的三重背书）。
-            ack_done_types = _ack_done_types(comments, bot_login, ts_findings, merged=merged)
+            # round-2 review：① 显式 `if merged` 守卫（内层函数已早返，call site 显式化更清晰、
+            # 且省掉 unmerged PR 的无谓调用）；② 隔离解析异常（CK.parse_latest / _trusted_bodies
+            # 抛错时不级联跳过整个 PR——降级为空集、按无 done 信号继续，与上方 thread 解析
+            # 失败的 fa=[] 降级同款"per-PR 故障不拖整批"模式）。
+            ack_done_types = set()
+            if merged:
+                try:
+                    ack_done_types = _ack_done_types(comments, bot_login, ts_findings, merged=merged)
+                except Exception as e:
+                    print(f"[learn] PR#{n} ack-done 解析失败（按无 done 信号继续）: {e}", file=sys.stderr)
             adopted_types = resolved_types | ack_done_types
             # 差距1a：带 file/line 的 resolved 发现（#131 review #2：过滤掉无 line 的——位置级奖励需行号；
             #   无 line 的仅进 resolved_types 做类型匹配，不进 positions，免产 line=null 的废位置）
