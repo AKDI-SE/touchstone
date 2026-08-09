@@ -42,7 +42,8 @@ def load_seed_injection(repo_dir=".", stack=None):
     无文件 / 解析失败 / 空列表 → 返回 ""（优雅降级，不阻塞评审）。
     格式不对的条目（kind 非 emphasize/suppress、缺 finding_type/text）逐条跳过、不整体失败。
     """
-    path = os.path.join(repo_dir or ".", SEEDS_REL)
+    # abspath 归一化（round-2 review）：防 repo_dir 带尾斜杠/相对分量致 join 行为意外。
+    path = os.path.join(os.path.abspath(repo_dir or "."), SEEDS_REL)
     if not os.path.isfile(path):
         return ""
     try:
@@ -59,22 +60,28 @@ def load_seed_injection(repo_dir=".", stack=None):
               file=sys.stderr)
         return ""
     parts = []
-    # text 长度封顶（防御纵深）：seeds.yaml 在 PR 评审时从 repo_dir 读，其 text 字段直接进
+    # 长度封顶（防御纵深）：seeds.yaml 在 PR 评审时从 repo_dir 读，text/finding_type 直接进
     # PR-Agent 提示词。封顶限注入面（防整段文档被塞入），与 threat-model 文档（seeds.yaml.example）
     # 一道把"PR-head 配置影响评审提示词"这个既有向量（pr-agent.yaml/standards.yaml 同款）圈在
     # 可控范围。评审输出本身 advisory-only（无合入权），进一步限影响。
     MAX_TEXT = 500
+    MAX_TYPE = 80
     stack_l = str(stack).lower() if stack is not None else None     # 防非 str（int 等）→ AttributeError
     for s in seeds:
         if not isinstance(s, dict):
             continue
         kind = str(s.get("kind") or "").strip().lower()
-        ftype = str(s.get("finding_type") or "").strip()
+        ftype = str(s.get("finding_type") or "").strip()[:MAX_TYPE]
         text = str(s.get("text") or "").strip()[:MAX_TEXT]
         if kind not in ("emphasize", "suppress") or not ftype or not text:
             continue                          # 格式不对：逐条跳过、不整体失败
         if stack_l is not None:
-            s_stack = str(s.get("stack") or "").strip().lower()
+            raw_stack = s.get("stack")
+            # round-2 review：stack 非 str（list/dict）时 str() 产 "['python']" 永不匹配 →
+            # 静默丢种子。要求 stack 必须是 str（或 None/留空=全栈）；非 str 视为格式不对跳过。
+            if raw_stack is not None and not isinstance(raw_stack, str):
+                continue
+            s_stack = str(raw_stack or "").strip().lower()
             if s_stack and s_stack != stack_l:
                 continue                      # 种子标了栈且不匹配 → 跳过
         verb = "Prioritize surfacing" if kind == "emphasize" else "Do not raise"

@@ -171,3 +171,57 @@ def test_text_length_capped(tmp_path):
     assert "x" * 500 in out
     assert "x" * 501 not in out
 
+
+def test_finding_type_length_capped(tmp_path):
+    """finding_type 也封顶（round-2 review：限注入面一致）——超长截断到 MAX_TYPE=80 整体长度。"""
+    long_type = "PRA-" + "Y" * 200      # 远超 MAX_TYPE=80
+    _write(str(tmp_path), f"""
+        - finding_type: {long_type}
+          kind: emphasize
+          text: keep
+    """)
+    out = seed_loader.load_seed_injection(str(tmp_path))
+    # 截断后 ftype 整体 80 字符 = "PRA-"(4) + "Y"*76
+    import re
+    m = re.search(r"\[(PRA-Y+)\]", out)
+    assert m and len(m.group(1)) == 80   # 整体 80
+    assert "Y" * 77 not in out           # 不超过 cap（去掉 PRA- 前缀后 76 个 Y）
+
+
+def test_repo_dir_normalized(tmp_path):
+    """repo_dir 带尾斜杠或 .. 分量也能正确定位（round-2 review：abspath 归一化）。"""
+    _write(str(tmp_path), """
+        - finding_type: PRA-X
+          kind: emphasize
+          text: keep
+    """)
+    # 尾斜杠不影响定位
+    assert "PRA-X" in seed_loader.load_seed_injection(str(tmp_path) + "/")
+    # 含 .. 的路径归一化后定位到同一文件（父目录 + subdir/..）
+    parent = os.path.dirname(str(tmp_path))
+    rel = os.path.join(parent, os.path.basename(str(tmp_path)), "..", os.path.basename(str(tmp_path)))
+    assert "PRA-X" in seed_loader.load_seed_injection(rel)
+
+
+def test_stack_non_string_yaml_value_skipped(tmp_path):
+    """YAML 里 stack 是 list/dict（非 str）→ str() 产 "['python']" 永不匹配；round-2 review
+    要求跳过这类格式不对的条目，而非静默丢。"""
+    _write(str(tmp_path), """
+        - finding_type: PRA-GOOD
+          kind: emphasize
+          text: keep this
+        - finding_type: PRA-LIST-STACK
+          kind: emphasize
+          stack: ["python"]
+          text: list stack should be skipped
+        - finding_type: PRA-DICT-STACK
+          kind: emphasize
+          stack: {lang: python}
+          text: dict stack should be skipped
+    """)
+    out = seed_loader.load_seed_injection(str(tmp_path), stack="python")
+    assert "PRA-GOOD" in out
+    assert "PRA-LIST-STACK" not in out
+    assert "PRA-DICT-STACK" not in out
+
+

@@ -26,6 +26,8 @@ from concurrent.futures import ThreadPoolExecutor
 
 import yaml
 
+from touchstone import seed_loader   # 模块级导入（round-2 review）：seed_loader 轻量（仅 os/sys/yaml）、
+                                     # 无循环引用风险——import 失败在启动期暴露而非藏在评审路径里。
 # ---- PR-Agent label → 本系统 category 的默认映射（可被 .touchstone/pr-agent.yaml 覆盖）----
 # PR-Agent improve 工具的 label 取值见其 $PRCodeSuggestions schema。
 _DEFAULT_NMAP = {
@@ -525,15 +527,13 @@ def _experience_injection(repo_dir):
 
     # 路 2：消费方 seeds.yaml（仓内配置）—— 受合并权限保护、不走 EXPERIENCE_REF 闸
     try:
-        from touchstone import seed_loader
         seed_text = seed_loader.load_seed_injection(repo_dir)
         if seed_text:
             parts.append(seed_text)
     except Exception as _e:
         # 不静默（round-1 review + 静默纪律闸）：seed_loader 内部已优雅降级返 ""，走到这里说明是
-        # 非预期缺陷（如 import 失败、TypeError）；降级为空不阻塞评审，但打 [warn] 暴露真实缺陷。
-        import sys as _sys
-        print(f"[warn] seeds.yaml 注入异常 → 降级为空（引擎库段不受影响）：{_e}", file=_sys.stderr)
+        # 非预期缺陷（如 TypeError）；降级为空不阻塞评审，但打 [warn] 暴露真实缺陷。
+        print(f"[warn] seeds.yaml 注入异常 → 降级为空（引擎库段不受影响）：{_e}", file=sys.stderr)
 
     return "\n\n".join(p for p in parts if p)
 
