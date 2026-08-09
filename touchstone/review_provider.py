@@ -523,10 +523,11 @@ def _experience_injection(repo_dir):
             import sys as _sys
             print(f"[warn] 引擎经验库注入异常 → 降级为空（seeds 段不受影响）：{_e}", file=_sys.stderr)
     else:
-        # 引擎库跳过，但 seeds.yaml（仓内配置）仍注入——告警里讲清楚（不掩盖、不整段返回 ""）
-        import sys as _sys
-        print("[warn] PR 评审未配置 TOUCHSTONE_EXPERIENCE_REF → 跳过引擎经验库注入"
-              "（防投毒）；仓内 .touchstone/seeds.yaml（如有）仍注入", file=_sys.stderr)
+        # 引擎库跳过——告警主旨是"引擎经验库被防投毒闸拦"（reviewer 可据因配 EXPERIENCE_REF）。
+        # seeds.yaml（仓内配置）仍走自己的路；用"如有"标注、不假定其存在（round-4 review：避免
+        # 无 seeds.yaml 的仓被误以为"丢了注入"）。
+        print("[warn] PR 评审未配置 TOUCHSTONE_EXPERIENCE_REF → 跳过引擎经验库注入（防投毒）。"
+              "如本仓有 .touchstone/seeds.yaml，其团队规范仍注入（仓内配置不走该闸）。", file=sys.stderr)
 
     # 路 2：消费方 seeds.yaml（仓内配置）—— 受合并权限保护、不走 EXPERIENCE_REF 闸
     try:
@@ -535,8 +536,11 @@ def _experience_injection(repo_dir):
             parts.append(seed_text)
     except Exception as _e:
         # 不静默（round-1 review + 静默纪律闸）：seed_loader 内部已优雅降级返 ""，走到这里说明是
-        # 非预期缺陷（如 TypeError）；降级为空不阻塞评审，但打 [warn] 暴露真实缺陷。
-        print(f"[warn] seeds.yaml 注入异常 → 降级为空（引擎库段不受影响）：{_e}", file=sys.stderr)
+        # 非预期缺陷（如 TypeError）；降级为空不阻塞评审，但打 [warn] + traceback 暴露真实缺陷
+        # （round-4 review：仅异常字符串难定位，补 traceback 便于生产诊断）。
+        import traceback as _tb
+        print(f"[warn] seeds.yaml 注入异常 → 降级为空（引擎库段不受影响）：{_e}\n{_tb.format_exc()}",
+              file=sys.stderr)
 
     return "\n\n".join(p for p in parts if p)
 

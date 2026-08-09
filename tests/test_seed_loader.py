@@ -143,20 +143,29 @@ def test_text_and_finding_type_required(tmp_path):
     assert seed_loader.load_seed_injection(str(tmp_path)) == ""
 
 
-def test_stack_non_string_does_not_crash(tmp_path):
+def test_stack_non_string_does_not_crash(tmp_path, capsys):
     """stack 传非 str（int 等）不抛 AttributeError——round-1 review 防御；
-    round-3 review：非 str 当作"不过滤"（fail-open，注入全部），而非 str() 强转丢全部。"""
+    round-3 review：非 str 当作"不过滤"（fail-open，注入全部）；round-4 review：另打 [warn] 辅助排查。"""
     _write(str(tmp_path), """
         - finding_type: PRA-X
           kind: emphasize
           stack: python
           text: keep
     """)
-    # int / list / 对象都不崩，且当作"不过滤"→ 种子正常注入（advisory 规范 fail-open 比 fail-closed 安全）
-    for bad in (123, ["python"], object(), ""):
-        assert "PRA-X" in seed_loader.load_seed_injection(str(tmp_path), stack=bad)
-    # stack=None = 不过滤（保持原行为）
-    assert "PRA-X" in seed_loader.load_seed_injection(str(tmp_path), stack=None)
+    # 合法"不过滤"（None / 空串）→ 无 warn
+    seed_loader.load_seed_injection(str(tmp_path), stack=None)
+    assert "[warn]" not in capsys.readouterr().err
+    seed_loader.load_seed_injection(str(tmp_path), stack="")
+    assert "[warn]" not in capsys.readouterr().err
+    # 合法 str → 无 warn
+    seed_loader.load_seed_injection(str(tmp_path), stack="python")
+    assert "[warn]" not in capsys.readouterr().err
+    # 非 str（int/list/对象）→ fail-open 注入 + [warn] 标记 caller bug
+    for bad in (123, ["python"], object()):
+        out = seed_loader.load_seed_injection(str(tmp_path), stack=bad)
+        assert "PRA-X" in out                          # fail-open：种子照注入
+        err = capsys.readouterr().err
+        assert "[warn]" in err and "非 str" in err     # 但打 warn 辅助排查
 
 
 def test_text_length_capped(tmp_path):

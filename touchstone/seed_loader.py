@@ -38,7 +38,9 @@ def load_seed_injection(repo_dir=".", stack=None):
     """读 ``repo_dir/.touchstone/seeds.yaml`` → 返回注入文本（供 PR-Agent extra_instructions）。
 
     repo_dir：消费方仓的 checkout 根（评审时 orchestrator 透传 REPO_DIR）。
-    stack：可选技术栈过滤（如 "python"）；None/非 str = 不过滤、返回所有栈的种子。
+    stack：可选技术栈过滤（如 "python"）。契约：**非 str 的 stack（int/list/None/空串）
+    一律当作"不过滤"（fail-open，注入全部）**——advisory 规范 fail-open 比 str() 强转
+    丢全部更安全；非 str 入参另打 [warn] 辅助排查 caller bug。
     无文件 / 解析失败 / 空列表 → 返回 ""（优雅降级，不阻塞评审）。
     格式不对的条目（kind 非 emphasize/suppress、缺 finding_type/text）逐条跳过、不整体失败。
 
@@ -72,10 +74,15 @@ def load_seed_injection(repo_dir=".", stack=None):
     MAX_TYPE = 80
     # round-3 review：非 str stack（int/list 等）→ 当作"不过滤"（与 None 同），而非 str() 强转
     # （"123" 永不匹配 → 静默丢全部种子）。caller 传错类型时 fail-open（注入全部）比 fail-closed
-    # （丢全部团队规范）更安全——团队规范本身是 advisory。
+    # （丢全部团队规范）更安全——团队规范本身是 advisory。round-4 review：非 str 另打 [warn]
+    # 辅助排查 caller bug（fail-open 但不静默）。
     if isinstance(stack, str) and stack.strip():
         stack_l = stack.strip().lower()
+    elif stack is None or (isinstance(stack, str) and not stack.strip()):
+        stack_l = None                        # None / 空串 = 合法"不过滤"
     else:
+        print(f"[warn] load_seed_injection 收到非 str stack（{type(stack).__name__}）"
+              f"→ 当作不过滤（fail-open）；可能是 caller bug", file=sys.stderr)
         stack_l = None
     for s in seeds:
         if not isinstance(s, dict):
