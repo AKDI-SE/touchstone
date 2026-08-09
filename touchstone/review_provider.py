@@ -512,8 +512,11 @@ def _experience_injection(repo_dir):
             ) or ""
             if engine_text:
                 parts.append(engine_text)
-        except Exception:
-            pass
+        except Exception as _e:
+            # 不静默（round-1 review + 静默纪律闸）：引擎库注入异常时降级为空（不影响 seeds 段），
+            # 但打 [warn] 让运维可见——load_store/render_injection 真挂时不会"无声丢一段"。
+            import sys as _sys
+            print(f"[warn] 引擎经验库注入异常 → 降级为空（seeds 段不受影响）：{_e}", file=_sys.stderr)
     else:
         # 引擎库跳过，但 seeds.yaml（仓内配置）仍注入——告警里讲清楚（不掩盖、不整段返回 ""）
         import sys as _sys
@@ -526,8 +529,11 @@ def _experience_injection(repo_dir):
         seed_text = seed_loader.load_seed_injection(repo_dir)
         if seed_text:
             parts.append(seed_text)
-    except Exception:
-        pass
+    except Exception as _e:
+        # 不静默（round-1 review + 静默纪律闸）：seed_loader 内部已优雅降级返 ""，走到这里说明是
+        # 非预期缺陷（如 import 失败、TypeError）；降级为空不阻塞评审，但打 [warn] 暴露真实缺陷。
+        import sys as _sys
+        print(f"[warn] seeds.yaml 注入异常 → 降级为空（引擎库段不受影响）：{_e}", file=_sys.stderr)
 
     return "\n\n".join(p for p in parts if p)
 

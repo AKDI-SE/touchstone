@@ -12,6 +12,13 @@
 #   "篡改本文件"= 提交一个改 seeds.yaml 的 PR，已由 code review + 合并权限覆盖。
 #   因此【不走】TOUCHSTONE_EXPERIENCE_REF 防投毒闸（那个闸只针对跨仓引擎经验库）。
 #
+#   threat-model 诚实标注：评审时本文件从 PR 工作树读，其 text 字段会进 PR-Agent 提示词。
+#   这与 pr-agent.yaml/standards.yaml/best_practices.md 同款（都是 PR-head 配置影响评审提示词），
+#   非 seeds.yaml 独有向量。EXPERIENCE_REF 是【额外】防线——专给跨仓、机器学习产出、非逐行
+#   人审的引擎经验库加的（更高价值投毒目标）。seeds.yaml 的 text 走长度封顶（限注入面）+
+#   评审输出 advisory-only（无合入权）+ code review 三层缓解。若你的仓对 prompt 注入零容忍，
+#   请评估是否在受限评审（仅成员 PR）下启用。
+#
 # 格式：YAML 列表，每项一条规范。字段：
 #   finding_type: 规范类型标识（与评审发现的 rule_id/finding_type 对齐，如 PRA-ERROR-SWALLOW）
 #   kind:         emphasize（多盯紧这类问题）/ suppress（少挑/不挑这类问题）

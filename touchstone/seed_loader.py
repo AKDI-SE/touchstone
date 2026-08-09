@@ -59,17 +59,23 @@ def load_seed_injection(repo_dir=".", stack=None):
               file=sys.stderr)
         return ""
     parts = []
+    # text 长度封顶（防御纵深）：seeds.yaml 在 PR 评审时从 repo_dir 读，其 text 字段直接进
+    # PR-Agent 提示词。封顶限注入面（防整段文档被塞入），与 threat-model 文档（seeds.yaml.example）
+    # 一道把"PR-head 配置影响评审提示词"这个既有向量（pr-agent.yaml/standards.yaml 同款）圈在
+    # 可控范围。评审输出本身 advisory-only（无合入权），进一步限影响。
+    MAX_TEXT = 500
+    stack_l = str(stack).lower() if stack is not None else None     # 防非 str（int 等）→ AttributeError
     for s in seeds:
         if not isinstance(s, dict):
             continue
         kind = str(s.get("kind") or "").strip().lower()
         ftype = str(s.get("finding_type") or "").strip()
-        text = str(s.get("text") or "").strip()
+        text = str(s.get("text") or "").strip()[:MAX_TEXT]
         if kind not in ("emphasize", "suppress") or not ftype or not text:
             continue                          # 格式不对：逐条跳过、不整体失败
-        if stack is not None:
+        if stack_l is not None:
             s_stack = str(s.get("stack") or "").strip().lower()
-            if s_stack and s_stack != stack.lower():
+            if s_stack and s_stack != stack_l:
                 continue                      # 种子标了栈且不匹配 → 跳过
         verb = "Prioritize surfacing" if kind == "emphasize" else "Do not raise"
         parts.append(f"- [{ftype}] {verb}: {text}")

@@ -141,3 +141,33 @@ def test_text_and_finding_type_required(tmp_path):
           text: no ftype
     """)
     assert seed_loader.load_seed_injection(str(tmp_path)) == ""
+
+
+def test_stack_non_string_does_not_crash(tmp_path):
+    """stack 传非 str（int 等）不抛 AttributeError——round-1 review 防御。"""
+    _write(str(tmp_path), """
+        - finding_type: PRA-X
+          kind: emphasize
+          stack: python
+          text: keep
+    """)
+    # int / None / 对象都不应崩（int 会 str() 成 "123"，与 "python" 不匹配 → 空）
+    assert seed_loader.load_seed_injection(str(tmp_path), stack=123) == ""
+    # stack=None = 不过滤（保持原行为）
+    assert "PRA-X" in seed_loader.load_seed_injection(str(tmp_path), stack=None)
+
+
+def test_text_length_capped(tmp_path):
+    """text 字段长度封顶（限 prompt 注入面）——超长被截断到 MAX_TEXT。"""
+    long_text = "x" * 1000
+    _write(str(tmp_path), f"""
+        - finding_type: PRA-LONG
+          kind: emphasize
+          text: {long_text}
+    """)
+    out = seed_loader.load_seed_injection(str(tmp_path))
+    # 截断到 500（MAX_TEXT）；不出现完整 1000 字
+    assert "PRA-LONG" in out
+    assert "x" * 500 in out
+    assert "x" * 501 not in out
+
