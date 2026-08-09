@@ -212,6 +212,37 @@ def test_details_summary_truncates_runon_sentence_to_max_len():
     assert runon in out                                     # body 全文
 
 
+def test_teaser_strict_max_len_when_first_sentence_exceeds():
+    """首句末标点恰在 max_len 之外 → 硬截断到 max_len（不留余量），加 …。
+
+    回归 #168 round-2「strict max length」：此前 max_len+5 余量会让首句 teaser 长达
+    max_len+6，与 _TEASER_MAX 语义不符、与 run-on 分支（max_len+1）不一致。"""
+    from touchstone.render import _reasoning_teaser, _TEASER_MAX
+    # 首句 = (max_len+10) 个 a + 句号；句末在 max_len+11 处（> max_len）→ 走硬截断分支
+    first_sentence = "a" * (_TEASER_MAX + 10) + "。"
+    long = first_sentence + "后续展开论证" * 100
+    teaser = _reasoning_teaser(long)
+    assert teaser == "a" * _TEASER_MAX + "…"                # 硬截断到 max_len + …
+    assert len(teaser) == _TEASER_MAX + 1                   # 严格 ≤ max_len + 1
+
+
+def test_details_body_flattens_internal_blank_lines():
+    """reasoning 自带空行（多段依据 / 含 \\n\\n 的代码片段）不破 <details> HTML block。
+
+    回归 #168 round-2 PRA-POSSIBLE_ISSUE：body 原样嵌 {reasoning} 时其内部空行同样会
+    截断 type-6 HTML block（与 summary/body 间空行同因）。折叠 body 空白（\\s+→空格）
+    成单行——内容一字不丢，仅丢多段排版；marker 存 reasoning 原文，API 取全文不受影响。"""
+    from touchstone.render import _render_reasoning
+    long = ("第一段依据，说明问题。" + "详情" * 100 + "\n\n" +   # 段间空行
+            "第二段依据，补充论证。" + "更多" * 100)
+    out = _render_reasoning(long)
+    assert "<details>" in out and "</details>" in out
+    blk = out[out.index("<details>"):out.index("</details>") + len("</details>")]
+    assert "\n\n" not in blk                          # 折叠后 body 无空行（HTML block 完整）
+    # 内容不丢（两段都在 body 内）
+    assert "第一段依据" in out and "第二段依据" in out
+
+
 def test_details_block_has_no_blank_lines_inside():
     """回归 #167 review：<details> 是 CommonMark type-6 HTML block，遇空行即终止。
     若 </summary> 与 body、body 与 </details> 之间有空行，<details> 在首个空行处被截断成

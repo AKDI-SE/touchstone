@@ -98,8 +98,10 @@ def _reasoning_teaser(reasoning, max_len=_TEASER_MAX):
     单行内联文本，换行会破坏 CommonMark type-6 HTML block 的单块性）。"""
     s = reasoning.strip().replace("\n", " ").replace("\r", "")
     m = _SENTENCE_END.search(s)
-    # 首句在预算内（含标点，留 5 字余量容标点）→ 取整句；首句超长 → 硬截断到 max_len
-    first = s[:m.end()] if (m and m.end() <= max_len + 5) else s[:max_len]
+    # 首句在预算内（m.end() 含末标点，≤ max_len）→ 取整句；首句超长 → 硬截断到 max_len。
+    # 不留余量：严格保证 teaser ≤ max_len + 1（+1 是末尾 …），与 run-on 分支（s[:max_len]）
+    # 一致——此前 max_len + 5 余量会让首句 teaser 长达 max_len+6，与 _TEASER_MAX 语义不符。
+    first = s[:m.end()] if (m and m.end() <= max_len) else s[:max_len]
     first = first.rstrip()
     if len(first) < len(s):
         first += "…"
@@ -136,9 +138,15 @@ def _render_reasoning(reasoning):
     # body 变成列表项里的松散段落（始终可见、不在折叠区内）、</details> 变孤立闭标签——
     # 表现为「点击展开」点了没反应（展开后空、正文跑到外面）。去空行让整段留在同一 HTML
     # block 内，<details> 才是完整可折叠元素（#167 review 实测回归）。
+    #
+    # body 同理须防 reasoning 自带空行（多段依据、含 \n\n 的代码片段）：原样嵌 {reasoning}
+    # 时其内部空行同样会截断 HTML block（#168 round-2 PRA-POSSIBLE_ISSUE）。折叠 body 的
+    # 空白（\s+→空格）成单行——内容一字不丢，仅丢多段排版（折叠区内的显示形态本就不重要）；
+    # 机器可读的 <!-- touchstone-checklist --> marker 存的是 reasoning 原文，API 取全文不受影响。
     teaser = _reasoning_teaser(reasoning)
+    body = re.sub(r"\s+", " ", reasoning).strip()
     return (f"   - <details><summary>依据（{len(reasoning)} 字）：{teaser}</summary>\n"
-            f"   {reasoning}\n"
+            f"   {body}\n"
             f"   </details>")
 
 
