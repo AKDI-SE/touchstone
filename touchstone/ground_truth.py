@@ -300,8 +300,7 @@ def build_ground_truth(owner, repo, token, *, window=GT_WINDOW, bot_login=None,
             # 与 _waived_types 对称（waived+merged→ignored）；放宽 adopted 口径——只认 thread
             # resolved 致 human_adopted 恒空（touchstone 工作流用 ack 不用 thread resolve），
             # 加 done 信号破 graduate 死锁（见 _ack_done_types 的三重背书）。
-            ack_done_types = (_ack_done_types(comments, bot_login, ts_findings, merged=True)
-                              if merged else set())
+            ack_done_types = _ack_done_types(comments, bot_login, ts_findings, merged=merged)
             adopted_types = resolved_types | ack_done_types
             # 差距1a：带 file/line 的 resolved 发现（#131 review #2：过滤掉无 line 的——位置级奖励需行号；
             #   无 line 的仅进 resolved_types 做类型匹配，不进 positions，免产 line=null 的废位置）
