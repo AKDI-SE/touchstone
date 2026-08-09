@@ -5,7 +5,12 @@
 
 ## [未发布]
 
-（下个版本的新变更记于此。）
+### 评审呈现层改进（借鉴 pr-agent 上游 #2510 写作风格）
+
+- **单条发现去字段冗余**（#157）：`修复方向` 与 `rationale` 同文时不再复读（标题已含一句话问题，方向同文即纯噪声）；依据字段早有同等去重守卫，此处补齐对称。
+- **定位精度**（#157）：行号缺失时渲染只显文件名（不再 `file:None`）。两层兜底——`review_provider.normalize` 做 `line_start→line_end` 回退（`is not None` 判定，0 不当缺失），`render._location` 是渲染侧最终兜底。sig 带真实行号让跨轮 reconcile 更稳（行号稳定而非塌缩到 `:None`）。
+- **长依据折叠**（#158）：`fix_reasoning` 超 200 字符折叠进 `<details>`，summary 行露字数，author 一眼扫清单只看标题+方向，需要细节再展开。短依据平铺（快速判读信号）。
+- **done_criteria 诚实降级**（#159）：model 来源（pr-agent）在 normalize 层给不出设计所要求的「一句可回答的具体复核问题」，此前用模板 `「{direction}」是否已按方向解决？` 复读修复方向。现 `question` 留空，渲染退为「下一轮复检不再命中即销项」（如实描述 reconcile 实际机制）。确定性来源（contract/probe）不受影响，仍给真实机器可验判据。
 
 ## [0.2.1] — 2026-08-06（TF-GRPO 生产化全部差距 + Probe + 运维加固）
 
