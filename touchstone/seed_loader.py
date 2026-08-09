@@ -38,9 +38,13 @@ def load_seed_injection(repo_dir=".", stack=None):
     """读 ``repo_dir/.touchstone/seeds.yaml`` → 返回注入文本（供 PR-Agent extra_instructions）。
 
     repo_dir：消费方仓的 checkout 根（评审时 orchestrator 透传 REPO_DIR）。
-    stack：可选技术栈过滤（如 "python"）；None=不过滤、返回所有栈的种子。
+    stack：可选技术栈过滤（如 "python"）；None/非 str = 不过滤、返回所有栈的种子。
     无文件 / 解析失败 / 空列表 → 返回 ""（优雅降级，不阻塞评审）。
     格式不对的条目（kind 非 emphasize/suppress、缺 finding_type/text）逐条跳过、不整体失败。
+
+    已知 gap（诚实标注）：主评审路径 ``_experience_injection`` 不持有当前 PR 的技术栈上下文，
+    故调用时不传 stack → 带 ``stack`` 字段的种子也会注入（不按栈过滤）。多数团队规范是通用的
+    （不标 stack），不受影响；按栈过滤的种子需由显式持有栈上下文的调用方自行调本函数。
     """
     # abspath 归一化（round-2 review）：防 repo_dir 带尾斜杠/相对分量致 join 行为意外。
     path = os.path.join(os.path.abspath(repo_dir or "."), SEEDS_REL)
@@ -66,7 +70,13 @@ def load_seed_injection(repo_dir=".", stack=None):
     # 可控范围。评审输出本身 advisory-only（无合入权），进一步限影响。
     MAX_TEXT = 500
     MAX_TYPE = 80
-    stack_l = str(stack).lower() if stack is not None else None     # 防非 str（int 等）→ AttributeError
+    # round-3 review：非 str stack（int/list 等）→ 当作"不过滤"（与 None 同），而非 str() 强转
+    # （"123" 永不匹配 → 静默丢全部种子）。caller 传错类型时 fail-open（注入全部）比 fail-closed
+    # （丢全部团队规范）更安全——团队规范本身是 advisory。
+    if isinstance(stack, str) and stack.strip():
+        stack_l = stack.strip().lower()
+    else:
+        stack_l = None
     for s in seeds:
         if not isinstance(s, dict):
             continue

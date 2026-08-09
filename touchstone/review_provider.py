@@ -480,7 +480,10 @@ def _experience_injection(repo_dir):
         seeds.yaml 的 PR，已由 code review + 合并权限覆盖。
 
     TOUCHSTONE_EXPERIENCE_ENABLED=false 时两路整体关闭（默认开）。经验/种子只调
-    建议、不进闸（符合"评审路径只读"的边界）。"""
+    建议、不进闸（符合"评审路径只读"的边界）。
+
+    已知 gap（诚实标注）：本函数不持有当前 PR 的技术栈上下文，故 seeds.yaml 的 stack
+    字段在主评审路径不生效（带栈的种子也注入）。多数团队规范通用（不标 stack），不受影响。"""
     if os.environ.get("TOUCHSTONE_EXPERIENCE_ENABLED", "true").lower() not in ("1", "true", "yes", "on"):
         return ""
 

@@ -144,15 +144,17 @@ def test_text_and_finding_type_required(tmp_path):
 
 
 def test_stack_non_string_does_not_crash(tmp_path):
-    """stack 传非 str（int 等）不抛 AttributeError——round-1 review 防御。"""
+    """stack 传非 str（int 等）不抛 AttributeError——round-1 review 防御；
+    round-3 review：非 str 当作"不过滤"（fail-open，注入全部），而非 str() 强转丢全部。"""
     _write(str(tmp_path), """
         - finding_type: PRA-X
           kind: emphasize
           stack: python
           text: keep
     """)
-    # int / None / 对象都不应崩（int 会 str() 成 "123"，与 "python" 不匹配 → 空）
-    assert seed_loader.load_seed_injection(str(tmp_path), stack=123) == ""
+    # int / list / 对象都不崩，且当作"不过滤"→ 种子正常注入（advisory 规范 fail-open 比 fail-closed 安全）
+    for bad in (123, ["python"], object(), ""):
+        assert "PRA-X" in seed_loader.load_seed_injection(str(tmp_path), stack=bad)
     # stack=None = 不过滤（保持原行为）
     assert "PRA-X" in seed_loader.load_seed_injection(str(tmp_path), stack=None)
 
