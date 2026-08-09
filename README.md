@@ -131,12 +131,9 @@ jobs:
         run: |
           REF="${TOUCHSTONE_ENGINE_REF}"
           if [ "$REF" = "latest" ]; then
-            REF=$(curl -fsS --max-time 30 --retry 3 \
-              -H "Authorization: token ${GH_TOKEN}" \
-              https://api.github.com/repos/${TOUCHSTONE_ENGINE_REPO}/releases/latest \
-              | jq -r .tag_name)
+            REF=$(gh release view --repo "${TOUCHSTONE_ENGINE_REPO}" --json tagName --jq .tagName)
           fi
-          [ -n "$REF" ] || { echo "::error::resolve engine ref 失败（TOUCHSTONE_ENGINE_REF=${TOUCHSTONE_ENGINE_REF}，检查 GitHub API 可达性 / GITHUB_TOKEN 权限）" >&2; exit 1; }
+          [ -n "$REF" ] || { echo "::error::resolve engine ref 失败（TOUCHSTONE_ENGINE_REF=${TOUCHSTONE_ENGINE_REF}，检查 GH_TOKEN 权限 / ${TOUCHSTONE_ENGINE_REPO} 是否有 release）"; exit 1; }
           echo "resolved=$REF" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-python@v5
         with:
