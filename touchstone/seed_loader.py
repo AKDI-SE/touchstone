@@ -49,7 +49,11 @@ def load_seed_injection(repo_dir=".", stack=None):
     （不标 stack），不受影响；按栈过滤的种子需由显式持有栈上下文的调用方自行调本函数。
     """
     # abspath 归一化（round-2 review）：防 repo_dir 带尾斜杠/相对分量致 join 行为意外。
-    path = os.path.join(os.path.abspath(repo_dir or "."), SEEDS_REL)
+    abs_dir = os.path.abspath(repo_dir or ".")
+    if not os.path.isdir(abs_dir):               # round-5 review：repo_dir 非目录（如误传文件路径）→ 显式告警 + 返空
+        print(f"[warn] seeds.yaml：repo_dir 不是目录（{abs_dir}）→ 跳过种子注入", file=sys.stderr)
+        return ""
+    path = os.path.join(abs_dir, SEEDS_REL)
     if not os.path.isfile(path):
         return ""
     try:
