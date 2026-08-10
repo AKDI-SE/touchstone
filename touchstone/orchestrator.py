@@ -268,7 +268,7 @@ def post_results(owner, repo, number, head_sha, token, risk, findings, loop_info
     _ed_block = _render_engine_detail(engine_status, engine_detail)
     if _ed_block:
         _vblocks.append(_ed_block)
-    verification_md = ("### 验证与日志\n" + "\n\n".join(_vblocks)) if _vblocks else ""
+    verification_md = ("### 验证与日志\n\n" + "\n\n".join(_vblocks)) if _vblocks else ""
     body = render_report(risk, findings, banner=banner, scope_facts=scope_facts,
                          checklist_md=checklist_md, verification_md=verification_md,
                          markers="\n".join(markers), lineage=ledger,

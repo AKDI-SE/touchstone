@@ -16,7 +16,7 @@
 
 - **AI 评审发现的依据 body 脱出 `<details>`**：`_render_reasoning` 里 body 与 `</details>` 此前缩进 3 空格（col 3），但 `<details>` 在 `   - ` 子列表项内（内容区 col 5）——body 脱出子列表项内容区 → CommonMark 判其不属于该列表项 → HTML block 在 body 行截断 → `<details>` 变空壳（summary 后紧跟 `</details>`）、body 渲染成列表项外的松散段落（始终可见、折叠失效）。修为 5 空格缩进（col 5，留在子列表项内），GitHub `body_html` 实测确认 body 回到 `<details>` 内。#168 修了 summary/body 间的空行但漏了缩进脱出（同一类 CommonMark type-6 HTML block 截断、不同表现）。
 - **「如何申报销项」`<details>` 内有空行**：`checklist.py` 里 summary 与 body、body 与 `</details>` 之间各有一空行 → type-6 HTML block 在首个空行处截断 → `<details>` 变空壳、申报指引正文渲染成折叠区外的松散段落（始终可见）。#168 修了 `_render_reasoning` 的同类空行但漏了此处。去空行；内联代码改用 `<code>` 标签（HTML block 内不解析 markdown 反引号）。
-- **验证与日志段收紧**：H3 与内容间去空行（`### 验证与日志\n` + 内容，非 `\n\n`）。
+- **验证与日志段收紧**：~~H3 与内容间去空行~~（评审指出 ATX 标题无空行虽在 CommonMark 合法、但部分 linter/渲染器有兼容顾虑，已回退保留空行——一行之差不值得牺牲可移植性）。
 - 5 条回归测试（`tests/test_revision_items.py`）：blockquote 合并、敏感路径省行、body 缩进 ≥ col 5、如何申报销项无空行、CAUTION 自成块。
 
 ## [0.2.6] — 2026-08-09（`<details>` 渲染修复 + summary 露关键信息预览）
