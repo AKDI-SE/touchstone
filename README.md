@@ -241,6 +241,8 @@ Touchstone 评审默认用通用规则。让评审**懂你团队的特定规范*
 
 不想跑学习回路、也不想等 graduate 达标的团队，在自己仓库放一份 `.touchstone/seeds.yaml`——手写的团队规范在评审时**直接注入** PR-Agent 提示词。
 
+> **注意区分**：这是 consumer-repo 的注入配置（`.touchstone/seeds.yaml`，由 `touchstone/seed_loader.py` 读取并注入 PR-Agent 提示词）。它与 `.github/workflows/seed.yml` / `examples/seed_experiences.py`（路径 B 用来 bootstrap **引擎经验库**的脚本与工作流）是两套独立机制——名字像但不是一回事，详见下方路径 B 的「graduate 阈值」。
+
 **3 步启用：**
 
 1. 在你的消费方仓创建 `.touchstone/seeds.yaml`（格式见下；完整样例与 threat-model 注释参考[本仓 `.touchstone/seeds.yaml.example`](./.touchstone/seeds.yaml.example)）。
