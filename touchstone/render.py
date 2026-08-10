@@ -273,9 +273,14 @@ def render_findings_checklist(findings, checklist, review_reliable=True):
                      # 不靠此处的恒定标题——此前「### 评审发现与销项\n本次无可自改发现。」是干净
                      # PR 上的恒定噪声，与 v2 去冗余目标矛盾。
 
+    # findings↔清单项 join 用 sig 建索引。重复 sig（同 rule:file:line 的多条 finding）
+    # keep-first——与 from_findings 的去重（seen 集，keep-first）一致：清单项已是首条，
+    # 索引也取首条才不出现「清单用首条 direction、元数据却取末条」的错配（PRA-GENERAL round-5）。
     finding_by_sig = {}
     for f in (findings or []):
-        finding_by_sig[sig_of(f)] = f
+        s = sig_of(f)
+        if s not in finding_by_sig:
+            finding_by_sig[s] = f
 
     def _sort_key(it):
         f = finding_by_sig.get(it["sig"])
