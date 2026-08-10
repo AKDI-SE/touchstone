@@ -150,9 +150,14 @@ def _render_reasoning(reasoning):
     # 机器可读的 <!-- touchstone-checklist --> marker 存的是 reasoning 原文，API 取全文不受影响。
     teaser = _reasoning_teaser(reasoning)
     body = re.sub(r"\s+", " ", reasoning).strip()
+    # body 与 </details> 须缩进到与 <details> 同列（col 5：3 空格 list 缩进 + "- " 2 字符）。
+    # 此前 3 空格（col 3）会让 body 脱出 `- ` 子列表项的内容区（col ≥5），CommonMark 判其
+    # 不属于该列表项 → HTML block 在 body 行处截断 → <details> 变空壳、body 渲染成列表项外的
+    # 松散段落（始终可见）—— GitHub 实测 body_html 证实：<details>summary 后紧跟 </details>、
+    # body 在 </details> 之外作为兄弟段落。修到 col 5 让 body 留在子列表项内、HTML block 完整。
     return (f"   - <details><summary>依据（{len(reasoning)} 字）：{teaser}</summary>\n"
-            f"   {body}\n"
-            f"   </details>")
+            f"     {body}\n"
+            f"     </details>")
 
 
 def _finding_entry(i, f):

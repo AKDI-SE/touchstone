@@ -259,6 +259,42 @@ def test_details_block_has_no_blank_lines_inside():
         "<details> 块内含空行 → HTML block 在首个空行处截断，折叠失效（#167 回归）")
 
 
+def test_details_body_indented_to_sublist_content_column():
+    """回归 PR #171 review（fetchBody HTML 诊断）：<details> 在 `   - ` 子列表项里（col 5），
+    body 与 </details> 此前在 col 3（脱出子列表项内容区）→ CommonMark 判 body 不属于该列表项
+    → HTML block 在 body 行处截断 → <details> 变空壳、body 渲染成列表项外的松散段落（始终
+    可见、折叠失效）。body 与 </details> 须缩进到 col 5（与 <details> 同列）留在子列表项内。
+
+    检查 GitHub body_html 证实：修前 <details>summary 后紧跟 </details>（空壳）、body 在
+    </details> 之外作为兄弟段落；修后 body 在 <details> 内。"""
+    from touchstone.render import _render_reasoning
+    out = _render_reasoning("依据正文内容。" * 30)            # > 200 字符，触发折叠
+    lines = out.split("\n")
+    # 第一行：`   - <details><summary>...`（col 3 缩进 + "- " + <details> at col 5）
+    assert lines[0].startswith("   - <details>")
+    # body 行（第二行）与 </details> 行（第三行）须在 col 5（5 空格），与 <details> 同列
+    # 关键：修前是 3 空格（col 3）→ 脱出 `- ` 子列表项内容区（col ≥5）→ HTML block 截断、
+    # body 渲染到折叠区外（GitHub body_html 实测：details 空壳 + body 作兄弟段落）
+    body_indent = len(lines[1]) - len(lines[1].lstrip())
+    close_indent = len(lines[2]) - len(lines[2].lstrip())
+    assert body_indent >= 5, (
+        f"body 缩进 {body_indent} < 5 → 脱出 `- ` 子列表项内容区 → HTML block 截断、折叠失效")
+    assert close_indent >= 5 and lines[2].strip() == "</details>"
+
+
+def test_ack_help_details_has_no_blank_lines_inside():
+    """回归 #171：如何申报销项 <details> 内有空行（summary/body 间、body/</details> 间各一）
+    → CommonMark type-6 HTML block 在首个空行处截断 → <details> 变空壳、申报指引正文渲染成
+    <details> 之外的松散段落（始终可见）。去空行让整段留在同一 HTML block 内才可折叠。"""
+    from touchstone import checklist as cl
+    f = {"rule_id": "R1", "severity": "warn", "confidence": 0.9, "agent": "pr-agent",
+         "file": "a.py", "line": 1, "rationale": "r", "fix_direction": "d",
+         "done_criteria": {"kind": "deterministic", "spec": {"recheck": "R1"}}}
+    md = cl.render(cl.from_findings([f]))
+    assert "<details>" in md and "</details>" in md
+    block = md[md.index("<details>"):md.index("</details>") + len("</details>")]
+    assert "\n\n" not in block, (
+        "<details> 内含空行 → HTML block 截断、申报指引正文跑到折叠区外（始终可见）")
 
 
 
@@ -1035,9 +1071,10 @@ def test_banner_and_summary_share_one_blockquote_when_reliable():
 def test_caution_stands_apart_from_loop_risk_blockquote_when_unreliable():
     """B 档边界：不可信时 [!CAUTION] 红框自成一块（banner 内空行隔开），其后的循环状态+
     风险等级另成一个 blockquote——CAUTION 不吞掉风险等级行（避免过度渲染）。"""
+    from touchstone import render
     risk = {"risk_band": "low", "human_action": "skip",
             "verification_decision": "cheap_only", "blast_radius": []}
-    md = orchestrator.render_report(
+    md = render.render_report(
         risk, [], banner="**反馈循环：🔁 继续** — 本轮不可信", review_reliable=False,
         engine_status="llm_failed", ai_raw_count=0, added_lines=50)
     lines = md.split("\n")
