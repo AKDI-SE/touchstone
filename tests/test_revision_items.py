@@ -1145,12 +1145,24 @@ def test_findings_checklist_merges_direction_status_and_sig():
 
 
 def test_status_line_resolved_rate_never_exceeds_100():
-    """销项率兜底：异常大值也不溢出（护栏）。v2：销项率在状态行（render_status_line）。"""
+    """销项率兜底：异常大值也不溢出（护栏）。v2：销项率在状态行（render_status_line）。
+    用非空 items 驱动（空清单不显示销项率——见 test_status_line_omits_rate_for_empty_checklist）。"""
     from touchstone import render
     st = render.render_status_line(
         {"risk_band": "low", "human_action": "skip", "verification_decision": "cheap_only", "blast_radius": []},
-        checklist={"round": 1, "resolved_rate": 33, "items": []})   # 误传 33 而非 0.33
+        checklist={"round": 1, "resolved_rate": 33, "items": [{"sig": "R:0", "status": "open"}]})  # 误传 33
     assert "销项率 100%" in st                              # min(100,...) 兜底
+
+
+def test_status_line_omits_rate_for_empty_checklist():
+    """空清单（items=[]）不显示销项率——_rate([])=1.0，若显示则「销项率 100%」对零项清单
+    是噪声，与 v2 去冗余目标矛盾（PRA-GENERAL round-1）。真值守卫（非 `is not None`）：空列表
+    是 falsy，跳过销项率行。"""
+    from touchstone import render
+    st = render.render_status_line(
+        {"risk_band": "low", "human_action": "skip", "blast_radius": []},
+        checklist={"round": 1, "resolved_rate": 1.0, "items": []})   # 空清单（_rate 空列表=1.0）
+    assert "销项率" not in st
 
 
 # ---------------- 变异体回归锁：waived 收敛门的轮次耗尽边界 ----------------

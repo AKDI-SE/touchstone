@@ -235,7 +235,10 @@ def render_status_line(risk, loop_info=None, checklist=None, rounds_left=None,
         if rounds_left is not None:
             round_part += f" · 剩余 {rounds_left} 轮"
         parts.append(round_part)
-    if cl.get("items") is not None and cl.get("resolved_rate") is not None:
+    if cl.get("items") and cl.get("resolved_rate") is not None:
+        # 真值检查（非 `is not None`）：空清单 items=[] 时 resolved_rate=1.0（_rate 空列表
+        # 归一），若用 `is not None` 会漏过空列表显示「销项率 100%」——对零项清单是噪声，
+        # 与 v2 去冗余目标矛盾（PRA-GENERAL round-1）。空清单无项可销，不显示销项率。
         rate = min(100, max(0, int(round(cl["resolved_rate"] * 100))))
         parts.append(f"销项率 {rate}%")
 
