@@ -324,7 +324,10 @@ def render_findings_checklist(findings, checklist, review_reliable=True):
         # rationale（问题陈述）作首条子项；与 direction 同文则省（去冗余，同 _finding_entry 纪律）
         if rationale and rationale != direction:
             lines.append(f"  - {rationale}")
-        if reasoning and reasoning != rationale:
+        # reasoning（依据）与 rationale 或 direction 同文则省——成对去冗余（PRA-REVIEW round-4：
+        # 已销项项 rationale="" 时 `reasoning != ""` 恒真，若 reasoning==direction 会复读标题，
+        # 补 `!= direction` 守卫使两分支（open 有 finding / resolved 无 finding）去冗余一致）。
+        if reasoning and reasoning != rationale and reasoning != direction:
             r = _render_reasoning(reasoning, indent="  ")   # task list 子项缩进 2 空格
             if r:
                 lines.append(r)
