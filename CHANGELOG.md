@@ -7,17 +7,20 @@
 
 （下个版本的新变更记于此。）
 
-### 评审报告顶部去碎片 + 去恒定噪声
+### 评审报告版面重设计：七段 → 六段（去冗余）
 
-- **① 横幅与 ② 态势合并为同一 blockquote**：模板 `templates/review_report.md` 里 `{{banner}}` 与 `{{summary_line}}` 间去掉空行，CommonMark 把连续 `>` 行并成单块——消除「顶部标题下两个紧邻引用框」（反馈循环框 + 风险等级框）的视觉碎片。不可信时 `[!CAUTION]` banner 内部仍用空行隔出两段引用，CAUTION 红框自成一块、循环状态+风险等级另成一块。
-- **静态检查「敏感路径命中」仅在有命中时显示**：无命中整体省略（不再写恒定的「敏感路径命中：无」），与态势区「触发因子」为空时省略同一去冗余纪律——大多数 PR 无敏感路径改动，「命中：无」是每轮占屏的恒定噪声。
+基于 PR #170–#171 多轮评审观察，对评审报告版面做去冗余重设计——七段合六段，保留 GitHub 原生 checkbox。版面是一等设计资产（`templates/review_report.md`），代码只填充。
 
-### `<details>` 折叠回归修复（#168 遗漏的两处）
+- **① 状态行合并（观测 1+6）**：旧版「① 横幅（反馈循环行）+ ② 态势（风险等级行）」两段合为一行 blockquote——循环决策（继续/收敛/升级）· 轮次 · 剩余轮数 · 销项率 · 风险等级。escalate 的升级理由有诊断价值保留；continue/converged 的理由是轮次/销项率的复述，已在状态行结构化呈现、不复读。`render_report` 接口变更：`banner=` → `alerts=`（循环行归①状态行，`alerts` 只留降级/CAUTION/溯源/同源提示）；新增 `loop_info=`、`checklist=`、`rounds_left=` 传给 `render_status_line`。
+- **③ 静态检查精简（观测 7）**：删除「修改范围」（文件数/增删行，与 PR UI 统计重复）；「规则命中」详情并入④。仅保留敏感路径命中 + 门禁状态；**无内容时整段省略**（简单 PR 零噪声）。
+- **④ 评审发现与销项合一（观测 2+3+4）**：AI 评审 + 待解决问题清单合为一段。所有发现（确定性规则命中 + LLM 建议）作为 `- [ ]` task list（GitHub 渲染成可勾选框），sig 兼作位置与 ack 锚点（不再单列位置/锚点行）。删除「销项跟踪：…见上方」样板（详情已在同段）。开放项在前（按置信降序）、已销项在后；大 PR 封顶列出（避免撑破 GitHub 65536 字符限）。findings↔checklist 按 sig join：开放项有当前 finding（完整详情），已销项项可能无（用清单存储的历史快照 sparse 显示）。
+- **⑤ 参考信息折叠（观测 5）**：验证/日志 + 申报指引全部 `<details>` 折叠（默认不占屏）；空清单时省申报指引。
+- **`<details>` 折叠回归修复（#168 遗漏两处，随 v2 修复）**：① `_render_reasoning` 的 body/`</details>` 缩进参数化（`indent` + 2），兼容编号列表（3 空格）与 task list（2 空格）——body 脱出子列表项内容区会让 HTML block 截断、折叠失效；② 申报指引 `<details>` 内去空行（type-6 HTML block 遇空行即终止）、内联代码改 `<code>` 标签。
+- **保留 checkbox**：用户明确要求保留 GitHub 原生 `- [ ]`/`- [x]` task list（不退化成编号列表 + emoji）。状态标签 ⬜/✅/🟡 在 checkbox 基础上加四态语义（待处理/已复核销项/待人核准豁免/待人核准拆出）。
+- **代码清理**：移除 v1 的 `_finding_entry`/`render_facts`/`render_findings`/`_location` 四个死函数（版面合并后不再被生产路径调用）；`checklist.py` 的 `render()`/状态常量迁至 `render.py`（呈现层归呈现层），`checklist.py` 只保留数据层（`render_marker` 产机读 JSON）；`orchestrator.post_results` 接口变更（`checklist_md=` → `checklist=, rounds_left=`）；`sig_of` 在 `line=None` 时省略行段（v2 sig 兼作位置显示，防 `:None` 渗入版面）。
+- 测试：`test_revision_items.py` 全部 v1 单发现渲染测试改驱动 v2 函数（`_render_done_criteria`/`_render_reasoning`/`render_findings_checklist`）；新增状态行合并、清单合一、销项率封顶等回归测试。1151 passed、11 skipped（4 个 `mutation_check` 测试因环境缺 `python` 可执行文件预存失败，与本变更无关）。
 
-- **AI 评审发现的依据 body 脱出 `<details>`**：`_render_reasoning` 里 body 与 `</details>` 此前缩进 3 空格（col 3），但 `<details>` 在 `   - ` 子列表项内（内容区 col 5）——body 脱出子列表项内容区 → CommonMark 判其不属于该列表项 → HTML block 在 body 行截断 → `<details>` 变空壳（summary 后紧跟 `</details>`）、body 渲染成列表项外的松散段落（始终可见、折叠失效）。修为 5 空格缩进（col 5，留在子列表项内），GitHub `body_html` 实测确认 body 回到 `<details>` 内。#168 修了 summary/body 间的空行但漏了缩进脱出（同一类 CommonMark type-6 HTML block 截断、不同表现）。
-- **「如何申报销项」`<details>` 内有空行**：`checklist.py` 里 summary 与 body、body 与 `</details>` 之间各有一空行 → type-6 HTML block 在首个空行处截断 → `<details>` 变空壳、申报指引正文渲染成折叠区外的松散段落（始终可见）。#168 修了 `_render_reasoning` 的同类空行但漏了此处。去空行；内联代码改用 `<code>` 标签（HTML block 内不解析 markdown 反引号）。
-- **验证与日志段收紧**：~~H3 与内容间去空行~~（评审指出 ATX 标题无空行虽在 CommonMark 合法、但部分 linter/渲染器有兼容顾虑，已回退保留空行——一行之差不值得牺牲可移植性）。
-- 5 条回归测试（`tests/test_revision_items.py`）：blockquote 合并、敏感路径省行、body 缩进 ≥ col 5、如何申报销项无空行、CAUTION 自成块。
+
 
 ## [0.2.6] — 2026-08-09（`<details>` 渲染修复 + summary 露关键信息预览）
 
