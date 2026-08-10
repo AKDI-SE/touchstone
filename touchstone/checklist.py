@@ -55,15 +55,24 @@ RESOLVED = VERIFIED | CLAIMED
 
 
 def _norm_sig(sig):
-    """规整清单签名：去除所有空白（含换行/制表符/首尾空格）。
+    """规整清单签名：去除所有空白（含换行/制表符/首尾空格）+ 剥除 legacy `:None` 行段。
 
     sig = rule_id:file:line，各段本不含合法空格，故全去空白安全。防 pr-agent 输出的
     file/line 字段带尾换行（见 PR #52 advisory 的 PRA-POSSIBLE_ISSUE）——未归一化时 sig 内嵌
     \\n，而 author 的 touchstone-ack 经 splitlines()+strip() 产不出含内部换行的 sig，导致
     acks.get(item_sig) 恒 None、显式 done/waived/split 申报永远匹配不上该项（structurally
     无法销项，只能走复检自动销项）。归一化在构造（sig_of）与加载（reconcile 读旧 marker）
-    两端一致施加，使含脏空白的旧清单项也能被 ack 命中。"""
-    return re.sub(r"\s+", "", sig or "")
+    两端一致施加，使含脏空白的旧清单项也能被 ack 命中。
+
+    legacy `:None` 剥除（PRA-REVIEW round-3）：v2 前 sig_of 在 line=None 时产 `rule:file:None`，
+    v2 改为省略行段（`rule:file`）。旧 marker/ack 的 `:None` sig 与新 sig 不匹配会导致跨版
+    reconcile orphan（旧项永远销不掉）。中心化剥除：count(':')>=2（即 rule:file:line 三段格式）
+    且 endswith(':None') 时剥后缀——只命中【行段=None】的 legacy 形态，不误伤 file=None
+    （`rule:None` 只一段冒号、不剥）。"""
+    s = re.sub(r"\s+", "", sig or "")
+    if s.endswith(":None") and s.count(":") >= 2:
+        s = s[:-5]       # 剥 legacy 行段 None（rule:file:None → rule:file），使旧/新 sig 可匹配
+    return s
 
 
 def sig_of(finding):

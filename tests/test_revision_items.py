@@ -1144,6 +1144,24 @@ def test_findings_checklist_merges_direction_status_and_sig():
     assert "锚点 `" not in md                              # 不再单列锚点行
 
 
+def test_findings_checklist_resolved_item_without_direction_not_pending():
+    """已销项项无方向时不显「（待补修复方向）」（PRA-REVIEW round-3 data-loss）。
+    「待补」暗示待办，但已销项（done/waived/split）无需再补——方向是历史快照、本就可能未留存。
+    open 项无方向仍显「待补」（提示 author 补）；已销项项改显「（已销项）」。"""
+    from touchstone import render
+    c = {"round": 2, "resolved_rate": 0.5, "items": [
+        {"sig": "R@a.py:1", "status": "open", "direction": "", "reasoning": "",
+         "done_criteria": {}, "note": ""},
+        {"sig": "R@b.py:2", "status": "done", "direction": "", "reasoning": "",
+         "done_criteria": {}, "note": "复核通过"}]}
+    md = render.render_findings_checklist([], c)
+    # open 项无方向 → 待补（提示补方向）
+    assert "（待补修复方向）" in md
+    # 已销项项无方向 → 不显「待补」（改显「已销项」，不误导）
+    assert md.count("（待补修复方向）") == 1                  # 只有 open 项那一处
+    assert "（已销项）" in md                                 # done 项用此占位
+
+
 def test_status_line_resolved_rate_never_exceeds_100():
     """销项率兜底：异常大值也不溢出（护栏）。v2：销项率在状态行（render_status_line）。
     用非空 items 驱动（空清单不显示销项率——见 test_status_line_omits_rate_for_empty_checklist）。"""

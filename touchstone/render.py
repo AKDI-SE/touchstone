@@ -311,7 +311,15 @@ def render_findings_checklist(findings, checklist, review_reliable=True):
             rationale = ""
             reasoning = it.get("reasoning") or ""
             dc = it.get("done_criteria") or {}
-        title = f"**{direction}**" if direction else "（待补修复方向）"
+        # 标题：方向作标题（加粗）。无方向时按状态区分占位——open 项「待补」提示 author 补方向；
+        # 已销项项（done/waived/split）方向是历史快照、本就可能未留存，「待补」会误导（待补=待办，
+        # 但已销项无需再补）→ 标「已销项」（PRA-REVIEW round-3 data-loss）。
+        if direction:
+            title = f"**{direction}**"
+        elif it["status"] == "open":
+            title = "（待补修复方向）"
+        else:
+            title = "（已销项）"
         lines.append(f"{mark} {title}" + (f" {label}" if label else "") + f" — `{it['sig']}`")
         # rationale（问题陈述）作首条子项；与 direction 同文则省（去冗余，同 _finding_entry 纪律）
         if rationale and rationale != direction:
