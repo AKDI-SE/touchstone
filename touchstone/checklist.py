@@ -278,12 +278,13 @@ def render(checklist, rounds_left=None, lineage=None):
     if cl["items"]:
         # 空清单（0 发现即收敛，如 PR #70）无项可申报——折叠样板此时纯噪声，省去。
         # 有项时仍显申报指引（test_report_layout_invariants 锁非空情形）。
+        # <details> 是 CommonMark type-6 HTML block，遇空行即终止——此前 summary 与 body、
+        # body 与 </details> 之间各有一空行 → <details> 在首个空行处截断成空壳、body 渲染成
+        # <details> 之外的松散段落（始终可见、折叠失效）。去空行让整段留在同一 HTML block 内。
         lines.append("<details><summary>如何申报销项</summary>")
-        lines.append("")
-        lines.append("发评论，内容为 ```touchstone-ack``` 代码块，每行 "
-                     "`<签名>: done|waived: 理由|split: 链接`。勾选/申报是输入信号，"
-                     "以评审方按达成判据复核后的本清单为准。")
-        lines.append("")
+        lines.append("发评论，内容为 <code>touchstone-ack</code> 代码块，每行 "
+                     "<code>&lt;签名&gt;: done|waived: 理由|split: 链接</code>。"
+                     "勾选/申报是输入信号，以评审方按达成判据复核后的本清单为准。")
         lines.append("</details>")
         lines.append("")
     lines.append(_OPEN + json.dumps(cl, ensure_ascii=False) + _CLOSE)

@@ -12,8 +12,14 @@ touchstone/templates/review_report.md —— 评审报告版面模板（修订�
 排版铁律（易读性改版确立）：
   - 标题唯一：H2 只有报告标题一处；③④⑤⑥ 一律 H3——并列段落必须并列层级；
   - 状态横幅（降级/循环/溯源）一律 blockquote，与正文区隔；
+  - ① 横幅与 ② 态势共享同一 blockquote（{{banner}} 与 {{summary_line}} 间无空行，
+    CommonMark 把连续 > 行合并为单块——避免顶部出现两个紧邻的引用框）；不可信时
+    [!CAUTION] banner 内部用空行隔开两段引用，CAUTION 红框仍自成一块；banner 为空
+    时 {{summary_line}} 落单成块（多余空行由 render_report 末尾的 \n{3,}→\n\n 收敛）；
   - 人最关心的信息前置：发现先给「位置 — 问题」，rule/置信/来源降级为行尾小字；
   - 每轮重复的样板说明（如申报方式）折叠进 <details>，不占屏；
+  - 去恒定噪声：静态检查的「敏感路径命中」仅在有命中时显示（无命中整体省略，不再写
+    「敏感路径命中：无」），与态势区「触发因子」为空时省略同一纪律；
   - 态势区一律「标签+人话」陈述行（非枚举表格），字段中文、英文名仅括注；机器路由
     字段（verification_decision）不入态势区，降级至「验证与日志」段；发现按
     「规则检查命中 / AI 评审建议」分组（易读性改版·二，PR #59 案例）；
@@ -24,7 +30,6 @@ touchstone/templates/review_report.md —— 评审报告版面模板（修订�
 ## Touchstone · AI Committer 代码检视
 
 {{banner}}
-
 {{summary_line}}
 
 {{facts}}

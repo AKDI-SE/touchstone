@@ -7,6 +7,18 @@
 
 （下个版本的新变更记于此。）
 
+### 评审报告顶部去碎片 + 去恒定噪声
+
+- **① 横幅与 ② 态势合并为同一 blockquote**：模板 `templates/review_report.md` 里 `{{banner}}` 与 `{{summary_line}}` 间去掉空行，CommonMark 把连续 `>` 行并成单块——消除「顶部标题下两个紧邻引用框」（反馈循环框 + 风险等级框）的视觉碎片。不可信时 `[!CAUTION]` banner 内部仍用空行隔出两段引用，CAUTION 红框自成一块、循环状态+风险等级另成一块。
+- **静态检查「敏感路径命中」仅在有命中时显示**：无命中整体省略（不再写恒定的「敏感路径命中：无」），与态势区「触发因子」为空时省略同一去冗余纪律——大多数 PR 无敏感路径改动，「命中：无」是每轮占屏的恒定噪声。
+
+### `<details>` 折叠回归修复（#168 遗漏的两处）
+
+- **AI 评审发现的依据 body 脱出 `<details>`**：`_render_reasoning` 里 body 与 `</details>` 此前缩进 3 空格（col 3），但 `<details>` 在 `   - ` 子列表项内（内容区 col 5）——body 脱出子列表项内容区 → CommonMark 判其不属于该列表项 → HTML block 在 body 行截断 → `<details>` 变空壳（summary 后紧跟 `</details>`）、body 渲染成列表项外的松散段落（始终可见、折叠失效）。修为 5 空格缩进（col 5，留在子列表项内），GitHub `body_html` 实测确认 body 回到 `<details>` 内。#168 修了 summary/body 间的空行但漏了缩进脱出（同一类 CommonMark type-6 HTML block 截断、不同表现）。
+- **「如何申报销项」`<details>` 内有空行**：`checklist.py` 里 summary 与 body、body 与 `</details>` 之间各有一空行 → type-6 HTML block 在首个空行处截断 → `<details>` 变空壳、申报指引正文渲染成折叠区外的松散段落（始终可见）。#168 修了 `_render_reasoning` 的同类空行但漏了此处。去空行；内联代码改用 `<code>` 标签（HTML block 内不解析 markdown 反引号）。
+- **验证与日志段收紧**：~~H3 与内容间去空行~~（评审指出 ATX 标题无空行虽在 CommonMark 合法、但部分 linter/渲染器有兼容顾虑，已回退保留空行——一行之差不值得牺牲可移植性）。
+- 5 条回归测试（`tests/test_revision_items.py`）：blockquote 合并、敏感路径省行、body 缩进 ≥ col 5、如何申报销项无空行、CAUTION 自成块。
+
 ## [0.2.6] — 2026-08-09（`<details>` 渲染修复 + summary 露关键信息预览）
 
 本版本修复评审报告里 `<details>` 折叠区「点击展开」无反应的回归（自 v0.2.2 #158 长依据折叠起即存在），并把折叠 summary 从无信息标签升级为首句预览——author 扫清单时不展开也能判读依据要点。

@@ -259,6 +259,42 @@ def test_details_block_has_no_blank_lines_inside():
         "<details> 块内含空行 → HTML block 在首个空行处截断，折叠失效（#167 回归）")
 
 
+def test_details_body_indented_to_sublist_content_column():
+    """回归 PR #171 review（fetchBody HTML 诊断）：<details> 在 `   - ` 子列表项里（col 5），
+    body 与 </details> 此前在 col 3（脱出子列表项内容区）→ CommonMark 判 body 不属于该列表项
+    → HTML block 在 body 行处截断 → <details> 变空壳、body 渲染成列表项外的松散段落（始终
+    可见、折叠失效）。body 与 </details> 须缩进到 col 5（与 <details> 同列）留在子列表项内。
+
+    检查 GitHub body_html 证实：修前 <details>summary 后紧跟 </details>（空壳）、body 在
+    </details> 之外作为兄弟段落；修后 body 在 <details> 内。"""
+    from touchstone.render import _render_reasoning
+    out = _render_reasoning("依据正文内容。" * 30)            # > 200 字符，触发折叠
+    lines = out.split("\n")
+    # 第一行：`   - <details><summary>...`（col 3 缩进 + "- " + <details> at col 5）
+    assert lines[0].startswith("   - <details>")
+    # body 行（第二行）与 </details> 行（第三行）须在 col 5（5 空格），与 <details> 同列
+    # 关键：修前是 3 空格（col 3）→ 脱出 `- ` 子列表项内容区（col ≥5）→ HTML block 截断、
+    # body 渲染到折叠区外（GitHub body_html 实测：details 空壳 + body 作兄弟段落）
+    body_indent = len(lines[1]) - len(lines[1].lstrip())
+    close_indent = len(lines[2]) - len(lines[2].lstrip())
+    assert body_indent >= 5, (
+        f"body 缩进 {body_indent} < 5 → 脱出 `- ` 子列表项内容区 → HTML block 截断、折叠失效")
+    assert close_indent >= 5 and lines[2].strip() == "</details>"
+
+
+def test_ack_help_details_has_no_blank_lines_inside():
+    """回归 #171：如何申报销项 <details> 内有空行（summary/body 间、body/</details> 间各一）
+    → CommonMark type-6 HTML block 在首个空行处截断 → <details> 变空壳、申报指引正文渲染成
+    <details> 之外的松散段落（始终可见）。去空行让整段留在同一 HTML block 内才可折叠。"""
+    from touchstone import checklist as cl
+    f = {"rule_id": "R1", "severity": "warn", "confidence": 0.9, "agent": "pr-agent",
+         "file": "a.py", "line": 1, "rationale": "r", "fix_direction": "d",
+         "done_criteria": {"kind": "deterministic", "spec": {"recheck": "R1"}}}
+    md = cl.render(cl.from_findings([f]))
+    assert "<details>" in md and "</details>" in md
+    block = md[md.index("<details>"):md.index("</details>") + len("</details>")]
+    assert "\n\n" not in block, (
+        "<details> 内含空行 → HTML block 截断、申报指引正文跑到折叠区外（始终可见）")
 
 
 
@@ -994,6 +1030,64 @@ def test_situation_block_omits_trigger_line_when_no_factors():
     # 对照：有因子 → 照常显
     head2, _ = render.render_findings(dict(risk_none, blast_radius=["security_surface"]), [])
     assert "触发因子" in head2 and "涉及安全面" in head2
+
+
+def test_facts_omit_sensitive_path_line_when_no_hit():
+    """去冗余（B 档）：无敏感路径命中时整行省略（不再写「敏感路径命中：无」）——大多数 PR
+    无命中，「命中：无」是恒定噪声。有命中时照常显（含规则名）。与态势区「触发因子」
+    为空时省略同一纪律。"""
+    from touchstone import render
+    sf_no_hit = {"parse_ok": True,
+                 "totals": {"files": 1, "added": 2, "deleted": 0},
+                 "sensitive_hits": []}
+    facts = render.render_facts(sf_no_hit)
+    assert "修改范围：1 个文件（+2 / −0 行）" in facts    # totals 仍显
+    assert "敏感路径命中" not in facts                    # 无命中 → 整行省略
+    assert "敏感路径命中：无" not in facts                 # 旧措辞彻底消失
+    # 对照：有命中 → 照常显（含规则名）
+    sf_hit = {"parse_ok": True, "totals": {"files": 1, "added": 1, "deleted": 0},
+              "sensitive_hits": [{"rule": "SEC-PATH", "path": "auth/k.py"}]}
+    facts_hit = render.render_facts(sf_hit)
+    assert "敏感路径命中（SEC-PATH）：`auth/k.py`" in facts_hit
+
+
+def test_banner_and_summary_share_one_blockquote_when_reliable():
+    """B 档：可信时 banner（反馈循环/横幅）与 summary_line（风险等级）同属一个 blockquote——
+    CommonMark 把连续 > 行并成单块，避免顶部出现两个紧邻引用框。断言：风险等级行紧跟在
+    反馈循环行之后（中间无空行）。"""
+    from touchstone import render
+    risk = {"risk_band": "mid", "human_action": "read",
+            "verification_decision": "cheap_only", "blast_radius": []}
+    body = render.render_report(risk, [], banner="**反馈循环：🔁 继续** — 第 3 轮")
+    lines = body.split("\n")
+    # 找反馈循环行，断言下一行是风险等级（同 blockquote、无空行隔开）
+    idx = next(i for i, ln in enumerate(lines) if "反馈循环：🔁 继续" in ln)
+    assert lines[idx].startswith("> ")                    # 反馈循环在 blockquote 内
+    assert "风险等级：中" in lines[idx + 1]                # 风险等级紧跟（同一 blockquote）
+    assert lines[idx + 1].startswith("> ")                # 且也是 > 行
+    # 旧行为（两独立 blockquote）下 lines[idx+1] 会是空串——此处必须非空
+
+
+def test_caution_stands_apart_from_loop_risk_blockquote_when_unreliable():
+    """B 档边界：不可信时 [!CAUTION] 红框自成一块（banner 内空行隔开），其后的循环状态+
+    风险等级另成一个 blockquote——CAUTION 不吞掉风险等级行（避免过度渲染）。"""
+    from touchstone import render
+    risk = {"risk_band": "low", "human_action": "skip",
+            "verification_decision": "cheap_only", "blast_radius": []}
+    md = render.render_report(
+        risk, [], banner="**反馈循环：🔁 继续** — 本轮不可信", review_reliable=False,
+        engine_status="llm_failed", ai_raw_count=0, added_lines=50)
+    lines = md.split("\n")
+    assert lines[2] == "> [!CAUTION]"                     # CAUTION 仍置顶（位置不变）
+    # CAUTION 红框（连续 > 块）里不含风险等级
+    caution_block_end = next(i for i, ln in enumerate(lines[3:], start=3) if not ln.startswith("> "))
+    caution_block = "\n".join(lines[3:caution_block_end])
+    assert "风险等级" not in caution_block
+    # 风险等级行在 CAUTION 之后、且与循环状态同块（无空行隔开）
+    risk_idx = next(i for i, ln in enumerate(lines) if "风险等级" in ln)
+    loop_idx = next(i for i, ln in enumerate(lines) if "反馈循环：🔁 继续" in ln)
+    assert risk_idx > caution_block_end and loop_idx > caution_block_end
+    assert abs(risk_idx - loop_idx) == 1                   # 紧邻（同 blockquote）
 
 
 def test_checklist_render_hides_ack_help_when_empty():
