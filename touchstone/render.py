@@ -268,7 +268,10 @@ def render_findings_checklist(findings, checklist, review_reliable=True):
     cl = checklist or {"round": 0, "items": [], "resolved_rate": 1.0}
     items = cl.get("items", [])
     if not items:
-        return "### 评审发现与销项\n\n本次无可自改发现。"
+        return ""    # 无清单项（干净 PR / 全销项）→ 整段省略（与 ③/⑤「无内容整段省略」纪律一致，
+                     # PRA-REVIEW round-2）。防静默故障溯源在 ② alerts 段（已端到端运行/0 条建议），
+                     # 不靠此处的恒定标题——此前「### 评审发现与销项\n本次无可自改发现。」是干净
+                     # PR 上的恒定噪声，与 v2 去冗余目标矛盾。
 
     finding_by_sig = {}
     for f in (findings or []):
