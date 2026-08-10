@@ -209,8 +209,8 @@ def render_facts(scope_facts, gate_line="", lineage=None, rule_findings=None):
             for rule, paths in sorted(by_rule.items()):
                 shown = ", ".join(f"`{p}`" for p in paths[:5]) + ("…" if len(paths) > 5 else "")
                 lines.append(f"- 敏感路径命中（{rule}）：{shown}")
-        else:
-            lines.append("- 敏感路径命中：无")
+        # 无命中时省略整行（不再写「敏感路径命中：无」）——与态势区「触发因子」为空时
+        # 省略同一纪律：大多数 PR 无敏感路径命中，「命中：无」是恒定噪声，占屏无信息。
         if gate_line:
             lines.append(f"- 门禁状态：{gate_line}")
         if lineage and lineage.get("lineage"):

@@ -996,6 +996,63 @@ def test_situation_block_omits_trigger_line_when_no_factors():
     assert "触发因子" in head2 and "涉及安全面" in head2
 
 
+def test_facts_omit_sensitive_path_line_when_no_hit():
+    """去冗余（B 档）：无敏感路径命中时整行省略（不再写「敏感路径命中：无」）——大多数 PR
+    无命中，「命中：无」是恒定噪声。有命中时照常显（含规则名）。与态势区「触发因子」
+    为空时省略同一纪律。"""
+    from touchstone import render
+    sf_no_hit = {"parse_ok": True,
+                 "totals": {"files": 1, "added": 2, "deleted": 0},
+                 "sensitive_hits": []}
+    facts = render.render_facts(sf_no_hit)
+    assert "修改范围：1 个文件（+2 / −0 行）" in facts    # totals 仍显
+    assert "敏感路径命中" not in facts                    # 无命中 → 整行省略
+    assert "敏感路径命中：无" not in facts                 # 旧措辞彻底消失
+    # 对照：有命中 → 照常显（含规则名）
+    sf_hit = {"parse_ok": True, "totals": {"files": 1, "added": 1, "deleted": 0},
+              "sensitive_hits": [{"rule": "SEC-PATH", "path": "auth/k.py"}]}
+    facts_hit = render.render_facts(sf_hit)
+    assert "敏感路径命中（SEC-PATH）：`auth/k.py`" in facts_hit
+
+
+def test_banner_and_summary_share_one_blockquote_when_reliable():
+    """B 档：可信时 banner（反馈循环/横幅）与 summary_line（风险等级）同属一个 blockquote——
+    CommonMark 把连续 > 行并成单块，避免顶部出现两个紧邻引用框。断言：风险等级行紧跟在
+    反馈循环行之后（中间无空行）。"""
+    from touchstone import render
+    risk = {"risk_band": "mid", "human_action": "read",
+            "verification_decision": "cheap_only", "blast_radius": []}
+    body = render.render_report(risk, [], banner="**反馈循环：🔁 继续** — 第 3 轮")
+    lines = body.split("\n")
+    # 找反馈循环行，断言下一行是风险等级（同 blockquote、无空行隔开）
+    idx = next(i for i, ln in enumerate(lines) if "反馈循环：🔁 继续" in ln)
+    assert lines[idx].startswith("> ")                    # 反馈循环在 blockquote 内
+    assert "风险等级：中" in lines[idx + 1]                # 风险等级紧跟（同一 blockquote）
+    assert lines[idx + 1].startswith("> ")                # 且也是 > 行
+    # 旧行为（两独立 blockquote）下 lines[idx+1] 会是空串——此处必须非空
+
+
+def test_caution_stands_apart_from_loop_risk_blockquote_when_unreliable():
+    """B 档边界：不可信时 [!CAUTION] 红框自成一块（banner 内空行隔开），其后的循环状态+
+    风险等级另成一个 blockquote——CAUTION 不吞掉风险等级行（避免过度渲染）。"""
+    risk = {"risk_band": "low", "human_action": "skip",
+            "verification_decision": "cheap_only", "blast_radius": []}
+    md = orchestrator.render_report(
+        risk, [], banner="**反馈循环：🔁 继续** — 本轮不可信", review_reliable=False,
+        engine_status="llm_failed", ai_raw_count=0, added_lines=50)
+    lines = md.split("\n")
+    assert lines[2] == "> [!CAUTION]"                     # CAUTION 仍置顶（位置不变）
+    # CAUTION 红框（连续 > 块）里不含风险等级
+    caution_block_end = next(i for i, ln in enumerate(lines[3:], start=3) if not ln.startswith("> "))
+    caution_block = "\n".join(lines[3:caution_block_end])
+    assert "风险等级" not in caution_block
+    # 风险等级行在 CAUTION 之后、且与循环状态同块（无空行隔开）
+    risk_idx = next(i for i, ln in enumerate(lines) if "风险等级" in ln)
+    loop_idx = next(i for i, ln in enumerate(lines) if "反馈循环：🔁 继续" in ln)
+    assert risk_idx > caution_block_end and loop_idx > caution_block_end
+    assert abs(risk_idx - loop_idx) == 1                   # 紧邻（同 blockquote）
+
+
 def test_checklist_render_hides_ack_help_when_empty():
     """去冗余：空清单（0 发现即收敛，如 PR #70）无项可申报——「如何申报销项」折叠省去。
     marker 仍在（机读状态不丢）；有项时照常显申报指引。"""
