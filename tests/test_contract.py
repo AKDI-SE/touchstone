@@ -100,10 +100,23 @@ def test_sec002_injection_not_built_in(rule_index):
     assert not any(f["rule_id"] == "SEC-002" for f in finds)
 
 
-def test_sec001_skips_test_file_fixtures(rule_index):
-    """测试文件里的密钥是故意夹具（测扫描器本身），不据此阻断——兑现『宁可漏不误拦』。"""
+def test_sec001_test_file_downgrades_to_warn_not_skip(rule_index):
+    """零路径盲区：测试文件不再无条件跳过（防藏匿通道）。命中降级 warn（可见不阻断）——
+    真凭据塞进 test 目录会被人看见，兑现『宁可多看一眼，不可漏一个』。"""
     diff = build_diff([("tests/test_secrets.py",
                         ['token = "ghp_abcdefghijklmnopqrstuvwxyz0123456789AB"'], True)])
+    finds = cc.check_contract_consistency(diff, {}, rule_index)
+    sec = [f for f in finds if f["rule_id"] == "SEC-001"]
+    assert sec, "测试文件中的疑似凭据应被检出（不再跳过）"
+    assert all(f["severity"] == "warn" for f in sec), "测试文件命中须降级 warn、不阻断"
+    assert all("测试文件" in f["rationale"] for f in sec), "rationale 须标注测试文件降级"
+
+
+def test_sec001_test_file_placeholder_still_filtered(rule_index):
+    """test 文件虽降级 warn，_PLACEHOLDER 仍先过滤——含 example/test 子串的占位值不产 finding。"""
+    # ghp_ 后 40 字符、含 "test" 子串 → 形状命中但 _PLACEHOLDER（含 test）过滤
+    diff = build_diff([("tests/test_secrets.py",
+                        ['token = "ghp_testabcdefghijklmnopqrstuvwxyz0123456789"'], True)])
     finds = cc.check_contract_consistency(diff, {}, rule_index)
     assert not any(f["rule_id"] == "SEC-001" for f in finds)
 
