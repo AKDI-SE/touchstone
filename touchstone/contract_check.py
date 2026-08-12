@@ -212,7 +212,8 @@ def check_secrets(added, rule_index):
                     out.append(_finding("SEC-001", path, lineno, "security",
                                         f"测试文件中出现疑似凭据（{label}）——已降级 warn 不阻断。"
                                         "请确认是测试夹具而非真实凭据泄露（若系真凭据须立即移除并轮换）",
-                                        "若是夹具改用明显占位值（含 example/test 字样即被过滤）；"
+                                        "若是夹具改用明显占位值（含 example/changeme 等字样即被过滤；"
+                                        "注：test 文件不再按 'test' 子串放行，防真凭据藏匿）；"
                                         "若是真凭据移至密钥管理并轮换",
                                         rule_index, severity="warn"))
                 else:
