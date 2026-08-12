@@ -24,8 +24,34 @@ permissions:
   # import 兜底检查保证不崩、日志可观测是否命中。
 
 jobs:
+  # ---- 前置：gitleaks 密钥/敏感信息扫描（SEC-001 确定性门禁的高召回补位）----
+  # 产出 check-run "gitleaks"（官方 action 经 API 发，名字精确匹配 checks.yaml relay 的 source_check）。
+  # 方案 3（同工作流 needs）：touchstone 等其完成 → relay 读结论折进总闸，消跨工作流时序的"未完成"假 failure。
+  # 安全：gitleaks 只读扫描（不执行 PR 代码），pull_request_target 下 checkout PR head 无注入面。
+  gitleaks:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: write          # gitleaks-action 发 check-run（带逐行 annotation）
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}   # 扫 PR 代码（非 base）
+          fetch-depth: 0       # gitleaks baseline 需完整历史
+          persist-credentials: false
+      - name: gitleaks scan
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_CONFIG: .gitleaks.toml       # 指向仓库根配置（IP + 密码规则 + 综合 allowlist）
+
   # ---- 判断层：评审（advisory，不拦截；不在此发总闸，交给 gate job）----
+  # needs gitleaks + !cancelled()：gitleaks 完成（无论成败）后才跑——relay 读 gitleaks check-run
+  # 折进总闸。gitleaks 失败（发现泄露）时 touchstone 仍跑（!cancelled 不被上游失败挡），relay 读到
+  # failure → 总闸 failure，统一出口。gitleaks 不会跳过（无 if），故无 skipped 态需兜。
   touchstone:
+    needs: [gitleaks]
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest          # 自托管 runner 见下方网络注记
     outputs:
       decision: ${{ steps.run.outputs.verification_decision }}
