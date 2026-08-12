@@ -32,6 +32,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      pull-requests: read   # gitleaks-action 读 PR 上下文发 annotation（PRA-POSSIBLE_ISSUE round-2）
       checks: write          # gitleaks-action 发 check-run（带逐行 annotation）
     steps:
       - uses: actions/checkout@v4
