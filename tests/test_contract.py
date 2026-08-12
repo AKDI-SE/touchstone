@@ -113,12 +113,23 @@ def test_sec001_test_file_downgrades_to_warn_not_skip(rule_index):
 
 
 def test_sec001_test_file_placeholder_still_filtered(rule_index):
-    """test 文件虽降级 warn，_PLACEHOLDER 仍先过滤——含 example/test 子串的占位值不产 finding。"""
-    # ghp_ 后 40 字符、含 "test" 子串 → 形状命中但 _PLACEHOLDER（含 test）过滤
+    """test 文件虽降级 warn，通用占位词（example）仍过滤——不产 finding。"""
+    # ghp_ 后 37 字符、含 "example" → _PLACEHOLDER_NO_TEST 仍过滤
+    diff = build_diff([("tests/test_secrets.py",
+                        ['token = "ghp_exampleabcdefghijklmnopqrstuvwxyz0123"'], True)])
+    finds = cc.check_contract_consistency(diff, {}, rule_index)
+    assert not any(f["rule_id"] == "SEC-001" for f in finds)
+
+
+def test_sec001_test_file_secret_with_test_substring_now_caught(rule_index):
+    """PRA-POSSIBLE_ISSUE 修复：含 'test' 子串的真凭据在 test 文件不再被当占位放行——
+    形状合法 + 含 'test' → 仍产 warn（防 ghp_test… 类真凭据借 test 子串藏匿于 test 目录）。"""
     diff = build_diff([("tests/test_secrets.py",
                         ['token = "ghp_testabcdefghijklmnopqrstuvwxyz0123456789"'], True)])
     finds = cc.check_contract_consistency(diff, {}, rule_index)
-    assert not any(f["rule_id"] == "SEC-001" for f in finds)
+    sec = [f for f in finds if f["rule_id"] == "SEC-001"]
+    assert sec, "含 test 子串的真凭据在 test 文件应被检出（不再当占位放行）"
+    assert all(f["severity"] == "warn" for f in sec)
 
 
 # ---------------- DANGER-001：危险代码构造扫描（确定性、离线，关 eval-bypass）----------------

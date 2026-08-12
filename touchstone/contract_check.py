@@ -174,6 +174,12 @@ _SECRET_PATTERNS = [
 _PLACEHOLDER = re.compile(
     r"(example|sample|changeme|changed?|placeholder|todo|xxxx|<[^>]+>|your[_-]?\w*"
     r"|_here\b|redacted|test|dummy|fake|replace[_-]?me)", re.I)
+# 测试文件用的占位符过滤：去掉 "test"——真凭据若含 "test" 子串（如 ghp_test…/测试环境密钥）
+# 不该被当占位值放行，否则正好挫败"抓 test 目录真凭据"的目标（PRA-POSSIBLE_ISSUE 修复）。
+# example/changeme/<...>/dummy 等通用占位词仍过滤——只有 "test" 子串不再豁免 test 文件。
+_PLACEHOLDER_NO_TEST = re.compile(
+    r"(example|sample|changeme|changed?|placeholder|todo|xxxx|<[^>]+>|your[_-]?\w*"
+    r"|_here\b|redacted|dummy|fake|replace[_-]?me)", re.I)
 
 
 def check_secrets(added, rule_index):
@@ -182,21 +188,23 @@ def check_secrets(added, rule_index):
 
     零路径盲区（与 .gitleaks.toml 零路径排除同构）：测试文件不再无条件跳过——否则
     员工把真凭据塞进 test 目录即可绕过确定性门禁（蓄意藏匿通道）。test 文件里的命中
-    降级 severity=warn（报告可见、不阻断），由人复核；_PLACEHOLDER 仍先过滤
-    example/test/changeme 等明显占位值——只有"像真的"凭据才产 warn。"""
+    降级 severity=warn（报告可见、不阻断），由人复核；占位符仍先过滤（example/changeme/<...> 等）。
+    注：test 文件用 _PLACEHOLDER_NO_TEST——不过滤 "test" 子串，防含 test 的真凭据（ghp_test…）
+    被当占位放行而挫败本检查目标（PRA-POSSIBLE_ISSUE 修复）。"""
     rule = rule_index.get("SEC-001", {})
     if not rule.get("machine_checkable"):
         return []
     out = []
     for path, lines in added.items():
         is_test_path = _is_test(path)
+        placeholder = _PLACEHOLDER_NO_TEST if is_test_path else _PLACEHOLDER
         for lineno, text in lines:
             for pat, label in _SECRET_PATTERNS:
                 m = pat.search(text)
                 if not m:
                     continue
                 matched = m.group(1) if m.groups() else m.group(0)
-                if _PLACEHOLDER.search(matched):       # 示例/占位值 → 跳过（含 "test" 子串的值）
+                if placeholder.search(matched):       # 占位/示例值 → 跳过（test 文件不过滤 "test" 子串）
                     continue
                 if is_test_path:
                     # 测试文件降级 warn：可见不阻断。SEC-001 severity=block_candidate，
@@ -218,7 +226,7 @@ def check_secrets(added, rule_index):
 
 # --- DANGER-001：危险代码构造（eval/exec/shell 注入/os.system/pickle）--------------
 # 与 SEC-001 部分同构（正则扫新增行、category=security），但【对测试文件的处理不同】：
-#   • 仍跳过测试文件——eval/exec/shell=True 在测试里合法常见（测这些特性的代码、沙箱演示），
+#   • 仍跳过测试文件——eval/exec/启用 shell 在测试里合法常见（测这些特性的代码、沙箱演示），
 #     非泄露通道，盲区论点不适用；而 SEC-001 的密钥可藏匿于 test 目录，故 SEC-001 改为扫 + 降级 warn；
 #   • 不走 _PLACEHOLDER 过滤——这些是【构造本身】危险，非"值像凭据"，没有占位符概念；
 #   • severity=warn（规则侧）、confidence=0.9——构造有少量合法用途，不一刀切 block，只升 high+full_suite；
