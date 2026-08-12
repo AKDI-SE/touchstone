@@ -248,8 +248,8 @@ def test_CHARACTERIZES_eval_in_test_fixture_still_bypasses_danger_skip():
     【测试文件】里不被确定性抓到 + LLM 空回 → 仍落 low-risk 放行。刻意保留此跳过：测试文件里
     的 eval 多为夹具/演示，不进生产、非泄露通道；生产代码（非 test 路径）的 eval 由
     test_danger_pattern_closes_eval_bypass_even_when_llm_empty 守住。
-    注：SEC-001 已不再跳过测试文件（密钥可藏匿于 test 目录，改为扫 + 降级 warn，见
-    test_sec001_test_file_downgrades_to_warn_not_skip）；DANGER-001 仍跳过——二者对 test 文件
+    注：SEC-001 已不再跳过测试文件（密钥可藏匿于 test 目录，改为扫 + 降级 warn，见同文件
+    test_sec001_test_file_downgrades_to_warn）；DANGER-001 仍跳过——二者对 test 文件
     的处理已分化（eval 在 test 里合法常见，盲区论点不适用）。本测试锁死 DANGER-001 残余 gap 防回归。"""
     from touchstone import orchestrator as orc
     from touchstone import review_provider as RP
