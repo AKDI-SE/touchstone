@@ -7,6 +7,30 @@
 
 （下个版本的新变更记于此。）
 
+## [0.2.7] — 2026-08-13（gitleaks relay/CLI 修复 + SEC-001 去测试盲区 + 评审报告去冗余）
+
+### gitleaks 挂为 SEC-001 高召回补位（#173）
+
+确定性 SEC-001 内置扫描（AKIA/ghp_/sk-/PEM 等高精度特征串）之外，新挂 gitleaks 作高召回补位——熵分析 + 云凭据默认规则 + IP/密码自定义规则。gitleaks 产独立 check-run `gitleaks`，经 `checks.yaml` 的 `type: relay` 折进总闸（按名读 check-run 结论，fail-closed）。
+
+- **同工作流 needs: 时序**：gitleaks 与评审、门禁在同一工作流，`needs: gitleaks` 等其完成（无论成败）后才跑 relay——消除跨工作流时序的「未完成」假 failure。
+- **规则级 allowlist 收窄**：值过滤（占位符正则、私网 IP 段）下沉到各 `[[rules.allowlists]]`，不全局 paths 跳文件。
+
+### SEC-001 去掉测试文件无条件跳过——防 test 目录成藏匿通道（#174）
+
+`check_secrets` 旧版 `if _is_test(path): continue` 对测试文件无条件跳过 → 员工把真凭据塞 test 目录即绕过 SEC-001（蓄意藏匿通道）。改为：测试文件照样扫，命中降级 `warn`（可见、不阻断）——「宁可多看一眼，不可漏一个」。
+
+- **`_PLACEHOLDER_NO_TEST` 新增**：测试文件不再按 `test` 子串放行（旧 `_PLACEHOLDER` 含 `test`，`ghp_test…` 真凭据被当占位过滤）；通用占位词（example/changeme 等）仍过滤。
+- **DANGER-001 分化注记**：DANGER-001 仍跳过测试文件（eval/exec 在测试里合法常见、非泄露通道）；`standards.yaml` 的 detect_hint 标注二者对 test 文件的分化处理。
+- 测试：`test_contract.py` / `test_adversarial.py` 新增 test 文件降级 warn、`example` 占位过滤、含 `test` 子串真凭据被检出等回归测试。
+
+### gitleaks 改 CLI 直跑 + 零路径排除（#175）
+
+**修阻塞所有 PR 的总闸 bug**：gitleaks-action@v2 不支持 `pull_request_target` 事件（硬限制「The event is not yet supported」）→ 在本工作流触发器下恒 error → relay fail-closed → 总闸恒失败、阻塞所有 PR。改用 gitleaks CLI（v8.30.1）+ `actions/github-script` 手动建 check-run `gitleaks`，保留同工作流 needs: 时序保证。
+
+- **零路径排除**：删全局 `[[allowlists]] paths = [...]`（tests/mocks/fixtures/vendor/`*.md`/`*.lock` 无条件跳文件）。paths 是不扫内容的藏匿通道——真凭据塞 test 目录即绕过。改全文件扫描 + 值过滤（占位符正则、熵阈值）治假阳性。规则级 allowlists（IP 私网段、密码占位词）保留。
+- **Bootstrap 注记**：本 PR 自身的 gitleaks check-run 跑的是合并前 main 的旧 action 版（pull_request_target 用 base 版工作流），故显示 failure——预期 chicken-and-egg；合并后下一个 PR 起走新 CLI 版。
+
 ### 评审报告版面重设计：七段 → 六段（去冗余）
 
 基于 PR #170–#171 多轮评审观察，对评审报告版面做去冗余重设计——七段合六段，保留 GitHub 原生 checkbox。版面是一等设计资产（`templates/review_report.md`），代码只填充。
