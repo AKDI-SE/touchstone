@@ -23,7 +23,11 @@ set -euo pipefail
 
 GITHUB_TOKEN="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
 # 兜底：本机惯例 ~/github.token（仅本地开发便利；CI/他人环境用 env）
-[ -z "$GITHUB_TOKEN" ] && [ -f "$HOME/github.token" ] && GITHUB_TOKEN="$(tr -d '\n' < "$HOME/github.token")"
+# 写成 if 而非 && 链：&& 链首失败在 set -e 下虽被豁免（bash 规则：非链尾失败不
+# 触发 -e），但整链返回码非 0——若哪天这条挪到脚本末行,会被 git 当钩子失败。
+if [ -z "$GITHUB_TOKEN" ] && [ -f "$HOME/github.token" ]; then
+  GITHUB_TOKEN="$(tr -d '\n' < "$HOME/github.token")"
+fi
 
 # pre-push 钩子从 stdin 读：每行 "<local ref> <local sha> <remote ref> <remote sha>"
 while read -r local_ref local_sha remote_ref remote_sha; do
@@ -49,8 +53,11 @@ while read -r local_ref local_sha remote_ref remote_sha; do
   # 网络/服务失败 → 标记 "net-fail"，区别于「该分支无 PR」：设计选择是不拦截
   # （离线/CI 故障不该卡住开发者推送），但显式提示降级,不静默。
   # token 不进 argv（ps 可见）：经 stdin -H @- 传头。退出码非 0（网络/服务失败）→ NET_FAIL。
+  # 分支名 URL 编码：/ 空格 中文等未编码时 curl/网关会拒（实测空格分支未编码 000、
+  # %20 编码后 200）。
+  enc_branch="$(printf '%s' "$branch" | sed 's/ /%20/g; s#/#%2F#g')"
   resp="$(printf 'Authorization: Bearer %s\n' "$GITHUB_TOKEN" | curl -sS -H @- \
-        "https://api.github.com/repos/$slug/pulls?head=${slug%%/*}:$branch&state=all" 2>/dev/null || echo 'NET_FAIL')"
+        "https://api.github.com/repos/$slug/pulls?head=${slug%%/*}:$enc_branch&state=all" 2>/dev/null || echo 'NET_FAIL')"
   if [ "$resp" = "NET_FAIL" ]; then state="net-fail"; else
   state="$(printf '%s' "$resp" | python3 -c '
 import sys, json
@@ -59,7 +66,11 @@ try:
 except Exception:
     print("parse-fail"); sys.exit()
 if not ps: print("none"); sys.exit()
-p = ps[0]
+# 任一 open 优先（同 head 分支存在 open PR 即放行）；否则取 number 最大（最新）
+# 的那条走 merged/closed 判定——比固定 ps[0] 稳：旧记录排序不依赖 API 返回序。
+opens = [p for p in ps if p["state"] == "open"]
+if opens: print("open x"); sys.exit()
+p = max(ps, key=lambda x: x.get("number") or 0)
 if p["state"] != "closed": print(p["state"], "x"); sys.exit()
 print("closed", p["number"])' 2>/dev/null || echo parse-fail)"
   fi
