@@ -17,7 +17,7 @@ description: Touchstone AI 评审的销项规程：处置发现、用 touchstone
 ## 1. 分诊：advisory ≠ 卡合并
 
 Touchstone 评审是 advisory，**不阻止合并**；阻止合并的是 gating CI（check-runs 里的
-failure）。接到"修 PR X / PR X 卡住"先查 gating CI——advisory 的 open=N **不是**
+failure）与合并冲突（见 §7）。接到"修 PR X / PR X 卡住"先查 gating CI——advisory 的 open=N **不是**
 待修缺陷数。有可本地跑的闸/测试/脚本先在目标分支本地复现（一行命令常直接吐
 根因），API 状态只作辅助。确认卡的就是 advisory（或用户只要清意见）才进本流程。
 
@@ -96,6 +96,10 @@ Touchstone 在 push 触发的复检里只读**运行启动时已存在**的申�
 - **PR 合并后其分支的推送不再被跟踪**；推送前确认 PR 仍 open。已发生 → 从 main
   切分支 cherry-pick 落下的提交另开 PR。合并生效核对用 grep 查关键标识在 main，
   不只看 git log（哈希会骗人）。
+- **合并冲突先于 ack**：PR 冲突（API `mergeable_state=dirty`，取 PR 对象的
+  mergeable 字段；null 表示尚在计算，稍后重查）时，先 rebase/合 main 解冲突
+  再进 ack 流程——解冲突本身改代码、会触发新一轮评审，先 ack 再解等于申报
+  刚被消费就作废；且冲突不除，收敛了也无法合入。
 - **判新轮只认该 PR 最新一条 bot 评论的 created_at**，绝不用 PR updated_at（自己
   的 push/ack 也刷它）。清单自足累积，永远只需最新一条 bot 评论，勿全量翻史。
 - 复检 push 即时触发（30s~1min 出轮），拥堵可达小时级——**按探测次数计不按墙钟**。
@@ -117,4 +121,5 @@ Touchstone 在 push 触发的复检里只读**运行启动时已存在**的申�
 - [ ] 代码改动有测试断言（防 TEST-001）
 - [ ] ack 在推送之前；纯 ack 轮有空提交承载
 - [ ] 判新轮用 bot created_at；单命令 ≤8 探、不按墙钟
+- [ ] PR 无合并冲突（mergeable_state=dirty 先解冲突再申报，见 §7）
 - [ ] 推送前确认 PR 仍 open；已对照仓正本（§0）
