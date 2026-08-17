@@ -46,8 +46,11 @@ while read -r local_ref local_sha remote_ref remote_sha; do
 
   # 查该分支的 PR（含关闭的）。列表端点无 merged 字段：先列表取 state+number，
   # closed 时再查单 PR 端点取 merged（区分「已合并」与「关闭未合并」）。
+  # 网络/服务失败 → 标记 "net-fail"，区别于「该分支无 PR」：设计选择是不拦截
+  # （离线/CI 故障不该卡住开发者推送），但显式提示降级,不静默。
   resp="$(curl -sS -H "Authorization: Bearer $GITHUB_TOKEN" \
-        "https://api.github.com/repos/$slug/pulls?head=${slug%%/*}:$branch&state=all" 2>/dev/null || echo '[]')"
+        "https://api.github.com/repos/$slug/pulls?head=${slug%%/*}:$branch&state=all" 2>/dev/null || echo 'NET_FAIL')"
+  if [ "$resp" = "NET_FAIL" ]; then state="net-fail"; else
   state="$(printf '%s' "$resp" | python3 -c '
 import sys, json
 try:
@@ -58,6 +61,7 @@ if not ps: print("none"); sys.exit()
 p = ps[0]
 if p["state"] != "closed": print(p["state"], "x"); sys.exit()
 print("closed", p["number"])' 2>/dev/null || echo parse-fail)"
+  fi
 
   if printf '%s' "$state" | grep -q '^open'; then
     echo "[push-guard] ✓ $branch 的 PR 仍 open，放行。"
@@ -80,11 +84,9 @@ except Exception: print("unknown")' 2>/dev/null || echo unknown)"
     echo "            若要继续此工作：重开 PR，或从最新 main 切新分支。" >&2
     echo "            （明知故犯绕过：git push --no-verify）" >&2
     exit 1
-  elif false; then
-    echo "[push-guard] ❌ $branch 的 PR 已【合并】，推送不会进任何 PR/main——纯作废！" >&2
-    echo "            正确做法：从最新 main 切新分支 cherry-pick，重开 PR。" >&2
-    echo "            （明知故犯绕过：git push --no-verify）" >&2
-    exit 1
+  elif [ "$state" = "net-fail" ]; then
+    echo "[push-guard] ⚠️ GitHub API 不可达（网络/限流）——无法查 $branch 的 PR state，降级放行。请自行确认 PR 状态。" >&2
+    continue
   elif [ "$state" = "none" ]; then
     echo "[push-guard] ✓ $branch 从未开过 PR（个人分支），放行。"
     continue

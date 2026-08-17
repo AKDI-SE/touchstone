@@ -44,7 +44,7 @@ Touchstone 把一个 PR 上要回答的问题分成三类,各用各的依据:
 ## 默认形态与可选能力
 
 - **评审(默认开)** —— 顾问式,只产建议与发现,不阻断。
-- **确定性门禁(默认开)** —— 契约与栈规则 + SEC-001 密钥扫描 + DANGER-001 危险代码构造(`eval`/`exec`/`os.system`/`pickle`、subprocess 启用 shell)扫描,机器可检。`severity=block_candidate` 的规则(CTR-001/SPR-TX-001/JAVA-EQ-001/SEC-001/DANGER-001)命中即阻断;`warn` 规则经校准固化(`enforced`)后升级为阻断。SEC-002(注入)依赖外部 SAST。密钥扫描为**双引擎**:SEC-001 内置特征串(离线兜底、永不放行) + gitleaks 前置扫描(熵分析 + 通用密码/公网 IP 规则,结果经 check-run relay 折进总闸)——gitleaks 只读扫描、不执行 PR 代码,pull_request_target 下无注入面。
+- **确定性门禁(默认开)** —— 契约与栈规则 + SEC-001 密钥扫描 + DANGER-001 危险代码构造(`eval`/`exec`/`os.system`/`pickle`、subprocess 启用 shell)扫描,机器可检。`severity=block_candidate` 的规则(CTR-001/SPR-TX-001/JAVA-EQ-001/SEC-001/DANGER-001)命中即阻断;`warn` 规则经校准固化(`enforced`)后升级为阻断。SEC-002(注入)依赖外部 SAST。
 - **独立验证 verify(默认关)** —— 用**异于评审的模型**、盲于实现地生成验收测试,在 git worktree 上对改动前/改动后两版分别执行,要求"改后通过 ∧ 改前失败 ∧ 覆盖/变异达标 ∧ 回归绿"才判正确。是 Touchstone 的核心,分量也最重。
 - **渐进自治 autonomy(默认关)** —— 仅对经校准证明"放行靠谱"的变更类,才开自动合并,且有熔断保障;自动放行另有**作者信任闸**(仅 OWNER/MEMBER/COLLABORATOR 或显式白名单,fork 陌生作者不进自动合并,fail-closed)。自主边界严格等于验证边界。
 - **学习回路 learning_loop(离线,Touchstone 的差异化核心)** —— 评审引擎复用的是开源 PR-Agent,所以真正属于 Touchstone 的创造,是这条让评审越用越准的回路:统计"人最终采纳了哪些发现、忽略了哪些",把规律写成自然语言经验,加进给 PR-Agent 的提示词里。它分两档:当前实际跑的是**计数式做法**(不训练模型、不改权重,只统计采纳率,已实现);更强的 **TF-GRPO**(取自 arXiv 2510.08191)**也已实现、离线可测**(机制见 `docs/learning-loop-design.html` 第 3 节;生产需一个参数固定的旗舰模型端点)。整条回路都离线跑、和评审分开(它出问题不影响评审);经验只用来调建议,绝不参与合入判定;新经验还要先用真实 PR 做 shadow A/B 对照,达标了才正式启用。
@@ -84,7 +84,7 @@ python -m touchstone.run --repo owner/name --pr 314 --post
 |---|---|
 | `standards.yaml` | **单一事实源规范**:同一份既喂 author 生成端,也喂评审端,两端不漂移 |
 | `pr.yaml` | 提交契约模板:author 每个 PR 按此生成 `SubmissionContract` |
-| `checks.yaml` | 可插拔检查闸配置:哪些检查折进总闸、哪些必须通过。内置检查(`type: builtin`)直接跑;外部检查(`type: relay`)按 `source_check` 名读既有 check-run 结论折算——本仓默认配了 `gitleaks`(`touchstone.yml` 里的前置 job 产出同名 check-run)、可选 `unit`/`SonarQube` 等 |
+| `checks.yaml` | 可插拔检查闸配置:哪些检查折进总闸、哪些必须通过 |
 | `pr-agent.yaml` | PR-Agent 原始输出 → 内部 `Finding` 的归一映射 |
 | `best_practices.md` | 主观规则库,作为喂 PR-Agent 评审侧的 prompt 素材 |
 | `acceptance.yaml.example` | 人核准验收规格样例(verify 用,可选) |
@@ -128,7 +128,7 @@ permissions:
 env:
   # 引擎版本单一来源。三选一：
   #   latest  → 自动跟最新 release tag（零摩擦跟 patch；breaking change 有 schema_version 告警兜底）
-  #   v0.2.7  → 钉具体 tag（可复现，升级时手动改这一行）
+  #   v0.2.2  → 钉具体 tag（可复现，升级时手动改这一行）
   #   main    → 追主干（最激进，不推荐生产用）
   TOUCHSTONE_ENGINE_REPO: "AKDI-SE/touchstone"
   TOUCHSTONE_ENGINE_REF: "latest"
@@ -185,7 +185,7 @@ jobs:
 | 值 | 行为 | 适用 |
 |---|---|---|
 | `latest` | 自动解析为最新 release tag（默认） | 日常零摩擦跟 patch；若拉到改了 pr.yaml 字段的版本，引擎运行时会 stderr 告警 |
-| `v0.2.7` | 钉具体 tag | 要求可复现；升级时手动改这一行 |
+| `v0.2.2` | 钉具体 tag | 要求可复现；升级手动改这一行 |
 | `main` | 追主干 | 实验性，不推荐生产 |
 
 **Step 2**：配置 Secrets（Settings → Secrets and variables → Actions → New repository secret）:
@@ -194,7 +194,7 @@ jobs:
 |---|---|---|---|
 | `LLM_BASE_URL` | ✅ | LLM 的 OpenAI 兼容端点 | `https://open.bigmodel.cn/api/coding/paas/v4` |
 | `LLM_API_KEY` | ✅ | LLM 端点的 API key | `your-key-here` |
-| `LLM_MODEL` | ✅ | 评审用的模型名 | `glm-5.3` |
+| `LLM_MODEL` | ✅ | 评审用的模型名 | `glm-5.2` |
 | `TOUCHSTONE_LLM_CONTEXT_TOKENS` | 推荐 | 模型上下文窗口（token）。2000 行 diff 约需 64K（含 prompt 开销 + 输出预留）；GLM-5.2 支持 128K | `131072` |
 | `TOUCHSTONE_LLM_OUTPUT_TOKENS` | 推荐 | 模型最大输出（token）。2000 行 PR 的建议产出上限 ~7.5K，8192 覆盖不截断 | `8192` |
 | `TOUCHSTONE_LLM_REFLECT_MODEL` | 可选 | improve 自评（self-reflection 打分，第二次 LLM 调用）专用的小模型；不设则沿用主模型。`touchstone.yml` 已默认 `glm-4.5-air`（自评是浅任务，小模型即可，improve 健康路径耗时近乎减半） | `glm-4.5-air` |
@@ -216,16 +216,13 @@ jobs:
 - check `touchstone/gate` 为 success（无 block 级发现时）。
 - 若 LLM 未配通，评论顶部会出现 `⚠️ AI 评审...` 横幅（不静默）。
 
-### 八条工作流
+### 五条工作流
 
-- `touchstone.yml` —— PR 触发:gitleaks 密钥/敏感信息前置扫描 → 评审 + 高风险时的 verify → 回贴 + 汇总成总闸。
+- `touchstone.yml` —— PR 触发:评审 + 高风险时的 verify → 回贴 + 汇总成总闸。
 - `calibrate.yml` —— 定时:从已合 PR 重建"与人审吻合度 / 噪声"报告。
 - `govern.yml` —— 定时:把复发的发现固化为硬门禁、按 revert/hotfix 信号做熔断校准。
 - `learn.yml` —— 定时:离线学习回路(计数式蒸馏 + TF-GRPO),产出经验库并经 PR 合入。
 - `seed.yml` —— 手动/定时:从手写种子案例初始化或补充经验库。
-- `ci.yml` —— 本仓自身测试:push/PR 跑 pytest + 覆盖率门槛——门禁系统先过自己的门。
-- `bot-pr-merge.yml` —— Touchstone 评审完成后的 bot 经验库 PR 自动合入(三道闸:分支名 / 仅数据文件 / head 新鲜度)。
-- `warm-pragent-cache.yml` —— 预热 PR-Agent venv 缓存(push 到 main / 定时):低信任触发器对缓存只读,由可信触发器预热、评审工作流只 restore。
 
 ### AI 评审引擎（PR-Agent + LLM）
 
@@ -307,7 +304,6 @@ Touchstone 评审默认用通用规则。让评审**懂你团队的特定规范*
 
 ```
 .
-├── .gitleaks.toml              # gitleaks 扫描配置(继承默认规则 + 公网 IP/通用密码自定义规则;零路径排除——不按目录跳文件,靠值过滤治假阳性)
 ├── .touchstone/                # 仓内策略(随仓库版本化,离线生效)
 │   ├── standards.yaml          # 单一事实源规范(喂 author 与评审两端)
 │   ├── pr.yaml                 # 提交契约模板
@@ -348,12 +344,11 @@ Touchstone 评审默认用通用规则。让评审**懂你团队的特定规范*
 ├── verify/
 │   ├── verify_change.py        # 质量门禁核心:独立验收测试 + 改前/改后对比 + 充分性阶梯
 │   └── runners.py              # Python(pytest+coverage)/Java(Maven+JaCoCo+PIT) runner + 外部变异接缝(防伪)
-├── skills/touchstone-ack/      # 消费方 AI agent 的销项规程 skill(正本,含防漂移测试)
-├── tests/                      # 1174 个离线用例 / 43 个文件(无需 LLM / 网络 / 外部服务)
-└── .github/workflows/          # touchstone.yml · calibrate.yml · govern.yml · learn.yml · seed.yml · ci.yml · bot-pr-merge.yml · warm-pragent-cache.yml
+├── tests/                      # 818 个离线用例 / 37 个文件(无需 LLM / 网络 / 外部服务)
+└── .github/workflows/          # touchstone.yml · calibrate.yml · govern.yml · learn.yml · seed.yml
 ```
 
-生产代码约 12100 行 / 36 个模块;测试 1174 个用例 / 43 个文件,全绿、离线;行覆盖率 92%(核心逻辑模块 90–100%;GitHub API / 子进程 / LLM / CLI 等集成层经 mock 覆盖)。
+生产代码约 8350 行 / 31 个模块;测试 818 个用例 / 37 个文件,全绿、离线;行覆盖率 93%(核心逻辑模块 90–100%;GitHub API / 子进程 / LLM / CLI 等集成层经 mock 覆盖)。
 
 ## 状态与边界(诚实交代)
 
