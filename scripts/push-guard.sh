@@ -7,7 +7,7 @@
 # 在规则合入 5 分钟内踩中，证明纪律靠自觉不可靠，要靠机器闸。
 #
 # 拦截逻辑：对每个待推送分支——
-#   1. 远端同名分支有【开着的】 PR（state=open 且非 draft）→ 放行
+#   1. 远端同名分支有【开着的】 PR（state=open；draft PR 同样放行——草稿态也要推提交）→ 放行
 #   2. 远端同名分支的 PR 已 merged/closed，且本次推送含新提交 → 拒绝并提示
 #      「开新分支 cherry-pick」
 #   3. 远端无 PR（未开过 PR 的分支，如个人开发分支）→ 放行
@@ -48,7 +48,8 @@ while read -r local_ref local_sha remote_ref remote_sha; do
   # closed 时再查单 PR 端点取 merged（区分「已合并」与「关闭未合并」）。
   # 网络/服务失败 → 标记 "net-fail"，区别于「该分支无 PR」：设计选择是不拦截
   # （离线/CI 故障不该卡住开发者推送），但显式提示降级,不静默。
-  resp="$(curl -sS -H "Authorization: Bearer $GITHUB_TOKEN" \
+  # token 不进 argv（ps 可见）：经 stdin -H @- 传头。退出码非 0（网络/服务失败）→ NET_FAIL。
+  resp="$(printf 'Authorization: Bearer %s\n' "$GITHUB_TOKEN" | curl -sS -H @- \
         "https://api.github.com/repos/$slug/pulls?head=${slug%%/*}:$branch&state=all" 2>/dev/null || echo 'NET_FAIL')"
   if [ "$resp" = "NET_FAIL" ]; then state="net-fail"; else
   state="$(printf '%s' "$resp" | python3 -c '
@@ -68,12 +69,16 @@ print("closed", p["number"])' 2>/dev/null || echo parse-fail)"
     continue
   elif printf '%s' "$state" | grep -q '^closed [0-9]'; then
     pr_num="$(printf '%s' "$state" | awk '{print $2}')"
-    one="$(curl -sS -H "Authorization: Bearer $GITHUB_TOKEN" \
-         "https://api.github.com/repos/$slug/pulls/$pr_num" 2>/dev/null || echo '{}')"
+    one="$(printf 'Authorization: Bearer %s\n' "$GITHUB_TOKEN" | curl -sS -H @- \
+         "https://api.github.com/repos/$slug/pulls/$pr_num" 2>/dev/null || echo 'ONE_FAIL')"
     merged="$(printf '%s' "$one" | python3 -c '
 import sys, json
 try: print("merged" if json.load(sys.stdin).get("merged") else "not-merged")
 except Exception: print("unknown")' 2>/dev/null || echo unknown)"
+    if [ "$merged" = "unknown" ]; then
+      echo "[push-guard] ⚠️ PR #$pr_num 状态查询失败——不基于空响应硬拦，降级放行。请自行确认 PR 状态。" >&2
+      continue
+    fi
     if [ "$merged" = "merged" ]; then
       echo "[push-guard] ❌ $branch 的 PR #$pr_num 已【合并】，推送不会进任何 PR/main——纯作废！" >&2
       echo "            正确做法：从最新 main 切新分支 cherry-pick，重开 PR。" >&2
