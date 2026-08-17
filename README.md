@@ -128,7 +128,7 @@ permissions:
 env:
   # 引擎版本单一来源。三选一：
   #   latest  → 自动跟最新 release tag（零摩擦跟 patch；breaking change 有 schema_version 告警兜底）
-  #   v0.2.2  → 钉具体 tag（可复现，升级时手动改这一行）
+  #   v0.2.7  → 钉具体 tag（可复现，升级时手动改这一行）
   #   main    → 追主干（最激进，不推荐生产用）
   TOUCHSTONE_ENGINE_REPO: "AKDI-SE/touchstone"
   TOUCHSTONE_ENGINE_REF: "latest"
@@ -185,7 +185,7 @@ jobs:
 | 值 | 行为 | 适用 |
 |---|---|---|
 | `latest` | 自动解析为最新 release tag（默认） | 日常零摩擦跟 patch；若拉到改了 pr.yaml 字段的版本，引擎运行时会 stderr 告警 |
-| `v0.2.2` | 钉具体 tag | 要求可复现；升级手动改这一行 |
+| `v0.2.7` | 钉具体 tag | 要求可复现；升级时手动改这一行 |
 | `main` | 追主干 | 实验性，不推荐生产 |
 
 **Step 2**：配置 Secrets（Settings → Secrets and variables → Actions → New repository secret）:
@@ -194,7 +194,7 @@ jobs:
 |---|---|---|---|
 | `LLM_BASE_URL` | ✅ | LLM 的 OpenAI 兼容端点 | `https://open.bigmodel.cn/api/coding/paas/v4` |
 | `LLM_API_KEY` | ✅ | LLM 端点的 API key | `your-key-here` |
-| `LLM_MODEL` | ✅ | 评审用的模型名 | `glm-5.2` |
+| `LLM_MODEL` | ✅ | 评审用的模型名 | `glm-5.3` |
 | `TOUCHSTONE_LLM_CONTEXT_TOKENS` | 推荐 | 模型上下文窗口（token）。2000 行 diff 约需 64K（含 prompt 开销 + 输出预留）；GLM-5.2 支持 128K | `131072` |
 | `TOUCHSTONE_LLM_OUTPUT_TOKENS` | 推荐 | 模型最大输出（token）。2000 行 PR 的建议产出上限 ~7.5K，8192 覆盖不截断 | `8192` |
 | `TOUCHSTONE_LLM_REFLECT_MODEL` | 可选 | improve 自评（self-reflection 打分，第二次 LLM 调用）专用的小模型；不设则沿用主模型。`touchstone.yml` 已默认 `glm-4.5-air`（自评是浅任务，小模型即可，improve 健康路径耗时近乎减半） | `glm-4.5-air` |
