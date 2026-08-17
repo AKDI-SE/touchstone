@@ -344,6 +344,7 @@ Touchstone 评审默认用通用规则。让评审**懂你团队的特定规范*
 ├── verify/
 │   ├── verify_change.py        # 质量门禁核心:独立验收测试 + 改前/改后对比 + 充分性阶梯
 │   └── runners.py              # Python(pytest+coverage)/Java(Maven+JaCoCo+PIT) runner + 外部变异接缝(防伪)
+├── skills/touchstone-ack/      # 消费方 AI agent 的销项规程 skill(正本,含防漂移测试)
 ├── tests/                      # 818 个离线用例 / 37 个文件(无需 LLM / 网络 / 外部服务)
 └── .github/workflows/          # touchstone.yml · calibrate.yml · govern.yml · learn.yml · seed.yml
 ```
