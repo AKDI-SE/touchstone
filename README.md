@@ -345,11 +345,11 @@ Touchstone 评审默认用通用规则。让评审**懂你团队的特定规范*
 │   ├── verify_change.py        # 质量门禁核心:独立验收测试 + 改前/改后对比 + 充分性阶梯
 │   └── runners.py              # Python(pytest+coverage)/Java(Maven+JaCoCo+PIT) runner + 外部变异接缝(防伪)
 ├── skills/touchstone-ack/      # 消费方 AI agent 的销项规程 skill(正本,含防漂移测试)
-├── tests/                      # 818 个离线用例 / 37 个文件(无需 LLM / 网络 / 外部服务)
+├── tests/                      # 1165 个离线用例 / 39 个文件(无需 LLM / 网络 / 外部服务)
 └── .github/workflows/          # touchstone.yml · calibrate.yml · govern.yml · learn.yml · seed.yml
 ```
 
-生产代码约 8350 行 / 31 个模块;测试 818 个用例 / 37 个文件,全绿、离线;行覆盖率 93%(核心逻辑模块 90–100%;GitHub API / 子进程 / LLM / CLI 等集成层经 mock 覆盖)。
+生产代码约 8350 行 / 31 个模块;测试 1165 个用例 / 39 个文件,全绿、离线;行覆盖率 93%(核心逻辑模块 90–100%;GitHub API / 子进程 / LLM / CLI 等集成层经 mock 覆盖)。
 
 ## 状态与边界(诚实交代)
 
