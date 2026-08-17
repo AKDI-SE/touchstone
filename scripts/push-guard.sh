@@ -21,9 +21,12 @@
 # ============================================================================
 set -euo pipefail
 
-# 拒绝时也要排空 stdin：git 送来的是全量更新清单,pre-push 提前退出可能让 git
-# 误报 "failed to read push options / SIGPIPE"。统一在退出路径前 cat >/dev/null。
-drain() { cat > /dev/null; }
+# 退出时统一善后：排空 stdin（防 git 在钩子提前退出时报 SIGPIPE/读错误——覆盖
+# set -e 意外死、所有 exit 路径）+ 清理含凭据的临时头文件。
+HDR_FILE=""
+drain() { cat > /dev/null 2>/dev/null || true; }
+cleanup() { drain; [ -n "$HDR_FILE" ] && rm -f "$HDR_FILE" 2>/dev/null || true; }
+trap cleanup EXIT
 
 GITHUB_TOKEN="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
 # 兜底：本机惯例 ~/github.token（仅本地开发便利；CI/他人环境用 env）
@@ -33,13 +36,18 @@ if [ -z "$GITHUB_TOKEN" ] && [ -f "$HOME/github.token" ]; then
   GITHUB_TOKEN="$(tr -d '\n' < "$HOME/github.token")"
 fi
 
+# 含凭据头文件（token 不进 argv）：建一次循环复用,EXIT trap 统一清理。无 token 时
+# 空文件——循环内无 token 分支先行 continue,不会用到。
+HDR_FILE="$(mktemp)"
+printf 'Authorization: Bearer %s\n' "$GITHUB_TOKEN" > "$HDR_FILE"
+
 # pre-push 钩子从 stdin 读：每行 "<local ref> <local sha> <remote ref> <remote sha>"
 while read -r local_ref local_sha remote_ref remote_sha; do
   [ "$local_sha" = "0000000000000000000000000000000000000000" ] && continue  # 删分支，不拦
   case "$remote_ref" in refs/heads/*) ;; *) continue ;; esac                 # 只管分支
   branch="${remote_ref#refs/heads/}"
 
-  # 从仓库 remote 推断 owner/repo（取 origin 的 URL）
+# 从仓库 remote 推断 owner/repo（取 origin 的 URL）
   url="$(git remote get-url origin 2>/dev/null || true)"
   slug=""
   if echo "$url" | grep -qE 'github\.com[:/].+/.+'; then
@@ -56,39 +64,43 @@ while read -r local_ref local_sha remote_ref remote_sha; do
   # closed 时再查单 PR 端点取 merged（区分「已合并」与「关闭未合并」）。
   # 网络/服务失败 → 标记 "net-fail"，区别于「该分支无 PR」：设计选择是不拦截
   # （离线/CI 故障不该卡住开发者推送），但显式提示降级,不静默。
-  # token 不进 argv（ps 可见）：经 stdin -H @- 传头。退出码非 0（网络/服务失败）→ NET_FAIL。
-  # 分支名全量 URL 编码：? # % 中文等都会破 query（python urllib quote, safe=''）。
-  # -w 分隔符方案拿 HTTP 状态：非 2xx（401 坏token/403 限流/404 错slug）与
-  # 传输失败区分开,不与「无PR」混淆。
+  # token 不进 argv（ps 可见）：经含凭据的头文件 -H @file 传（循环外建一次复用，
+  # EXIT trap 统一清理）。分支名全量 URL 编码：? # % 中文等都会破 query。
+  # 一次请求同时拿 body 与 HTTP 状态（-w 附加状态码行）——不二次请求（省限流，
+  # 无 TOCTOU）；非 2xx（401 坏token/403 限流/404 错slug）与「无PR」区分开。
   enc_branch="$(printf '%s' "$branch" | python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.stdin.read(), safe=""))')"
-  hdr="$(mktemp)"; trap 'rm -f "$hdr"' EXIT
-  printf 'Authorization: Bearer %s\n' "$GITHUB_TOKEN" > "$hdr"
-  resp_with_code="$(curl -sS -H @"$hdr" \
-        -o /dev/null -w '%{http_code} %{url_effective}\n' \
-        "https://api.github.com/repos/$slug/pulls?head=${slug%%/*}:$enc_branch&state=all" 2>/dev/null || true)"
-  http_code="${resp_with_code%% *}"
+  list_url="https://api.github.com/repos/$slug/pulls?head=${slug%%/*}:$enc_branch&state=all"
+  raw="$(curl -sS -H @"$HDR_FILE" -w '\n__HTTP__%{http_code}' \
+        "$list_url" 2>/dev/null || true)"
+  http_code="${raw##*__HTTP__}"
+  body="${raw%$'\n'__HTTP__*}"
   if [ -z "$http_code" ] || [ "$http_code" = "000" ]; then state="net-fail"
-  elif [ "$http_code" = "200" ]; then
-    resp="$(curl -sS -H @"$hdr" \
-        "https://api.github.com/repos/$slug/pulls?head=${slug%%/*}:$enc_branch&state=all" 2>/dev/null || echo NET_FAIL)"
-    state="$(printf '%s' "$resp" | python3 -c '
+  elif [ "$http_code" != "200" ]; then state="api-error"
+  else
+    # 输出收敛为单一结果行；.get() 防御畸形条目；异常时不回退 echo 追加（避免
+    # 「部分输出+parse-fail」拼接污染 grep 判定）——统一落 else 分支提示。
+    state="$(printf '%s' "$body" | python3 -c '
 import sys, json
+def out(tag, extra=""):
+    print((tag + " " + extra).strip()); sys.exit()
 try:
     ps = json.load(sys.stdin)
 except Exception:
-    print("parse-fail"); sys.exit()
+    out("parse-fail")
 if not isinstance(ps, list):
-    print("api-error"); sys.exit()
-if not ps: print("none"); sys.exit()
+    out("api-error")
+if not ps:
+    out("none")
 # 任一 open 优先（同 head 分支存在 open PR 即放行）；否则取 number 最大（最新）
 # 的那条走 merged/closed 判定——比固定 ps[0] 稳：旧记录排序不依赖 API 返回序。
-opens = [p for p in ps if p["state"] == "open"]
-if opens: print("open x"); sys.exit()
+opens = [p for p in ps if p.get("state") == "open"]
+if opens:
+    out("open")
 p = max(ps, key=lambda x: x.get("number") or 0)
-if p["state"] != "closed": print(p["state"], "x"); sys.exit()
-print("closed", p["number"])' 2>/dev/null || echo parse-fail)"
-  else
-    state="api-error"
+st = p.get("state")
+if st != "closed":
+    out(st or "unknown")
+out("closed", str(p.get("number") or 0))' || echo parse-fail)"
   fi
 
   if printf '%s' "$state" | grep -q '^open'; then
@@ -96,7 +108,7 @@ print("closed", p["number"])' 2>/dev/null || echo parse-fail)"
     continue
   elif printf '%s' "$state" | grep -q '^closed [0-9]'; then
     pr_num="$(printf '%s' "$state" | awk '{print $2}')"
-    one="$(curl -sS -H @"$hdr" \
+    one="$(curl -sS -H @"$HDR_FILE" \
          "https://api.github.com/repos/$slug/pulls/$pr_num" 2>/dev/null || echo 'ONE_FAIL')"
     merged="$(printf '%s' "$one" | python3 -c '
 import sys, json
@@ -110,13 +122,11 @@ except Exception: print("unknown")' 2>/dev/null || echo unknown)"
       echo "[push-guard] ❌ $branch 的 PR #$pr_num 已【合并】，推送不会进任何 PR/main——纯作废！" >&2
       echo "            正确做法：从最新 main 切新分支 cherry-pick，重开 PR。" >&2
       echo "            （明知故犯绕过：git push --no-verify）" >&2
-      drain
       exit 1
     fi
     echo "[push-guard] ❌ $branch 的 PR #$pr_num 已【关闭未合并】，推送不评审不进 main——作废！" >&2
     echo "            若要继续此工作：重开 PR，或从最新 main 切新分支。" >&2
     echo "            （明知故犯绕过：git push --no-verify）" >&2
-    drain
     exit 1
   elif [ "$state" = "api-error" ]; then
     echo "[push-guard] ⚠️ GitHub API 返回错误（HTTP $http_code：token 失效/限流/slug 错？）——无法查 $branch 的 PR state，降级放行。请检查凭据。" >&2
