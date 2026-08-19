@@ -73,6 +73,12 @@ jobs:
           # TOUCHSTONE_TAXONOMY_TYPES（或 pr-agent.yaml label 集）配齐规范类型——白名单非空时未知类型
           # fail-closed 丢弃。run #6 的 191 条里混有 LLM 幻觉型（PRA-A/B/C/OK/003…），类型表确定后置
           # vars.TOUCHSTONE_TAXONOMY_ENFORCE=true 即开始清洗（仅影响后续新蒸馏的候选，不改存量）。
+          # 开启后【两处】生效（同词表不漂移）：① merge_candidates fail-closed 过滤；② rollout/内省
+          # 系统提示带白名单（奖励侧对齐——rollout 词表 ≠ 人审信号词表时 score_review 把表外产出全计
+          # 噪声、奖励全负；2026-08 实测 310 条候选/247 个幻觉类型即此根因）。
+          # 注：PRA-REVIEW（无 label 的 review 工具发现兜底类型）不在 pr-agent.yaml label 集里——
+          # 本仓 raised/adopted 信号里它占大头（20 raised/12 adopted），开启时用
+          # vars.TOUCHSTONE_TAXONOMY_TYPES=PRA-REVIEW 补进词表，否则最值钱的类型被表拒之门外。
           TOUCHSTONE_TAXONOMY_ENFORCE: ${{ vars.TOUCHSTONE_TAXONOMY_ENFORCE || '' }}
           TOUCHSTONE_TAXONOMY_TYPES: ${{ vars.TOUCHSTONE_TAXONOMY_TYPES || '' }}
           # 差距1a 位置级奖励（默认关=类型集合匹配=现状）。机制+数据管线+测试已就位（514f1ae）：
