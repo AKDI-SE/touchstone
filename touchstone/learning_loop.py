@@ -362,10 +362,15 @@ def main(argv=None):
     if skip:
         report["steps"].append(f"converged_types: 跳过 {len(skip)} 个稳定 type 的蒸馏：{sorted(skip)}")
     name = distiller or os.environ.get("TOUCHSTONE_DISTILLER")
+    # c1 词表（TOUCHSTONE_TAXONOMY_ENFORCE 开时非 None）：一处计算、两处消费，两端不漂移——
+    # ① 经 ctx.taxonomy 注入 rollout/内省系统提示（奖励侧对齐：rollout 词表 = 人审信号词表，
+    #    score_review 的类型匹配才有效；2026-08 事故：词表错位致 4 轮 TF-GRPO 奖励全负）
+    # ② merge_candidates 的 fail-closed 过滤（既有语义，见 _resolve_taxonomy docstring）。
+    taxonomy = _resolve_taxonomy(store)
     ctx = {"calib_agg": agg or {}, "ground_truth": ground_truth,
            "store": store, "repo": os.environ.get("REPO_DIR", ""),
            "stack": os.environ.get("TOUCHSTONE_STACK", ""),
-           "skip_types": skip}
+           "skip_types": skip, "taxonomy": taxonomy}
     if not name:
         name = "tfgrpo" if (ground_truth and _flagship_configured()) else "counting"
     try:
@@ -389,7 +394,7 @@ def main(argv=None):
         report["steps"].append(f"bootstrap_from_calibrate: 高采纳 type 直接 seed active："
                                f"{len(bootstrapped)} 条 {bootstrapped}")
 
-    merge_candidates(store, cands, taxonomy=_resolve_taxonomy(store))
+    merge_candidates(store, cands, taxonomy=taxonomy)
 
     # ③.6 归一化存量：合并大小写/分隔符变体造成的重复条目（PRA-CONSISTENCY 与 PRA-consistency 等）。
     # merge_candidates 已对【新进】候选规范化；本步清【存量】历史重复——TF-GRPO 的 LLM 自由产 finding_type

@@ -274,6 +274,95 @@ def test_rollout_reviews_group_with_fake_llm():
     assert {f["finding_type"] for f in reviews[0]} == {"PRA-POSSIBLE_BUG", "PRA-TYPO"}
 
 
+# ---------------- c1 词表对齐：rollout/内省提示词带类型白名单（opt-in 默认关） ----------------
+def _capture_llm(sink, resp="[]"):
+    """记录 messages 的假 llm（验提示词内容用），回固定 resp。"""
+    def llm(messages):
+        sink.append(messages)
+        return resp
+    return llm
+
+
+def test_rollout_reviews_whitelist_in_prompt():
+    """allowed_types 非空 → 系统提示带白名单（排序稳定、逐 variant 都带）。"""
+    pr = {"pr_id": "1", "repo": "o/r", "stack": "py", "summary": "s", "diff": "d"}
+    sink = []
+    L.rollout_reviews(pr, "", _capture_llm(sink), group_size=2,
+                      allowed_types={"PRA-REVIEW", "PRA-GENERAL"})
+    assert len(sink) == 2
+    for m in sink:
+        assert "MUST be one of: PRA-GENERAL, PRA-REVIEW." in m[0]["content"]
+
+
+def test_rollout_reviews_no_whitelist_keeps_prompt_bytes():
+    """默认 None → 提示词不带约束（默认关 = 字节级零行为变化）。"""
+    pr = {"pr_id": "1", "repo": "o/r", "stack": "py", "summary": "s", "diff": "d"}
+    sink = []
+    L.rollout_reviews(pr, "", _capture_llm(sink), group_size=1)
+    assert "MUST be one of" not in sink[0][0]["content"]
+
+
+def test_distill_semantic_advantage_whitelist_in_prompt():
+    """内省提示词同样带白名单（rollout 约束了产出词表，内省不约则经验仍可能编新类型）。"""
+    pr = {"pr_id": "1", "repo": "o/r", "stack": "py"}
+    group = {"outputs": [[{"finding_type": "PRA-A"}], [{"finding_type": "PRA-B"}]],
+             "rewards": [1.0, -0.5]}
+    sink = []
+    L.distill_semantic_advantage(pr, group, _capture_llm(sink), "o/r", "py",
+                                 allowed_types={"PRA-REVIEW"})
+    assert sink and "MUST be one of: PRA-REVIEW." in sink[0][0]["content"]
+
+
+def test_distill_via_llm_taxonomy_flows_to_builtin_prompts():
+    """ctx.taxonomy（_tfgrpo_distiller 透传）→ rollout 与内省两处系统提示都带白名单，
+    且蒸馏产出的候选类型落在表内（rollout 侧约束生效）。"""
+    sink = []
+
+    def llm(messages):
+        sink.append(messages)
+        sysp, user = messages[0]["content"], (messages[1]["content"] if len(messages) > 1 else "")
+        if "list the review findings" in sysp:
+            if "variant 0" in user:      # 组内制造奖励差异（防退化组跳过内省）
+                return ('[{"finding_type":"PRA-REVIEW","file":"a.py","note":"x"},'
+                        '{"finding_type":"PRA-GENERAL","file":"a.py","note":"y"}]')
+            return '[{"finding_type":"PRA-REVIEW","file":"a.py","note":"x"}]'
+        if "distill repo-specific review experience" in sysp:
+            return '[{"finding_type":"PRA-REVIEW","kind":"emphasize","text":"t"}]'
+        return "[]"
+
+    gt = [{"pr_id": "1", "repo": "o/r", "stack": "py", "summary": "s", "diff": "d",
+           "human_adopted": ["PRA-REVIEW"]}]
+    cands = L._tfgrpo_distiller({"ground_truth": gt, "store": {"experiences": []}, "llm": llm,
+                                 "taxonomy": {"PRA-REVIEW", "PRA-GENERAL"},
+                                 "repo": "o/r", "stack": "py"})
+    ro = [m for m in sink if "list the review findings" in m[0]["content"]]
+    intro = [m for m in sink if "distill repo-specific review experience" in m[0]["content"]]
+    assert ro and all("MUST be one of: PRA-GENERAL, PRA-REVIEW." in m[0]["content"] for m in ro)
+    assert intro and all("MUST be one of" in m[0]["content"] for m in intro)
+    assert {c["finding_type"] for c in cands} == {"PRA-REVIEW"}
+
+
+def test_distill_via_llm_allowed_types_keeps_custom_injectable_signature():
+    """注入式 rollout/distill_advantage（旧签名、无 allowed_types kwarg）不受新参数影响——
+    词表只喂内置实现，自定义实现不被迫改签名。"""
+    called = {"rollout": 0, "adv": 0}
+
+    def rollout(pr, e, llm, g):
+        called["rollout"] += 1
+        return [[{"finding_type": "PRA-A"}], []]     # G 份评审（每份是发现列表）
+
+    def adv(pr, group, llm, repo, stack):
+        called["adv"] += 1
+        return []
+
+    gt = [{"pr_id": "1", "repo": "o/r", "stack": "py", "summary": "s", "diff": "d",
+           "human_adopted": []}]
+    L._distill_via_llm(gt, {"experiences": []}, llm=lambda m: "[]", group_size=2,
+                       rollout=rollout, distill_advantage=adv,
+                       allowed_types={"PRA-REVIEW"})
+    assert called["rollout"] == 1 and called["adv"] == 1        # 都被调到且未 TypeError
+
+
 def test_distill_semantic_advantage_excludes_anchor():
     pr = {"pr_id": "1", "repo": "o/r", "stack": "py"}
     group = {"outputs": [[{"finding_type": "PRA-POSSIBLE_BUG"}], [{"finding_type": "PRA-TYPO"}]],

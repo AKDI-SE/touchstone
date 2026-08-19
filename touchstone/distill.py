@@ -249,15 +249,26 @@ def _llm_json(llm, messages, default):
         return default
 
 
-def rollout_reviews(pr, experience_text, llm, group_size=TFGRPO_GROUP_SIZE, *, max_workers=None):
+def rollout_reviews(pr, experience_text, llm, group_size=TFGRPO_GROUP_SIZE, *, max_workers=None,
+                    allowed_types=None):
     """① 在当前经验库 E（experience_text）下，让冻结旗舰模型对一个历史 PR 生成 group_size 份评审。
     每份是发现列表 [{finding_type, file?, note?}]。llm(messages)->str 由调用方注入
     （生产=参数冻结的旗舰模型端点；测试=确定性假 llm）；变体序号入提示以促组内多样性。
     max_workers>1：G 份变体并行（I/O-bound、互独立、顺序由 ex.map 保留 → 与串行结果一致、更省墙钟）；
-    默认 None=串行（确定性、字节级不变）。"""
+    默认 None=串行（确定性、字节级不变）。
+    allowed_types（c1 词表对齐，opt-in 默认 None=不约束、提示词字节级不变）：非空集合 → 系统提示
+    追加类型白名单，冻结模型只许产表内 finding_type。词表由 learning_loop._resolve_taxonomy 给出
+    （TOUCHSTONE_TAXONOMY_ENFORCE 开时 = pr-agent.yaml label 集 ∪ active 类型 ∪ env 扩展），与
+    merge_candidates 的过滤同一来源、两端不漂移。为什么必须在【提示词侧】约束而不只靠 merge 后过滤：
+    score_review 按类型集合匹配人审信号——rollout 词表 ≠ 人审信号词表时，表外产出全部计为噪声、
+    奖励系统性为负（2026-08 实测：4 轮 TF-GRPO 产 310 条候选/247 个幻觉类型、组奖励全负，
+    "高分 vs 低分"对比实为噪声对比）。词表对齐是奖励有效的前提，不是卫生问题。"""
     sys_p = ("You are a senior code reviewer. Given a PR and the repo's learned review experience, "
              "list the review findings you would raise. Respond ONLY as a JSON array of objects "
              '{"finding_type": "PRA-...", "file": "...", "note": "..."}.')
+    if allowed_types:
+        sys_p += (" Each finding_type MUST be one of: "
+                  + ", ".join(sorted(str(t) for t in allowed_types)) + ".")
     user_tmpl = ("# Repo experience (advisory)\n{exp}\n\n"
                  "# PR\nid={pid} repo={repo} stack={stack}\n{summary}\n\n# Diff\n{diff}\n\n"
                  "(variant {variant}: explore a distinct angle)")
@@ -310,14 +321,17 @@ def _render_structured_text(condition, action, ftype):
     return f"When {condition.strip()}, {action.strip()} ({ftype})"
 
 
-def distill_semantic_advantage(pr, group, llm, repo="", stack=""):
+def distill_semantic_advantage(pr, group, llm, repo="", stack="", *, allowed_types=None):
     """③ 组内相对语义优势：把一组带分数的评审交旗舰模型内省——高分挑对了什么、低分挑偏/漏了什么——
     按 仓·栈·发现类型 提炼候选经验。返回与 distill_candidates 同 schema 的 Experience(candidate)；
     只保留 PR-Agent 源类型（确定性 contract 类型永不进经验，坑 2b）。
 
     差距2b（opt-in，TOUCHSTONE_EXP_INJECTION_FILTER 默认关）：开 → prompt 改要求 LLM 输出
     {finding_type, kind, condition, action}，text 由 condition+action 渲染（"When <c>, <a> (PRA-X)"），
-    并校验非空 + 祈使味 + 拒注入式；关 → 仅自由 text（行为不变）。"""
+    并校验非空 + 祈使味 + 拒注入式；关 → 仅自由 text（行为不变）。
+    allowed_types（c1 词表对齐，opt-in 默认 None=不约束）：非空 → 内省系统提示同样限定
+    finding_type 白名单（rollout 侧约束了产出词表，内省侧若不限，蒸馏经验仍可能编新类型——
+    两端同表才闭环；词表来源与 rollout_reviews.allowed_types 同一 _resolve_taxonomy）。"""
     rewards = group["rewards"]
     if len(rewards) < 2 or len({round(r, 6) for r in rewards}) < 2:
         return []                                  # 退化组：组内奖励无差异，对比无意义（I4）
@@ -337,6 +351,9 @@ def distill_semantic_advantage(pr, group, llm, repo="", stack=""):
                  "distill repo-specific review experience: which finding_type to EMPHASIZE (humans "
                  "act on) and which to SUPPRESS (humans dismiss). Respond ONLY as a JSON array of "
                  '{"finding_type": "PRA-...", "kind": "emphasize|suppress", "text": "<one imperative sentence>"}.')
+    if allowed_types:
+        sys_p += (" Each finding_type MUST be one of: "
+                  + ", ".join(sorted(str(t) for t in allowed_types)) + ".")
     user = f"# PR\n{pr.get('summary', '')}\n\n# Group\n{json.dumps(payload, ensure_ascii=False)}"
     items = _llm_json(llm, [{"role": "system", "content": sys_p},
                             {"role": "user", "content": user}], default=[])
@@ -486,7 +503,7 @@ def _distill_via_llm(ground_truth, store, llm=None, *, group_size=TFGRPO_GROUP_S
                      epochs=1, repo="", stack="",
                      rollout=None, score=None, distill_advantage=None,
                      cache=None, max_llm_calls=None, max_workers=None, skip_types=None,
-                     min_source_prs=None, max_reward_var=None):
+                     min_source_prs=None, max_reward_var=None, allowed_types=None):
     """TF-GRPO 入口（实现）。机制设计见 docs/learning-loop-design.html §3。
     ground_truth: 最小真值集 [{pr_id, repo, stack, summary, diff, human_adopted:[finding_type]}]
                   —— 历史已合 PR + 人审裁决（生产由 calibrate 从 GitHub 重建）。
@@ -503,13 +520,17 @@ def _distill_via_llm(ground_truth, store, llm=None, *, group_size=TFGRPO_GROUP_S
                         中途失败也落盘（try/finally）；唯一临时文件（mkstemp）防并发撞名。
       max_llm_calls(int)：单次 run 旗舰调用预算（rollout 生成 + distill 内省各计入），超限跳过剩余 PR
                          （不静默，记 budget.skipped_prs）；
-      max_workers(int)：仅对内置 rollout_reviews 生效（注入自定义 rollout 时自行管理并发）。"""
+      max_workers(int)：仅对内置 rollout_reviews 生效（注入自定义 rollout 时自行管理并发）。
+    allowed_types（c1 词表对齐，opt-in 默认 None=不约束）：非空 → 传给【内置】rollout_reviews 与
+      distill_semantic_advantage 的系统提示（见两函数 docstring）。注入式自定义 rollout/distill_advantage
+      保持旧签名、不收新 kwarg（兼容既有注入方——含测试）；自定义实现要词表可经闭包自取。"""
     llm = llm or _flagship_llm()
     rollout_is_default = rollout is None
     rollout = rollout or rollout_reviews
     rollout_tag = ("default" if rollout_is_default
                    else f"{rollout.__module__}:{rollout.__qualname__}")  # 缓存 key 的实现身份
     score = score or score_review
+    distill_is_default = distill_advantage is None          # 先记再兜底：只给内置实现喂新 kwarg
     distill_advantage = distill_advantage or distill_semantic_advantage
     base_active = [e for e in (store or {}).get("experiences", []) if e.get("status") == "active"]
     cache_obj = _load_cache(cache)
@@ -538,10 +559,15 @@ def _distill_via_llm(ground_truth, store, llm=None, *, group_size=TFGRPO_GROUP_S
                     if not budget.has(group_size):
                         budget.skipped_prs.append(pr.get("pr_id"))   # 预算耗尽：跳过（不静默）
                         continue
-                    if rollout_is_default and max_workers:
-                        reviews = rollout(pr, experience_text, llm, group_size, max_workers=max_workers)
+                    if rollout_is_default:
+                        _ro_kw = {"allowed_types": allowed_types} if allowed_types else {}
+                        if max_workers:
+                            reviews = rollout(pr, experience_text, llm, group_size,
+                                              max_workers=max_workers, **_ro_kw)
+                        else:
+                            reviews = rollout(pr, experience_text, llm, group_size, **_ro_kw)
                     else:
-                        reviews = rollout(pr, experience_text, llm, group_size)
+                        reviews = rollout(pr, experience_text, llm, group_size)   # 注入实现自带签名
                     budget.use(group_size)
                     if cache_obj is not None:
                         cache_obj[key] = reviews
@@ -565,8 +591,13 @@ def _distill_via_llm(ground_truth, store, llm=None, *, group_size=TFGRPO_GROUP_S
                 # 触发 distill，预算失真（可显示 0 用量而数百次调用）。预算耗尽则跳过内省。
                 if budget.has(1):
                     budget.use(1)
-                    distilled = distill_advantage(pr, group, llm,
-                                                  pr.get("repo", repo), pr.get("stack", stack))
+                    if distill_is_default and allowed_types:
+                        distilled = distill_advantage(pr, group, llm,
+                                                      pr.get("repo", repo), pr.get("stack", stack),
+                                                      allowed_types=allowed_types)
+                    else:
+                        distilled = distill_advantage(pr, group, llm,
+                                                      pr.get("repo", repo), pr.get("stack", stack))
                 else:
                     distilled = []
                 for c in distilled:
@@ -671,11 +702,14 @@ def _tfgrpo_distiller(ctx):
     # 差距2a 跨 PR 一致性：ctx 显式传入优先，否则读 env（默认 min=1/var=None=不过滤=现状）。
     min_sp = ctx.get("min_source_prs", _distill_min_source_prs())
     max_var = ctx.get("max_reward_var", _distill_max_reward_var())
+    # c1 词表对齐：ctx.taxonomy（learning_loop._resolve_taxonomy 产，enforce 关时 None）→
+    # rollout/内省系统提示。与 merge_candidates 的过滤同一词表：enforce 开则提示词与过滤端同表。
     return _distill_via_llm(ctx.get("ground_truth") or [], ctx.get("store") or {"experiences": []},
                             ctx.get("llm"), repo=ctx.get("repo", ""), stack=ctx.get("stack", ""),
                             cache=cache, max_llm_calls=budget, max_workers=workers,
                             skip_types=ctx.get("skip_types"),
-                            min_source_prs=min_sp, max_reward_var=max_var)
+                            min_source_prs=min_sp, max_reward_var=max_var,
+                            allowed_types=ctx.get("taxonomy"))
 
 
 _DISTILLERS = {"counting": _counting_distiller, "tfgrpo": _tfgrpo_distiller}
