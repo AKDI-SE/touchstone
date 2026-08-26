@@ -83,7 +83,10 @@ def _gitcode_files_to_diff(files):
         if not new_fn or not hunks:
             continue
         parts.append(f"diff --git a/{new_fn} b/{new_fn}")
-        parts.append(f"--- a/{old_fn}")
+        if f.get("new_file") or not f.get("old_path"):
+            parts.append("--- /dev/null")
+        else:
+            parts.append(f"--- a/{old_fn}")
         parts.append(f"+++ b/{new_fn}")
         parts.append(hunks if hunks.endswith("\n") else hunks + "\n")
     return "\n".join(parts)
@@ -103,7 +106,11 @@ def get_pr_diff(owner, repo, number, token):
         url = (os.environ.get("GITHUB_API_URL", "https://api.github.com").rstrip("/")
                + f"/repos/{owner}/{repo}/pulls/{number}/files")
         files = ghclient.paginate(url, token, per_page=100, max_pages=30)
-        return _gitcode_files_to_diff(files) if isinstance(files, list) else ""
+        if not isinstance(files, list):
+            print(f"[warn] GitCode /pulls/{number}/files 返回非预期类型 {type(files).__name__}，"
+                  f"确定性核对无 diff 输入", file=sys.stderr)
+            return ""
+        return _gitcode_files_to_diff(files)
     return gh("GET", f"/repos/{owner}/{repo}/pulls/{number}", token,
               accept="application/vnd.github.v3.diff")
 
@@ -773,8 +780,9 @@ def main():
                 _new_labels = list(dict.fromkeys(_existing + ["touchstone:needs-human"]))
                 _patch_url = (os.environ.get("GITHUB_API_URL", "https://api.github.com").rstrip("/")
                               + f"/repos/{owner}/{repo}/pulls/{number}")
-                requests.patch(_patch_url, headers={"Authorization": "Bearer " + token},
+                _resp = requests.patch(_patch_url, headers={"Authorization": "Bearer " + token},
                                data={"labels": ",".join(_new_labels)}, timeout=30)
+                _resp.raise_for_status()
             else:
                 gh("POST", f"/repos/{owner}/{repo}/issues/{number}/labels", token,
                    {"labels": ["touchstone:needs-human"]})
