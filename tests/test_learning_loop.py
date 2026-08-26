@@ -3234,3 +3234,82 @@ def test_append_lift_history_max_history_zero_or_negative_means_uncapped(monkeyp
     for i in range(5):
         L.append_lift_history(trend, ab, ts=i, max_history=2)
     assert len(trend["PRA-X"]) == 2
+
+
+# ---------------- PRA round-5：taxonomy 入缓存键 + bootstrap 后重解析词表 ----------------
+def test_rollout_cache_key_includes_taxonomy():
+    """词表变 → key 变（防 enforce 开启后复用无白名单时代的旧 rollout 缓存，白名单被静默绕过）。
+    None/空集 → 键与旧实现逐字节一致（enforce 未开的历史缓存零失效）。"""
+    pr = {"pr_id": "1", "summary": "s", "diff": "d"}
+    k0 = L._rollout_cache_key(pr, "E", 4)
+    assert L._rollout_cache_key(pr, "E", 4, taxonomy=None) == k0        # None → 不追加
+    assert L._rollout_cache_key(pr, "E", 4, taxonomy=set()) == k0       # 空集 → 不追加
+    k1 = L._rollout_cache_key(pr, "E", 4, taxonomy={"PRA-A", "PRA-B"})
+    assert k1 != k0                                                     # 词表开 → 键变
+    k2 = L._rollout_cache_key(pr, "E", 4, taxonomy={"PRA-B", "PRA-A"})
+    assert k2 == k1                                                     # 集合序不影响（排序入键）
+    k3 = L._rollout_cache_key(pr, "E", 4, taxonomy={"PRA-A"})
+    assert k3 != k1                                                     # 词表内容变 → 键变
+
+
+def test_distill_via_llm_cache_invalidated_by_allowed_types(monkeypatch):
+    """端到端：TOUCHSTONE_ROLLOUT_CACHE=memory 下，allowed_types 变 → 不命中旧缓存（重新采样）；
+    同词表重跑 → 命中（rollout 只跑一次，key 稳定）。"""
+    calls = {"n": 0}
+
+    def rollout(pr, E, llm, G):
+        calls["n"] += 1
+        return [[]]
+
+    gt = [{"pr_id": "1", "human_adopted": [], "repo": "o/r", "stack": "py",
+           "summary": "s", "diff": "d"}]
+    kw = dict(llm=lambda m: "[]", group_size=1, rollout=rollout, cache={})
+    L._distill_via_llm(gt, {"experiences": []}, **kw)                    # 无词表
+    L._distill_via_llm(gt, {"experiences": []}, allowed_types={"PRA-A"}, **kw)  # 词表开 → 键变
+    L._distill_via_llm(gt, {"experiences": []}, allowed_types={"PRA-A"}, **kw)  # 同词表 → 命中
+    assert calls["n"] == 2
+
+
+def test_main_bootstrap_reseeds_taxonomy_after_bootstrap(tmp_path, monkeypatch):
+    """PR #183 PRA round-5 'Possible Bug'：bootstrap 把全新 type seed 成 active 后，
+    merge_candidates 用的 taxonomy 必须重解析（新 active 入白名单），否则同 run 蒸出的同 type
+    候选被 fail-closed 误丢。端到端：enforce 开 + bootstrap 开 + 计数式蒸馏产同 type 候选。"""
+    import os as _os
+    store_path = tmp_path / "exp.json"
+    store_path.write_text(json.dumps({"experiences": []}), encoding="utf-8")
+    # calib_agg：PRA-NEWTYPE 高采纳 → 计数式蒸馏产 emphasize 候选 + bootstrap 达门(15 fires/0.85+)
+    (tmp_path / "agg.json").write_text(json.dumps(
+        {"by_rule": {"PRA-NEWTYPE": {"fires": 20, "adoption_rate": 0.9}}}), encoding="utf-8")
+    monkeypatch.setenv("TOUCHSTONE_TAXONOMY_ENFORCE", "true")
+    monkeypatch.setenv("TOUCHSTONE_TAXONOMY_TYPES", "")                # env 扩展不加（否则测不出重解析）
+    monkeypatch.setenv("TOUCHSTONE_PRAGENT_YAML", str(tmp_path / "nope.yaml"))  # yaml 缺 → extra 空
+    monkeypatch.setenv("TOUCHSTONE_BOOTSTRAP_SEED", "true")
+    monkeypatch.delenv("TOUCHSTONE_DISTILLER", raising=False)
+    monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path / "gh.txt"))
+    report = L.main(["--store", str(store_path), "--calib-agg", str(tmp_path / "agg.json")])
+    store = json.load(open(store_path, encoding="utf-8"))
+    # 同 id 候选走 merge 的 update 分支（补证据、不降级 active）：若 taxonomy 未重解析，
+    # PRA-NEWTYPE 不在快照 → 候选被 fail-closed 丢弃，evidence 停留在 seed 的 {"seeded": True}。
+    (e,) = [e for e in store["experiences"] if e["finding_type"] == "PRA-NEWTYPE"]
+    assert e["status"] == "active" and e["source"] == "bootstrap"    # active 不被候选降级
+    assert e["evidence"] == {"fires": 20, "adoption": 0.9}           # 蒸馏证据并入 = 没被丢
+
+
+def test_main_taxonomy_staleness_no_bootstrap_no_reseeds(tmp_path, monkeypatch):
+    """反向对照：bootstrap 关（默认）→ 不重解析、行为与 PR 前 bit 级一致——重解析只在
+    bootstrap 确有产出时发生，避免无谓的 store 扫描。这里只验重解析不引入额外丢弃。"""
+    store_path = tmp_path / "exp.json"
+    store_path.write_text(json.dumps({"experiences": []}), encoding="utf-8")
+    (tmp_path / "agg.json").write_text(json.dumps(
+        {"by_rule": {"PRA-NEWTYPE": {"fires": 20, "adoption_rate": 0.9}}}), encoding="utf-8")
+    monkeypatch.setenv("TOUCHSTONE_TAXONOMY_ENFORCE", "true")
+    monkeypatch.setenv("TOUCHSTONE_TAXONOMY_TYPES", "")
+    monkeypatch.setenv("TOUCHSTONE_PRAGENT_YAML", str(tmp_path / "nope.yaml"))
+    monkeypatch.delenv("TOUCHSTONE_BOOTSTRAP_SEED", raising=False)      # 默认关
+    monkeypatch.delenv("TOUCHSTONE_DISTILLER", raising=False)
+    monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path / "gh.txt"))
+    L.main(["--store", str(store_path), "--calib-agg", str(tmp_path / "agg.json")])
+    store = json.load(open(store_path, encoding="utf-8"))
+    # bootstrap 关：无 active；候选在无白名单下被丢（既有 fail-closed 语义，非本修复改变）
+    assert not [e for e in store["experiences"] if e["status"] == "active"]
+    assert not [e for e in store["experiences"] if e["finding_type"] == "PRA-NEWTYPE"]

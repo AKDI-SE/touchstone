@@ -421,10 +421,14 @@ def _flagship_llm():
 #         砍掉"每周 cron 全量重跑"对未变 PR 的重复采样。跨 epoch：E 变了 → key 变 → 自然 miss（正确）。
 #   预算：max_llm_calls 限单次 run 的旗舰调用量，超限跳过剩余 PR（不静默——skipped_prs 留痕）。
 #   三者默认全关（cache=None / max_llm_calls=None / max_workers=None）→ 字节级零行为变化。
-def _rollout_cache_key(pr, experience_text, group_size, *, rollout_tag="default"):
+def _rollout_cache_key(pr, experience_text, group_size, *, rollout_tag="default", taxonomy=None):
     """稳定键：同 PR + 同经验库 E + 同组大小 + 同旗舰模型 + 同 PR 内容(summary/diff) + 同 rollout 实现 → 复用 rollout。
     summary/diff 入键：PR 标题改 / GT_DIFF_BUDGET 变更截断 → key 变 → 不返回 stale rollout。
-    rollout_tag 入键：换 rollout 实现（自定义 distiller）→ tag 变 → 不复用旧实现产的结果（默认 "default"）。"""
+    rollout_tag 入键：换 rollout 实现（自定义 distiller）→ tag 变 → 不复用旧实现产的结果（默认 "default"）。
+    taxonomy 入键（PRA round-5，两条同根）：allowed_types 改变 rollout 系统提示 → 采样分布随词表变；
+    键不感知则 enforce 开启（或词表增删）后命中 enforce 前的旧缓存，静默复用无白名单时代的 review，
+    白名单被绕过、score_review 全负的老错位复活。词表以排序串入键（集合序不影响）；None/空 → 不追加
+    （与旧键逐字节一致，enforce 未开的历史缓存零失效）。"""
     model = os.environ.get("TOUCHSTONE_FLAGSHIP_MODEL") or os.environ.get("LLM_MODEL") or ""
     h = hashlib.sha256()
     h.update(str(pr.get("pr_id", "")).encode("utf-8"))
@@ -440,6 +444,9 @@ def _rollout_cache_key(pr, experience_text, group_size, *, rollout_tag="default"
     h.update((pr.get("diff") or "").encode("utf-8"))
     h.update(b"\x1f")
     h.update((rollout_tag or "default").encode("utf-8"))  # rollout 实现身份入键（防跨实现 stale）
+    if taxonomy:
+        h.update(b"\x1f")
+        h.update(",".join(sorted(str(t) for t in taxonomy)).encode("utf-8"))  # 词表入键（防跨词表 stale）
     return h.hexdigest()
 
 
@@ -551,7 +558,8 @@ def _distill_via_llm(ground_truth, store, llm=None, *, group_size=TFGRPO_GROUP_S
                 pr_types = {t for t in (pr.get("raised_types") or []) if t}
                 if skip_types and pr_types and pr_types <= skip_types:
                     continue
-                key = (_rollout_cache_key(pr, experience_text, group_size, rollout_tag=rollout_tag)
+                key = (_rollout_cache_key(pr, experience_text, group_size,
+                                          rollout_tag=rollout_tag, taxonomy=allowed_types)
                        if cache_obj is not None else None)
                 if cache_obj is not None and key in cache_obj:
                     reviews = cache_obj[key]                       # 缓存命中：复用，不重复采样

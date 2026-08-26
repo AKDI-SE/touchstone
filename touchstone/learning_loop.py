@@ -393,6 +393,13 @@ def main(argv=None):
     if bootstrapped:
         report["steps"].append(f"bootstrap_from_calibrate: 高采纳 type 直接 seed active："
                                f"{len(bootstrapped)} 条 {bootstrapped}")
+        # PRA round-5（learning_loop.py:369 "Possible Bug"）：taxonomy 在 bootstrap【前】解析，
+        # 而白名单 = active 类型 ∪ yaml labels ∪ env 扩展（见 _resolve_taxonomy docstring）——
+        # bootstrap 刚把全新 type seed 成 active，不在陈旧快照里 → merge_candidates 的 fail-closed
+        # 会把同 run 蒸出的同 type 候选误丢（coerce_type 未知 → drop）。bootstrap 后重解析：
+        # 新 active type 入白名单。只在确实 seed 了新条目时重解析（bootstrap 关/零产出 → 零行为变化）；
+        # 上方 ctx.taxonomy 不重算——distill 已跑完，回改无效且当时 store 状态与快照自洽。
+        taxonomy = _resolve_taxonomy(store)
 
     merge_candidates(store, cands, taxonomy=taxonomy)
 
