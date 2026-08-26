@@ -110,6 +110,15 @@ jobs:
       # pr-agent 版本单一来源：下方 cache key 与 pip install 同引此变量，升版只改这一行（两处自动同步刷新）。
       PRA_VERSION: "0.39.0"
     steps:
+      # fail-loud 守卫（round-2 review item 2）：verify/gate/auto_merge 链移除后，若有人再设
+      # vars.VERIFY_ENABLED/AUTONOMY_ENABLED=true，这两个 vars 会【静默 no-op】——期望的 verify
+      # 深检不再发生且无人察觉。本步把静默 no-op 转成显式红：设了即 fail，提示先 git revert
+      # 移除提交（重启整链）或清除 vars。不设（现状）→ 步骤 skipped，零行为变化。
+      - name: "Guard: removed verify/autonomy chain must not be requested"
+        if: ${{ vars.VERIFY_ENABLED == 'true' || vars.AUTONOMY_ENABLED == 'true' }}
+        run: |
+          echo "::error::VERIFY_ENABLED/AUTONOMY_ENABLED 为 true，但 verify/gate/auto_merge 链已移除（见文件头注释）——vars 现为静默 no-op。重启整链：git revert 移除提交；或清除这两个 vars。"
+          exit 1
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.base.ref }}
