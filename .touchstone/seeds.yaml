@@ -2,8 +2,12 @@
 #
 # 依据（数据，非拍脑袋）：data/ground_truth.json 98 条校准真值的人审裁决统计
 # （2026-08-17 快照，learn.yml 每周重建）：
-#   PRA-REVIEW   20 raised / 12 adopted /  8 ignored —— 采纳率 0.60，全类型最高 → emphasize
-#   PRA-GENERAL  20 raised /  6 adopted / 14 ignored —— 采纳率 0.30，全类型最低 → suppress
+#   PRA-REVIEW         20 raised / 12 adopted /  8 ignored —— 采纳率 0.60，全类型最高 → emphasize
+#   PRA-GENERAL        20 raised /  6 adopted / 14 ignored —— 采纳率 0.30，全类型最低 → suppress
+#   PRA-POSSIBLE_ISSUE 10 raised /  5 adopted /  5 ignored —— 采纳率 0.50，居中但内部混杂：ignored
+#     半数是投机性防御建议（try/except 包内部调用、冗余 None 检查、防御性拷贝）→ 只压子集，
+#     不 discard 整类（真 bug 也在这个 label 下）。配套 standards.yaml ERR-002（fail-fast 规范）
+#     + best_practices.md 再生成；两轮 learn.yml 后按 calibration.json 复核压没压住。
 # 口径：adopted = 人 resolve 了该类型发现（calibrate.thread_findings）；raised = touchstone
 # 实际挑过该类型的 PR 数。样本 20/20，方向可信；数值会随后续裁决漂移，本文件由人按
 # 最新 calibration.json 定期复核（建议随 release 节奏看一眼）。
@@ -18,3 +22,7 @@
 - finding_type: PRA-GENERAL
   kind: suppress
   text: Avoid generic or vague commentary (style preferences, restating the diff, non-actionable suggestions); humans dismiss these as noise in this repo.
+
+- finding_type: PRA-POSSIBLE_ISSUE
+  kind: suppress
+  text: Do not raise speculative defensive-coding suggestions — extra try/except wrappers, redundant None checks, "just in case" input validation, defensive copies — unless you can point to a concrete reachable failure path in this change; this repo prefers fail-fast over belt-and-suspenders.

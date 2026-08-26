@@ -23,26 +23,30 @@ Pattern 4 (ERR-001, applies: all languages): 外部边界(IO/网络/解析/用�
 - Why: AI 常给出 happy-path 实现，忽略错误路径与边界。
 - Do: 对所有外部输入与可失败调用显式处理错误；不写空 catch、不静默吞异常。
 
-Pattern 5 (COR-001, applies: all languages): 使用了未经核实的 API/方法/字段（疑似幻觉或签名记错）。
+Pattern 5 (ERR-002, applies: all languages): 非外部边界的内部路径添加投机性防御——try/except 包裹、冗余 None 检查、防御性拷贝、"以防万一"式校验——且指不出具体可达的失败路径。
+- Why: LLM 读到 ERR-001 易泛化成"处处加防御"，把内部调用链也裹上；这类建议恰是本仓人审 ignore 的低质量模式（PRA-POSSIBLE_ISSUE ignored 半数）。与 ERR-001 配对：边界要防、内部 fail-fast。
+- Do: 内部调用链让异常自然抛出（fail-fast），错误在外部边界统一处理；要加防御必须能指出具体可达的失败路径，否则不加。
+
+Pattern 6 (COR-001, applies: all languages): 使用了未经核实的 API/方法/字段（疑似幻觉或签名记错）。
 - Why: AI 易调用不存在的接口或记错参数顺序/语义。
 - Do: 只用已确认存在的 API；不确定的先查文档/类型定义。
 
-Pattern 6 (COR-002, applies: all languages): 共享状态/并发路径缺同步，或对外部响应结构做了未验证假设。
+Pattern 7 (COR-002, applies: all languages): 共享状态/并发路径缺同步，或对外部响应结构做了未验证假设。
 - Why: 此类语义错误"看着对、能跑"，只有执行/特定输入才暴露。
 - Do: 并发访问共享状态需显式同步；对外部响应先校验结构再使用。
 
-Pattern 7 (SCOPE-001, applies: all languages): diff 触及与提交契约 intent 无关的文件/区域，或捆绑了不相关改动。
+Pattern 8 (SCOPE-001, applies: all languages): diff 触及与提交契约 intent 无关的文件/区域，或捆绑了不相关改动。
 - Why: agent 易顺手改动声明范围之外的东西，放大评审与风险面。
 - Do: 一个 PR 只做一件事；与 intent 无关的改动拆成独立 PR。
 
 ## **/*test*, **/*spec*
 
-Pattern 8 (TEST-002, applies: **/*test*, **/*spec*): 测试 mock 掉了被测对象本身，或只测桩而非真实逻辑。
+Pattern 9 (TEST-002, applies: **/*test*, **/*spec*): 测试 mock 掉了被测对象本身，或只测桩而非真实逻辑。
 - Why: 过度 mock 让测试通过却未验证真实行为。
 - Do: 只 mock 外部依赖，不 mock 被测单元本身。
 
 ## java
 
-Pattern 9 (SPR-VAL-001, applies: java): 控制器入参（@RequestBody/@RequestParam/@PathVariable）未做校验（缺 @Valid/@Validated 或显式校验）。
+Pattern 10 (SPR-VAL-001, applies: java): 控制器入参（@RequestBody/@RequestParam/@PathVariable）未做校验（缺 @Valid/@Validated 或显式校验）。
 - Why: 外部输入是信任边界；不校验直接进业务/落库，放大注入与脏数据风险。
 - Do: 给 @RequestBody DTO 加约束注解并在入参标 @Valid；@RequestParam 关键约束显式校验。

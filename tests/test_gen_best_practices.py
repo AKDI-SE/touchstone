@@ -8,7 +8,7 @@ from touchstone import gen_best_practices as G
 _STD = os.path.join(os.path.dirname(G.__file__), "..", ".touchstone", "standards.yaml")
 _STANDARDS = yaml.safe_load(open(_STD, encoding="utf-8"))
 
-_SUBJECTIVE = {"DUP-001", "CONV-002", "OE-001", "ERR-001", "TEST-002",
+_SUBJECTIVE = {"DUP-001", "CONV-002", "OE-001", "ERR-001", "ERR-002", "TEST-002",
                "COR-001", "COR-002", "SCOPE-001", "SPR-VAL-001"}
 _MACHINE = {"CONV-001", "TEST-001", "SEC-001", "SEC-002", "CTR-001",
             "SPR-DI-001", "SPR-TX-001", "JAVA-EQ-001", "JAVA-EXC-001", "JAVA-LOG-001"}
