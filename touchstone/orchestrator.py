@@ -89,6 +89,7 @@ def _gitcode_files_to_diff(files):
                 parts.append(f"diff --git a/{old_fn} b/{new_fn}")
                 parts.append(f"--- a/{old_fn}")
                 parts.append(f"+++ b/{new_fn}")
+                parts.append("")
             else:
                 print(f"[warn] GitCode files: 跳过无 patch 的文件 {new_fn or '?'}（二进制/重命名/无 hunks）", file=sys.stderr)
             continue
@@ -116,8 +117,8 @@ def get_pr_diff(owner, repo, number, token):
     files 端点是分页的——必须 paginate 取全量（per_page=100 × 30 页 = 3000 文件，
     对齐 GitHub 自身 diff 上限），否则超过一页的文件会静默漏出确定性核对。"""
     if _is_gitcode():
-        url = (os.environ.get("GITHUB_API_URL", "https://api.github.com").rstrip("/")
-               + f"/repos/{owner}/{repo}/pulls/{number}/files")
+        _api_base = os.environ.get("GITHUB_API_URL") or os.environ.get("TOUCHSTONE_GITHUB_BASE_URL", "https://api.github.com")
+        url = _api_base.rstrip("/") + f"/repos/{owner}/{repo}/pulls/{number}/files"
         files = ghclient.paginate(url, token, per_page=100, max_pages=30)
         if not isinstance(files, list):
             print(f"[warn] GitCode /pulls/{number}/files 返回非预期类型 {type(files).__name__}，"
@@ -799,7 +800,14 @@ def main():
                 if not isinstance(_pr_full, dict):
                     raise requests.exceptions.RequestException(
                         f"GET PR 返回非 dict: {type(_pr_full).__name__}")
-                _existing = [l.get("name") for l in (_pr_full.get("labels") or []) if isinstance(l, dict)]
+                _existing = []
+                for l in (_pr_full.get("labels") or []):
+                    if isinstance(l, dict):
+                        _n = l.get("name")
+                        if _n:
+                            _existing.append(_n)
+                    elif isinstance(l, str) and l:
+                        _existing.append(l)
                 _new_labels = list(dict.fromkeys(_existing + ["touchstone:needs-human"]))
                 _base = os.environ.get("TOUCHSTONE_GITHUB_BASE_URL") or os.environ.get("GITHUB_API_URL", "https://api.github.com")
                 _patch_url = _base.rstrip("/") + f"/repos/{owner}/{repo}/pulls/{number}"

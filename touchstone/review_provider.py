@@ -626,6 +626,8 @@ def _collect_subprocess(args, mode, timeout, log_path=None):
             m = re.search(re.escape(_JSON_BEGIN) + r"(.*?)" + re.escape(_JSON_END),
                           proc.stdout or "", re.S)
             data = json.loads(m.group(1)) if m else None
+            if data is not None and not isinstance(data, dict):
+                data = None
         else:
             data = _extract_json(proc.stdout)
     except json.JSONDecodeError as e:
