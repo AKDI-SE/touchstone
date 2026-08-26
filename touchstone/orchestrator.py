@@ -59,12 +59,51 @@ def load_yaml(path, default=None):
         return yaml.safe_load(f)
 
 
+def _is_gitcode():
+    """检测 API 端点是否 GitCode（Gitea 兼容）。GitCode 不支持 Accept:diff 取整段 diff
+    （返回 400 "Invalid Accept header"），需走 /pulls/{n}/files 逐文件拼装。
+    经 GITHUB_API_URL 含 "gitcode" 判定；GitHub/GHE 默认不含、不受影响。"""
+    return "gitcode" in os.environ.get("GITHUB_API_URL", "").lower()
+
+
+def _gitcode_files_to_diff(files):
+    """GitCode /pulls/{n}/files 的 JSON 数组 → unified diff 文本（供 unidiff PatchSet 解析）。
+    GitCode 的 patch 字段是 {"diff": "<hunks>"}（嵌套 dict），与 GitHub 的 patch（纯字符串）
+    不同，故专门适配。每文件拼 diff --git / --- a/ / +++ b/ 头 + hunks。
+    已知信息损失（与 GitHub Accept:diff 路径的差异，调用方须知）：
+    - 二进制文件 / 纯重命名（无 patch 字段）不入 diff → 不进 changed_files（GitHub 路径
+      会以 "Binary files differ" / rename 头出现，但同样无 hunks 可扫）。
+    - 必须配合分页取全量（见 get_pr_diff），否则确定性核对漏文件。"""
+    parts = []
+    for f in files or []:
+        new_fn = f.get("new_path") or f.get("filename") or f.get("old_path")
+        old_fn = f.get("old_path") or new_fn
+        patch = f.get("patch")
+        hunks = patch.get("diff") if isinstance(patch, dict) else patch
+        if not new_fn or not hunks:
+            continue
+        parts.append(f"diff --git a/{new_fn} b/{new_fn}")
+        parts.append(f"--- a/{old_fn}")
+        parts.append(f"+++ b/{new_fn}")
+        parts.append(hunks if hunks.endswith("\n") else hunks + "\n")
+    return "\n".join(parts)
+
+
 def get_pr_diff(owner, repo, number, token):
     """取 PR 全文 diff——确定性核对（SEC-001 等）必须覆盖全文，安全保证不随体量打折扣。
     LLM 侧的上下文限制由 pr-agent 自己管理（它取全文 PR + 用 custom_model_max_tokens 做
     max_tokens）；touchstone 的确定性核对（密钥扫描/契约/栈规则）是纯正则/AST，不进 LLM，
     不受 diff 体量影响。超大体量 PR 默认走 SIZE-001 体量门禁拆分（TOUCHSTONE_MAX_DIFF_LINES
-    默认 1000 行；设 0 关闭、或调高/调低阈值）。"""
+    默认 1000 行；设 0 关闭、或调高/调低阈值）。
+    GitCode 适配：GitCode/Gitea 不支持 Accept: application/vnd.github.v3.diff（400），
+    改走 /pulls/{n}/files 取每文件 patch 拼 unified diff；GitHub/GHE 路径不变。
+    files 端点是分页的——必须 paginate 取全量（per_page=100 × 30 页 = 3000 文件，
+    对齐 GitHub 自身 diff 上限），否则超过一页的文件会静默漏出确定性核对。"""
+    if _is_gitcode():
+        url = (os.environ.get("GITHUB_API_URL", "https://api.github.com").rstrip("/")
+               + f"/repos/{owner}/{repo}/pulls/{number}/files")
+        files = ghclient.paginate(url, token, per_page=100, max_pages=30)
+        return _gitcode_files_to_diff(files) if isinstance(files, list) else ""
     return gh("GET", f"/repos/{owner}/{repo}/pulls/{number}", token,
               accept="application/vnd.github.v3.diff")
 
@@ -260,6 +299,12 @@ def post_results(owner, repo, number, head_sha, token, risk, findings, loop_info
                     f"未销项 {len(ledger.get('inherited_open_items', []))} 条已并入本清单，"
                     f"剩余轮次按台账计。人工重置请打 `rounds-reset` label。")
             alerts = (alerts + "\n\n" if alerts else "") + _lin
+    # checklist 兜底（影响所有平台，run.py 独立入口受益）：run.py 调 post_results 不传
+    # checklist → 此前 checklist=None 时 render_findings_checklist 整段省略，评论只有
+    # 标题+状态行、findings 不进清单。仅 checklist=None 且有 findings 时从 findings 现
+    # 建清单；CI（orchestrator main）恒传 cur_cl，不触发。
+    if not checklist and findings:
+        checklist = checklist_mod.from_findings(findings)
     # 机器 marker 段：loop 状态 marker + checklist 权威状态 marker（机读，永远存在）。
     markers = []
     if loop_info:
@@ -303,7 +348,10 @@ def post_results(owner, repo, number, head_sha, token, risk, findings, loop_info
     }, ensure_ascii=False) + " -->"
     body = body + "\n\n" + result_marker
     try:
-        gh("POST", f"/repos/{owner}/{repo}/issues/{number}/comments", token, {"body": body})
+        # GitCode 适配：PR 评论端点是 /pulls/{n}/comments（GitHub 是 /issues/{n}/comments）。
+        _cmt = (f"/repos/{owner}/{repo}/pulls/{number}/comments" if _is_gitcode()
+                else f"/repos/{owner}/{repo}/issues/{number}/comments")
+        gh("POST", _cmt, token, {"body": body})
     except requests.exceptions.RequestException as e:
         print(f"[warn] 摘要评论失败: {e}", file=sys.stderr)
     # (2) 尽力内联评论（event=COMMENT，绝不 REQUEST_CHANGES）
@@ -319,14 +367,16 @@ def post_results(owner, repo, number, head_sha, token, risk, findings, loop_info
                    "body": f"`{f['rule_id']}` {f.get('rationale','')}\n方向：{f.get('fix_direction') or f.get('suggested_fix','')}"
                            f"\n{_finding_marker(f)}"}
                   for f in findings if f.get("file") and f.get("line")]
-    if inline:
+    # GitCode 适配：无 /pulls/{n}/reviews 与 /check-runs 端点（404）——内联与 check run
+    # 双双跳过（内联信息由摘要评论覆盖；中性 check run 本就是 advisory，缺失不影响裁决）。
+    if inline and not _is_gitcode():
         try:
             gh("POST", f"/repos/{owner}/{repo}/pulls/{number}/reviews", token,
                {"event": "COMMENT", "comments": inline})
         except requests.exceptions.RequestException as e:
             print(f"[info] 内联评论降级(行不在 diff 内属正常): {e}", file=sys.stderr)
     # (3) 中性 check run（advisory，永不 failure）
-    if head_sha:
+    if head_sha and not _is_gitcode():
         flag = "⚠️ 评审降级 · " if (engine_status != "ok" or det_warning) else ""
         try:
             gh("POST", f"/repos/{owner}/{repo}/check-runs", token, {
@@ -489,7 +539,9 @@ def main():
         # 不允许守卫增强层的 ImportError 崩掉 main()——与 attach 面的包裹口径一致。
         from touchstone import guard_context as _gc0
         if _gc0.enabled():
-            _pre_comments = gh("GET", f"/repos/{owner}/{repo}/issues/{number}/comments", token)
+            _pre_cmt_path = (f"/repos/{owner}/{repo}/pulls/{number}/comments" if _is_gitcode()
+                             else f"/repos/{owner}/{repo}/issues/{number}/comments")
+            _pre_comments = gh("GET", _pre_cmt_path, token)
             _pre_bodies = loop.trusted_bodies(
                 _pre_comments if isinstance(_pre_comments, list) else [], None)
             _pre_cl = checklist_mod.parse_latest(_pre_bodies)
@@ -527,7 +579,10 @@ def main():
     # 只信机器人自己发的评论（按发帖人过滤）——否则 author 可自己发伪造 marker 洗掉抗博弈闸。
     all_bodies = []          # 全量评论正文（含 author）——只用于解析 ack 申报（申报是输入信号）
     try:
-        comments = gh("GET", f"/repos/{owner}/{repo}/issues/{number}/comments", token)
+        # GitCode 适配：PR 评论读取同走 /pulls/{n}/comments（与回贴端点一致）。
+        _cmt_path = (f"/repos/{owner}/{repo}/pulls/{number}/comments" if _is_gitcode()
+                     else f"/repos/{owner}/{repo}/issues/{number}/comments")
+        comments = gh("GET", _cmt_path, token)
         comments = comments if isinstance(comments, list) else []
         all_bodies = [c.get("body", "") for c in comments]
         try:
@@ -709,8 +764,20 @@ def main():
     # 升级到人：打标签（best-effort）
     if decision == "escalate":
         try:
-            gh("POST", f"/repos/{owner}/{repo}/issues/{number}/labels", token,
-               {"labels": ["touchstone:needs-human"]})
+            if _is_gitcode():
+                # GitCode 适配：不支持 POST /issues/{n}/labels（400）；PATCH /pulls/{n} 是
+                # 覆盖式 labels——须先 GET 现有 labels 合并后再 PATCH，避免抹掉他人标签
+                # （GET→PATCH 存在竞窗，覆盖面限于标签、escalate 为 best-effort，可接受）。
+                _pr_full = gh("GET", f"/repos/{owner}/{repo}/pulls/{number}", token)
+                _existing = [l.get("name") for l in (_pr_full.get("labels") or []) if isinstance(l, dict)]
+                _new_labels = list(dict.fromkeys(_existing + ["touchstone:needs-human"]))
+                _patch_url = (os.environ.get("GITHUB_API_URL", "https://api.github.com").rstrip("/")
+                              + f"/repos/{owner}/{repo}/pulls/{number}")
+                requests.patch(_patch_url, headers={"Authorization": "Bearer " + token},
+                               data={"labels": ",".join(_new_labels)}, timeout=30)
+            else:
+                gh("POST", f"/repos/{owner}/{repo}/issues/{number}/labels", token,
+                   {"labels": ["touchstone:needs-human"]})
         except requests.exceptions.RequestException as e:
             # needs-human 标签打不上 = 人工升级信号丢失——escalate 本身已定，标签只是
             # 传达渠道，失败必须可见（否则升级悄悄变没人接）。

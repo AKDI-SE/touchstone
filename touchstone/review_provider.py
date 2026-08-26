@@ -614,22 +614,39 @@ def _collect_subprocess(args, mode, timeout, log_path=None):
                                  f"非超时、非命令缺失的执行故障。")
     rc = proc.returncode
     raw_err = proc.stderr or ""
-    if rc != 0:
+    # 先提取哨兵 JSON：pr-agent 0.43 + Py3.11/Windows 偶发 access violation 崩在子进程
+    # 退出阶段（_emit_json 已 flush 结果到 stdout），rc≠0 是退出崩溃而非结果损坏——
+    # 只要 stdout 有合法哨兵 JSON 就视为结果有效。仅在无合法 JSON 时才按 rc/解析失败归类。
+    # ⚠️ 影响所有平台：rc≠0 的提取只认哨兵命中（_extract_json 的 raw_decode 兜底可能
+    # 采信崩溃前 stdout 里的无关 JSON——如 litellm 噪音），rc=0 路径与旧版完全一致。
+    data = None
+    parse_err = None
+    try:
+        if rc != 0:
+            m = re.search(re.escape(_JSON_BEGIN) + r"(.*?)" + re.escape(_JSON_END),
+                          proc.stdout or "", re.S)
+            data = json.loads(m.group(1)) if m else None
+        else:
+            data = _extract_json(proc.stdout)
+    except json.JSONDecodeError as e:
+        parse_err = e
+    except Exception as e:        # 兜底（同「绝不抛」）：_extract_json 未来改动引入其他异常
+        parse_err = e             # 也归解析失败（_BAD_JSON），异常类型进 stderr/reason 供诊断。
+    if rc != 0 and data is None:
         return _SubResult(mode, _CRASHED,
                           stderr=f"[runner] {mode} subprocess crashed（rc={rc}）\n{raw_err}".rstrip(),
                           reason=f"{mode} 子进程非零退出（rc={rc}）。stderr 末尾：\n{raw_err.strip()[-600:]}")
-    try:
-        data = _extract_json(proc.stdout)
-    except json.JSONDecodeError as e:
+    if rc != 0:
+        # 崩溃但哨兵结果有效：保留 rc 诊断（否则 Windows access violation=3221225477 这类
+        # 排障关键信息静默丢失）。措辞刻意避开 "subprocess crashed" 签名——结果有效不该
+        # 被 _PRED_FAILURE_SIGS / partial_tool_failure 误归因为硬失败。
+        raw_err = (f"[runner] {mode} subprocess exited rc={rc}（结果已从哨兵 JSON 恢复）\n"
+                   + raw_err).rstrip()
+    if data is None:
+        _pe = f"{type(parse_err).__name__}: {parse_err}" if parse_err else "no output"
         return _SubResult(mode, _BAD_JSON,
-                          stderr=f"[runner] {mode} subprocess non-JSON output（{e}）\n{raw_err}".rstrip(),
-                          reason=f"{mode} 适配输出非合法 JSON：{e}；stdout 末尾：\n{(proc.stdout or '').strip()[-300:]}")
-    except Exception as e:        # 兜底：兑现「绝不抛」——_extract_json 当前实现只抛 JSONDecodeError，
-                                  # 此处防未来改动引入其他异常（同 subprocess.run 的 catch-all 一致）。
-                                  # 归 _BAD_JSON（输出解析不可用），异常类型进 stderr/reason 供诊断。
-        return _SubResult(mode, _BAD_JSON,
-                          stderr=f"[runner] {mode} subprocess output parse crashed（{type(e).__name__}: {e}）\n{raw_err}".rstrip(),
-                          reason=f"{mode} 输出解析异常（{type(e).__name__}: {e}）。")
+                          stderr=f"[runner] {mode} subprocess non-JSON output（{_pe}）\n{raw_err}".rstrip(),
+                          reason=f"{mode} 适配输出非合法 JSON：{_pe}；stdout 末尾：\n{(proc.stdout or '').strip()[-300:]}")
     if isinstance(data, dict) and data.get("_degraded"):
         # _degraded 是结构化降级（pr-agent 没装 / LLM 调用失败）——data 自带信号，无需注入标记；
         # 部分降级归因由 _status_partial_failure 按状态精确给出（不靠 stderr 扫描，避免 _degraded 串不在

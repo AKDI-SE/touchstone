@@ -192,12 +192,19 @@ def _llm_thinking_extra_body():
 
 def _guard_acompletion(orig_acompletion, extra_body=None):
     """围栏（纯函数工厂，供单测）：逐调用注入 max_retries=0——openai client 内层不重试
-    （否则默认 max_retries=2 在 tenacity 之下偷偷乘）；extra_body 非空时一并注入
-    （思考开关等端点方言，主模型与自评模型统一生效）。setdefault：上游显式传参不覆盖。"""
+    （否则默认 max_retries=2 在 tenacity 之下偷偷乘）；extra_body 非空时合并注入
+    （思考开关等端点方言，主模型与自评模型统一生效）。字段级 setdefault：上游显式传参
+    不覆盖。⚠️ 合并语义（影响所有平台）：pr-agent 0.43 的 chat_completion 自带
+    extra_body（provider/reasoning 等），旧的 "extra_body not in kwargs" 跳过会让思考
+    开关失效（GitHub 侧设了 TOUCHSTONE_LLM_THINKING 时同样受影响）；thinking 字段
+    存在才加，不与 pr-agent 自有 extra_body 字段冲突。"""
     async def _guarded(*args, **kwargs):
         kwargs.setdefault("max_retries", 0)
-        if extra_body and "extra_body" not in kwargs:
-            kwargs["extra_body"] = extra_body
+        if extra_body:
+            existing = dict(kwargs.get("extra_body") or {})
+            for k, v in extra_body.items():
+                existing.setdefault(k, v)
+            kwargs["extra_body"] = existing
         return await orig_acompletion(*args, **kwargs)
     return _guarded
 
@@ -312,6 +319,47 @@ def run(pr_url, mode, extra_instructions=None):
     gh_tok = os.environ.get("GITHUB_TOKEN") or os.environ.get("GITHUB_USER_TOKEN")
     if gh_tok:
         s.github.user_token = gh_tok          # pr-agent 取 PR 需要 GitHub token
+    # GitCode/Gitea 适配：pr-agent 的 GithubProvider 默认 base_url=api.github.com，
+    # 取不到 GitCode PR（provider_failed）。经 TOUCHSTONE_GITHUB_BASE_URL 指向 GitCode API
+    # （如 https://api.gitcode.com/api/v5）；未设=沿用 api.github.com（GitHub/GHE 不受影响）。
+    _gc_base = os.environ.get("TOUCHSTONE_GITHUB_BASE_URL")
+    if _gc_base:
+        try:
+            s.github.base_url = _gc_base.rstrip("/")
+            _ix(f"git provider base_url={_gc_base.rstrip('/')}")
+        except Exception as e:
+            _ix(f"设 github.base_url 失败: {type(e).__name__}: {e}")
+        # GitCode v5 只认 Bearer 鉴权，PyGithub Auth.Token 默认 token_type="token"
+        # → 发 "Authorization: token xxx" → 401。monkeypatch token_type property 返回
+        # "Bearer" → 发 "Authorization: Bearer xxx"。仅 GitCode 场景进此分支；GitHub 场景
+        # _gc_base 未设，Auth.Token 不受影响。
+        try:
+            from github import Auth as _gh_auth
+            _gh_auth.Token.token_type = property(lambda self: "Bearer")
+            _ix("PyGithub Auth.Token.token_type → Bearer（GitCode v5 鉴权适配）")
+        except Exception as e:
+            _ix(f"Auth.Token Bearer monkeypatch 失败: {type(e).__name__}: {e}")
+        # GitCode 的 /pulls/{n}/files 的 patch 字段是 {"diff":"...","old_path":...,"new_path":...}
+        # dict，而 PyGithub 的 File.patch 期望 str → 访问报 BadAttributeException。
+        # monkeypatch File.patch property 从 dict 提取 diff 字符串；GitHub 的 str 路径
+        # 原样返回（rawData.patch 非 dict 时透传），不影响 GitHub 场景。
+        try:
+            from github.File import File as _gh_file
+
+            def _patch_prop(self):
+                try:
+                    v = self._patch.value
+                except Exception:
+                    v = None
+                if isinstance(v, dict):
+                    return v.get("diff")
+                raw = getattr(self, "_rawData", None) or {}
+                p = raw.get("patch")
+                return p.get("diff") if isinstance(p, dict) else p
+            _gh_file.patch = property(_patch_prop)
+            _ix("PyGithub File.patch → 从 dict 提取 diff（GitCode files 格式适配）")
+        except Exception as e:
+            _ix(f"File.patch monkeypatch 失败: {type(e).__name__}: {e}")
     if model_override:
         s.config.model = f"openai/{model_override}"   # LiteLLM：openai 前缀走 OpenAI 兼容端点
         # pr-agent 的 get_max_tokens(model) 要求模型在内置 MAX_TOKENS 表里，否则报
