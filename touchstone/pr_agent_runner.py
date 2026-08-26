@@ -333,6 +333,9 @@ def run(pr_url, mode, extra_instructions=None):
         # → 发 "Authorization: token xxx" → 401。monkeypatch token_type property 返回
         # "Bearer" → 发 "Authorization: Bearer xxx"。仅 GitCode 场景进此分支；GitHub 场景
         # _gc_base 未设，Auth.Token 不受影响。
+        # ⚠️ 进程级 monkeypatch：以下 Auth.Token.token_type 和 File.patch 的改动影响本进程所有
+        # PyGithub 调用。本进程是 pr_agent_runner 子进程（单次评审，不并发访问 GitHub 真实端点）；
+        # 如未来同进程混用 GitCode + GitHub 端点，需改为 context-scoped 方案。
         try:
             from github import Auth as _gh_auth
             _gh_auth.Token.token_type = property(lambda self: "Bearer")

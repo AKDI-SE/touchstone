@@ -62,8 +62,10 @@ def load_yaml(path, default=None):
 def _is_gitcode():
     """检测 API 端点是否 GitCode（Gitea 兼容）。GitCode 不支持 Accept:diff 取整段 diff
     （返回 400 "Invalid Accept header"），需走 /pulls/{n}/files 逐文件拼装。
-    经 GITHUB_API_URL 含 "gitcode" 判定；GitHub/GHE 默认不含、不受影响。"""
-    return "gitcode" in os.environ.get("GITHUB_API_URL", "").lower()
+    经 GITHUB_API_URL 或 TOUCHSTONE_GITHUB_BASE_URL 含 "gitcode" 判定；GitHub/GHE 默认不受影响。"""
+    _api = "gitcode" in os.environ.get("GITHUB_API_URL", "").lower()
+    _base = "gitcode" in os.environ.get("TOUCHSTONE_GITHUB_BASE_URL", "").lower()
+    return _api or _base
 
 
 def _gitcode_files_to_diff(files):
@@ -81,7 +83,10 @@ def _gitcode_files_to_diff(files):
         patch = f.get("patch")
         hunks = patch.get("diff") if isinstance(patch, dict) else patch
         if not new_fn or not hunks:
-            print(f"[warn] GitCode files: 跳过无 patch 的文件 {new_fn or '?'}（二进制/重命名/无 hunks）", file=sys.stderr)
+            if new_fn and old_fn and old_fn != new_fn:
+                parts.append(f"diff --git a/{old_fn} b/{new_fn}")
+            else:
+                print(f"[warn] GitCode files: 跳过无 patch 的文件 {new_fn or '?'}（二进制/重命名/无 hunks）", file=sys.stderr)
             continue
         parts.append(f"diff --git a/{old_fn} b/{new_fn}")
         if f.get("new_file") or not f.get("old_path"):
@@ -117,6 +122,10 @@ def get_pr_diff(owner, repo, number, token):
         if len(files) >= 3000:
             print(f"[warn] GitCode /pulls/{number}/files 返回 {len(files)} 文件，可能因分页截断"
                   f"（max 3000），确定性核对可能漏文件", file=sys.stderr)
+        if not files:
+            print(f"[warn] GitCode /pulls/{number}/files 返回空列表——可能是 fetch 失败"
+                  f"（auth/404/限流）或确实无文件变更", file=sys.stderr)
+            return ""
         return _gitcode_files_to_diff(files)
     return gh("GET", f"/repos/{owner}/{repo}/pulls/{number}", token,
               accept="application/vnd.github.v3.diff")
@@ -789,7 +798,7 @@ def main():
                               + f"/repos/{owner}/{repo}/pulls/{number}")
                 _resp = requests.patch(_patch_url, headers={"Authorization": "Bearer " + token,
                                        "Accept": "application/json", "Content-Type": "application/json"},
-                                       json={"labels": ",".join(_new_labels)}, timeout=30)
+                                       json={"labels": _new_labels}, timeout=30)
                 _resp.raise_for_status()
             else:
                 gh("POST", f"/repos/{owner}/{repo}/issues/{number}/labels", token,
