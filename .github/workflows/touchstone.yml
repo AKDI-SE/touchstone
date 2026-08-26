@@ -38,7 +38,17 @@ jobs:
       contents: read
       checks: write          # 手动建 gitleaks check-run（relay 按名读结论折进总闸）
     steps:
-      - uses: actions/checkout@v4
+      # checkout 钉到具体 SHA（=v4.4.0，2026-07-20 起的 v4 tip）：allow-unsafe-pr-checkout 是
+      # v4.4.0 新增输入，浮动 @v4 下未来大版本漂移或本地缓存旧版会静默忽略该输入（只打 warning）
+      # → fork PR 仍死在 checkout。该 SHA 正是 PR #186 上实际发出"Refusing…"拒绝的版本，实证支持。
+      # ① 受信 base checkout：只为取 .gitleaks.toml（扫描配置源，见下方扫描步注释）
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.base.ref }}
+          path: trusted-config          # base 受信，无需 unsafe 放行
+          persist-credentials: false
+      # ② fork head checkout：被扫对象
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: ${{ github.event.pull_request.head.sha }}   # 扫 PR 代码（非 base）
           fetch-depth: 0       # 完整历史——commit-range 扫描需 base..head 的提交都在
@@ -57,9 +67,18 @@ jobs:
         id: scan
         continue-on-error: true    # gitleaks 退出 1=发现泄露——要让 job 继续到建 check-run 步
         run: |
+          # 防 fork 压制扫描结果（round-3 review item 1，gitleaks 8.30.1 本地实测复现三种豁免面）：
+          # ① --config 指受信 base 的配置——fork 改自己树里的 .gitleaks.toml（如清空规则）不再生效
+          #    （旧写法 --config .gitleaks.toml 读的是 fork 工作树，可被 PR 作者换掉）
+          # ② rm 源根 .gitleaksignore——gitleaks 认源根该文件的 fingerprint（commit:file:rule）豁免，
+          #    且实测 --gitleaks-ignore-path 无法覆盖源根文件；fork 作者可算出自己泄漏的指纹自我豁免。
+          #    本仓 base 无 .gitleaksignore（若有需要走受信 base 版本，勿用 fork 的）
+          # ③ --ignore-gitleaks-allow——fork 在泄漏行旁加 "gitleaks:allow" 注释不再豁免（纵深防御）
+          rm -f .gitleaksignore
           # 扫 PR 提交范围（base..head）——只拦本 PR 引入的泄露，不翻历史旧账
           gitleaks detect --source . \
-            --config .gitleaks.toml \
+            --config trusted-config/.gitleaks.toml \
+            --ignore-gitleaks-allow \
             --log-opts="${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}" \
             --redact --report-format json --report-path /tmp/gitleaks.json
           echo "code=$?" >> "$GITHUB_OUTPUT"
@@ -114,7 +133,11 @@ jobs:
       # vars.VERIFY_ENABLED/AUTONOMY_ENABLED=true，这两个 vars 会【静默 no-op】——期望的 verify
       # 深检不再发生且无人察觉。本步把静默 no-op 转成显式红：设了即 fail，提示先 git revert
       # 移除提交（重启整链）或清除 vars。不设（现状）→ 步骤 skipped，零行为变化。
+      # round-3 item 3：守卫红不再连坐评审链——下方 Run review / Post gate 等步按 outcome != 'failure'
+      # 门控，守卫触发时留下【唯一且归因清晰】的信号（红 job + ::error 注解），不误导性地发
+      # "未产出结果" 总闸、也不对无辜 PR 发半截评审。
       - name: "Guard: removed verify/autonomy chain must not be requested"
+        id: guard
         if: ${{ vars.VERIFY_ENABLED == 'true' || vars.AUTONOMY_ENABLED == 'true' }}
         run: |
           echo "::error::VERIFY_ENABLED/AUTONOMY_ENABLED 为 true，但 verify/gate/auto_merge 链已移除（见文件头注释）——vars 现为静默 no-op。重启整链：git revert 移除提交；或清除这两个 vars。"
@@ -307,8 +330,10 @@ jobs:
       # checks._check_verify 的 except (OSError, ValueError) 归一为中性结论，不挡。
       # `!cancelled()`：被取消时不发 check（always() 含取消态，否则会对每个被取消的 run 发
       # "未产出结果" failure check，偏离旧行为）。
+      # `steps.guard.outcome != 'failure'`（round-3 item 3）：守卫（vars 误设）红时不再发
+      # "未产出结果" 的误导性总闸——配置错误的信号是红 job + ::error 注解本身，唯一且归因清晰。
       - name: "Post gate"
-        if: ${{ always() && !cancelled() }}
+        if: ${{ always() && !cancelled() && steps.guard.outcome != 'failure' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
