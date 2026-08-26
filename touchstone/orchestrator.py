@@ -81,13 +81,17 @@ def _gitcode_files_to_diff(files):
         patch = f.get("patch")
         hunks = patch.get("diff") if isinstance(patch, dict) else patch
         if not new_fn or not hunks:
+            print(f"[warn] GitCode files: 跳过无 patch 的文件 {new_fn or '?'}（二进制/重命名/无 hunks）", file=sys.stderr)
             continue
-        parts.append(f"diff --git a/{new_fn} b/{new_fn}")
+        parts.append(f"diff --git a/{old_fn} b/{new_fn}")
         if f.get("new_file") or not f.get("old_path"):
             parts.append("--- /dev/null")
         else:
             parts.append(f"--- a/{old_fn}")
-        parts.append(f"+++ b/{new_fn}")
+        if f.get("deleted_file") or not new_fn:
+            parts.append("+++ /dev/null")
+        else:
+            parts.append(f"+++ b/{new_fn}")
         parts.append(hunks if hunks.endswith("\n") else hunks + "\n")
     return "\n".join(parts)
 
@@ -110,6 +114,9 @@ def get_pr_diff(owner, repo, number, token):
             print(f"[warn] GitCode /pulls/{number}/files 返回非预期类型 {type(files).__name__}，"
                   f"确定性核对无 diff 输入", file=sys.stderr)
             return ""
+        if len(files) >= 3000:
+            print(f"[warn] GitCode /pulls/{number}/files 返回 {len(files)} 文件，可能因分页截断"
+                  f"（max 3000），确定性核对可能漏文件", file=sys.stderr)
         return _gitcode_files_to_diff(files)
     return gh("GET", f"/repos/{owner}/{repo}/pulls/{number}", token,
               accept="application/vnd.github.v3.diff")
@@ -780,8 +787,9 @@ def main():
                 _new_labels = list(dict.fromkeys(_existing + ["touchstone:needs-human"]))
                 _patch_url = (os.environ.get("GITHUB_API_URL", "https://api.github.com").rstrip("/")
                               + f"/repos/{owner}/{repo}/pulls/{number}")
-                _resp = requests.patch(_patch_url, headers={"Authorization": "Bearer " + token},
-                               data={"labels": ",".join(_new_labels)}, timeout=30)
+                _resp = requests.patch(_patch_url, headers={"Authorization": "Bearer " + token,
+                                       "Accept": "application/json", "Content-Type": "application/json"},
+                                       json={"labels": ",".join(_new_labels)}, timeout=30)
                 _resp.raise_for_status()
             else:
                 gh("POST", f"/repos/{owner}/{repo}/issues/{number}/labels", token,
