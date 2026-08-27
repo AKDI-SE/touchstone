@@ -1220,64 +1220,39 @@ def test_loop_waived_claims_escalate_exactly_at_max_rounds(rule_index):
     assert dec_before == "continue", "未耗尽(nr==max_rounds-1)时应 continue 点名待核准项"
 
 
-def test_reference_includes_ack_skill_pointer(monkeypatch):
+def test_reference_includes_ack_skill_pointer():
     """评审评论是提交代码的 agent 的必经触点——「如何申报销项」折叠内给 skill 指针。
 
     部署事实：评审在【受评仓】运行，开发者代码仓没有 skills/ 目录——指针**恒出现**、
     只指上游正本 URL（不引用受评仓本地路径、不用 GITHUB_REPOSITORY 拼 URL——那会 404），
-    并内联时序要点（无网 agent 至少拿到最易错规则）。正文贴入仍 file-gate：部署携带
-    了 skills/ 才有全文（运行时读文件=与正本同步，无副本漂移）。"""
+    并内联时序要点（无网 agent 至少拿到最易错的规则）。
+    【只留链接不贴正文】（#192 二级折叠后用户仍反馈混乱，拍板）：正本正文（含
+    二级折叠版）整体移除——渲染零文件依赖，无 <pre>、无「skill 正本全文」二级折叠，
+    部署带不带 skills/ 输出完全一致。"""
     from touchstone import render
     url = "https://github.com/AKDI-SE/touchstone/blob/main/skills/touchstone-ack/SKILL.md"
-    # 恒出现：受评仓没有 skills/（file-gate 关）也照样提醒——URL + 时序要点
-    monkeypatch.setattr(render.os.path, "exists", lambda p: False)
-    md0 = render.render_reference(has_checklist_items=True)
-    blk0 = md0.split("<details><summary>如何申报销项</summary>")[1].split("</details>")[0]
-    assert url in blk0 and "可安装为 skill" in blk0
-    assert "推送后补 ack 本轮不计" in blk0 and "空提交" in blk0   # 内联时序要点（SKILL §4 同源）
-    assert "<pre>" not in blk0 and "仓内" not in blk0              # 无正文可贴；无「仓内」措辞
-    monkeypatch.undo()
-    # 本部署携带 skills/（touchstone 自审/fork）→ 正文全文贴在链接下方
-    md4 = render.render_reference(has_checklist_items=True)
-    blk4 = md4.split("<details><summary>如何申报销项</summary>")[1].split("</details>")[0]
-    assert "<pre>" in blk4 and "以仓正本为准" in blk4            # skill 正文在
-    assert "&lt;签名&gt;" in blk4                               # 尖括号已转义（防 HTML 吃掉）
-    assert "name: touchstone-ack" not in blk4                   # frontmatter 已剥
-    assert "仓内" not in blk4                                    # 措辞不引用受评仓本地路径
-    assert "\n\n" not in blk4                                  # 无空行（#168 HTML block 约束）
-    assert md4.index(url) < md4.index("<pre>")                   # 正文贴在链接下方
+    md = render.render_reference(has_checklist_items=True)
+    blk = md.split("<details><summary>如何申报销项</summary>")[1].split("</details>")[0]
+    assert url in blk and "可安装为 skill" in blk
+    assert "推送后补 ack 本轮不计" in blk and "空提交" in blk   # 内联时序要点（SKILL §4 同源）
+    assert "<pre>" not in blk                                   # 不贴正文（回归：正文已删）
+    assert "skill 正本全文" not in md and "以仓正本为准" not in blk   # 无二级折叠/无正本内容
+    assert "仓内" not in blk                                    # 无「仓内」措辞（不指受评仓路径）
+    assert "\n\n" not in blk                                  # 无空行（#168 HTML block 约束）
     # 既有行为不回归：空清单仍不出申报指引
     assert "如何申报销项" not in render.render_reference(has_checklist_items=False)
 
 
-
-
-def test_ack_section_readable_layout(monkeypatch, tmp_path):
-    """「如何销项内容混乱」回归（用户反馈）：①HTML block 内裸 \\n 不换行——三行散文
-    连排成糊文，行间必须 <br>；②4300 字符 skill 正本源码不得直接砸进一级折叠——
-    进二级嵌套 <details>，打开一级只见短指引。无空行约束（#168）不因嵌套破坏。"""
+def test_ack_section_readable_layout():
+    """「如何销项内容混乱」回归（用户反馈）：①HTML block 内裸 \n 不换行——三行散文
+    连排成糊文，行间必须 <br>；②skill 正本源码不得进一级折叠——#192 后拍板**只留
+    链接**，正文（含二级折叠版）整体删除，渲染零文件依赖。无空行约束（#168）不破坏。"""
     from touchstone import render
-    # #192 round-1：不依赖部署携带 skills/（开发者仓常态没有——正文 file-gate 关，
-    # 二级标记缺席时 split[1] 直接 IndexError）。tmp_path 假正本强制走「有正文」路径，
-    # 断言对假内容（frontmatter/空行/尖括号）逐项成立，与部署形态无关。
-    fake = tmp_path / "SKILL.md"
-    fake.write_text("---\nname: touchstone-ack\ndescription: x\n---\n"
-                    "# Touchstone 销项规程\n\n以仓正本为准。每行 <签名>: done: 理由。\n\n"
-                    "段落二\n", encoding="utf-8")
-    monkeypatch.setattr(render, "_ack_skill_path", lambda: str(fake))
     md = render.render_reference(has_checklist_items=True)
-    frag = md.split("<details><summary>如何申报销项</summary>")[1]
-    lvl1 = frag.split("<details><summary>skill 正本全文")[0]     # 一级直见内容（二级之前）
-    assert lvl1.count("<br>") == 2                              # 3 行散文 = 2 个行间分隔
-    assert lvl1.rstrip("\n").count("\n") >= 2                   # 源码层仍逐行（可 diff）
-    assert "<pre>" not in lvl1                                  # 一级不见正本源码墙
-    assert len(lvl1) < 500                                      # 打开一级 = 短指引，非糊文
-    nested = frag.split("<details><summary>skill 正本全文")[1].split("</details>")[0]
-    assert nested.startswith("（离线参考") or "离线参考" in nested[:30]
-    assert "<pre>" in nested and "以仓正本为准" in nested       # 全文仍在（离线自足不丢）
-    assert "name: touchstone-ack" not in nested                # frontmatter 已剥（假文件验证）
-    assert "&lt;签名&gt;" in nested                            # 尖括号已转义（假文件验证）
-    assert "段落二" in nested                                 # 空行折叠后正文完整（假文件验证）
-    assert "\n\n" not in frag.split("</details>")[0] + nested   # 嵌套两段均无空行（#168）
-    # 二级收尾存在：嵌套后还有一级的 </details>（两级都闭合）
-    assert "skill 正本全文" in md and md.count("</details>") >= md.count("<details>")
+    frag = md.split("<details><summary>如何申报销项</summary>")[1].split("</details>")[0]
+    assert frag.count("<br>") == 2                              # 3 行散文 = 2 个行间分隔
+    assert frag.rstrip("\n").count("\n") >= 2                  # 源码层仍逐行（可 diff）
+    assert "<pre>" not in frag and "skill 正本全文" not in frag  # 无正文源码/无二级折叠
+    assert len(frag) < 500                                      # 打开一级 = 短指引，非糊文
+    assert "可安装为 skill" in frag                             # 链接指针仍在（参考入口不丢）
+    assert "\n\n" not in frag                                 # 无空行（#168）
