@@ -1252,12 +1252,20 @@ def test_reference_includes_ack_skill_pointer(monkeypatch):
 
 
 
-def test_ack_section_readable_layout():
+def test_ack_section_readable_layout(monkeypatch, tmp_path):
     """「如何销项内容混乱」回归（用户反馈）：①HTML block 内裸 \\n 不换行——三行散文
     连排成糊文，行间必须 <br>；②4300 字符 skill 正本源码不得直接砸进一级折叠——
     进二级嵌套 <details>，打开一级只见短指引。无空行约束（#168）不因嵌套破坏。"""
     from touchstone import render
-    md = render.render_reference(has_checklist_items=True)   # 本仓携带 skills/ → 有正文
+    # #192 round-1：不依赖部署携带 skills/（开发者仓常态没有——正文 file-gate 关，
+    # 二级标记缺席时 split[1] 直接 IndexError）。tmp_path 假正本强制走「有正文」路径，
+    # 断言对假内容（frontmatter/空行/尖括号）逐项成立，与部署形态无关。
+    fake = tmp_path / "SKILL.md"
+    fake.write_text("---\nname: touchstone-ack\ndescription: x\n---\n"
+                    "# Touchstone 销项规程\n\n以仓正本为准。每行 <签名>: done: 理由。\n\n"
+                    "段落二\n", encoding="utf-8")
+    monkeypatch.setattr(render, "_ack_skill_path", lambda: str(fake))
+    md = render.render_reference(has_checklist_items=True)
     frag = md.split("<details><summary>如何申报销项</summary>")[1]
     lvl1 = frag.split("<details><summary>skill 正本全文")[0]     # 一级直见内容（二级之前）
     assert lvl1.count("<br>") == 2                              # 3 行散文 = 2 个行间分隔
@@ -1267,6 +1275,9 @@ def test_ack_section_readable_layout():
     nested = frag.split("<details><summary>skill 正本全文")[1].split("</details>")[0]
     assert nested.startswith("（离线参考") or "离线参考" in nested[:30]
     assert "<pre>" in nested and "以仓正本为准" in nested       # 全文仍在（离线自足不丢）
+    assert "name: touchstone-ack" not in nested                # frontmatter 已剥（假文件验证）
+    assert "&lt;签名&gt;" in nested                            # 尖括号已转义（假文件验证）
+    assert "段落二" in nested                                 # 空行折叠后正文完整（假文件验证）
     assert "\n\n" not in frag.split("</details>")[0] + nested   # 嵌套两段均无空行（#168）
     # 二级收尾存在：嵌套后还有一级的 </details>（两级都闭合）
     assert "skill 正本全文" in md and md.count("</details>") >= md.count("<details>")
