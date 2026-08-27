@@ -1259,3 +1259,24 @@ def test_ack_section_readable_layout():
     assert len(frag) < 500                                      # 打开一级 = 短指引，非糊文
     assert "可安装为 skill" in frag                             # 链接指针仍在（参考入口不丢）
     assert "\n\n" not in frag                                 # 无空行（#168）
+
+
+def test_markers_html_comment_safe_roundtrip():
+    """PR #191 round-5 实录回归：marker payload 含字面 '-->' 时 GitHub 提前终止
+    HTML 注释——余下 JSON 裸露成可见乱文（"参考信息"后格式混乱信息的根因）。
+    发射侧统一转义 '-->' 为 '--\\u003e'（json.loads 解回 '>'，round-trip 无损）。"""
+    from touchstone import checklist as cl, loop as lp, orchestrator as orc
+    cl_obj = {"round": 3, "items": [
+        {"sig": "PRA-X:a.py:1", "direction": "match up to the literal `-->` terminator",
+         "reasoning": "non-greedy to `-->`; also `->` and `>=` appear", "status": "open"}],
+        "resolved_rate": 0.0}
+    m = cl.render_marker(cl_obj)
+    assert m.count("-->") == 1 and m.rstrip().endswith("-->")   # 唯一 '-->' 是真正收尾
+    assert "--\\u003e" in m                                     # payload 内已转义
+    back = cl.parse_latest([m])
+    assert back["items"][0]["reasoning"].count("-->") == 1      # 解析复原原文
+    lm = lp.render_marker(lp.LoopState(2, [["sig with --> inside"]], True))
+    assert lm.count("-->") == 1
+    assert lp.parse_latest_state([lm]).history == [["sig with --> inside"]]
+    import inspect
+    assert "html_comment_safe_json" in inspect.getsource(orc.post_results)  # result 源已接（漂移哨兵）

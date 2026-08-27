@@ -255,12 +255,24 @@ def no_progress(prev, cur):
 # （呈现层常量归呈现层）。本模块只产机读 marker（render_marker）。
 
 
+def html_comment_safe_json(obj):
+    """marker payload 的 HTML 注释安全化（PR #191 round-5 实录）。
+
+    json.dumps 不转义 '>'：note/direction/reasoning 引用字面 '-->'（LLM 转述正则
+    终止符、author 的 waived note 带箭头注释）时，GitHub 在 payload 内首个 '-->'
+    提前终止 HTML 注释——余下 JSON **裸露成可见乱文**（"参考信息"后一大段格式
+    混乱信息的根因）。序列化后把 '-->' 换成 '--\\u003e'：JSON 源里不再含终止符；
+    json.loads 把 \\u003e 解回 '>'，round-trip 无损——parse_latest 的 raw_decode
+    与 loop.parse_latest_state 的 find(_CLOSE) 都落到真正收尾上，解析侧零改动。"""
+    return json.dumps(obj, ensure_ascii=False).replace("-->", "--\\u003e")
+
+
 def render_marker(checklist):
     """v2：只产机读 marker（权威状态 JSON），不产可见渲染——可见渲染由 render.render_findings_checklist
     统一负责（合并 AI 评审 + 清单）。marker 放报告 ⑥ 机器 marker 段，与 loop/result marker 并列。
     纯函数：输入 checklist 对象，输出 `<!-- touchstone-checklist: JSON -->` 字符串。"""
     cl = checklist or {"round": 0, "items": [], "resolved_rate": 1.0}
-    return _OPEN + json.dumps(cl, ensure_ascii=False) + _CLOSE
+    return _OPEN + html_comment_safe_json(cl) + _CLOSE
 
 
 def parse_latest(bodies):
