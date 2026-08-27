@@ -125,6 +125,17 @@ rules:
     author_guidance: 对所有外部输入与可失败调用显式处理错误；不写空 catch、不静默吞异常。
     detect_hint: 查空 catch / 裸 except、未校验的外部输入、未处理的 Promise/error 返回值。
 
+  - id: ERR-002
+    category: over_engineering
+    class: quality
+    severity: warn
+    machine_checkable: false        # "投机性"依赖语境（是否外部边界/有无失败路径），不可静态判定
+    applies_to: "*"
+    description: 非外部边界的内部路径添加投机性防御——try/except 包裹、冗余 None 检查、防御性拷贝、"以防万一"式校验——且指不出具体可达的失败路径。
+    rationale: LLM 读到 ERR-001 易泛化成"处处加防御"，把内部调用链也裹上；这类建议恰是本仓人审 ignore 的低质量模式（PRA-POSSIBLE_ISSUE ignored 半数）。与 ERR-001 配对：边界要防、内部 fail-fast。
+    author_guidance: 内部调用链让异常自然抛出（fail-fast），错误在外部边界统一处理；要加防御必须能指出具体可达的失败路径，否则不加。
+    detect_hint: 查非边界代码里的裸 try/except、同链重复 None 检查、"just in case" 式校验/拷贝——无具体失败路径支撑即命中。
+
   # ===== weak_test · 恒真/无效测试（命门相关）=====
   - id: TEST-001
     category: weak_test
