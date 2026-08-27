@@ -1280,3 +1280,55 @@ def test_markers_html_comment_safe_roundtrip():
     assert lp.parse_latest_state([lm]).history == [["sig with --> inside"]]
     import inspect
     assert "html_comment_safe_json" in inspect.getsource(orc.post_results)  # result 源已接（漂移哨兵）
+
+
+# -------- LLM 自由文本中性化：HTML 注释定界符不入渲染层（PR #191 round-7 实录）--------
+def test_reasoning_quoting_marker_syntax_neutralized():
+    """round-7 实录回归：依据 details body 处在 CommonMark type-6 HTML block 内——块内
+    markdown（含反引号 code span）一律不生效，LLM 在依据里引用 marker 语法的字面
+    `<!--` 被浏览器当真注释开符，一路吞到下一个 `-->`（页尾 loop marker 的闭符），
+    清单尾部/参考信息/如何申报销项/验证与日志/要点速览 在渲染层整体消失（GraphQL
+    bodyHTML 实测四段 find=-1；评论源码仍在、marker 存原文，仅 UI 不可见）。
+    修法：reasoning 折叠 body 与 summary teaser 经 _html_text 中性化。"""
+    from touchstone.render import _render_reasoning
+    r = ("Verify that report bodies never embed a second `<!-- touchstone-checklist:` line; "
+         "a stray `-->` closer leaks as visible junk; `->` and `>=` are harmless. "
+         + "padding " * 40)
+    assert len(r) > 200                                       # 走折叠分支
+    out = _render_reasoning(r)
+    assert "<!--" not in out and "-->" not in out             # 渲染层不可能再开/关 HTML 注释
+    assert "&lt;!--" in out and "--&gt;" in out               # 中性实体仍在（渲染回原字符）
+    assert "`-&gt;`" in out and "`&gt;=`" in out              # 相邻符号一并转义，视觉无损
+    first = out.splitlines()[0]                               # teaser 行同在 HTML block 内
+    assert "<!--" not in first and "-->" not in first
+
+
+def test_short_reasoning_comment_syntax_escaped():
+    """短依据平铺分支同样中性化：markdown 行内字面 `<!--` 是 raw inline HTML 注释开符，
+    不必等折叠分支才出事——同样会吞掉后续渲染内容直到下一个 `-->`。"""
+    from touchstone.render import _render_reasoning
+    out = _render_reasoning("quoted `<!--` and `-->` in short evidence")   # ≤200：平铺分支
+    assert "<details>" not in out
+    assert "<!--" not in out and "-->" not in out
+    assert "&lt;!--" in out and "--&gt;" in out
+
+
+def test_checklist_freetext_fields_neutralized():
+    """清单自由字段（direction/rationale/reasoning/note/guard/复核问题）全线中性化：
+    title/rationale 行与 details 同区（HTML block 未终结前 raw HTML 语境），任一字面
+    `<!--` 都可能开注释吞段；guard 的 `<module>`（裸路径守卫占位）不转义会被浏览器当
+    未知内联标签吞掉（round-7 实测 `函数 <module>` 渲染丢失）。"""
+    from touchstone import render
+    f = _rf("PRA-X:a.py:1", rationale="a `<!--` in rationale opens a comment",
+            direction="dedupe quoted `<!-- touchstone-loop:` markers, keep last",
+            reasoning="body quotes `<!-- touchstone-checklist:` and its `-->` terminator "
+                      + "evidence " * 40)
+    f["done_criteria"] = {"kind": "review", "spec": {"question": "does `<!--` still open a comment?"}}
+    c = cl.from_findings([f])
+    c["items"][0]["note"] = "ack note quoting `<!--`"
+    c["items"][0]["guard"] = "函数 <module>：无守卫（裸路径）"
+    md = render.render_findings_checklist([f], c)
+    assert "<!--" not in md and "-->" not in md              # 整段无原始注释定界符
+    assert "&lt;!--" in md                                   # 中性实体仍在（渲染回原字符）
+    assert "函数 &lt;module&gt;：无守卫" in md               # guard 占位符字面可见
+    assert "需人工复核：does `&lt;!--` still open" in md     # 复核问题同样中性化
