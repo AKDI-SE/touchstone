@@ -116,7 +116,9 @@ def main():
         _banner = C._engine_banner(out.get("engine_status", "ok"))
         if _banner:
             print(_banner)
-        dec, reason, new_state = C.loop.loop_step(findings, rule_index, C.loop.LoopState())
+        dec, reason, new_state = C.loop.loop_step(
+            findings, rule_index, C.loop.LoopState(),
+            engine_failed=out.get("engine_status", "ok") in C.loop.INFRA_FAILURE_STATUSES)
 
         print("\n=== 结果 ===")
         print(f"风险等级={risk['risk_band']}  人={risk['human_action']}  "

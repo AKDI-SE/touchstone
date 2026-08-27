@@ -243,3 +243,37 @@ def test_loop_withholds_convergence_when_review_unreliable(rule_index):
     dec_ok, _, _ = _lp.loop_step([], rule_index, _lp.LoopState(),
                                  ci_passed=True, review_reliable=True)
     assert dec_ok == "converged"
+
+
+# ============================================================================
+# 端到端：引擎故障（llm_failed 等）→ engine_failed → 轮次不消耗
+# 锁 orchestrator 的接线表达式：engine_status in loop.INFRA_FAILURE_STATUSES
+# （PR #183 实录：4 轮 llm_failed 白烧 4 轮预算——故障不该由作者买单）。
+# ============================================================================
+@pytest.mark.parametrize("fault_rc,fault_out,expected_status", [
+    ("timeout", None, "llm_failed"),                          # 子进程超时 → LLM 调用失败
+    (2, "", "no_engine"),                                     # 适配器自身崩
+])
+def test_e2e_engine_failure_does_not_burn_round(monkeypatch, rule_index,
+                                                fault_rc, fault_out, expected_status):
+    """review_pr 降级出引擎级故障状态 → 按 orchestrator 同款接线判 engine_failed →
+    loop_step 本轮 round 冻结、不追 history、continue（待端点恢复复核）。"""
+    from touchstone import loop as _loop_mod
+
+    def fake_run(*a, **k):
+        if fault_rc == "timeout":
+            raise _sp.TimeoutExpired(cmd="pr-agent", timeout=1)
+        return _Proc(fault_rc, out=fault_out, err="")
+
+    monkeypatch.setattr(RP.subprocess, "run", fake_run)
+    pr = _pr([("src/Main.java", ["public class Main { int x; }"], True)])
+    out = orc.review_pr(pr, {}, _standards())
+    assert out["engine_status"] == expected_status
+    # 与 orchestrator.post_results 完全相同的接线表达式（防只改 loop 忘接线的半截修复）
+    engine_failed = out["engine_status"] in _loop_mod.INFRA_FAILURE_STATUSES
+    assert engine_failed is True
+    st = _loop_mod.LoopState(round=4, history=[["OE-001:f:1"]])
+    dec, reason, ns = _loop_mod.loop_step(out["findings"], rule_index, st,
+                                          engine_failed=engine_failed)
+    assert dec == "continue" and "不计入轮次" in reason
+    assert ns.round == 4 and ns.history == [["OE-001:f:1"]]
