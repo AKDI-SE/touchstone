@@ -1218,31 +1218,36 @@ def test_loop_waived_claims_escalate_exactly_at_max_rounds(rule_index):
 
 
 def test_reference_includes_ack_skill_pointer(monkeypatch):
-    """评审评论是提交代码的 agent 的必经触点——「如何申报销项」折叠内给 skill 指针
-    （可安装为 skill / 直接参考）。URL 由 GITHUB_REPOSITORY/BASE_REF 拼（各部署指向
-    自己正本）；本地无 env → 相对路径提示；skills/ 未随部署拷贝（file-gate）→ 不提示
-    （不产 404 链接）。"""
+    """评审评论是提交代码的 agent 的必经触点——「如何申报销项」折叠内给 skill 指针，
+    **离线优先**：仓内本地路径恒在（agent 手上必有本地克隆，不依赖 GitHub 网络），
+    URL 仅在线时附加（GITHUB_REPOSITORY/BASE_REF 拼，各部署指自己正本）；
+    末行内联时序要点（无文件无网络也可从评论拿到最易错规则）。
+    file-gate：skills/ 未随部署拷贝 → 不提示（不出 404 链接/不存在的本地路径）。"""
     from touchstone import render
+    local = "skills/touchstone-ack/SKILL.md"
+    url = "https://github.com/AKDI-SE/touchstone/blob/main/skills/touchstone-ack/SKILL.md"
+    # 在线（CI）：本地路径在前 + URL 备选 + 时序要点
     monkeypatch.setenv("GITHUB_REPOSITORY", "AKDI-SE/touchstone")
     monkeypatch.setenv("GITHUB_BASE_REF", "main")
     md = render.render_reference(has_checklist_items=True)
-    url = "https://github.com/AKDI-SE/touchstone/blob/main/skills/touchstone-ack/SKILL.md"
-    assert url in md and "可安装为 skill" in md
+    assert md.index(local) < md.index(url)          # 离线优先：本地路径在前
+    assert "可安装为 skill" in md
+    assert "推送后补 ack 本轮不计" in md and "空提交" in md   # 内联时序要点（SKILL §4 同源）
     # BASE_REF 缺省（push 事件等）→ main 兜底
     monkeypatch.delenv("GITHUB_BASE_REF")
     assert "blob/main/skills/touchstone-ack/SKILL.md" in render.render_reference(has_checklist_items=True)
-    # 本地 dry-run（无 GITHUB_REPOSITORY）→ 退化为仓内相对路径提示，仍提醒
+    # 离线（无 GITHUB_REPOSITORY，如本地 dry-run / 无网 agent）：本地路径仍在、无 URL 也自足
     monkeypatch.delenv("GITHUB_REPOSITORY")
     md2 = render.render_reference(has_checklist_items=True)
-    assert "skills/touchstone-ack/SKILL.md" in md2 and "https://" not in md2
+    assert local in md2 and "https://" not in md2 and "推送后补 ack" in md2
     # #168 HTML block 约束：details 内不得出现空行（换行拼接、无空行）
     blk = md.split("<details><summary>如何申报销项</summary>")[1].split("</details>")[0]
     assert "\n\n" not in blk
-    # file-gate：skill 不在（拷贝部署不带 skills/）→ 无指针、无 URL（不出 404 链接）
+    # file-gate：skill 不在（拷贝部署不带 skills/）→ 无指针、无 URL、无时序行
     monkeypatch.setenv("GITHUB_REPOSITORY", "AKDI-SE/touchstone")
     monkeypatch.setattr(render.os.path, "exists", lambda p: False)
     md3 = render.render_reference(has_checklist_items=True)
-    assert "如何申报销项" in md3 and "skills/touchstone-ack" not in md3
+    assert "如何申报销项" in md3 and "skills/touchstone-ack" not in md3 and "推送后补" not in md3
     # 既有行为不回归：空清单仍不出申报指引
     monkeypatch.undo()
     assert "如何申报销项" not in render.render_reference(has_checklist_items=False)

@@ -54,3 +54,25 @@ def test_skill_inline_comments_not_counted_is_stated():
     """核心事实（PR 级评论计数、行内线程不计数）必须出现在文档开头。"""
     head = _skill_text()[:1500]
     assert "行内" in head and "PR 级评论" in head
+
+
+def test_pr_template_names_the_two_reads():
+    """PR 模板（创建时触点）防漂移：必须点名「两读」——.touchstone/pr.yaml 必填三件
+    （intent/acceptance_criteria/scope，与 pr.yaml 头声明同源）与 CLAUDE.md（写代码规矩），
+    并指向销项 skill。agent/人在开 PR 的编辑器里读到原始 body 即被提醒。"""
+    import os
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    tpl = open(os.path.join(root, ".github", "PULL_REQUEST_TEMPLATE.md"), encoding="utf-8").read()
+    for key in (".touchstone/pr.yaml", "intent", "acceptance_criteria", "scope",
+                "CLAUDE.md", "skills/touchstone-ack/SKILL.md", "SCOPE-001"):
+        assert key in tpl, f"PR 模板缺关键提醒：{key}"
+
+
+def test_contract_findings_point_to_pr_yaml():
+    """契约发现（违规时触点）统一带正本指针：agent 收到 SCOPE/TEST/DUP 类发现时
+    知道修的方向在 .touchstone/pr.yaml（scope/tests_added/reused_components）。"""
+    from touchstone import contract_check as cc
+    ri = {"SCOPE-001": {"severity": "warn"}}
+    (f,) = cc.check_scope(["src/x.py"], ["docs/**"], ri)
+    assert "改动文件不在提交契约声明的 scope 内" in f["rationale"]
+    assert f["fix_direction"].endswith("（契约正本 .touchstone/pr.yaml）")

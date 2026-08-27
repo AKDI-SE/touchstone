@@ -354,22 +354,24 @@ def render_findings_checklist(findings, checklist, review_reliable=True):
 def _ack_skill_ref():
     """给【提交代码的 agent】的销项规程指针（评审评论必经之地 = 最可靠的提醒触点）。
 
-    - 只在 skill 随评审代码同仓存在时提示（file-gate：拷贝部署不带 skills/ 的仓库不出
-      404 链接）；URL 由运行环境拼（GITHUB_REPOSITORY/BASE_REF）——AKDI-SE 与 CPAT fork
-      各自指向自己的正本，不写死仓址。
-    - 无 GITHUB_REPOSITORY（本地 dry-run）→ 退化为仓内相对路径提示。
-    """
+    离线优先：提交代码的 agent 手上必有本地克隆——**仓内路径放前**（本地文件即可读，
+    不依赖 GitHub 网络）；URL 仅作在线备选（由 GITHUB_REPOSITORY/BASE_REF 拼，AKDI-SE
+    与 CPAT fork 各指自己正本，不写死仓址）。file-gate：skill 不随代码同仓存在（拷贝
+    部署未带 skills/）→ 整段不提示（不出 404 链接、不出不存在的本地路径）。
+    末行内联时序要点：无文件无网络的 agent 也能从评论本身拿到最易错的规则
+    （与 SKILL.md §4 同源，改时序须两处同步）。"""
     here = os.path.dirname(os.path.abspath(__file__))
     if not os.path.exists(os.path.join(here, os.pardir, "skills", "touchstone-ack", "SKILL.md")):
         return ""
+    ref = ("Agent 销项完整规程（可安装为 skill 或直接参考）：仓内 "
+           "<code>skills/touchstone-ack/SKILL.md</code>")
     repo = (os.environ.get("GITHUB_REPOSITORY") or "").strip()
-    if not repo:
-        return ("Agent 销项完整规程：仓内 <code>skills/touchstone-ack/SKILL.md</code>"
-                "（可安装为 skill 或直接参考——含时序、waived 反证质量线、轮询坑）。")
-    br = (os.environ.get("GITHUB_BASE_REF") or "").strip() or "main"
-    return (f"Agent 销项完整规程（可安装为 skill 或直接参考）："
-            f"https://github.com/{repo}/blob/{br}/skills/touchstone-ack/SKILL.md"
-            " ——含申报时序、waived 反证质量线、轮询与合并坑。")
+    if repo:
+        br = (os.environ.get("GITHUB_BASE_REF") or "").strip() or "main"
+        ref += f"；在线正本 https://github.com/{repo}/blob/{br}/skills/touchstone-ack/SKILL.md"
+    return (ref + "\n"
+            "时序要点：改码 → 提交 → 发 ack 评论 → 推送（推送后补 ack 本轮不计；"
+            "纯 ack 轮用空提交承载）。")
 
 
 def render_reference(verification_blocks=None, has_checklist_items=False):
