@@ -307,6 +307,20 @@ _REVIEW_BRAND = "## Touchstone · AI Committer 代码检视"
 _MARKER_RE = re.compile(r"<!-- touchstone-(?:loop|checklist|result):[^\n]*?-->")
 
 
+def _marker_payload_ok(marker):
+    """整条 marker 的 payload 必须是合法 JSON（round-5 评审）：历史裸 dumps 评论的
+    marker 含字面 '-->' 时，findall 截在 payload 内首个 '-->' 上——残片外置等于
+    固化坏 marker，完整原文随转义进 <pre> 再无人可解析（round 归零风险）。"""
+    m = re.match(r"^<!-- touchstone-(?:loop|checklist|result):\s*(.*?)\s*-->$", marker, re.DOTALL)
+    if not m:
+        return False
+    try:
+        json.loads(m.group(1))
+        return True
+    except (ValueError, TypeError):
+        return False
+
+
 def _collapse_status_line(orig):
     """折叠摘要取状态行：品牌 H2 之后、**头部区内**的第一条 blockquote（v2 版面结构：
     ①标题+状态行 ②告警——告警也是 "> " 开头，如降级轮的 [!CAUTION]；头部区止于首个
@@ -338,6 +352,9 @@ def _collapse_review_body(orig):
     """
     status = _collapse_status_line(orig)
     markers = _MARKER_RE.findall(orig)
+    if any(not _marker_payload_ok(mk) for mk in markers):
+        return None                    # 有损坏 marker（历史裸 dumps 截断）——折叠会固化
+                                       # 坏 marker，放弃折叠、整条评论保持原样
     stripped = _MARKER_RE.sub("", orig)
     folded = re.sub(r"\n\s*\n+", "\n", stripped.strip())
     out = (f"{_COLLAPSED_SENTINEL}\n"
@@ -383,9 +400,14 @@ def _collapse_stale_reviews(owner, repo, token, stale):
                   file=sys.stderr)
         return
     for c in stale:
+        folded = _collapse_review_body(c.get("body", "") or "")
+        if folded is None:
+            print(f"[info] 历史评论含损坏 marker，跳过折叠保持原样(id={c.get('id')})",
+                  file=sys.stderr)
+            continue
         try:
             gh("PATCH", f"/repos/{owner}/{repo}/issues/comments/{c['id']}", token,
-               {"body": _collapse_review_body(c.get("body", "") or "")})
+               {"body": folded})
         except requests.exceptions.RequestException as e:
             print(f"[warn] 历史评论折叠失败(id={c.get('id')})，保持原样: {e}", file=sys.stderr)
 
