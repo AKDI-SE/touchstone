@@ -308,16 +308,20 @@ _MARKER_RE = re.compile(r"<!-- touchstone-(?:loop|checklist|result):[^\n]*?-->")
 
 
 def _collapse_status_line(orig):
-    """折叠摘要取状态行：品牌 H2 之后的**第一条** blockquote（v2 版面结构：①标题+状态行
-    ②告警——告警也是 "> " 开头，如降级轮的 [!CAUTION]）。取「全文第一条 > 」在模板演化
-    或正文含前置引用时会拿错（round-1 评审）；锚定 H2 之后才是结构正确的取法。"""
+    """折叠摘要取状态行：品牌 H2 之后、**头部区内**的第一条 blockquote（v2 版面结构：
+    ①标题+状态行 ②告警——告警也是 "> " 开头，如降级轮的 [!CAUTION]；头部区止于首个
+    小节标题 ###）。取「全文第一条 > 」在模板演化或正文含前置引用时会拿错（round-1）；
+    H2 后无界扫描会在头部缺状态行（旧模板/降级轮）时抓到正文深处的引用片段冒充摘要
+    （round-4）——界到 ###，头部没有就用占位，绝不深挖正文。"""
     lines = orig.split("\n")
     for i, ln in enumerate(lines):
         if ln.startswith(_REVIEW_BRAND):
             for l2 in lines[i + 1:]:
+                if l2.startswith("###"):       # 头部区止于首个小节标题
+                    break
                 if l2.startswith("> "):
                     return l2
-            break
+            return "> Touchstone 历史轮次"     # 头部无状态行 → 占位（不冒充、不深挖）
     # 兜底（无品牌 H2 的异常输入）：全文第一条 blockquote；再无则占位
     return next((ln for ln in lines if ln.startswith("> ")), "> Touchstone 历史轮次")
 

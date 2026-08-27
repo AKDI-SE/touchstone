@@ -1290,3 +1290,24 @@ def test_collapse_summary_keeps_nested_quote_marker():
     assert summary.endswith("· > 嵌套引用的结论行")    # 内层 '>' 保留（旧 lstrip 会吃掉）
     # 状态行本身以 "> >" 开头时 _collapse_status_line 仍能选中它（startswith "> "）
     assert "> 嵌套引用的结论行" in summary
+
+
+def test_collapse_status_bounded_to_header():
+    """round-4 回归（orchestrator:310）：头部缺状态行（旧模板/降级轮）时，无界扫描
+    会抓正文深处首个 '> '（LLM 引用片段/深层告警）冒充摘要。界到首个 ### 小节标题，
+    头部没有状态行就用占位——绝不深挖正文。"""
+    from touchstone import orchestrator as orc
+    orig = ("## Touchstone · AI Committer 代码检视\n\n"
+            "### 评审发现与销项（共 1 条）\n\n"
+            "> 深处正文里的引用片段，不该被当成状态行\n\n"
+            '<!-- touchstone-loop: {"round": 2, "history": []} -->')
+    summary = orc._collapse_review_body(orig).split("\n")[1]
+    assert summary.endswith("Touchstone 历史轮次")           # 占位
+    assert "深处正文" not in summary                          # 不冒充（原文仍在 <pre>）
+    # 头部区内（### 之前）的状态行照常命中——界不误伤
+    orig2 = ("## Touchstone · AI Committer 代码检视\n\n"
+             "> 🔁 继续 · 第 5 轮 · 销项率 80%\n\n"
+             "### 评审发现与销项\n\n"
+             "> 深处正文里的引用片段\n")
+    summary2 = orc._collapse_review_body(orig2).split("\n")[1]
+    assert "第 5 轮" in summary2 and "深处正文" not in summary2
