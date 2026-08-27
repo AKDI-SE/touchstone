@@ -92,7 +92,7 @@ def main():
     # fork PR：head_sha 来自 fork 的 head repo，须从 head repo fetch（base repo 取不到该
     # commit）。非 fork PR head_repo == args.repo，行为不变；fork 仓已删（full_name=None）
     # 时回退 base repo（fetch 失败同旧行为，不更糟）。
-    head_repo = (pr.get("head") or {}).get("repo", {}).get("full_name") or args.repo
+    head_repo = ((pr.get("head") or {}).get("repo") or {}).get("full_name") or args.repo
     print(f"[run] PR #{args.pr} {pr.get('title','')}  head={head_sha[:9] if head_sha else '?'}  "
           f"模式={'POST' if args.post else 'DRY-RUN'}")
 

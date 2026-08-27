@@ -201,7 +201,8 @@ def _guard_acompletion(orig_acompletion, extra_body=None):
     async def _guarded(*args, **kwargs):
         kwargs.setdefault("max_retries", 0)
         if extra_body:
-            existing = dict(kwargs.get("extra_body") or {})
+            _eb = kwargs.get("extra_body")
+            existing = dict(_eb) if isinstance(_eb, dict) else {}
             for k, v in extra_body.items():
                 existing.setdefault(k, v)
             kwargs["extra_body"] = existing

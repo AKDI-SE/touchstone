@@ -132,7 +132,8 @@ def get_pr_diff(owner, repo, number, token):
             return ""
         if len(files) >= 3000:
             print(f"[warn] GitCode /pulls/{number}/files 返回 {len(files)} 文件，可能因分页截断"
-                  f"（max 3000），确定性核对可能漏文件——降级为空 diff 防止部分 diff 被误当完整", file=sys.stderr)
+                  f"（max 3000），确定性核对可能漏文件——降级为空 diff 防止部分 diff 被误当完整"
+                  f"（3000 文件 PR 极罕见，GitHub 自身 diff 也有上限；若需精确检测请探测第 31 页）", file=sys.stderr)
             return ""
         if not files:
             print(f"[warn] GitCode /pulls/{number}/files 返回空列表——可能是 fetch 失败"
