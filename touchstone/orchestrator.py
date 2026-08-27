@@ -321,6 +321,24 @@ def _marker_payload_ok(marker):
         return False
 
 
+def _repair_marker(orig, pos):
+    """从原文 pos 起修复损坏 marker：raw_decode 从首个 '{' 取完整 JSON（字符串内的
+    '-->' 不干扰——checklist.parse_latest 同技），重新序列化 + html_comment_safe_json
+    转义。修复不了（真不是 JSON）返回 None——调用方放弃折叠该评论。"""
+    name = re.match(r"<!-- touchstone-(loop|checklist|result):", orig[pos:])
+    if not name:
+        return None
+    i = orig.find("{", pos)
+    if i < 0:
+        return None
+    try:
+        obj, _ = json.JSONDecoder().raw_decode(orig[i:])
+    except ValueError:
+        return None
+    return (f"<!-- touchstone-{name.group(1)}: "
+            + checklist_mod.html_comment_safe_json(obj) + " -->")
+
+
 def _collapse_status_line(orig):
     """折叠摘要取状态行：品牌 H2 之后、**头部区内**的第一条 blockquote（v2 版面结构：
     ①标题+状态行 ②告警——告警也是 "> " 开头，如降级轮的 [!CAUTION]；头部区止于首个
@@ -351,10 +369,16 @@ def _collapse_review_body(orig):
       PR 评论重建轮次预算都依赖它们。
     """
     status = _collapse_status_line(orig)
-    markers = _MARKER_RE.findall(orig)
-    if any(not _marker_payload_ok(mk) for mk in markers):
-        return None                    # 有损坏 marker（历史裸 dumps 截断）——折叠会固化
-                                       # 坏 marker，放弃折叠、整条评论保持原样
+    markers = []
+    for m in _MARKER_RE.finditer(orig):
+        frag = m.group(0)
+        if _marker_payload_ok(frag):
+            markers.append(frag)
+            continue
+        rep = _repair_marker(orig, m.start())   # 损坏（历史裸 dumps 截断）→ 从原文
+        if rep is None:                         # 完整区间修复；修不好才放弃折叠
+            return None
+        markers.append(rep)
     stripped = _MARKER_RE.sub("", orig)
     folded = re.sub(r"\n\s*\n+", "\n", stripped.strip())
     out = (f"{_COLLAPSED_SENTINEL}\n"

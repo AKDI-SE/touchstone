@@ -1343,29 +1343,42 @@ def test_markers_html_comment_safe_roundtrip():
     assert "html_comment_safe_json" in inspect.getsource(orc.post_results)
 
 
-def test_collapse_skips_comment_with_broken_marker():
-    """round-5 回归：历史裸 dumps 评论的 marker 含字面 '-->'——findall 截在 payload
-    内首个 '-->' 上，残片外置=固化坏 marker（原文随转义进 <pre> 无人可解析，round
-    归零风险）。任一 marker 损坏 → 放弃折叠该评论，整条保持原样。"""
-    from touchstone import orchestrator as orc
-    # 模拟 round≤5 的真实评论：checklist reasoning 引用字面 `-->`（裸 dumps 未转义）
+def test_collapse_repairs_broken_marker():
+    """round-5 回归（升级为修复语义）：历史裸 dumps 评论的 marker 含字面 '-->'——
+    findall 截在 payload 内首个 '-->' 上。折叠时从原文完整区间 raw_decode 修复 +
+    重新安全化序列化：旧乱文评论可折叠、marker 痊愈可解析（而非固化残片/放弃折叠）。"""
+    from touchstone import orchestrator as orc, checklist as cl
     broken = ("## Touchstone · AI Committer 代码检视\n\n> 第 3 轮\n\n"
               '<!-- touchstone-checklist: {"round": 3, "items": [{"sig": "PRA-X:a.py:1", '
               '"reasoning": "match up to the literal `-->` instead.", "status": "open"}]} -->')
-    assert orc._collapse_review_body(broken) is None      # 不折叠（放弃，非固化残片）
+    folded = orc._collapse_review_body(broken)
+    assert folded is not None                              # 修复成功 → 照常折叠
+    back = cl.parse_latest([folded])
+    assert back["round"] == 3 and back["items"][0]["sig"] == "PRA-X:a.py:1"
+    assert "`-->`" in back["items"][0]["reasoning"]        # reasoning 原文完整复原
+    assert "--\\u003e" in folded                          # 外置 marker 已安全化
+    assert folded.count("<!-- touchstone-checklist:") == 1  # 修复版恰一条（残片未重复外置）
+
+
+def test_collapse_skips_unrepairable_marker():
+    """修复兜底：marker payload 真不是 JSON（连 raw_decode 都失败）→ 放弃折叠该评论，
+    整条保持原样（绝不固化残片）。"""
+    from touchstone import orchestrator as orc
+    junk = ("## Touchstone · AI Committer 代码检视\n\n> 第 1 轮\n\n"
+            "<!-- touchstone-loop: not-json-at-all -->")
+    assert orc._collapse_review_body(junk) is None
     good = ("## Touchstone · AI Committer 代码检视\n\n> 第 2 轮\n\n"
             '<!-- touchstone-loop: {"round": 2, "history": []} -->')
-    assert orc._collapse_review_body(good) is not None    # 好评论照常折叠
-    # PATCH 层：坏 marker 评论被跳过、好评论照常就地编辑
+    assert orc._collapse_review_body(good) is not None
     import touchstone.orchestrator as O
+    import unittest.mock as um
     patched = []
 
     def fake_gh(method, path, token, data=None, **k):
         if method == "PATCH":
             patched.append(path)
 
-    import unittest.mock as um
     with um.patch.object(O, "gh", fake_gh):
-        O._collapse_stale_reviews("o", "r", "t", [{"id": 31, "body": broken},
-                                                 {"id": 32, "body": good}])
-    assert patched and patched[0].endswith("/issues/comments/32")   # 只折叠好评论
+        O._collapse_stale_reviews("o", "r", "t", [{"id": 41, "body": junk},
+                                                 {"id": 42, "body": good}])
+    assert patched and patched[0].endswith("/issues/comments/42")   # 只折叠好评论
