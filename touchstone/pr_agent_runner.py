@@ -323,7 +323,7 @@ def run(pr_url, mode, extra_instructions=None):
     # 取不到 GitCode PR（provider_failed）。经 TOUCHSTONE_GITHUB_BASE_URL 指向 GitCode API
     # （如 https://api.gitcode.com/api/v5）；未设=沿用 api.github.com（GitHub/GHE 不受影响）。
     _gc_base = os.environ.get("TOUCHSTONE_GITHUB_BASE_URL")
-    if _gc_base:
+    if _gc_base and "gitcode" in _gc_base.lower():
         try:
             s.github.base_url = _gc_base.rstrip("/")
             _ix(f"git provider base_url={_gc_base.rstrip('/')}")

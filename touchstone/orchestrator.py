@@ -59,6 +59,12 @@ def load_yaml(path, default=None):
         return yaml.safe_load(f)
 
 
+def _api_base():
+    """统一的 GitCode/GitHub API base URL（get_pr_diff 与 escalate label 共用同一优先级）。"""
+    return (os.environ.get("TOUCHSTONE_GITHUB_BASE_URL")
+            or os.environ.get("GITHUB_API_URL", "https://api.github.com")).rstrip("/")
+
+
 def _is_gitcode():
     """检测 API 端点是否 GitCode（Gitea 兼容）。优先看显式 TOUCHSTONE_PLATFORM=gitcode；
     否则子串匹配 GITHUB_API_URL 或 TOUCHSTONE_GITHUB_BASE_URL 含 "gitcode"。
@@ -117,8 +123,8 @@ def get_pr_diff(owner, repo, number, token):
     files 端点是分页的——必须 paginate 取全量（per_page=100 × 30 页 = 3000 文件，
     对齐 GitHub 自身 diff 上限），否则超过一页的文件会静默漏出确定性核对。"""
     if _is_gitcode():
-        _api_base = os.environ.get("GITHUB_API_URL") or os.environ.get("TOUCHSTONE_GITHUB_BASE_URL", "https://api.github.com")
-        url = _api_base.rstrip("/") + f"/repos/{owner}/{repo}/pulls/{number}/files"
+        _api_base_url = _api_base()
+        url = _api_base_url + f"/repos/{owner}/{repo}/pulls/{number}/files"
         files = ghclient.paginate(url, token, per_page=100, max_pages=30)
         if not isinstance(files, list):
             print(f"[warn] GitCode /pulls/{number}/files 返回非预期类型 {type(files).__name__}，"
@@ -126,7 +132,8 @@ def get_pr_diff(owner, repo, number, token):
             return ""
         if len(files) >= 3000:
             print(f"[warn] GitCode /pulls/{number}/files 返回 {len(files)} 文件，可能因分页截断"
-                  f"（max 3000），确定性核对可能漏文件", file=sys.stderr)
+                  f"（max 3000），确定性核对可能漏文件——降级为空 diff 防止部分 diff 被误当完整", file=sys.stderr)
+            return ""
         if not files:
             print(f"[warn] GitCode /pulls/{number}/files 返回空列表——可能是 fetch 失败"
                   f"（auth/404/限流）或确实无文件变更", file=sys.stderr)
@@ -809,8 +816,7 @@ def main():
                     elif isinstance(l, str) and l:
                         _existing.append(l)
                 _new_labels = list(dict.fromkeys(_existing + ["touchstone:needs-human"]))
-                _base = os.environ.get("TOUCHSTONE_GITHUB_BASE_URL") or os.environ.get("GITHUB_API_URL", "https://api.github.com")
-                _patch_url = _base.rstrip("/") + f"/repos/{owner}/{repo}/pulls/{number}"
+                _patch_url = _api_base() + f"/repos/{owner}/{repo}/pulls/{number}"
                 _resp = requests.patch(_patch_url, headers={"Authorization": "Bearer " + token,
                                        "Accept": "application/json", "Content-Type": "application/json"},
                                        json={"labels": _new_labels}, timeout=30)
