@@ -1311,3 +1311,33 @@ def test_collapse_status_bounded_to_header():
              "> 深处正文里的引用片段\n")
     summary2 = orc._collapse_review_body(orig2).split("\n")[1]
     assert "第 5 轮" in summary2 and "深处正文" not in summary2
+
+
+def test_markers_html_comment_safe_roundtrip():
+    """round-5 实录回归（PR #191 评论区乱文根因）：marker payload 含字面 '-->' 时
+    GitHub 提前终止 HTML 注释——余下 JSON 裸露成可见乱文。发射侧统一转义 '-->' 为
+    '--\\u003e'（json.loads 解回 '>'，round-trip 无损）；三个 marker 源都走
+    checklist.html_comment_safe_json。"""
+    from touchstone import checklist as cl, loop as lp, orchestrator as orc
+    # checklist：reasoning 引用字面 -->（LLM 转述正则终止符的实录场景）
+    cl_obj = {"round": 3, "items": [
+        {"sig": "PRA-X:a.py:1", "direction": "match up to the literal `-->` terminator",
+         "reasoning": "non-greedy to `-->`; also `->` and `>=` appear", "status": "open"}],
+        "resolved_rate": 0.0}
+    m = cl.render_marker(cl_obj)
+    assert m.count("-->") == 1 and m.rstrip().endswith("-->")   # 唯一 '-->' 是真正收尾
+    assert "--\\u003e" in m                                     # payload 内已转义
+    back = cl.parse_latest([m])
+    assert back["items"][0]["reasoning"].count("-->") == 1      # 解析复原原文
+    assert back["items"][0]["direction"].endswith("terminator")
+    # loop：history 含 --> 的签名同 round-trip
+    lm = lp.render_marker(lp.LoopState(2, [["sig with --> inside"]], True))
+    assert lm.count("-->") == 1
+    assert lp.parse_latest_state([lm]).history == [["sig with --> inside"]]
+    # 折叠抽取：安全化 marker 仍整条原样外置、可解析
+    folded = orc._collapse_review_body("## Touchstone · AI Committer 代码检视\n\n> 第 3 轮\n" + m)
+    assert m in folded                                  # 折叠抽取：整条原样外置
+    assert cl.parse_latest([folded])["round"] == 3      # 折叠后仍可解析
+    # orchestrator result marker 源已接 helper（防回退到裸 json.dumps 的漂移哨兵）
+    import inspect
+    assert "html_comment_safe_json" in inspect.getsource(orc.post_results)

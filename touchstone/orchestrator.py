@@ -471,7 +471,7 @@ def post_results(owner, repo, number, head_sha, token, risk, findings, loop_info
                          review_reliable=review_reliable, engine_status=engine_status,
                          ai_raw_count=ai_raw_count, added_lines=added_lines, engine_detail=engine_detail)
     # 机读 result marker（隐藏）——校准/自治经验从 API 重建数据的入口
-    result_marker = "<!-- touchstone-result: " + json.dumps({
+    result_marker = "<!-- touchstone-result: " + checklist_mod.html_comment_safe_json({
         "risk_band": risk["risk_band"],
         "verification_decision": risk["verification_decision"],
         "change_class": change_class,
@@ -483,7 +483,7 @@ def post_results(owner, repo, number, head_sha, token, risk, findings, loop_info
         "findings": [{"rule_id": f.get("rule_id"), "agent": f.get("agent"),
                       "severity": f.get("severity")} for f in findings],
         "unverified_claims": unverified_claims,
-    }, ensure_ascii=False) + " -->"
+    }) + " -->"
     body = body + "\n\n" + result_marker
     posted = False
     try:

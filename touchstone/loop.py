@@ -223,8 +223,9 @@ def loop_step(findings, rule_index, state, max_rounds=MAX_ROUNDS, ci_passed=None
 
 # --- 状态持久化（PR 评论隐藏 marker）----------------------------------------
 def render_marker(state):
-    payload = json.dumps({"round": state.round, "history": state.history,
-                          "last_verdict": state.last_verdict}, ensure_ascii=False)
+    payload = _checklist.html_comment_safe_json(          # '-->' 转义：防 HTML 注释提前终止
+        {"round": state.round, "history": state.history,
+         "last_verdict": state.last_verdict})
     return f"{_OPEN} {payload} {_CLOSE}"
 
 
