@@ -3286,7 +3286,7 @@ def test_main_bootstrap_reseeds_taxonomy_after_bootstrap(tmp_path, monkeypatch):
     monkeypatch.setenv("TOUCHSTONE_BOOTSTRAP_SEED", "true")
     monkeypatch.delenv("TOUCHSTONE_DISTILLER", raising=False)
     monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path / "gh.txt"))
-    report = L.main(["--store", str(store_path), "--calib-agg", str(tmp_path / "agg.json")])
+    L.main(["--store", str(store_path), "--calib-agg", str(tmp_path / "agg.json")])
     store = json.load(open(store_path, encoding="utf-8"))
     # 同 id 候选走 merge 的 update 分支（补证据、不降级 active）：若 taxonomy 未重解析，
     # PRA-NEWTYPE 不在快照 → 候选被 fail-closed 丢弃，evidence 停留在 seed 的 {"seeded": True}。
