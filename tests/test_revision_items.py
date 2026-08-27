@@ -1215,3 +1215,123 @@ def test_loop_waived_claims_escalate_exactly_at_max_rounds(rule_index):
         [], rule_index, loop.LoopState(round=mr - 2),
         max_rounds=mr, checklist_pair=(prev, cur))
     assert dec_before == "continue", "未耗尽(nr==max_rounds-1)时应 continue 点名待核准项"
+
+
+
+
+# ============================================================================
+# 历史轮次评论折叠（视觉降噪）：新评论落地后，旧评审评论编辑为折叠体；
+# 原文进 <pre> 转义、marker 原样外置保持可解析（loop 状态/lineage 台账依赖）。
+# ============================================================================
+def _mk_bot_comment(cid, body, login="github-actions[bot]"):
+    return {"id": cid, "body": body, "user": {"login": login}}
+
+
+def test_collapse_review_body_structure():
+    """折叠体：哨兵 + 状态行摘要 + <details><pre> 转义原文 + marker 原样外置；
+    全程无空行（#168 HTML block 约束）。"""
+    from touchstone import orchestrator as orc
+    orig = ("## Touchstone · AI Committer 代码检视\n\n"
+            "> 🔁 继续 · 第 3 轮 · 销项率 40% · 风险等级：中\n\n"
+            "### 评审发现与销项（共 2 条）\n\n- [ ] X\n\n"
+            '<!-- touchstone-loop: {"round": 3, "history": [[]]} -->')
+    folded = orc._collapse_review_body(orig)
+    assert folded.startswith(orc._COLLAPSED_SENTINEL)
+    assert "第 3 轮" in folded and "销项率 40%" in folded        # 状态行摘要外置可见
+    assert "<details><summary>展开本轮完整评审原文</summary>" in folded
+    assert "&lt;签名&gt;" not in folded or True                  # 原文里无签名则无转义体
+    assert '<!-- touchstone-loop: {"round": 3' in folded         # marker 原样外置（未转义）
+    assert "&lt;!-- touchstone-loop" not in folded                # 正文里的 marker 已剥离
+    assert "\n\n" not in folded                                   # 无空行
+    assert folded.rstrip().endswith("-->")                        # marker 在末尾
+
+
+def test_collapse_keeps_marker_parseable_across_rounds():
+    """端到端语义：折叠后的旧轮 + 未折叠的新轮 → parse_latest_state 取到新轮状态；
+    若旧的也被折叠（marker 外置保留），同轮并列时新评论后置仍胜出。"""
+    from touchstone import orchestrator as orc, loop as _lp
+    old_body = ("## Touchstone · AI Committer 代码检视\n\n> 🔁 继续 · 第 4 轮\n\n"
+                '<!-- touchstone-loop: {"round": 4, "history": [["a"]], "last_verdict": true} -->')
+    folded = orc._collapse_review_body(old_body)
+    new_body = ('## Touchstone · AI Committer 代码检视\n\n> 🔁 继续 · 第 5 轮\n\n'
+                '<!-- touchstone-loop: {"round": 5, "history": [["b"]], "last_verdict": false} -->')
+    st = _lp.parse_latest_state([folded, new_body])
+    assert st.round == 5 and st.history == [["b"]] and st.last_verdict is False
+
+
+def test_stale_review_comments_filter():
+    """过滤：只折叠受信 bot 的评审报告（品牌 H2）；已折叠的/人的/无品牌的跳过。"""
+    from touchstone import orchestrator as orc
+    review = "## Touchstone · AI Committer 代码检视\n\n> x\n<!-- touchstone-loop: {} -->"
+    cs = [
+        _mk_bot_comment(1, review),                                  # 待折叠
+        _mk_bot_comment(2, orc._collapse_review_body(review)),       # 已折叠 → 跳过
+        _mk_bot_comment(3, "普通 bot 评论无品牌"),                    # 非评审报告 → 跳过
+        {"id": 4, "body": review, "user": {"login": "author1"}},     # 人发 → 跳过
+        _mk_bot_comment(None, review),                               # 无 id 不可 PATCH → 跳过
+    ]
+    stale = orc._stale_review_comments(cs, "github-actions[bot]")
+    assert [c["id"] for c in stale] == [1]
+    # bot_login 未知 → [bot] 后缀过滤（防伪造不降级）
+    assert [c["id"] for c in orc._stale_review_comments(cs, None)] == [1]
+
+
+def test_collapse_stale_reviews_patches_and_swallows(monkeypatch, capsys):
+    """PATCH 就地编辑；单条失败只告警不阻塞。"""
+    from touchstone import orchestrator as orc
+    patched = []
+
+    def fake_gh(method, path, token, data=None, **k):
+        if method == "PATCH":
+            if "boom" in path:
+                raise orc.requests.exceptions.RequestException("net down")
+            patched.append((path, data["body"]))
+
+    monkeypatch.setattr(orc, "gh", fake_gh)
+    review = "## Touchstone · AI Committer 代码检视\n\n> 第 1 轮\n<!-- touchstone-loop: {} -->"
+    orc._collapse_stale_reviews("o", "r", "t",
+                                [{"id": 11, "body": review},
+                                 {"id": "boom", "body": review}])
+    assert len(patched) == 1 and patched[0][0].endswith("/issues/comments/11")
+    assert patched[0][1].startswith(orc._COLLAPSED_SENTINEL)
+    assert "折叠失败" in capsys.readouterr().err
+
+
+def test_post_results_collapses_only_after_post_success(monkeypatch):
+    """顺序铁律（防 round 归零）：仅在新评论 POST 成功后才折叠历史。POST 失败 → 绝不折叠
+    （旧 marker 随转义不可解析，若新评论又没落地，PR 将无任何可解析 marker → 状态归零、
+    台账断链）。"""
+    from touchstone import orchestrator as orc
+    calls = {"patched": 0, "posted": False}
+
+    def fake_gh(method, path, token, data=None, **k):
+        if method == "POST" and "/issues/123/comments" in path:
+            calls["posted"] = True
+            return {}
+        if method == "PATCH":
+            calls["patched"] += 1
+
+    monkeypatch.setattr(orc, "gh", fake_gh)
+    risk = {"risk_band": "low", "human_action": "a", "verification_decision": "v",
+            "blast_radius": []}
+    stale = [{"id": 9, "body": "## Touchstone · AI Committer 代码检视\n\n> 第 1 轮\n"
+                               "<!-- touchstone-loop: {} -->",
+              "user": {"login": "github-actions[bot]"}}]
+
+    def _run():
+        orc.post_results("o", "r", 123, "sha", "t", risk, [], ("continue", "r", "<!-- m -->"),
+                         stale_comments=stale)
+
+    _run()
+    assert calls["posted"] and calls["patched"] == 1          # 成功路径：发完新评论 → 折叠旧评论
+
+    def fail_post(method, path, token, data=None, **k):
+        if method == "POST" and "/issues/123/comments" in path:
+            raise orc.requests.exceptions.RequestException("down")
+        if method == "PATCH":
+            calls["patched"] += 1
+
+    monkeypatch.setattr(orc, "gh", fail_post)
+    calls["patched"] = 0
+    _run()
+    assert calls["patched"] == 0                              # 失败路径：绝不折叠

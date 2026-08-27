@@ -12,6 +12,7 @@
 #   GITHUB_API_URL  缺省 https://api.github.com；用 GitHub Enterprise 在此改。
 # ============================================================================
 
+import html
 import json
 import os
 import time
@@ -213,6 +214,70 @@ def _render_engine_detail(engine_status, engine_detail):
             "更完整的 litellm 调用轨迹 / 真实 HTTP 错误见交互日志 artifact `pr-agent-interaction.log`。")
 
 
+# --- 历史轮次折叠（视觉降噪；原文与 marker 全保留）----------------------------
+# 动机：每轮评审各发一条全量报告评论，9 轮下来整屏重复信息。新评论发出后，把历史轮次
+# 评论【就地编辑】为折叠形态：一行摘要 + <details> 包住转义原文——数据不删（GitHub 评论
+# 编辑历史仍可查全量），屏幕只剩最新轮展开。
+# 顺序铁律：只在新评论 POST 成功后折叠。旧 marker 随正文转义后不可再解析，若新评论没发出
+# 去就折叠旧的，PR 上将无任何可解析 marker → 下一轮 round 归零、台账断链。
+_COLLAPSED_SENTINEL = "<!-- touchstone-collapsed -->"
+_REVIEW_BRAND = "## Touchstone · AI Committer 代码检视"
+_MARKER_RE = re.compile(r"<!-- touchstone-(?:loop|checklist|result):[^>]*-->")
+
+
+def _collapse_review_body(orig):
+    """单条历史评审评论 → 折叠体。
+
+    - 状态行（blockquote 首行）提到折叠体外做摘要——折叠后仍一眼可见每轮结论；
+    - 原文空行折叠 + html.escape 进 <pre>（#168 HTML block 约束：details 内不得有空行；
+      尖括号防吞；<pre> 保留换行）；
+    - 机器 marker（loop/checklist/result 的 HTML 注释）从原文抽出、**原样**附在折叠体末尾
+      ——HTML 注释不渲染（视觉零成本），但保持可解析：loop 状态派生、lineage 台账从已关
+      PR 评论重建轮次预算都依赖它们。
+    """
+    status = next((ln for ln in orig.split("\n") if ln.startswith("> ")), "Touchstone 历史轮次")
+    markers = _MARKER_RE.findall(orig)
+    stripped = _MARKER_RE.sub("", orig)
+    folded = re.sub(r"\n\s*\n+", "\n", stripped.strip())
+    out = (f"{_COLLAPSED_SENTINEL}\n"
+           f"🔁 历史评审已折叠（最新轮次见最新评论）· {status.lstrip('> ').strip()}\n"
+           "<details><summary>展开本轮完整评审原文</summary>\n"
+           f"<pre>{html.escape(folded)}</pre>\n"
+           "</details>")
+    if markers:
+        out += "\n" + "\n".join(markers)
+    return out
+
+
+def _stale_review_comments(comments, bot_login):
+    """待折叠的历史评论：受信 bot 发的【评审报告】（品牌 H2 识别），且尚未折叠过。"""
+    out = []
+    for c in comments or []:
+        login = ((c.get("user") or {}).get("login"))
+        if bot_login:
+            if login != bot_login:
+                continue
+        elif not loop._is_bot_login(login):
+            continue
+        body = c.get("body", "") or ""
+        if _REVIEW_BRAND not in body or _COLLAPSED_SENTINEL in body:
+            continue
+        if not c.get("id"):
+            continue
+        out.append(c)
+    return out
+
+
+def _collapse_stale_reviews(owner, repo, token, stale):
+    """就地编辑（PATCH）历史评论为折叠体。逐条隔离：单条失败只告警，不阻塞评审主链。"""
+    for c in stale:
+        try:
+            gh("PATCH", f"/repos/{owner}/{repo}/issues/comments/{c['id']}", token,
+               {"body": _collapse_review_body(c.get("body", "") or "")})
+        except requests.exceptions.RequestException as e:
+            print(f"[warn] 历史评论折叠失败(id={c.get('id')})，保持原样: {e}", file=sys.stderr)
+
+
 def post_results(owner, repo, number, head_sha, token, risk, findings, loop_info=None,
                  change_class=None, diff=None, injected_types=None, injected_experience_ids=None,
                  shadow_types=None, shadow_experience_ids=None,
@@ -220,7 +285,7 @@ def post_results(owner, repo, number, head_sha, token, risk, findings, loop_info
                  scope_facts=None, checklist=None, rounds_left=None, ledger=None,
                  review_reliable=True,
                  llm_notes=None, raw_excerpt=None, unverified_claims=0, telemetry_status="disabled",
-                 engine_detail=""):
+                 engine_detail="", stale_comments=None):
     # (1) 摘要评论——总是成功；按 v2 六段版面模板组装：
     #     ①标题+状态行 ②告警 ③静态检查 ④评审发现与销项 ⑤参考信息 ⑥机器 marker
     # 评审不可信时，降级说明/0-发现溯源统一并入 render 层的 [!CAUTION] 置顶告警
@@ -302,10 +367,16 @@ def post_results(owner, repo, number, head_sha, token, risk, findings, loop_info
         "unverified_claims": unverified_claims,
     }, ensure_ascii=False) + " -->"
     body = body + "\n\n" + result_marker
+    posted = False
     try:
         gh("POST", f"/repos/{owner}/{repo}/issues/{number}/comments", token, {"body": body})
+        posted = True
     except requests.exceptions.RequestException as e:
         print(f"[warn] 摘要评论失败: {e}", file=sys.stderr)
+    # 新评论已落地 → 历史轮次评论折叠（视觉降噪，原文与 marker 全保留）。仅在 posted 后做：
+    # 若新评论没发出去就折叠旧的，旧 marker（转义后不再可解析）会丢状态——round 归零。
+    if posted and stale_comments is not None:
+        _collapse_stale_reviews(owner, repo, token, stale_comments)
     # (2) 尽力内联评论（event=COMMENT，绝不 REQUEST_CHANGES）
     #     锚定到 diff 可评论行（删除行/超界行就近锚或降级）；每条附自识别隐藏标记
     if diff is not None:
@@ -530,6 +601,7 @@ def main():
     # 反馈循环：从历史评论 marker 取状态 → 决策 → 回贴附状态与新 marker。
     # 只信机器人自己发的评论（按发帖人过滤）——否则 author 可自己发伪造 marker 洗掉抗博弈闸。
     all_bodies = []          # 全量评论正文（含 author）——只用于解析 ack 申报（申报是输入信号）
+    stale_reviews = []       # 历史评审评论（bot 发、未折叠）——新评论落地后折叠（视觉降噪）
     try:
         comments = gh("GET", f"/repos/{owner}/{repo}/issues/{number}/comments", token)
         comments = comments if isinstance(comments, list) else []
@@ -543,6 +615,8 @@ def main():
             # [bot] 后缀过滤（github-actions[bot]），防伪造仍生效（人无法注册 [bot] 后缀）。
             print("[info] GET /user 未返回身份：loop marker 改按 [bot] 后缀过滤（防伪造仍生效）",
                   file=sys.stderr)
+        # 此刻列表不含即将发出的本轮新评论——正是「历史」的定义；外层 except 路径保持 []。
+        stale_reviews = _stale_review_comments(comments, bot_login)
         bodies = loop.trusted_bodies(comments, bot_login)
     except requests.exceptions.RequestException:
         bodies = []
@@ -710,7 +784,7 @@ def main():
                  engine_status=engine_status, det_warning=det_warning,
                  ai_raw_count=ai_raw_count, added_lines=added_lines, n_changed=n_changed,
                  scope_facts=scope_facts, checklist=cur_cl, rounds_left=_rounds_left,
-                 ledger=ledger,
+                 ledger=ledger, stale_comments=stale_reviews,
                  review_reliable=reliable, llm_notes=llm_notes,
                  raw_excerpt=raw_excerpt, unverified_claims=n_unverified,
                  telemetry_status=_tel_res, engine_detail=engine_detail)
