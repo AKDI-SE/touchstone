@@ -297,6 +297,14 @@ jobs:
           TOUCHSTONE_METRICS_ISSUE: ${{ vars.TOUCHSTONE_METRICS_ISSUE }}
           # TOUCHSTONE_METRICS_ISSUE_LABEL: "touchstone-metrics"   # 看板 issue 的 label（若改 vars. 须在 Python 侧处理空串，勿直接 uncomment）
           # TOUCHSTONE_METRICS_ISSUE_WINDOW: "50"                   # 滚动历史保留轮数（bounded FIFO）
+          # ── 最大检视轮次（repo variable 可调，默认 9）──────────────────────────
+          # loop.py:22 读 TOUCHSTONE_MAX_ROUNDS（含坏值兜底：空/非数字→9，0/负→夹 1）。此前仅
+          # env 直填无生产入口——现在经 repo variable 控制（Settings → Secrets and variables →
+          # Actions → Variables，建 TOUCHSTONE_MAX_ROUNDS，非敏感值用 variable 不占 secret）。
+          # 非敏感 + 可被任何人读到不影响安全 → variable 而非 secret。改动即刻对下一次触发的
+          # 评审生效（每轮 run 重新读 env）。注意：引擎级故障轮（LLM 调用失败等）不消耗轮次
+          # 预算（loop.INFRA_FAILURE_STATUSES），本值只约束「成功执行的评审轮」上限。
+          TOUCHSTONE_MAX_ROUNDS: ${{ vars.TOUCHSTONE_MAX_ROUNDS || '9' }}
         run: python -m touchstone.orchestrator
       # 「Save PR-Agent venv」步已移除（上游报告问题一）：pull_request_target 下缓存写入被 GitHub
       # 2026-06-26 政策永久拒绝，continue-on-error 把这个永久失败伪装成瞬态黄警告。写缓存改由

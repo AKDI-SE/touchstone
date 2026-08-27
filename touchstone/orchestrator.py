@@ -522,6 +522,10 @@ def main():
     # checklist 不予自动销项、loop 不收敛、autonomy 不自动放行--防"diff 被裁空/LLM 随机性"
     # 假收敛放行未评审代码。engaged 让"glm 审完无问题"的干净 PR 不再被误判可疑（PR #51）。
     reliable = review_provider.review_reliable(engine_status, ai_raw_count, added_lines, engaged=engaged)
+    # 引擎级故障（LLM 调用失败等，见 loop.INFRA_FAILURE_STATUSES）：检视未发生，本轮不消耗
+    # 作者轮次预算——与 reliable 正交：reliable=False 只是「不收敛」（轮照烧），engine_failed
+    # 是「没评审过」（轮不烧）。PR #183 实录：glm 429 连续 4 轮 llm_failed，白烧 4 轮预算。
+    engine_failed = engine_status in loop.INFRA_FAILURE_STATUSES
 
     # 反馈循环：从历史评论 marker 取状态 → 决策 → 回贴附状态与新 marker。
     # 只信机器人自己发的评论（按发帖人过滤）——否则 author 可自己发伪造 marker 洗掉抗博弈闸。
@@ -557,7 +561,11 @@ def main():
     if prev_cl is None and ledger.get("inherited_open_items"):
         prev_cl = {"round": 0, "items": ledger["inherited_open_items"]}
     acks = checklist_mod.parse_acks(all_bodies)
-    cur_cl = checklist_mod.reconcile(prev_cl, acks, findings, round_no=state.round + 1,
+    # 引擎故障轮 round_no 冻结在 state.round（清单不显示「新的一轮」——检视没成功就没有新轮；
+    # 首轮即故障时 round=0，render 的 `if cl.get("round")` 自然隐藏轮次行）。确定性发现（规则/
+    # 契约核对不依赖 LLM）仍照常吸收进清单——故障只是 AI 部分缺席，不废掉确定性检查的结果。
+    cur_cl = checklist_mod.reconcile(prev_cl, acks, findings,
+                                     round_no=state.round if engine_failed else state.round + 1,
                                      review_reliable=reliable)
     try:                                       # 守卫事实附着（issue #139 方案 C）：只附着不判断，
         from touchstone import guard_context as _gc2   # 供人 waived 佐证 + 下一轮核销注入复用
@@ -570,7 +578,8 @@ def main():
     ci_pass = ci_verdict(owner, repo, head_sha, token)   # 供闭环：CI/verify 红则不收敛
     decision, reason, new_state = loop.loop_step(
         findings, rule_index, state, ci_passed=ci_pass,
-        checklist_pair=(prev_cl, cur_cl), ledger=ledger, review_reliable=reliable)
+        checklist_pair=(prev_cl, cur_cl), ledger=ledger, review_reliable=reliable,
+        engine_failed=engine_failed)
     loop_info = (decision, reason, loop.render_marker(new_state))
     # v2：可见清单渲染由 render_report 内 render_findings_checklist 统一负责（合并 AI 评审 +
     # 清单）；此处只算 rounds_left 供状态行/台账用，不再预算 checklist_md。
