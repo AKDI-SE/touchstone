@@ -78,3 +78,17 @@ def test_contract_findings_point_to_pr_yaml():
     (f,) = cc.check_scope(["src/x.py"], ["docs/**"], ri)
     assert "改动文件不在提交契约声明的 scope 内" in f["rationale"]
     assert f["fix_direction"].endswith("（契约正本 .touchstone/pr.yaml）")
+
+
+def test_render_digest_phrases_exist_in_skill_doc():
+    """防漂移（双向）：render._ack_skill_ref 的「要点速览」与 SKILL.md 正本同源——
+    速览里的关键措辞必须在正本中逐字存在。改 SKILL.md 口径而忘改速览（或反之）
+    在此红，避免评论里的速览悄悄变成第二套规则。"""
+    from touchstone import render
+    digest = render._ack_skill_ref().replace("<br>\n", "\n")
+    skill = _skill_text()
+    for phrase in ("改码 → 提交 → 发 ack 评论 → 推送",
+                   "行内评论线程一律不计数",
+                   "空提交"):
+        assert phrase in skill, f"SKILL.md 缺逐字措辞：{phrase}"
+        assert phrase in digest, f"渲染速览缺逐字措辞：{phrase}"
