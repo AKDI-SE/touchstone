@@ -1332,3 +1332,113 @@ def test_checklist_freetext_fields_neutralized():
     assert "&lt;!--" in md                                   # 中性实体仍在（渲染回原字符）
     assert "函数 &lt;module&gt;：无守卫" in md               # guard 占位符字面可见
     assert "需人工复核：does `&lt;!--` still open" in md     # 复核问题同样中性化
+
+
+# -------- L2/L3：文档级不变量闸门——锁洞的类别，不锁已知洞 --------
+_TORTURE = [
+    "`<!-- touchstone-checklist:` quoted opener",
+    "stray `-->` closer leaks",
+    "`<!--` plain opener",
+    "<script>alert(1)</script>",
+    "<details><summary>x</summary>",
+    "a\n\nblank line inside",
+    "> fake blockquote",
+    "- [ ] fake task item",
+    "<module> placeholder",
+    "&amp; pre-escaped entity",
+    "back`tick unpaired",
+]
+
+
+def test_report_invariant_survives_torture_text_all_fields():
+    """L3 对抗性属性测试：torture 语料逐条灌进每个自由字段（direction/rationale/
+    reasoning/note/guard/问题），整份报告（含 marker 载荷同灌）必须通过 L2 不变量——
+    每个 `<!--` 都是自产 marker 且闭合、可见区无孤儿 `-->`、折叠标签平衡。
+    点测试锁已知洞；本测试锁洞的类别：未来新增嵌入点只要仍走 render 层，任何漏
+    转义的自由文本都会在此现形。"""
+    from touchstone import render
+    for t in _TORTURE:
+        f = _rf("PRA-X:a.py:1", rationale=t, direction=t, reasoning=(t + " ") * 20)
+        f["done_criteria"] = {"kind": "review", "spec": {"question": t}}
+        c = cl.from_findings([f])
+        c["items"][0]["note"] = t
+        c["items"][0]["guard"] = t
+        risk = {"risk_band": "mid", "human_action": "read", "blast_radius": [],
+                "verification_decision": "cheap_only"}
+        markers = "\n".join([
+            loop.render_marker(loop.LoopState(1, [[t]], True)),
+            cl.render_marker(c),
+            "<!-- touchstone-result: " + json.dumps({"risk_band": "mid"}) + " -->",
+        ])
+        report = render.render_report(risk, [f], checklist=c, loop_info=("continue", "", None),
+                                      markers=markers)
+        issues = render.validate_report_body(report)
+        assert issues == [], f"torture {t!r} 违反文档不变量: {issues}"
+        # marker 载荷同灌 torture，round-trip 仍复原原文（发射侧转义不破坏解析）
+        back = cl.parse_latest([report])
+        assert back["items"][0]["reasoning"].startswith(t.split("\n")[0])
+
+
+def test_scan_validate_sanitize_report_body():
+    """L2 单元：扫描/校验/自愈三件套。
+    - 干净文档（仅自产 marker）零违例
+    - 坏开符/孤儿闭符/未闭合 marker 各自被点名，自愈后复验通过、marker 不受波及
+    - tag-balance 只报告不自愈（无法机械断定转义哪一个）"""
+    from touchstone import render
+    clean = ("## Touchstone\n\n> 状态行\n\n- [ ] item\n\n"
+             "<!-- touchstone-loop: {\"round\": 1} -->\n"
+             "<!-- touchstone-checklist: {\"round\": 1, \"items\": []} -->\n"
+             "<!-- touchstone-result: {\"risk_band\": \"mid\"} -->")
+    assert render.validate_report_body(clean) == []
+    assert render.sanitize_report_body(clean) == (clean, 0)
+
+    bad = ("正文里 `<!-- touchstone-checklist:` 被引用\n"
+           "孤儿闭符 --> 裸露\n"
+           "<!-- touchstone-result: {\"ok\": true} -->")
+    issues = render.validate_report_body(bad)
+    assert any(i.startswith("bad-open@") for i in issues)     # 引用 marker：前缀对但载荷非 JSON
+    assert any(i.startswith("orphan-close@") for i in issues)
+    assert not any(i.startswith("unclosed-marker@") for i in issues)
+    fixed, n = render.sanitize_report_body(bad)
+    assert n >= 2
+    assert "<!-- touchstone-result:" in fixed          # 完好 marker 原样保留
+    assert "<!-- touchstone-checklist:" not in fixed   # 引用的 marker 已中性化为 &lt;!--
+    assert render.validate_report_body(fixed) == [] or all(
+        i.startswith("tag-balance") for i in render.validate_report_body(fixed))
+
+    # 真正未闭合的 marker（其后再无任何闭符）→ unclosed-marker，自愈为可见文本
+    unclosed = "尾部 <!-- touchstone-loop: {\"round\": 1"
+    assert any(i.startswith("unclosed-marker@") for i in render.validate_report_body(unclosed))
+    fixed2, n2 = render.sanitize_report_body(unclosed)
+    assert n2 == 1 and "&lt;!-- touchstone-loop:" in fixed2
+
+    # tag-balance：多一个 <details> 开标签 → 报告但 sanitize 不动它
+    tagged = "x <details> y"
+    assert any(i.startswith("tag-balance") for i in render.validate_report_body(tagged))
+    assert render.sanitize_report_body(tagged) == (tagged, 0)
+
+
+def test_post_results_gate_neutralizes_before_post(monkeypatch):
+    """L2 闸门接线：post_results 在 POST 前过 sanitize——模拟 L1 漏点（monkeypatch
+    render_report 塞入坏 token），捕获实际 POST 的 body 必须通过不变量校验。
+    漂移哨兵：post_results 源码必须调用 sanitize_report_body（防未来重构脱钩）。"""
+    import inspect
+    from touchstone import render
+    from touchstone import orchestrator as orc
+    assert "sanitize_report_body" in inspect.getsource(orc.post_results)
+
+    posted = {}
+    monkeypatch.setattr(orc, "gh",
+                        lambda m, p, t, data=None, **k: posted.update(body=data["body"])
+                        if (m == "POST" and p.endswith("/comments")) else None)
+    monkeypatch.setattr(orc, "render_report",
+                        lambda *a, **k: "正文带坏开符 `<!-- 不是 marker\n孤儿 --> 闭符")
+    raw = {"risk_band": "mid", "human_action": "read", "blast_radius": [],
+           "verification_decision": "cheap_only"}
+    orc.post_results("o", "r", 1, "sha", "t", raw, [])
+    body = posted["body"]
+    assert "<!-- 不是" not in body                       # 坏开符已中性化
+    assert "--&gt;" in body                              # 孤儿闭符已中性化
+    assert "<!-- touchstone-result:" in body             # 完好 marker 原样保留
+    assert render.validate_report_body(body) == [] or all(
+        i.startswith("tag-balance") for i in render.validate_report_body(body))

@@ -39,7 +39,8 @@ from touchstone.artifacts import artifact_path      # 统一产物路径（默�
 # render_status_line、AI 评审+清单→render_findings_checklist、静态检查→render_facts_v2。
 # 再导出仅保留仍存在的 render_report / render_summary。
 from touchstone.render import (_load_template,  # noqa: F401
-                               render_report, render_summary)
+                               render_report, render_summary,
+                               sanitize_report_body)   # L2 文档级闸门（post_results POST 前）
 
 # --- 配置 ---------------------------------------------------------------------
 STANDARDS_PATH = os.environ.get("TOUCHSTONE_STANDARDS", ".touchstone/standards.yaml")
@@ -383,6 +384,15 @@ def post_results(owner, repo, number, head_sha, token, risk, findings, loop_info
         "unverified_claims": unverified_claims,
     }) + " -->"
     body = body + "\n\n" + result_marker
+    # L2 文档级闸门（POST 前最后一道）：不变量=每个 `<!--` 都是自产 marker 且闭合、可见区
+    # 无孤儿 `-->`。L1（各嵌入点 _html_text）漏转义时在此兜底自愈——坏文档不出门。
+    # 实录：#191 round-7 LLM 依据引用 marker 语法的字面 `<!--` 吞掉整段参考信息（#197 L1
+    # 修复）；本闸门保证同类洞（未来新增嵌入点/新文本源）不再进 UI。修复打 stderr 留痕
+    # （run log 可查），正文不再静默带病出门。
+    body, _n_fixes = sanitize_report_body(body)
+    if _n_fixes:
+        print(f"[review_pr] 报告正文 HTML 注释配对违例，已中性化 {_n_fixes} 处（L1 转义漏点，"
+              f"详见 render.sanitize_report_body）", file=sys.stderr)
     try:
         # GitCode 适配：PR 评论端点是 /pulls/{n}/comments（GitHub 是 /issues/{n}/comments）。
         _cmt = (f"/repos/{owner}/{repo}/pulls/{number}/comments" if _is_gitcode()
