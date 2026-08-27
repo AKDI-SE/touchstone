@@ -354,8 +354,10 @@ def _collapse_status_line(orig):
                 if l2.startswith("> "):
                     return l2
             return "> Touchstone 历史轮次"     # 头部无状态行 → 占位（不冒充、不深挖）
-    # 兜底（无品牌 H2 的异常输入）：全文第一条 blockquote；再无则占位
-    return next((ln for ln in lines if ln.startswith("> ")), "> Touchstone 历史轮次")
+    # 无品牌 H2（异常输入）也直接占位（round-6）：受信评审评论必有品牌 H2
+    # （_stale_review_comments 以其过滤），无 H2 = 模板已面目全非，头部区无从锚定，
+    # 全文扫首条 '>' 是 round-4 刚消灭的无界扫描借尸还魂——占位不冒充。
+    return "> Touchstone 历史轮次"
 
 
 def _collapse_review_body(orig):
@@ -379,6 +381,14 @@ def _collapse_review_body(orig):
         if rep is None:                         # 完整区间修复；修不好才放弃折叠
             return None
         markers.append(rep)
+    # 同类去重保最后一个（round-6）：正文散文里引用/示例的 marker（LLM 转述 marker
+    # 语法）会被一并抽出原样外置——假 marker 污染 parse_latest。真实 marker 统一
+    # 追加在报告尾部 → 同类取最后一个；定序 loop/checklist/result 保持稳定输出。
+    by_kind = {}
+    for mk in markers:
+        k = re.match(r"<!-- touchstone-(loop|checklist|result):", mk).group(1)
+        by_kind[k] = mk
+    markers = [by_kind[k] for k in ("loop", "checklist", "result") if k in by_kind]
     stripped = _MARKER_RE.sub("", orig)
     folded = re.sub(r"\n\s*\n+", "\n", stripped.strip())
     out = (f"{_COLLAPSED_SENTINEL}\n"

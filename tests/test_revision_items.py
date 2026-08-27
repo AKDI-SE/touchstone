@@ -1385,3 +1385,33 @@ def test_collapse_skips_unrepairable_marker():
         O._collapse_stale_reviews("o", "r", "t", [{"id": 41, "body": junk},
                                                  {"id": 42, "body": good}])
     assert patched and patched[0].endswith("/issues/comments/42")   # 只折叠好评论
+
+
+def test_collapse_dedupes_quoted_markers_keeps_last():
+    """round-6 回归：正文散文里 LLM 转述 marker 语法（引用/示例一个假 marker）时，
+    抽出的假 marker 若原样外置会污染 parse_latest。真实 marker 统一追加在报告尾部
+    ——同类去重保最后一个，折叠体每类恰一条、解析取到真实轮次。"""
+    from touchstone import orchestrator as orc, checklist as cl
+    fake = '<!-- touchstone-checklist: {"round": 99, "items": [], "resolved_rate": 1.0} -->'
+    real = '<!-- touchstone-checklist: {"round": 7, "items": [{"sig": "PRA-Y:b.py:2"}], "resolved_rate": 0.0} -->'
+    orig = ("## Touchstone · AI Committer 代码检视\n\n> 第 7 轮\n\n"
+            "正文里引用了 marker 语法示例：\n" + fake + "\n\n<!-- touchstone-loop: {\"round\": 7, \"history\": []} -->\n"
+            + real)
+    folded = orc._collapse_review_body(orig)
+    assert folded.count("<!-- touchstone-checklist:") == 1    # 假的被去掉，不外置
+    assert folded.count("<!-- touchstone-loop:") == 1
+    assert cl.parse_latest([folded])["round"] == 7            # 解析取真实轮次，非 99
+    assert "PRA-Y:b.py:2" in folded                           # 真实清单内容保留
+
+
+def test_collapse_no_brand_h2_uses_placeholder():
+    """round-6 回归：无品牌 H2 → 直接占位。全文扫首条 '>'（旧兜底）是无界扫描借尸
+    还魂——受信评审评论必有品牌 H2（_stale_review_comments 以其过滤），无 H2 即模板
+    面目全非，头部区无从锚定。（round-1「锚定 H2」测试在合并中遗失，此为补位+升级。）"""
+    from touchstone import orchestrator as orc
+    fb = orc._collapse_review_body("> 无品牌但有序\n").split("\n")[1]
+    assert fb.endswith("· Touchstone 历史轮次")            # 占位，不冒充正文引用
+    # 有 H2 时锚定语义不变：H2 后头部区第一条 blockquote 即状态行
+    orig = ("## Touchstone · AI Committer 代码检视\n\n> 🔁 继续 · 第 3 轮\n\n"
+            "### 评审发现与销项\n\n> 深处正文引用\n")
+    assert "第 3 轮" in orc._collapse_review_body(orig).split("\n")[1]
