@@ -351,6 +351,27 @@ def render_findings_checklist(findings, checklist, review_reliable=True):
     return "\n".join(lines)
 
 
+def _ack_skill_ref():
+    """给【提交代码的 agent】的销项规程指针（评审评论必经之地 = 最可靠的提醒触点）。
+
+    - 只在 skill 随评审代码同仓存在时提示（file-gate：拷贝部署不带 skills/ 的仓库不出
+      404 链接）；URL 由运行环境拼（GITHUB_REPOSITORY/BASE_REF）——AKDI-SE 与 CPAT fork
+      各自指向自己的正本，不写死仓址。
+    - 无 GITHUB_REPOSITORY（本地 dry-run）→ 退化为仓内相对路径提示。
+    """
+    here = os.path.dirname(os.path.abspath(__file__))
+    if not os.path.exists(os.path.join(here, os.pardir, "skills", "touchstone-ack", "SKILL.md")):
+        return ""
+    repo = (os.environ.get("GITHUB_REPOSITORY") or "").strip()
+    if not repo:
+        return ("Agent 销项完整规程：仓内 <code>skills/touchstone-ack/SKILL.md</code>"
+                "（可安装为 skill 或直接参考——含时序、waived 反证质量线、轮询坑）。")
+    br = (os.environ.get("GITHUB_BASE_REF") or "").strip() or "main"
+    return (f"Agent 销项完整规程（可安装为 skill 或直接参考）："
+            f"https://github.com/{repo}/blob/{br}/skills/touchstone-ack/SKILL.md"
+            " ——含申报时序、waived 反证质量线、轮询与合并坑。")
+
+
 def render_reference(verification_blocks=None, has_checklist_items=False):
     """⑤ v2 参考信息（观测意见 5）：验证/日志 + 申报指引，全部 <details> 折叠（默认不占屏）。
     无内容时整段省略。<details> 是 CommonMark type-6 HTML block——summary/body/</details>
@@ -360,11 +381,13 @@ def render_reference(verification_blocks=None, has_checklist_items=False):
         content = "\n\n".join(verification_blocks)
         blocks.append(f"<details><summary>验证与日志</summary>\n{content}\n</details>")
     if has_checklist_items:
-        blocks.append("<details><summary>如何申报销项</summary>\n"
-                      "发评论，内容为 <code>touchstone-ack</code> 代码块，每行 "
-                      "<code>&lt;签名&gt;: done|waived: 理由|split: 链接</code>。"
-                      "勾选/申报是输入信号，以评审方按达成判据复核后的本清单为准。\n"
-                      "</details>")
+        body = ("发评论，内容为 <code>touchstone-ack</code> 代码块，每行 "
+                "<code>&lt;签名&gt;: done|waived: 理由|split: 链接</code>。"
+                "勾选/申报是输入信号，以评审方按达成判据复核后的本清单为准。")
+        skill_ref = _ack_skill_ref()
+        if skill_ref:
+            body += "\n" + skill_ref                # 换行拼接，绝无空行（#168 HTML block 约束）
+        blocks.append(f"<details><summary>如何申报销项</summary>\n{body}\n</details>")
     if not blocks:
         return ""
     return "### 参考信息\n\n" + "\n\n".join(blocks)
