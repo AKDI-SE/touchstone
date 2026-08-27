@@ -1220,222 +1220,43 @@ def test_loop_waived_claims_escalate_exactly_at_max_rounds(rule_index):
     assert dec_before == "continue", "未耗尽(nr==max_rounds-1)时应 continue 点名待核准项"
 
 
-
-
-# ============================================================================
-# 历史轮次评论折叠（视觉降噪）：新评论落地后，旧评审评论编辑为折叠体；
-# 原文进 <pre> 转义、marker 原样外置保持可解析（loop 状态/lineage 台账依赖）。
-# ============================================================================
-def _mk_bot_comment(cid, body, login="github-actions[bot]"):
-    return {"id": cid, "body": body, "user": {"login": login}}
-
-
-def test_collapse_review_body_structure():
-    """折叠体：哨兵 + 状态行摘要 + <details><pre> 转义原文 + marker 原样外置；
-    全程无空行（#168 HTML block 约束）。"""
-    from touchstone import orchestrator as orc
-    orig = ("## Touchstone · AI Committer 代码检视\n\n"
-            "> 🔁 继续 · 第 3 轮 · 销项率 40% · 风险等级：中\n\n"
-            "### 评审发现与销项（共 2 条）\n\n- [ ] X：每行 <签名>: done: 理由\n\n"
-            '<!-- touchstone-loop: {"round": 3, "history": [[]]} -->')
-    folded = orc._collapse_review_body(orig)
-    assert folded.startswith(orc._COLLAPSED_SENTINEL)
-    assert "第 3 轮" in folded and "销项率 40%" in folded        # 状态行摘要外置可见
-    assert "<details><summary>展开本轮完整评审原文</summary>" in folded
-    assert "&lt;签名&gt;" in folded                            # 尖括号已转义（原文明含 <签名>）
-    assert "<签名>" not in folded                              # 未转义尖括号不再出现于任何处
-    assert '<!-- touchstone-loop: {"round": 3' in folded         # marker 原样外置（未转义）
-    assert "&lt;!-- touchstone-loop" not in folded                # 正文里的 marker 已剥离
-    assert "\n\n" not in folded                                   # 无空行
-    assert folded.rstrip().endswith("-->")                        # marker 在末尾
-
-
-def test_collapse_keeps_marker_parseable_across_rounds():
-    """端到端语义：折叠后的旧轮 + 未折叠的新轮 → parse_latest_state 取到新轮状态；
-    若旧的也被折叠（marker 外置保留），同轮并列时新评论后置仍胜出。"""
-    from touchstone import orchestrator as orc, loop as _lp
-    old_body = ("## Touchstone · AI Committer 代码检视\n\n> 🔁 继续 · 第 4 轮\n\n"
-                '<!-- touchstone-loop: {"round": 4, "history": [["a"]], "last_verdict": true} -->')
-    folded = orc._collapse_review_body(old_body)
-    new_body = ('## Touchstone · AI Committer 代码检视\n\n> 🔁 继续 · 第 5 轮\n\n'
-                '<!-- touchstone-loop: {"round": 5, "history": [["b"]], "last_verdict": false} -->')
-    st = _lp.parse_latest_state([folded, new_body])
-    assert st.round == 5 and st.history == [["b"]] and st.last_verdict is False
-
-
-def test_stale_review_comments_filter():
-    """过滤：只折叠受信 bot 的评审报告（品牌 H2）；已折叠的/人的/无品牌的跳过。"""
-    from touchstone import orchestrator as orc
-    review = "## Touchstone · AI Committer 代码检视\n\n> x\n<!-- touchstone-loop: {} -->"
-    cs = [
-        _mk_bot_comment(1, review),                                  # 待折叠
-        _mk_bot_comment(2, orc._collapse_review_body(review)),       # 已折叠 → 跳过
-        _mk_bot_comment(3, "普通 bot 评论无品牌"),                    # 非评审报告 → 跳过
-        {"id": 4, "body": review, "user": {"login": "author1"}},     # 人发 → 跳过
-        _mk_bot_comment(None, review),                               # 无 id 不可 PATCH → 跳过
-    ]
-    stale = orc._stale_review_comments(cs, "github-actions[bot]")
-    assert [c["id"] for c in stale] == [1]
-    # bot_login 未知 → [bot] 后缀过滤（防伪造不降级）
-    assert [c["id"] for c in orc._stale_review_comments(cs, None)] == [1]
-
-
-def test_collapse_stale_reviews_patches_and_swallows(monkeypatch, capsys):
-    """PATCH 就地编辑；单条失败只告警不阻塞。"""
-    from touchstone import orchestrator as orc
-    patched = []
-
-    def fake_gh(method, path, token, data=None, **k):
-        if method == "PATCH":
-            if "boom" in path:
-                raise orc.requests.exceptions.RequestException("net down")
-            patched.append((path, data["body"]))
-
-    monkeypatch.setattr(orc, "gh", fake_gh)
-    review = "## Touchstone · AI Committer 代码检视\n\n> 第 1 轮\n<!-- touchstone-loop: {} -->"
-    orc._collapse_stale_reviews("o", "r", "t",
-                                [{"id": 11, "body": review},
-                                 {"id": "boom", "body": review}])
-    assert len(patched) == 1 and patched[0][0].endswith("/issues/comments/11")
-    assert patched[0][1].startswith(orc._COLLAPSED_SENTINEL)
-    assert "折叠失败" in capsys.readouterr().err
-
-
-def test_post_results_collapses_only_after_post_success(monkeypatch):
-    """顺序铁律（防 round 归零）：仅在新评论 POST 成功后才折叠历史。POST 失败 → 绝不折叠
-    （旧 marker 随转义不可解析，若新评论又没落地，PR 将无任何可解析 marker → 状态归零、
-    台账断链）。"""
-    from touchstone import orchestrator as orc
-    calls = {"patched": 0, "posted": False}
-
-    def fake_gh(method, path, token, data=None, **k):
-        if method == "POST" and "/issues/123/comments" in path:
-            calls["posted"] = True
-            return {}
-        if method == "PATCH":
-            calls["patched"] += 1
-
-    monkeypatch.setattr(orc, "gh", fake_gh)
-    risk = {"risk_band": "low", "human_action": "a", "verification_decision": "v",
-            "blast_radius": []}
-    stale = [{"id": 9, "body": "## Touchstone · AI Committer 代码检视\n\n> 第 1 轮\n"
-                               "<!-- touchstone-loop: {} -->",
-              "user": {"login": "github-actions[bot]"}}]
-
-    def _run():
-        orc.post_results("o", "r", 123, "sha", "t", risk, [], ("continue", "r", "<!-- m -->"),
-                         stale_comments=stale)
-
-    _run()
-    assert calls["posted"] and calls["patched"] == 1          # 成功路径：发完新评论 → 折叠旧评论
-
-    def fail_post(method, path, token, data=None, **k):
-        if method == "POST" and "/issues/123/comments" in path:
-            raise orc.requests.exceptions.RequestException("down")
-        if method == "PATCH":
-            calls["patched"] += 1
-
-    monkeypatch.setattr(orc, "gh", fail_post)
-    calls["patched"] = 0
-    _run()
-    assert calls["patched"] == 0                              # 失败路径：绝不折叠
-
-
-def test_collapse_marker_payload_with_gt_survives():
-    """round-1 回归①：marker payload 是自由文本 JSON（LLM direction/reasoning 可含 "->"
-    / ">="），正则不得用 [^>]*（首个 '>' 即失配 → 整条 marker 随正文转义进 <pre> 永久
-    不可解析）。断言：整条 marker 原样完整抽出、折叠体外置未转义、且 loop 状态仍可派生。"""
-    import json
-    from touchstone import orchestrator as orc, loop as _lp
-    loop_marker = ('<!-- touchstone-loop: '
-                   + json.dumps({"round": 6, "history": [["X -> Y 已改"], ["阈值 >= 1"]],
-                                 "last_verdict": True}, ensure_ascii=False) + ' -->')
-    result_marker = ('<!-- touchstone-result: '
-                     + json.dumps({"risk_band": "mid",
-                                   "notes": "reasoning 里出现 -> 和 >= 也不许截断"},
-                                  ensure_ascii=False) + ' -->')
-    orig = ("## Touchstone · AI Committer 代码检视\n\n> 🔁 继续 · 第 6 轮\n\n"
-            "正文含箭头 a -> b。\n\n" + result_marker + "\n" + loop_marker)
-    # 正则层面：完整整条抽出（旧 [^>]* 会在 payload 内首个 '>' 处截断、字符串不等）
-    assert orc._MARKER_RE.findall(orig) == [result_marker, loop_marker]
-    folded = orc._collapse_review_body(orig)
-    assert result_marker in folded and loop_marker in folded      # 原样外置
-    assert "&lt;!-- touchstone-" not in folded                     # 未被转义进 <pre>
-    st = _lp.parse_latest_state([folded])                         # 折叠后仍可派生状态
-    assert st.round == 6 and st.history == [["X -> Y 已改"], ["阈值 >= 1"]]
-
-
-def test_collapse_status_anchored_after_brand_h2():
-    """round-1 回归②：状态行 = 品牌 H2 之后的第一条 blockquote。全文首条 "> " 在
-    前置引用（[!NOTE] 等，降级轮的 [!CAUTION] 同理）存在时会拿错摘要。"""
-    from touchstone import orchestrator as orc
-    orig = ("> [!NOTE]\n> 前置引用块（不是状态行）\n\n"
-            "## Touchstone · AI Committer 代码检视\n\n"
-            "> 🔁 继续 · 第 2 轮 · 销项率 50%\n\n"
-            "> [!CAUTION] 降级告警\n<!-- touchstone-loop: {} -->")
-    folded = orc._collapse_review_body(orig)
-    summary = folded.split("\n")[1]        # 折叠体第 2 行 = 外置摘要行
-    assert "销项率 50%" in summary         # 取 H2 后第一条（状态行）
-    assert "前置引用块" not in summary     # 前置引用不冒充摘要
-    assert "降级告警" not in summary       # H2 后第二条 blockquote（告警）也不冒充
-    assert "前置引用块" in folded          # 原文仍完整保留在 <pre> 内（折叠不删数据）
-    # 兜底：无品牌 H2 → 全文第一条 blockquote；再无 → 占位
-    fb = orc._collapse_review_body("> 无品牌但有序\n").split("\n")[1]
-    assert fb.endswith("· 无品牌但有序")                       # 兜底取全文首条 blockquote
-    folded2 = orc._collapse_review_body("## Touchstone · AI Committer 代码检视\n无任何引用")
-    assert folded2.split("\n")[1].endswith("Touchstone 历史轮次")       # 占位
-
-
-def test_reference_includes_ack_skill_pointer(monkeypatch):
+def test_reference_includes_ack_skill_pointer():
     """评审评论是提交代码的 agent 的必经触点——「如何申报销项」折叠内给 skill 指针。
 
     部署事实：评审在【受评仓】运行，开发者代码仓没有 skills/ 目录——指针**恒出现**、
     只指上游正本 URL（不引用受评仓本地路径、不用 GITHUB_REPOSITORY 拼 URL——那会 404），
-    并内联时序要点（无网 agent 至少拿到最易错规则）。正文贴入仍 file-gate：部署携带
-    了 skills/ 才有全文（运行时读文件=与正本同步，无副本漂移）。"""
+    并内联时序要点（无网 agent 至少拿到最易错的规则）。
+    【只留链接不贴正文】（#192 二级折叠后用户仍反馈混乱，拍板）：正本正文（含
+    二级折叠版）整体移除——渲染零文件依赖，无 <pre>、无「skill 正本全文」二级折叠，
+    部署带不带 skills/ 输出完全一致。"""
     from touchstone import render
     url = "https://github.com/AKDI-SE/touchstone/blob/main/skills/touchstone-ack/SKILL.md"
-    # 恒出现：受评仓没有 skills/（file-gate 关）也照样提醒——URL + 时序要点
-    monkeypatch.setattr(render.os.path, "exists", lambda p: False)
-    md0 = render.render_reference(has_checklist_items=True)
-    blk0 = md0.split("<details><summary>如何申报销项</summary>")[1].split("</details>")[0]
-    assert url in blk0 and "可安装为 skill" in blk0
-    assert "推送后补 ack 本轮不计" in blk0 and "空提交" in blk0   # 内联时序要点（SKILL §4 同源）
-    assert "<pre>" not in blk0 and "仓内" not in blk0              # 无正文可贴；无「仓内」措辞
-    monkeypatch.undo()
-    # 本部署携带 skills/（touchstone 自审/fork）→ 正文全文贴在链接下方
-    md4 = render.render_reference(has_checklist_items=True)
-    blk4 = md4.split("<details><summary>如何申报销项</summary>")[1].split("</details>")[0]
-    assert "<pre>" in blk4 and "以仓正本为准" in blk4            # skill 正文在
-    assert "&lt;签名&gt;" in blk4                               # 尖括号已转义（防 HTML 吃掉）
-    assert "name: touchstone-ack" not in blk4                   # frontmatter 已剥
-    assert "仓内" not in blk4                                    # 措辞不引用受评仓本地路径
-    assert "\n\n" not in blk4                                  # 无空行（#168 HTML block 约束）
-    assert md4.index(url) < md4.index("<pre>")                   # 正文贴在链接下方
+    md = render.render_reference(has_checklist_items=True)
+    blk = md.split("<details><summary>如何申报销项</summary>")[1].split("</details>")[0]
+    assert url in blk and "可安装为 skill" in blk
+    assert "推送后补 ack 本轮不计" in blk and "空提交" in blk   # 内联时序要点（SKILL §4 同源）
+    assert "<pre>" not in blk                                   # 不贴正文（回归：正文已删）
+    assert "skill 正本全文" not in md and "以仓正本为准" not in blk   # 无二级折叠/无正本内容
+    assert "仓内" not in blk                                    # 无「仓内」措辞（不指受评仓路径）
+    assert "\n\n" not in blk                                  # 无空行（#168 HTML block 约束）
     # 既有行为不回归：空清单仍不出申报指引
     assert "如何申报销项" not in render.render_reference(has_checklist_items=False)
 
 
-
-
 def test_ack_section_readable_layout():
-    """「如何销项内容混乱」回归（用户反馈）：①HTML block 内裸 \\n 不换行——三行散文
-    连排成糊文，行间必须 <br>；②4300 字符 skill 正本源码不得直接砸进一级折叠——
-    进二级嵌套 <details>，打开一级只见短指引。无空行约束（#168）不因嵌套破坏。"""
+    """「如何销项内容混乱」回归（用户反馈）：①HTML block 内裸 \n 不换行——三行散文
+    连排成糊文，行间必须 <br>；②skill 正本源码不得进一级折叠——#192 后拍板**只留
+    链接**，正文（含二级折叠版）整体删除，渲染零文件依赖。无空行约束（#168）不破坏。"""
     from touchstone import render
-    md = render.render_reference(has_checklist_items=True)   # 本仓携带 skills/ → 有正文
-    frag = md.split("<details><summary>如何申报销项</summary>")[1]
-    lvl1 = frag.split("<details><summary>skill 正本全文")[0]     # 一级直见内容（二级之前）
-    assert lvl1.count("<br>") == 2                              # 3 行散文 = 2 个行间分隔
-    assert lvl1.rstrip("\n").count("\n") >= 2                   # 源码层仍逐行（可 diff）
-    assert "<pre>" not in lvl1                                  # 一级不见正本源码墙
-    assert len(lvl1) < 500                                      # 打开一级 = 短指引，非糊文
-    nested = frag.split("<details><summary>skill 正本全文")[1].split("</details>")[0]
-    assert nested.startswith("（离线参考") or "离线参考" in nested[:30]
-    assert "<pre>" in nested and "以仓正本为准" in nested       # 全文仍在（离线自足不丢）
-    assert "\n\n" not in frag.split("</details>")[0] + nested   # 嵌套两段均无空行（#168）
-    # 二级收尾存在：嵌套后还有一级的 </details>（两级都闭合）
-    assert "skill 正本全文" in md and md.count("</details>") >= md.count("<details>")
+    md = render.render_reference(has_checklist_items=True)
+    frag = md.split("<details><summary>如何申报销项</summary>")[1].split("</details>")[0]
+    assert frag.count("<br>") == 2                              # 3 行散文 = 2 个行间分隔
+    assert frag.rstrip("\n").count("\n") >= 2                  # 源码层仍逐行（可 diff）
+    assert "<pre>" not in frag and "skill 正本全文" not in frag  # 无正文源码/无二级折叠
+    assert len(frag) < 500                                      # 打开一级 = 短指引，非糊文
+    assert "可安装为 skill" in frag                             # 链接指针仍在（参考入口不丢）
+    assert "\n\n" not in frag                                 # 无空行（#168）
+
 
 def test_collapse_skipped_on_gitcode(monkeypatch, capsys):
     """合并 #186 后守卫：GitCode 的 PR 评论 id 与 GitHub /issues/comments 命名空间
