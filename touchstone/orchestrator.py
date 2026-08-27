@@ -337,7 +337,7 @@ def _collapse_review_body(orig):
     stripped = _MARKER_RE.sub("", orig)
     folded = re.sub(r"\n\s*\n+", "\n", stripped.strip())
     out = (f"{_COLLAPSED_SENTINEL}\n"
-           f"🔁 历史评审已折叠（最新轮次见最新评论）· {status.lstrip('> ').strip()}\n"
+           f"🔁 历史评审已折叠（最新轮次见最新评论）· {status.removeprefix('> ').strip()}\n"
            "<details><summary>展开本轮完整评审原文</summary>\n"
            f"<pre>{html.escape(folded)}</pre>\n"
            "</details>")

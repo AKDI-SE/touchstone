@@ -1236,13 +1236,14 @@ def test_collapse_review_body_structure():
     from touchstone import orchestrator as orc
     orig = ("## Touchstone · AI Committer 代码检视\n\n"
             "> 🔁 继续 · 第 3 轮 · 销项率 40% · 风险等级：中\n\n"
-            "### 评审发现与销项（共 2 条）\n\n- [ ] X\n\n"
+            "### 评审发现与销项（共 2 条）\n\n- [ ] X：每行 <签名>: done: 理由\n\n"
             '<!-- touchstone-loop: {"round": 3, "history": [[]]} -->')
     folded = orc._collapse_review_body(orig)
     assert folded.startswith(orc._COLLAPSED_SENTINEL)
     assert "第 3 轮" in folded and "销项率 40%" in folded        # 状态行摘要外置可见
     assert "<details><summary>展开本轮完整评审原文</summary>" in folded
-    assert "&lt;签名&gt;" not in folded or True                  # 原文里无签名则无转义体
+    assert "&lt;签名&gt;" in folded                            # 尖括号已转义（原文明含 <签名>）
+    assert "<签名>" not in folded                              # 未转义尖括号不再出现于任何处
     assert '<!-- touchstone-loop: {"round": 3' in folded         # marker 原样外置（未转义）
     assert "&lt;!-- touchstone-loop" not in folded                # 正文里的 marker 已剥离
     assert "\n\n" not in folded                                   # 无空行
@@ -1455,3 +1456,16 @@ def test_collapse_skipped_on_gitcode(monkeypatch, capsys):
     monkeypatch.setattr(orc, "_is_gitcode", lambda: False)
     orc._collapse_stale_reviews("o", "r", "t", [{"id": 22, "body": review}])
     assert calls == ["PATCH"]                            # GitHub 侧行为不变
+
+
+def test_collapse_summary_keeps_nested_quote_marker():
+    """round-3 回归（orchestrator:340）：lstrip('> ') 是字符集过剥——嵌套引用状态行
+    "> > 回复"会把第二个 '>' 也吃掉。removeprefix("> ") 只剥一层前缀，嵌套标记保留。"""
+    from touchstone import orchestrator as orc
+    orig = ("## Touchstone · AI Committer 代码检视\n\n"
+            "> > 嵌套引用的结论行\n\n"
+            '<!-- touchstone-loop: {"round": 1, "history": []} -->')
+    summary = orc._collapse_review_body(orig).split("\n")[1]
+    assert summary.endswith("· > 嵌套引用的结论行")    # 内层 '>' 保留（旧 lstrip 会吃掉）
+    # 状态行本身以 "> >" 开头时 _collapse_status_line 仍能选中它（startswith "> "）
+    assert "> 嵌套引用的结论行" in summary
