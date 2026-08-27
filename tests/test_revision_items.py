@@ -1335,3 +1335,48 @@ def test_post_results_collapses_only_after_post_success(monkeypatch):
     calls["patched"] = 0
     _run()
     assert calls["patched"] == 0                              # 失败路径：绝不折叠
+
+
+def test_collapse_marker_payload_with_gt_survives():
+    """round-1 回归①：marker payload 是自由文本 JSON（LLM direction/reasoning 可含 "->"
+    / ">="），正则不得用 [^>]*（首个 '>' 即失配 → 整条 marker 随正文转义进 <pre> 永久
+    不可解析）。断言：整条 marker 原样完整抽出、折叠体外置未转义、且 loop 状态仍可派生。"""
+    import json
+    from touchstone import orchestrator as orc, loop as _lp
+    loop_marker = ('<!-- touchstone-loop: '
+                   + json.dumps({"round": 6, "history": [["X -> Y 已改"], ["阈值 >= 1"]],
+                                 "last_verdict": True}, ensure_ascii=False) + ' -->')
+    result_marker = ('<!-- touchstone-result: '
+                     + json.dumps({"risk_band": "mid",
+                                   "notes": "reasoning 里出现 -> 和 >= 也不许截断"},
+                                  ensure_ascii=False) + ' -->')
+    orig = ("## Touchstone · AI Committer 代码检视\n\n> 🔁 继续 · 第 6 轮\n\n"
+            "正文含箭头 a -> b。\n\n" + result_marker + "\n" + loop_marker)
+    # 正则层面：完整整条抽出（旧 [^>]* 会在 payload 内首个 '>' 处截断、字符串不等）
+    assert orc._MARKER_RE.findall(orig) == [result_marker, loop_marker]
+    folded = orc._collapse_review_body(orig)
+    assert result_marker in folded and loop_marker in folded      # 原样外置
+    assert "&lt;!-- touchstone-" not in folded                     # 未被转义进 <pre>
+    st = _lp.parse_latest_state([folded])                         # 折叠后仍可派生状态
+    assert st.round == 6 and st.history == [["X -> Y 已改"], ["阈值 >= 1"]]
+
+
+def test_collapse_status_anchored_after_brand_h2():
+    """round-1 回归②：状态行 = 品牌 H2 之后的第一条 blockquote。全文首条 "> " 在
+    前置引用（[!NOTE] 等，降级轮的 [!CAUTION] 同理）存在时会拿错摘要。"""
+    from touchstone import orchestrator as orc
+    orig = ("> [!NOTE]\n> 前置引用块（不是状态行）\n\n"
+            "## Touchstone · AI Committer 代码检视\n\n"
+            "> 🔁 继续 · 第 2 轮 · 销项率 50%\n\n"
+            "> [!CAUTION] 降级告警\n<!-- touchstone-loop: {} -->")
+    folded = orc._collapse_review_body(orig)
+    summary = folded.split("\n")[1]        # 折叠体第 2 行 = 外置摘要行
+    assert "销项率 50%" in summary         # 取 H2 后第一条（状态行）
+    assert "前置引用块" not in summary     # 前置引用不冒充摘要
+    assert "降级告警" not in summary       # H2 后第二条 blockquote（告警）也不冒充
+    assert "前置引用块" in folded          # 原文仍完整保留在 <pre> 内（折叠不删数据）
+    # 兜底：无品牌 H2 → 全文第一条 blockquote；再无 → 占位
+    fb = orc._collapse_review_body("> 无品牌但有序\n").split("\n")[1]
+    assert fb.endswith("· 无品牌但有序")                       # 兜底取全文首条 blockquote
+    folded2 = orc._collapse_review_body("## Touchstone · AI Committer 代码检视\n无任何引用")
+    assert folded2.split("\n")[1].endswith("Touchstone 历史轮次")       # 占位

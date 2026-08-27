@@ -222,20 +222,42 @@ def _render_engine_detail(engine_status, engine_detail):
 # 去就折叠旧的，PR 上将无任何可解析 marker → 下一轮 round 归零、台账断链。
 _COLLAPSED_SENTINEL = "<!-- touchstone-collapsed -->"
 _REVIEW_BRAND = "## Touchstone · AI Committer 代码检视"
-_MARKER_RE = re.compile(r"<!-- touchstone-(?:loop|checklist|result):[^>]*-->")
+# marker 提取：非贪婪到字面终止符 -->（行内，不跨行——marker 是 json.dumps 单行产物）。
+# 【不得用 [^>]*】（round-1 评审）：result/checklist marker 的 payload 是自由文本 JSON
+# （LLM direction/reasoning 可含 "->" / ">="），[^>]* 遇 payload 内首个 '>' 即失配 →
+# 整条 marker 匹配失败 → 随正文转义进 <pre> 永久不可解析，恰好毁掉折叠要保护的
+# loop 状态/lineage 台账。残余风险（有意接受）：payload 字符串里出现字面 "-->" 会提前
+# 截断——json.dumps 不转义 '>'，但 marker 消费方（parse_latest_state 等）本就容忍坏
+# JSON 跳过，且发生频率远低于裸 '>'。
+_MARKER_RE = re.compile(r"<!-- touchstone-(?:loop|checklist|result):[^\n]*?-->")
+
+
+def _collapse_status_line(orig):
+    """折叠摘要取状态行：品牌 H2 之后的**第一条** blockquote（v2 版面结构：①标题+状态行
+    ②告警——告警也是 "> " 开头，如降级轮的 [!CAUTION]）。取「全文第一条 > 」在模板演化
+    或正文含前置引用时会拿错（round-1 评审）；锚定 H2 之后才是结构正确的取法。"""
+    lines = orig.split("\n")
+    for i, ln in enumerate(lines):
+        if ln.startswith(_REVIEW_BRAND):
+            for l2 in lines[i + 1:]:
+                if l2.startswith("> "):
+                    return l2
+            break
+    # 兜底（无品牌 H2 的异常输入）：全文第一条 blockquote；再无则占位
+    return next((ln for ln in lines if ln.startswith("> ")), "> Touchstone 历史轮次")
 
 
 def _collapse_review_body(orig):
     """单条历史评审评论 → 折叠体。
 
-    - 状态行（blockquote 首行）提到折叠体外做摘要——折叠后仍一眼可见每轮结论；
+    - 状态行（品牌 H2 后首条 blockquote）提到折叠体外做摘要——折叠后仍一眼可见每轮结论；
     - 原文空行折叠 + html.escape 进 <pre>（#168 HTML block 约束：details 内不得有空行；
       尖括号防吞；<pre> 保留换行）；
     - 机器 marker（loop/checklist/result 的 HTML 注释）从原文抽出、**原样**附在折叠体末尾
       ——HTML 注释不渲染（视觉零成本），但保持可解析：loop 状态派生、lineage 台账从已关
       PR 评论重建轮次预算都依赖它们。
     """
-    status = next((ln for ln in orig.split("\n") if ln.startswith("> ")), "Touchstone 历史轮次")
+    status = _collapse_status_line(orig)
     markers = _MARKER_RE.findall(orig)
     stripped = _MARKER_RE.sub("", orig)
     folded = re.sub(r"\n\s*\n+", "\n", stripped.strip())
