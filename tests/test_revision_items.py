@@ -874,6 +874,7 @@ def test_loop_reliable_converges_normally(rule_index):
 def test_report_layout_invariants():
     """铁律（v2）：全文唯一 H2；③④⑤ 并列段一律 H3；状态行 blockquote（循环+风险合一）。
     v2 版面：七段→六段——AI 评审 + 清单合为「评审发现与销项」；验证/日志 + 申报指引折进「参考信息」。"""
+    import re as _re
     from touchstone import render, checklist as cl
     risk = {"risk_band": "mid", "human_action": "a", "verification_decision": "v",
             "blast_radius": ["x"]}
@@ -886,7 +887,9 @@ def test_report_layout_invariants():
         loop_info=("continue", "待 author 逐项申报", ""),
         verification_blocks=["📄 完整 LLM 交互日志：http://x"],
         markers="<!-- m -->", gate_line="1/1")
-    lines = body.split("\n")
+    # <pre> 内的 skill 正文按字面渲染（## 不会成标题）——版面不变量只看会被渲染的行
+    visible = _re.sub(r"<pre>.*?</pre>", "", body, flags=_re.DOTALL)
+    lines = visible.split("\n")
     h2 = [l for l in lines if l.startswith("## ")]
     h3 = [l for l in lines if l.startswith("### ") and not l.startswith("#### ")]
     assert len(h2) == 1 and "Touchstone · AI Committer 代码检视" in h2[0]  # 唯一 H2 承载品牌与定位
@@ -1215,3 +1218,35 @@ def test_loop_waived_claims_escalate_exactly_at_max_rounds(rule_index):
         [], rule_index, loop.LoopState(round=mr - 2),
         max_rounds=mr, checklist_pair=(prev, cur))
     assert dec_before == "continue", "未耗尽(nr==max_rounds-1)时应 continue 点名待核准项"
+
+
+def test_reference_includes_ack_skill_pointer(monkeypatch):
+    """评审评论是提交代码的 agent 的必经触点——「如何申报销项」折叠内给 skill 指针。
+
+    部署事实：评审在【受评仓】运行，开发者代码仓没有 skills/ 目录——指针**恒出现**、
+    只指上游正本 URL（不引用受评仓本地路径、不用 GITHUB_REPOSITORY 拼 URL——那会 404），
+    并内联时序要点（无网 agent 至少拿到最易错规则）。正文贴入仍 file-gate：部署携带
+    了 skills/ 才有全文（运行时读文件=与正本同步，无副本漂移）。"""
+    from touchstone import render
+    url = "https://github.com/AKDI-SE/touchstone/blob/main/skills/touchstone-ack/SKILL.md"
+    # 恒出现：受评仓没有 skills/（file-gate 关）也照样提醒——URL + 时序要点
+    monkeypatch.setattr(render.os.path, "exists", lambda p: False)
+    md0 = render.render_reference(has_checklist_items=True)
+    blk0 = md0.split("<details><summary>如何申报销项</summary>")[1].split("</details>")[0]
+    assert url in blk0 and "可安装为 skill" in blk0
+    assert "推送后补 ack 本轮不计" in blk0 and "空提交" in blk0   # 内联时序要点（SKILL §4 同源）
+    assert "<pre>" not in blk0 and "仓内" not in blk0              # 无正文可贴；无「仓内」措辞
+    monkeypatch.undo()
+    # 本部署携带 skills/（touchstone 自审/fork）→ 正文全文贴在链接下方
+    md4 = render.render_reference(has_checklist_items=True)
+    blk4 = md4.split("<details><summary>如何申报销项</summary>")[1].split("</details>")[0]
+    assert "<pre>" in blk4 and "以仓正本为准" in blk4            # skill 正文在
+    assert "&lt;签名&gt;" in blk4                               # 尖括号已转义（防 HTML 吃掉）
+    assert "name: touchstone-ack" not in blk4                   # frontmatter 已剥
+    assert "仓内" not in blk4                                    # 措辞不引用受评仓本地路径
+    assert "\n\n" not in blk4                                  # 无空行（#168 HTML block 约束）
+    assert md4.index(url) < md4.index("<pre>")                   # 正文贴在链接下方
+    # 既有行为不回归：空清单仍不出申报指引
+    assert "如何申报销项" not in render.render_reference(has_checklist_items=False)
+
+

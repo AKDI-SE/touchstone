@@ -56,6 +56,10 @@ def _finding(rule_id, file, line, category, rationale, fix, rule_index,
     sev = severity or rule.get("severity", "warn")
     if rule.get("enforced"):
         sev = "block_candidate"
+    # 契约正本指针（单一收口点，所有 contract-check 发现统一带上）：提交代码的 agent 收到
+    # SCOPE/TEST/DUP 类发现时才知道「契约在哪、按什么写」——修的方向就在 .touchstone/pr.yaml
+    # 里（scope 声明/tests_added/reused_components）。仓内相对路径，离线可读。
+    fix = (fix.rstrip("。") + "（契约正本 .touchstone/pr.yaml）") if fix else fix
     return {
         "rule_id": rule_id, "file": file, "line": line, "category": category,
         "severity": sev,
