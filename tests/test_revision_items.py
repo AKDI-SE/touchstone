@@ -1234,7 +1234,10 @@ def test_reference_includes_ack_skill_pointer():
     md = render.render_reference(has_checklist_items=True)
     blk = md.split("<details><summary>如何申报销项</summary>")[1].split("</details>")[0]
     assert url in blk and "可安装为 skill" in blk
-    assert "推送后补 ack 本轮不计" in blk and "空提交" in blk   # 内联时序要点（SKILL §4 同源）
+    assert "推送后补 ack 本轮不计" in blk and "空提交" in blk   # 速览③ 时序（SKILL §4 同源）
+    assert "行内评论线程一律不计数" in blk                       # 速览① 唯一有效渠道
+    assert "下轮复检签名不再命中才落账" in blk                  # 速览② done 语义
+    assert "归人核准" in blk and "须附链接" in blk               # 速览② waived/split 语义
     assert "<pre>" not in blk                                   # 不贴正文（回归：正文已删）
     assert "skill 正本全文" not in md and "以仓正本为准" not in blk   # 无二级折叠/无正本内容
     assert "仓内" not in blk                                    # 无「仓内」措辞（不指受评仓路径）
@@ -1250,7 +1253,7 @@ def test_ack_section_readable_layout():
     from touchstone import render
     md = render.render_reference(has_checklist_items=True)
     frag = md.split("<details><summary>如何申报销项</summary>")[1].split("</details>")[0]
-    assert frag.count("<br>") == 2                              # 3 行散文 = 2 个行间分隔
+    assert frag.count("<br>") == 6                              # 7 行（指引/链接/速览①-④）= 6 个行间分隔
     assert frag.rstrip("\n").count("\n") >= 2                  # 源码层仍逐行（可 diff）
     assert "<pre>" not in frag and "skill 正本全文" not in frag  # 无正文源码/无二级折叠
     assert len(frag) < 500                                      # 打开一级 = 短指引，非糊文
