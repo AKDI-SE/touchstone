@@ -1221,51 +1221,32 @@ def test_loop_waived_claims_escalate_exactly_at_max_rounds(rule_index):
 
 
 def test_reference_includes_ack_skill_pointer(monkeypatch):
-    """评审评论是提交代码的 agent 的必经触点——「如何申报销项」折叠内给 skill 指针，
-    **离线优先**：仓内本地路径恒在（agent 手上必有本地克隆，不依赖 GitHub 网络），
-    URL 仅在线时附加（GITHUB_REPOSITORY/BASE_REF 拼，各部署指自己正本）；
-    末行内联时序要点（无文件无网络也可从评论拿到最易错规则）。
-    file-gate：skills/ 未随部署拷贝 → 不提示（不出 404 链接/不存在的本地路径）。"""
+    """评审评论是提交代码的 agent 的必经触点——「如何申报销项」折叠内给 skill 指针。
+
+    部署事实：评审在【受评仓】运行，开发者代码仓没有 skills/ 目录——指针**恒出现**、
+    只指上游正本 URL（不引用受评仓本地路径、不用 GITHUB_REPOSITORY 拼 URL——那会 404），
+    并内联时序要点（无网 agent 至少拿到最易错规则）。正文贴入仍 file-gate：部署携带
+    了 skills/ 才有全文（运行时读文件=与正本同步，无副本漂移）。"""
     from touchstone import render
-    local = "skills/touchstone-ack/SKILL.md"
     url = "https://github.com/AKDI-SE/touchstone/blob/main/skills/touchstone-ack/SKILL.md"
-    # 在线（CI）：本地路径在前 + URL 备选 + 时序要点
-    monkeypatch.setenv("GITHUB_REPOSITORY", "AKDI-SE/touchstone")
-    monkeypatch.setenv("GITHUB_BASE_REF", "main")
-    md = render.render_reference(has_checklist_items=True)
-    assert md.index(local) < md.index(url)          # 离线优先：本地路径在前
-    assert "可安装为 skill" in md
-    assert "推送后补 ack 本轮不计" in md and "空提交" in md   # 内联时序要点（SKILL §4 同源）
-    # BASE_REF 缺省（push 事件等）→ main 兜底
-    monkeypatch.delenv("GITHUB_BASE_REF")
-    assert "blob/main/skills/touchstone-ack/SKILL.md" in render.render_reference(has_checklist_items=True)
-    # 离线（无 GITHUB_REPOSITORY，如本地 dry-run / 无网 agent）：本地路径仍在、
-    # 指针行无 URL 也自足（skill 正文示例里的 https:// 属字面内容，不算指针 URL）
-    monkeypatch.delenv("GITHUB_REPOSITORY")
-    md2 = render.render_reference(has_checklist_items=True)
-    pointer2 = md2.split("<pre>")[0]
-    assert local in pointer2 and "https://" not in pointer2 and "推送后补 ack" in pointer2
-    # #168 HTML block 约束：details 内不得出现空行（换行拼接、无空行）
-    blk = md.split("<details><summary>如何申报销项</summary>")[1].split("</details>")[0]
-    assert "\n\n" not in blk
-    # file-gate：skill 不在（拷贝部署不带 skills/）→ 无指针、无 URL、无时序行
-    monkeypatch.setenv("GITHUB_REPOSITORY", "AKDI-SE/touchstone")
+    # 恒出现：受评仓没有 skills/（file-gate 关）也照样提醒——URL + 时序要点
     monkeypatch.setattr(render.os.path, "exists", lambda p: False)
-    md3 = render.render_reference(has_checklist_items=True)
-    assert "如何申报销项" in md3 and "skills/touchstone-ack" not in md3 and "推送后补" not in md3
-    # 正本正文贴在链接下方（<pre>、转义、空行折叠、剥 frontmatter）——评论自足：
-    # 无网无本地克隆的 agent 也能照办；运行时读文件 = 与正本同步，无副本漂移。
+    md0 = render.render_reference(has_checklist_items=True)
+    blk0 = md0.split("<details><summary>如何申报销项</summary>")[1].split("</details>")[0]
+    assert url in blk0 and "可安装为 skill" in blk0
+    assert "推送后补 ack 本轮不计" in blk0 and "空提交" in blk0   # 内联时序要点（SKILL §4 同源）
+    assert "<pre>" not in blk0 and "仓内" not in blk0              # 无正文可贴；无「仓内」措辞
     monkeypatch.undo()
+    # 本部署携带 skills/（touchstone 自审/fork）→ 正文全文贴在链接下方
     md4 = render.render_reference(has_checklist_items=True)
     blk4 = md4.split("<details><summary>如何申报销项</summary>")[1].split("</details>")[0]
     assert "<pre>" in blk4 and "以仓正本为准" in blk4            # skill 正文在
     assert "&lt;签名&gt;" in blk4                               # 尖括号已转义（防 HTML 吃掉）
     assert "name: touchstone-ack" not in blk4                   # frontmatter 已剥
+    assert "仓内" not in blk4                                    # 措辞不引用受评仓本地路径
     assert "\n\n" not in blk4                                  # 无空行（#168 HTML block 约束）
-    # file-gate 同管正文：skill 文件不在 → 正文也不出（正文只随指针出现）
-    monkeypatch.setattr(render.os.path, "exists", lambda p: False)
-    md5 = render.render_reference(has_checklist_items=True)
-    assert "<pre>" not in md5 and "以仓正本为准" not in md5
-    monkeypatch.undo()
+    assert md4.index(url) < md4.index("<pre>")                   # 正文贴在链接下方
     # 既有行为不回归：空清单仍不出申报指引
     assert "如何申报销项" not in render.render_reference(has_checklist_items=False)
+
+

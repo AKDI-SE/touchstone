@@ -64,8 +64,10 @@ def test_pr_template_names_the_two_reads():
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     tpl = open(os.path.join(root, ".github", "PULL_REQUEST_TEMPLATE.md"), encoding="utf-8").read()
     for key in (".touchstone/pr.yaml", "intent", "acceptance_criteria", "scope",
-                "CLAUDE.md", "skills/touchstone-ack/SKILL.md", "SCOPE-001"):
+                "CLAUDE.md", "SCOPE-001",
+                "https://github.com/AKDI-SE/touchstone/blob/main/skills/touchstone-ack/SKILL.md"):
         assert key in tpl, f"PR 模板缺关键提醒：{key}"
+    assert "仓内 skills" not in tpl        # 受评仓（开发者代码仓）没有该路径——不得引用
 
 
 def test_contract_findings_point_to_pr_yaml():
