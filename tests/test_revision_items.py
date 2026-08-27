@@ -1435,3 +1435,23 @@ def test_ack_section_readable_layout():
     assert "\n\n" not in frag.split("</details>")[0] + nested   # 嵌套两段均无空行（#168）
     # 二级收尾存在：嵌套后还有一级的 </details>（两级都闭合）
     assert "skill 正本全文" in md and md.count("</details>") >= md.count("<details>")
+
+def test_collapse_skipped_on_gitcode(monkeypatch, capsys):
+    """合并 #186 后守卫：GitCode 的 PR 评论 id 与 GitHub /issues/comments 命名空间
+    未必一致——拿 pulls 侧 id PATCH issues/comments/{id} 可能改错评论；编辑端点
+    无法离线核实，故 GitCode 整体跳过折叠（纯视觉功能，降级无状态损失）。"""
+    from touchstone import orchestrator as orc
+    monkeypatch.setattr(orc, "_is_gitcode", lambda: True)
+    calls = []
+
+    def fake_gh(method, path, token, data=None, **k):
+        calls.append(method)
+
+    monkeypatch.setattr(orc, "gh", fake_gh)
+    review = "## Touchstone · AI Committer 代码检视\n\n> 第 1 轮\n<!-- touchstone-loop: {} -->"
+    orc._collapse_stale_reviews("o", "r", "t", [{"id": 21, "body": review}])
+    assert calls == []                                   # 绝不 PATCH（防改错评论）
+    assert "GitCode" in capsys.readouterr().err          # 有告警可观测
+    monkeypatch.setattr(orc, "_is_gitcode", lambda: False)
+    orc._collapse_stale_reviews("o", "r", "t", [{"id": 22, "body": review}])
+    assert calls == ["PATCH"]                            # GitHub 侧行为不变

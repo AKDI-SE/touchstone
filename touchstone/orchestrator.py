@@ -366,7 +366,18 @@ def _stale_review_comments(comments, bot_login):
 
 
 def _collapse_stale_reviews(owner, repo, token, stale):
-    """就地编辑（PATCH）历史评论为折叠体。逐条隔离：单条失败只告警，不阻塞评审主链。"""
+    """就地编辑（PATCH）历史评论为折叠体。逐条隔离：单条失败只告警，不阻塞评审主链。
+
+    GitCode 平台整体跳过（合并 origin/main #186 后补的守卫）：GitCode 的 PR 评论走
+    /pulls/{n}/comments，其评论 id 与 GitHub /issues/comments 命名空间未必一致——
+    拿 pulls 侧 id 去 PATCH issues/comments/{id} 有改错评论的风险，而 GitCode 的
+    编辑端点无法离线核实（不猜端点）。折叠是纯视觉功能：跳过 = 历史评论保持原样
+    （marker 完整，状态无损），等端点核实后再开。"""
+    if _is_gitcode():
+        if stale:
+            print("[info] GitCode 平台暂不折叠历史评审评论（编辑端点未核实，保持原样）",
+                  file=sys.stderr)
+        return
     for c in stale:
         try:
             gh("PATCH", f"/repos/{owner}/{repo}/issues/comments/{c['id']}", token,
