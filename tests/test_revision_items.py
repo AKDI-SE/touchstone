@@ -1250,3 +1250,23 @@ def test_reference_includes_ack_skill_pointer(monkeypatch):
     assert "如何申报销项" not in render.render_reference(has_checklist_items=False)
 
 
+
+
+def test_ack_section_readable_layout():
+    """「如何销项内容混乱」回归（用户反馈）：①HTML block 内裸 \\n 不换行——三行散文
+    连排成糊文，行间必须 <br>；②4300 字符 skill 正本源码不得直接砸进一级折叠——
+    进二级嵌套 <details>，打开一级只见短指引。无空行约束（#168）不因嵌套破坏。"""
+    from touchstone import render
+    md = render.render_reference(has_checklist_items=True)   # 本仓携带 skills/ → 有正文
+    frag = md.split("<details><summary>如何申报销项</summary>")[1]
+    lvl1 = frag.split("<details><summary>skill 正本全文")[0]     # 一级直见内容（二级之前）
+    assert lvl1.count("<br>") == 2                              # 3 行散文 = 2 个行间分隔
+    assert lvl1.rstrip("\n").count("\n") >= 2                   # 源码层仍逐行（可 diff）
+    assert "<pre>" not in lvl1                                  # 一级不见正本源码墙
+    assert len(lvl1) < 500                                      # 打开一级 = 短指引，非糊文
+    nested = frag.split("<details><summary>skill 正本全文")[1].split("</details>")[0]
+    assert nested.startswith("（离线参考") or "离线参考" in nested[:30]
+    assert "<pre>" in nested and "以仓正本为准" in nested       # 全文仍在（离线自足不丢）
+    assert "\n\n" not in frag.split("</details>")[0] + nested   # 嵌套两段均无空行（#168）
+    # 二级收尾存在：嵌套后还有一级的 </details>（两级都闭合）
+    assert "skill 正本全文" in md and md.count("</details>") >= md.count("<details>")

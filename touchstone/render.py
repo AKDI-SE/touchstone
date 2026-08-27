@@ -369,9 +369,10 @@ def _ack_skill_ref():
 
     恒出现——不依赖受评仓是否携带 skills/（开发者代码仓没有）：规范 URL + 内联时序
     要点（无网 agent 至少从评论本身拿到最易错的规则；与 SKILL.md §4 同源，改时序须
-    两处同步）。"""
-    return (f"Agent 销项完整规程（可安装为 skill 或直接参考）：{_ACK_SKILL_URL}"
-            "\n时序要点：改码 → 提交 → 发 ack 评论 → 推送（推送后补 ack 本轮不计；"
+    两处同步）。行间用 <br>：本段落在 HTML block 里，裸 \n 浏览器不换行（三行散文会
+    连排成糊文——round-4 后用户反馈"如何销项内容混乱"其一）。"""
+    return (f"Agent 销项完整规程（可安装为 skill 或直接参考）：{_ACK_SKILL_URL}<br>\n"
+            "时序要点：改码 → 提交 → 发 ack 评论 → 推送（推送后补 ack 本轮不计；"
             "纯 ack 轮用空提交承载）。")
 
 
@@ -397,7 +398,12 @@ def _ack_skill_body():
     body = re.sub(r"\n\s*\n+", "\n", raw.strip())   # 空行折叠（HTML block 约束）
     if not body:
         return ""
-    return f"<pre>{html.escape(body)}</pre>"
+    # 二级嵌套折叠：打开一级「如何申报销项」只该看到 3 行短指引——4300 字符正本源码
+    # 糊在小折叠块里不可读（round-4 后用户反馈"如何销项内容混乱"其二）。有意要全文
+    # 的人自己展开二级（嵌套 <details> 合法，同样须守 #168 无空行约束）。
+    return ("<details><summary>skill 正本全文（离线参考，无网也能照办）</summary>\n"
+            f"<pre>{html.escape(body)}</pre>\n"
+            "</details>")
 
 
 def render_reference(verification_blocks=None, has_checklist_items=False):
@@ -411,8 +417,8 @@ def render_reference(verification_blocks=None, has_checklist_items=False):
     if has_checklist_items:
         body = ("发评论，内容为 <code>touchstone-ack</code> 代码块，每行 "
                 "<code>&lt;签名&gt;: done|waived: 理由|split: 链接</code>。"
-                "勾选/申报是输入信号，以评审方按达成判据复核后的本清单为准。")
-        body += "\n" + _ack_skill_ref()           # 恒出现（受评仓无 skills/ 也提醒）
+                "勾选/申报是输入信号，以评审方按达成判据复核后的本清单为准。<br>\n")
+        body += _ack_skill_ref()                    # 恒出现（受评仓无 skills/ 也提醒）
         skill_body = _ack_skill_body()              # 正文 file-gate：部署携带了 skills/ 才有全文
         if skill_body:
             body += "\n" + skill_body               # 正本正文贴在链接下方（<pre>，自足评论）
