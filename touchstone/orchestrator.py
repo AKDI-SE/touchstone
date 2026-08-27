@@ -324,12 +324,19 @@ def _marker_payload_ok(marker):
 def _repair_marker(orig, pos):
     """从原文 pos 起修复损坏 marker：raw_decode 从首个 '{' 取完整 JSON（字符串内的
     '-->' 不干扰——checklist.parse_latest 同技），重新序列化 + html_comment_safe_json
-    转义。修复不了（真不是 JSON）返回 None——调用方放弃折叠该评论。"""
+    转义。修复不了（真不是 JSON）返回 None——调用方放弃折叠该评论。
+
+    round-7 销项（PRA-POSSIBLE_ISSUE）：'{' 的搜索必须限定在 marker 名前缀紧邻之后——
+    此前无界 orig.find("{", pos) 在坏 marker 载荷没有 '{' 时会一路落到【后续】真 marker
+    或正文的 '{' 上，raw_decode 成功即产出张冠李戴的"修复"（loop 名挂着 checklist 载荷）。
+    前缀后跳过空白若非 '{'，直接判不可修复。"""
     name = re.match(r"<!-- touchstone-(loop|checklist|result):", orig[pos:])
     if not name:
         return None
-    i = orig.find("{", pos)
-    if i < 0:
+    i = pos + name.end()                     # 名前缀（含冒号）之后
+    while i < len(orig) and orig[i] in " \t":
+        i += 1
+    if i >= len(orig) or orig[i] != "{":
         return None
     try:
         obj, _ = json.JSONDecoder().raw_decode(orig[i:])
@@ -337,6 +344,28 @@ def _repair_marker(orig, pos):
         return None
     return (f"<!-- touchstone-{name.group(1)}: "
             + checklist_mod.html_comment_safe_json(obj) + " -->")
+
+
+def _tail_marker_start(orig, matches):
+    """尾部区（真 marker 的信任域）起点判定：真 marker 统一追加在报告最后（⑥ 段，
+    位于最后一个 </details> 之后）。round-7 销项（PRA-GENERAL）：
+
+    - 正文含 </details> → 尾部区 = 最后一个 </details> 之后——正文中引用/示例的假
+      marker（LLM 转述 marker 语法）几乎都在 依据/reference 的 details 体内，天然
+      落在信任域外；
+    - 无 </details> 的退化正文（极简夹具/异常输入）→ 尾部区无从锚定，退回信任全域：
+      宁可保守外置（round-6 的同类去重保最后仍是防线），不误杀真 marker——尤其别
+      把「历史裸 dumps 损坏 marker」的修复路径堵死（损坏 marker 的正则残片截在载荷
+      中段，任何「从末尾回扫连续 marker 段」的口径都会把它判到信任域外）。
+
+    同类去重保最后（round-6）只在假 marker 之后还有同类真 marker 时兜得住；引用了
+    本评论从未真实发射过的 kind（如只有 checklist 的评论里引用 loop round=99）时假货
+    是同类唯一出现，keep-last 会原样外置污染 parse_latest_state——信任域把这类假货
+    整类挡在门外（不外化 ≠ 丢失：原文仍在折叠 <pre> 里）。"""
+    k = orig.rfind("</details>")
+    if k != -1:
+        return k + len("</details>")
+    return 0
 
 
 def _collapse_status_line(orig):
@@ -371,8 +400,16 @@ def _collapse_review_body(orig):
       PR 评论重建轮次预算都依赖它们。
     """
     status = _collapse_status_line(orig)
+    matches = list(_MARKER_RE.finditer(orig))
+    # 只外化【尾部区】marker（round-7 销项 PRA-GENERAL，信任域判定见 _tail_marker_start）：
+    # 正文引用的假 marker 不外化（原文仍在折叠 <pre> 里可见），kind 仅正文出现则整类消失
+    # ——防引用伪造污染 parse_latest_state/lineage。尾部区的损坏 marker（历史裸 dumps
+    # 截断）才走修复；修不好（真不是 JSON）放弃折叠该评论。
+    tail_start = _tail_marker_start(orig, matches)
     markers = []
-    for m in _MARKER_RE.finditer(orig):
+    for m in matches:
+        if m.start() < tail_start:
+            continue                             # 正文引用：不外化
         frag = m.group(0)
         if _marker_payload_ok(frag):
             markers.append(frag)
@@ -381,9 +418,8 @@ def _collapse_review_body(orig):
         if rep is None:                         # 完整区间修复；修不好才放弃折叠
             return None
         markers.append(rep)
-    # 同类去重保最后一个（round-6）：正文散文里引用/示例的 marker（LLM 转述 marker
-    # 语法）会被一并抽出原样外置——假 marker 污染 parse_latest。真实 marker 统一
-    # 追加在报告尾部 → 同类取最后一个；定序 loop/checklist/result 保持稳定输出。
+    # 同类去重保最后一个（round-6）：尾部区同类多次出现（如损坏残片与其真身）取最后；
+    # 定序 loop/checklist/result 保持稳定输出。
     by_kind = {}
     for mk in markers:
         k = re.match(r"<!-- touchstone-(loop|checklist|result):", mk).group(1)

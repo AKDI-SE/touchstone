@@ -1404,6 +1404,56 @@ def test_collapse_dedupes_quoted_markers_keeps_last():
     assert "PRA-Y:b.py:2" in folded                           # 真实清单内容保留
 
 
+def test_collapse_drops_quoted_marker_of_never_emitted_kind():
+    """round-7 回归（PRA-GENERAL）：同类去重保最后只在假 marker 之后还有同类【真】
+    marker 时兜得住。依据 details 里引用一个本评论从未真实发射过的 kind（假 loop
+    round=99，载荷是合法 JSON——payload 校验拦不住）+ 尾部真 checklist：keep-last
+    会把假货原样外置，parse_latest_state 读到 round 99。修法：只外化尾部区（最后
+    一个 </details> 之后）——正文引用不外化，kind 仅正文出现则整类消失。"""
+    from touchstone import orchestrator as orc, checklist as cl, loop as lp
+    fake_loop = '<!-- touchstone-loop: {"round": 99, "history": [], "last_verdict": true} -->'
+    real_cl = ('<!-- touchstone-checklist: {"round": 7, "items": [{"sig": "PRA-Y:b.py:2"}], '
+               '"resolved_rate": 0.0} -->')
+    orig = ("## Touchstone · AI Committer 代码检视\n\n> 第 7 轮\n\n"
+            "### 评审发现与销项\n\n- [ ] **t** — `PRA-X:a.py:1`\n"
+            "  - <details><summary>依据（10 字）：quoted marker</summary>\n"
+            "    prose quoting " + fake_loop + " as example\n"
+            "    </details>\n\n" + real_cl)
+    folded = orc._collapse_review_body(orig)
+    assert folded is not None
+    assert folded.count("<!-- touchstone-loop:") == 0        # 假 loop 不外置（整类丢弃）
+    assert folded.count("<!-- touchstone-checklist:") == 1   # 真 checklist 照常外置
+    assert lp.parse_latest_state([folded]).round == 0        # 读不到 round 99
+    assert cl.parse_latest([folded])["round"] == 7
+    assert "round\": 99" not in folded                        # 假载荷不进折叠体 marker 区
+
+
+def test_repair_marker_json_search_bounded_to_prefix():
+    """round-7 回归（PRA-POSSIBLE_ISSUE）：坏 marker 载荷没有 '{' 时，无界
+    orig.find("{", pos) 会落到【后续】真 marker 的 '{' 上——raw_decode 成功即产出
+    张冠李戴的"修复"（loop 名挂 checklist 载荷）。修法：'{' 必须紧跟名前缀（跳空白），
+    否则判不可修复。"""
+    from touchstone import orchestrator as orc, loop as lp
+    real_cl = ('<!-- touchstone-checklist: {"round": 7, "items": [{"sig": "PRA-Y:b.py:2"}], '
+               '"resolved_rate": 0.0} -->')
+    # 尾部：无 '{' 的坏 loop marker 在前、真 checklist 在后——旧代码会把 checklist
+    # 载荷嫁接到 loop 名下；新代码判不可修复 → 放弃折叠（不产出张冠李戴的 marker）
+    orig = ("## Touchstone · AI Committer 代码检视\n\n> 第 4 轮\n\n"
+            "<!-- touchstone-loop: not-json -->\n" + real_cl)
+    assert orc._collapse_review_body(orig) is None
+    # 对照：前缀后确是 '{' 的损坏 loop marker（载荷内嵌 '-->' 被正则截断）→ 正常
+    # 修复回 loop 自己的载荷，轮次不丢、不跨类嫁接
+    broken_loop = ('<!-- touchstone-loop: {"round": 4, "history": '
+                   '[["sig with `-->` inside"]], "last_verdict": true} -->')
+    orig2 = ("## Touchstone · AI Committer 代码检视\n\n> 第 4 轮\n\n"
+             + broken_loop + "\n" + real_cl)
+    folded = orc._collapse_review_body(orig2)
+    assert folded is not None
+    st = lp.parse_latest_state([folded])
+    assert st.round == 4 and st.history == [["sig with `-->` inside"]]
+    assert folded.count("<!-- touchstone-checklist:") == 1   # checklist 未被嫁接进 loop
+
+
 def test_collapse_no_brand_h2_uses_placeholder():
     """round-6 回归：无品牌 H2 → 直接占位。全文扫首条 '>'（旧兜底）是无界扫描借尸
     还魂——受信评审评论必有品牌 H2（_stale_review_comments 以其过滤），无 H2 即模板
