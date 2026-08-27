@@ -10,6 +10,7 @@
 # 个别测试文件污染 sys.path 而在全量测试中被掩盖（单跑文件才炸）。现改为顶层包导入。
 # ============================================================================
 
+import html
 import os
 import re
 import sys
@@ -351,6 +352,60 @@ def render_findings_checklist(findings, checklist, review_reliable=True):
     return "\n".join(lines)
 
 
+# 销项规程正本的规范 URL（上游仓）。评审部署在【任意受评仓】运行——开发者代码仓里
+# 没有 skills/ 目录，指针不能引用受评仓本地路径（不存在），也不能用 GITHUB_REPOSITORY
+# 拼 URL（会指向受评仓自己的 404）；统一指上游正本。本地文件仅作贴文来源
+# （_ack_skill_body：引擎部署若携带了 skills/ 才有全文可贴）。
+_ACK_SKILL_URL = "https://github.com/AKDI-SE/touchstone/blob/main/skills/touchstone-ack/SKILL.md"
+
+
+def _ack_skill_path():
+    here = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(here, os.pardir, "skills", "touchstone-ack", "SKILL.md")
+
+
+def _ack_skill_ref():
+    """给【提交代码的 agent】的销项规程指针（评审评论必经之地 = 最可靠的提醒触点）。
+
+    恒出现——不依赖受评仓是否携带 skills/（开发者代码仓没有）：规范 URL + 内联时序
+    要点（无网 agent 至少从评论本身拿到最易错的规则；与 SKILL.md §4 同源，改时序须
+    两处同步）。行间用 <br>：本段落在 HTML block 里，裸 \n 浏览器不换行（三行散文会
+    连排成糊文——round-4 后用户反馈"如何销项内容混乱"其一）。"""
+    return (f"Agent 销项完整规程（可安装为 skill 或直接参考）：{_ACK_SKILL_URL}<br>\n"
+            "时序要点：改码 → 提交 → 发 ack 评论 → 推送（推送后补 ack 本轮不计；"
+            "纯 ack 轮用空提交承载）。")
+
+
+def _ack_skill_body():
+    """skill 正本正文贴进评论（链接下方）——运行时读文件，永远与正本同步（无副本可漂移，
+    正好回应 SKILL.md §0 的副本漂移担忧）。评论自身即自足：无网、无本地克隆的 agent
+    也能照办。
+
+    两个渲染约束（#168 HTML block 教训）：
+    - <details> 内不得有空行（空行截断 type-6 HTML block）→ 正文空行折叠为单个换行；
+    - 正文含 <签名> 等尖括号 → html.escape 后进 <pre>（保留换行、原样可读）。
+    frontmatter（name/description）剥除——那是 skill 装载器的元数据，不是规程内容。"""
+    if not os.path.exists(_ack_skill_path()):
+        return ""                                  # 部署未携带 skills/（开发者仓常态）
+    try:
+        with open(_ack_skill_path(), encoding="utf-8") as f:
+            raw = f.read()
+    except OSError:
+        return ""
+    m = re.match(r"^---\n.*?\n---\n", raw, re.DOTALL)   # 剥 frontmatter（首个 ---…--- 块）
+    if m:
+        raw = raw[m.end():]
+    body = re.sub(r"\n\s*\n+", "\n", raw.strip())   # 空行折叠（HTML block 约束）
+    if not body:
+        return ""
+    # 二级嵌套折叠：打开一级「如何申报销项」只该看到 3 行短指引——4300 字符正本源码
+    # 糊在小折叠块里不可读（round-4 后用户反馈"如何销项内容混乱"其二）。有意要全文
+    # 的人自己展开二级（嵌套 <details> 合法，同样须守 #168 无空行约束）。
+    return ("<details><summary>skill 正本全文（离线参考，无网也能照办）</summary>\n"
+            f"<pre>{html.escape(body)}</pre>\n"
+            "</details>")
+
+
 def render_reference(verification_blocks=None, has_checklist_items=False):
     """⑤ v2 参考信息（观测意见 5）：验证/日志 + 申报指引，全部 <details> 折叠（默认不占屏）。
     无内容时整段省略。<details> 是 CommonMark type-6 HTML block——summary/body/</details>
@@ -360,11 +415,14 @@ def render_reference(verification_blocks=None, has_checklist_items=False):
         content = "\n\n".join(verification_blocks)
         blocks.append(f"<details><summary>验证与日志</summary>\n{content}\n</details>")
     if has_checklist_items:
-        blocks.append("<details><summary>如何申报销项</summary>\n"
-                      "发评论，内容为 <code>touchstone-ack</code> 代码块，每行 "
-                      "<code>&lt;签名&gt;: done|waived: 理由|split: 链接</code>。"
-                      "勾选/申报是输入信号，以评审方按达成判据复核后的本清单为准。\n"
-                      "</details>")
+        body = ("发评论，内容为 <code>touchstone-ack</code> 代码块，每行 "
+                "<code>&lt;签名&gt;: done|waived: 理由|split: 链接</code>。"
+                "勾选/申报是输入信号，以评审方按达成判据复核后的本清单为准。<br>\n")
+        body += _ack_skill_ref()                    # 恒出现（受评仓无 skills/ 也提醒）
+        skill_body = _ack_skill_body()              # 正文 file-gate：部署携带了 skills/ 才有全文
+        if skill_body:
+            body += "\n" + skill_body               # 正本正文贴在链接下方（<pre>，自足评论）
+        blocks.append(f"<details><summary>如何申报销项</summary>\n{body}\n</details>")
     if not blocks:
         return ""
     return "### 参考信息\n\n" + "\n\n".join(blocks)

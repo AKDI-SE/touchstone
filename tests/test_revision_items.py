@@ -874,6 +874,7 @@ def test_loop_reliable_converges_normally(rule_index):
 def test_report_layout_invariants():
     """铁律（v2）：全文唯一 H2；③④⑤ 并列段一律 H3；状态行 blockquote（循环+风险合一）。
     v2 版面：七段→六段——AI 评审 + 清单合为「评审发现与销项」；验证/日志 + 申报指引折进「参考信息」。"""
+    import re as _re
     from touchstone import render, checklist as cl
     risk = {"risk_band": "mid", "human_action": "a", "verification_decision": "v",
             "blast_radius": ["x"]}
@@ -886,7 +887,9 @@ def test_report_layout_invariants():
         loop_info=("continue", "待 author 逐项申报", ""),
         verification_blocks=["📄 完整 LLM 交互日志：http://x"],
         markers="<!-- m -->", gate_line="1/1")
-    lines = body.split("\n")
+    # <pre> 内的 skill 正文按字面渲染（## 不会成标题）——版面不变量只看会被渲染的行
+    visible = _re.sub(r"<pre>.*?</pre>", "", body, flags=_re.DOTALL)
+    lines = visible.split("\n")
     h2 = [l for l in lines if l.startswith("## ")]
     h3 = [l for l in lines if l.startswith("### ") and not l.startswith("#### ")]
     assert len(h2) == 1 and "Touchstone · AI Committer 代码检视" in h2[0]  # 唯一 H2 承载品牌与定位
@@ -1380,3 +1383,55 @@ def test_collapse_status_anchored_after_brand_h2():
     assert fb.endswith("· 无品牌但有序")                       # 兜底取全文首条 blockquote
     folded2 = orc._collapse_review_body("## Touchstone · AI Committer 代码检视\n无任何引用")
     assert folded2.split("\n")[1].endswith("Touchstone 历史轮次")       # 占位
+
+
+def test_reference_includes_ack_skill_pointer(monkeypatch):
+    """评审评论是提交代码的 agent 的必经触点——「如何申报销项」折叠内给 skill 指针。
+
+    部署事实：评审在【受评仓】运行，开发者代码仓没有 skills/ 目录——指针**恒出现**、
+    只指上游正本 URL（不引用受评仓本地路径、不用 GITHUB_REPOSITORY 拼 URL——那会 404），
+    并内联时序要点（无网 agent 至少拿到最易错规则）。正文贴入仍 file-gate：部署携带
+    了 skills/ 才有全文（运行时读文件=与正本同步，无副本漂移）。"""
+    from touchstone import render
+    url = "https://github.com/AKDI-SE/touchstone/blob/main/skills/touchstone-ack/SKILL.md"
+    # 恒出现：受评仓没有 skills/（file-gate 关）也照样提醒——URL + 时序要点
+    monkeypatch.setattr(render.os.path, "exists", lambda p: False)
+    md0 = render.render_reference(has_checklist_items=True)
+    blk0 = md0.split("<details><summary>如何申报销项</summary>")[1].split("</details>")[0]
+    assert url in blk0 and "可安装为 skill" in blk0
+    assert "推送后补 ack 本轮不计" in blk0 and "空提交" in blk0   # 内联时序要点（SKILL §4 同源）
+    assert "<pre>" not in blk0 and "仓内" not in blk0              # 无正文可贴；无「仓内」措辞
+    monkeypatch.undo()
+    # 本部署携带 skills/（touchstone 自审/fork）→ 正文全文贴在链接下方
+    md4 = render.render_reference(has_checklist_items=True)
+    blk4 = md4.split("<details><summary>如何申报销项</summary>")[1].split("</details>")[0]
+    assert "<pre>" in blk4 and "以仓正本为准" in blk4            # skill 正文在
+    assert "&lt;签名&gt;" in blk4                               # 尖括号已转义（防 HTML 吃掉）
+    assert "name: touchstone-ack" not in blk4                   # frontmatter 已剥
+    assert "仓内" not in blk4                                    # 措辞不引用受评仓本地路径
+    assert "\n\n" not in blk4                                  # 无空行（#168 HTML block 约束）
+    assert md4.index(url) < md4.index("<pre>")                   # 正文贴在链接下方
+    # 既有行为不回归：空清单仍不出申报指引
+    assert "如何申报销项" not in render.render_reference(has_checklist_items=False)
+
+
+
+
+def test_ack_section_readable_layout():
+    """「如何销项内容混乱」回归（用户反馈）：①HTML block 内裸 \\n 不换行——三行散文
+    连排成糊文，行间必须 <br>；②4300 字符 skill 正本源码不得直接砸进一级折叠——
+    进二级嵌套 <details>，打开一级只见短指引。无空行约束（#168）不因嵌套破坏。"""
+    from touchstone import render
+    md = render.render_reference(has_checklist_items=True)   # 本仓携带 skills/ → 有正文
+    frag = md.split("<details><summary>如何申报销项</summary>")[1]
+    lvl1 = frag.split("<details><summary>skill 正本全文")[0]     # 一级直见内容（二级之前）
+    assert lvl1.count("<br>") == 2                              # 3 行散文 = 2 个行间分隔
+    assert lvl1.rstrip("\n").count("\n") >= 2                   # 源码层仍逐行（可 diff）
+    assert "<pre>" not in lvl1                                  # 一级不见正本源码墙
+    assert len(lvl1) < 500                                      # 打开一级 = 短指引，非糊文
+    nested = frag.split("<details><summary>skill 正本全文")[1].split("</details>")[0]
+    assert nested.startswith("（离线参考") or "离线参考" in nested[:30]
+    assert "<pre>" in nested and "以仓正本为准" in nested       # 全文仍在（离线自足不丢）
+    assert "\n\n" not in frag.split("</details>")[0] + nested   # 嵌套两段均无空行（#168）
+    # 二级收尾存在：嵌套后还有一级的 </details>（两级都闭合）
+    assert "skill 正本全文" in md and md.count("</details>") >= md.count("<details>")

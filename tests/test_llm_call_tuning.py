@@ -226,10 +226,19 @@ def test_guard_injects_thinking_extra_body():
     g = R._guard_acompletion(fake, extra_body={"thinking": {"type": "disabled"}})
     asyncio.run(g(model="m"))
     assert captured["extra_body"] == {"thinking": {"type": "disabled"}}
-    # 上游显式传参不覆盖
+    # 上游（pr-agent 0.43 chat_completion）自带 extra_body：字段级 setdefault 合并——
+    # 上游字段保留（a:1）、我方 thinking 补入；不再整体跳过（旧 "not in" 会令思考开关失效）。
     captured.clear()
     asyncio.run(g(model="m", extra_body={"a": 1}))
-    assert captured["extra_body"] == {"a": 1}
+    assert captured["extra_body"] == {"a": 1, "thinking": {"type": "disabled"}}
+    # 上游显式同名 thinking 字段优先（setdefault 不覆盖上游决策）
+    captured.clear()
+    asyncio.run(g(model="m", extra_body={"thinking": {"type": "enabled"}}))
+    assert captured["extra_body"] == {"thinking": {"type": "enabled"}}
+    # 上游显式 extra_body=None/空 dict：与未传等价，仍注入思考开关
+    captured.clear()
+    asyncio.run(g(model="m", extra_body=None))
+    assert captured["extra_body"] == {"thinking": {"type": "disabled"}}
 
 
 def test_guard_without_thinking_injects_nothing(monkeypatch):

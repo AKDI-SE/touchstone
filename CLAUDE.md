@@ -48,6 +48,8 @@
 - **诚实标 gap。** 遇到可选/未实现的东西（TF-GRPO 那条更强做法、默认关的 verify/autonomy），描述时就如实说它是可选/未实现，**不要写成"现行能力"**。文档里"把休眠当现行说"已被多次清理过，别再制造。
 - **复用成熟开源组件。** 尽可能复用成熟、经过社区验证的开源库，不要重复造轮子。现有核心依赖：`unidiff` / `requests` / `openai` / `pyyaml` / `pytest` / `coverage`。测试用 `unittest.mock`（stdlib，零额外依赖）。引入新依赖时在 PR 里说明理由与替代方案对比。PR-Agent 在**独立 venv、不进仓库**，只经 `pr_agent_runner.py` 子进程调用——不要把它的包塞进本仓依赖。
 - **遇到这些信号立刻停下问人**：要删东西、要改契约/共有文件、要碰安全/凭据相关、跨层改动、或你发现自己在"为了让测试过而修改测试"。
+- **收到 Touchstone 评审意见要销项时**：先读 `skills/touchstone-ack/SKILL.md`（正本；agent 可把它安装为 skill——Claude Code 下 `.claude/skills/touchstone-ack` 软链即仓内预装）。围栏申报格式、时序（改码→提交→发 ack 评论→推送）、waived 反证质量线全在那里面，**别凭印象申报**。
+- **开 PR 前填提交契约**：`.touchstone/pr.yaml` 必填三件（intent / acceptance_criteria / scope），其余按价值递减选填——PR body 的「改动说明」与 intent 保持一致；每个声明都会被独立核对（scope 外改动=SCOPE-001 等），申报不实只烧你自己的修改轮次。
 
 ---
 
