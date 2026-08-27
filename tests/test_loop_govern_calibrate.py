@@ -427,12 +427,13 @@ def test_author_self_resolve_not_counted_as_adoption():
     # 他人 resolve → 仍算采纳
     threads[0]['resolved_by'] = 'reviewer2'
     assert calibrate.thread_findings(threads, 'github-actions[bot]', pr_author='author1')[0]['resolved'] is True
-
-
 # ============================================================================
 # 引擎故障轮不计入轮次（LLM 调用失败 → 检视未成功，不消耗作者预算）
 # PR #183 实录：glm 429 连续 4 轮 llm_failed，4 轮预算白烧——故障是基础设施问题，
 # 不该由作者买单。
+# 刻意【不设】连续故障上限/防滥用闸（评审复盘结论）：故障轮对作者零收益（不产出 LLM
+# 发现、此路径到不了 converged、review_reliable=False 抑制销项），作者也无法制造 LLM
+# 故障；每轮由作者 push 触发、bot 不自触发，无无限循环。轮次预算语义 = 成功评审数。
 # ============================================================================
 def test_engine_failed_round_not_counted(rule_index):
     """LLM 调用失败 → 本轮不消耗预算：round 冻结、history 不追加空集、决策 continue。"""
@@ -441,17 +442,18 @@ def test_engine_failed_round_not_counted(rule_index):
     assert dec == "continue"
     assert ns.round == 4                            # 轮次冻结（不 +1）
     assert ns.history == st.history                 # 不追加空集（空集会污染无推进/震荡判定）
-    assert ns.unreliable_streak == 1
     assert "不计入轮次" in reason
 
 
-def test_engine_failed_consecutive_cap_escalates(rule_index):
-    """非无限白嫖：连续故障达 UNRELIABLE_STREAK_CAP → 升级人工（运维信号），轮次仍未消耗。"""
-    st = loop.LoopState(round=2, history=[["X"]],
-                        unreliable_streak=loop.UNRELIABLE_STREAK_CAP - 1)
-    dec, reason, ns = loop.loop_step([_f("OE-001")], rule_index, st, engine_failed=True)
-    assert dec == "escalate" and "连续" in reason and "交人" in reason
-    assert ns.round == 2 and ns.unreliable_streak == loop.UNRELIABLE_STREAK_CAP
+def test_engine_failed_never_escalates_even_persistent(rule_index):
+    """故障再久也不升级：连续故障不是作者的错，不能打 needs-human（那是震荡/假修/耗尽等
+    作者行为问题的通道）。基础设施故障的可见性由 ⚠️ 横幅 + CAUTION 块承担，不走 PR 升级。"""
+    st = loop.LoopState(round=4, history=[["OE-001:f:1"]])
+    for _ in range(10):                             # 远超任何「上限」假设值
+        dec, reason, ns = loop.loop_step([_f("OE-001")], rule_index, st, engine_failed=True)
+        assert dec == "continue" and "不计入轮次" in reason
+        st = ns                                     # 用回写的 marker 状态串下一轮（模拟连续故障）
+    assert st.round == 4                            # 烧不動：始终冻结
 
 
 def test_engine_failed_skips_ledger_exhaustion(rule_index):
@@ -464,33 +466,27 @@ def test_engine_failed_skips_ledger_exhaustion(rule_index):
     assert ns.round == 1
 
 
-def test_reliable_round_resets_streak_and_advances(rule_index):
-    """端点恢复后的可靠轮：streak 清零、轮次从冻结值正常 +1、history 正常追加。"""
-    st = loop.LoopState(round=4, history=[["OE-001:f:1"]], unreliable_streak=2)
+def test_reliable_round_after_failure_advances_normally(rule_index):
+    """端点恢复后的可靠轮：轮次从冻结值正常 +1、history 正常追加——冻结只发生在故障轮。"""
+    st = loop.LoopState(round=4, history=[["OE-001:f:1"]])
     dec, _, ns = loop.loop_step([_f("OE-001", line=2)], rule_index, st)
     assert dec == "continue"
-    assert ns.round == 5 and ns.unreliable_streak == 0
+    assert ns.round == 5
     assert len(ns.history) == 2                     # 正常轮才追加本轮签名集
 
 
-def test_engine_failed_marker_roundtrip_and_backcompat():
-    """marker 携带 unreliable_streak：render→parse 复原；同轮并列取 streak 更大者（最新状态）；
-    旧 marker（无字段）→ 兜底 0。"""
-    st = loop.LoopState(round=4, history=[["a"]], unreliable_streak=2)
-    # 故障 marker 在前、好轮 marker 在后（同 round 并列）：仅靠「后出现的评论胜出」的旧顺序
-    # 语义会选错（选中 streak 0）——必须按 streak 并列取大者才是最新状态。
-    bodies = [loop.render_marker(st),                            # 故障轮（streak 2，同 round）
-              loop.render_marker(loop.LoopState(4, [["a"]]))]    # 好轮（streak 0）
-    parsed = loop.parse_latest_state(bodies)
-    assert parsed.round == 4 and parsed.unreliable_streak == 2
-    # 旧 marker（无 unreliable_streak 键）→ 0，不炸解析
-    old = '<!-- touchstone-loop: {"round": 3, "history": [["x"]]} -->'
-    p2 = loop.parse_latest_state([old])
-    assert p2.round == 3 and p2.unreliable_streak == 0
+def test_engine_failed_marker_roundtrip_frozen_round():
+    """故障轮回写的 marker：render→parse 复原出同一冻结轮——下一次 push（端点恢复）从
+    同一轮次继续，预算未被消耗。marker schema 与 PR 前完全一致（round/history/last_verdict）。"""
+    st = loop.LoopState(round=4, history=[["a"]])
+    frozen = loop.loop_step([], {}, st, engine_failed=True)[2]
+    parsed = loop.parse_latest_state([loop.render_marker(st),       # 上一好轮（round 4）
+                                      loop.render_marker(frozen)])  # 故障轮（round 4 冻结）
+    assert parsed.round == 4 and parsed.history == [["a"]]          # 后者胜出=最新状态
 
 
 def test_infra_failure_statuses_scope():
     """范围锁：仅三个引擎级故障状态享不计轮待遇；skipped_large_diff 是策略性跳过且
-    diff 大小作者可控——计入免费轮会开「刷大 diff 绕过轮次预算」的通道，刻意排除。"""
+    diff 大小作者可控——「我让你没法审所以别收我轮次」是恶性激励，刻意排除。"""
     assert loop.INFRA_FAILURE_STATUSES == {"llm_failed", "no_engine", "provider_failed"}
     assert "skipped_large_diff" not in loop.INFRA_FAILURE_STATUSES

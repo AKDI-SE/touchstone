@@ -31,9 +31,6 @@ except (TypeError, ValueError):
 # 刻意排除 skipped_large_diff：那是策略性跳过且 diff 大小作者可控——计入免费轮会让刷大 diff
 # 变成绕过轮次预算的通道。
 INFRA_FAILURE_STATUSES = {"llm_failed", "no_engine", "provider_failed"}
-# 引擎故障连续上限：超过即升级人工（运维信号：LLM 端点长期不可用）。轮次不消耗 ≠ 无限白嫖——
-# 免费轮只在「故障期间」有效，连续 3 轮全故障说明不是抖动，交人处理比挂着循环等更有价值。
-UNRELIABLE_STREAK_CAP = 3
 _OPEN = "<!-- touchstone-loop:"
 _CLOSE = "-->"
 
@@ -46,9 +43,6 @@ class LoopState:
     round: int = 0
     history: list = field(default_factory=list)   # 每轮的可自改发现签名集（list[list[str]]）
     last_verdict: Optional[bool] = None           # 上轮 CI/verify 判定：True 绿 / False 红 / None 未知
-    unreliable_streak: int = 0                    # 连续「引擎故障不计轮」次数（可靠轮自动清零；
-                                                  # 达 UNRELIABLE_STREAK_CAP 升级人工）。旧 marker
-                                                  # 无此字段 → parse 兜底 0，向后兼容。
 
 
 def _sig(f):
@@ -111,22 +105,17 @@ def loop_step(findings, rule_index, state, max_rounds=MAX_ROUNDS, ci_passed=None
       engine_failed：本轮引擎级故障（engine_status ∈ INFRA_FAILURE_STATUSES，如 LLM 调用失败）。
         检视根本没成功，轮次对作者不应有「消耗」语义——round 冻结、history 不追加（空集会污染
         无推进/震荡判定），台账/耗尽检查一并跳过（否则故障轮照样烧预算，PR #183 实录：4 轮
-        llm_failed 白烧 4 轮）。非无限白嫖：marker 记 unreliable_streak，连续达
-        UNRELIABLE_STREAK_CAP 升级人工（运维信号）。skipped_large_diff 不属故障（策略性跳过、
-        diff 大小作者可控），不享此待遇。"""
+        llm_failed 白烧 4 轮）。
+        无需「连续故障上限」之类的防滥用闸：故障轮对作者零收益（不产出 LLM 发现、此路径到不了
+        converged、review_reliable=False 抑制销项），作者也无法制造 LLM 故障（端点在基础设施
+        侧）；每轮由作者 push 触发、bot 不自触发，不存在无限循环。轮次预算的语义就是「成功
+        执行的评审数」，故障期间冻结即正确语义。skipped_large_diff 不属故障（策略性跳过、diff
+        大小作者可控——「我让你没法审所以别收我轮次」是恶性激励），不享此待遇。"""
     if engine_failed:
-        streak = int(state.unreliable_streak or 0) + 1
-        ns = LoopState(state.round, state.history, ci_passed, unreliable_streak=streak)
-        if streak >= UNRELIABLE_STREAK_CAP:
-            return ("escalate",
-                    f"评审引擎连续 {streak} 轮调用失败（LLM/引擎级故障），检视未成功 → 交人"
-                    f"（LLM 端点疑似长期不可用，请运维介入）；轮次预算未消耗，第 {state.round} 轮保持不变",
-                    ns)
         return ("continue",
                 f"本轮 LLM 调用失败，检视未成功——不计入轮次（第 {state.round} 轮保持，"
-                f"预算未消耗；连续故障 {streak}/{UNRELIABLE_STREAK_CAP} 轮将交人）。"
-                "端点恢复后 push/重跑即自动复核",
-                ns)
+                "预算未消耗）。端点恢复后 push/重跑即自动复核",
+                LoopState(state.round, state.history, ci_passed))
     # 台账预算（评审意见 10）：同源重提继承历史轮次，本函数只看剩余额度。
     if ledger is not None:
         budget_left = int(ledger.get("rounds_left", max_rounds))
@@ -235,9 +224,7 @@ def loop_step(findings, rule_index, state, max_rounds=MAX_ROUNDS, ci_passed=None
 # --- 状态持久化（PR 评论隐藏 marker）----------------------------------------
 def render_marker(state):
     payload = json.dumps({"round": state.round, "history": state.history,
-                          "last_verdict": state.last_verdict,
-                          "unreliable_streak": state.unreliable_streak or 0},
-                         ensure_ascii=False)
+                          "last_verdict": state.last_verdict}, ensure_ascii=False)
     return f"{_OPEN} {payload} {_CLOSE}"
 
 
@@ -266,9 +253,9 @@ def trusted_bodies(comments, bot_login):
 def parse_latest_state(comment_bodies):
     """从历史评论里取轮次最大的 loop marker；无则返回初始状态。
 
-    同轮并列（引擎故障轮不推进 round，故障 marker 与上一好轮同 round）时取
-    unreliable_streak 更大者——即最新状态；并列再并列（同为好轮/streak 相同）保持
-    「后出现的评论胜出」原语义。旧 marker 无 unreliable_streak 字段 → 兜底 0，兼容。"""
+    引擎故障轮不推进 round（其 marker 与上一好轮同 round、同 history，状态等价），
+    仅 last_verdict 可能更新——「后出现的评论胜出」的 >= 原语义即取到最新状态，无需
+    额外并列判定。"""
     latest = LoopState()
     for body in comment_bodies or []:
         i = body.rfind(_OPEN)
@@ -280,11 +267,8 @@ def parse_latest_state(comment_bodies):
         try:
             d = json.loads(body[i + len(_OPEN):j].strip())
             st = LoopState(int(d.get("round", 0)), list(d.get("history", [])),
-                           d.get("last_verdict"),
-                           int(d.get("unreliable_streak") or 0))
-            if (st.round > latest.round
-                    or (st.round == latest.round
-                        and st.unreliable_streak >= latest.unreliable_streak)):
+                           d.get("last_verdict"))
+            if st.round >= latest.round:
                 latest = st
         except (json.JSONDecodeError, ValueError, TypeError):
             continue
