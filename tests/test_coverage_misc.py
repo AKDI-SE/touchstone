@@ -150,15 +150,25 @@ def test_load_provider_cfg_missing(tmp_path):
     assert RP._load_provider_cfg(str(tmp_path)) == {}
 
 
-def test_experience_injection_exception(monkeypatch):
+def test_experience_injection_exception(monkeypatch, tmp_path, capsys):
+    """引擎库路 render_injection 抛异常 → 降级为空（[warn] 留痕），不影响 seeds 路。
+    两处历史缺陷修正：
+    ① 旧 monkeypatch key 是裸名 "learning_loop"，不遮蔽 `from touchstone import learning_loop`
+      实际取的子模块——异常路径从未真正被测过（假绿，靠下述②碰巧通过）。
+    ② 旧 repo_dir="." 假设仓根无 seeds.yaml——PR #182 合入 .touchstone/seeds.yaml 后在
+      main 上必红（#182 起所有 PR 的 CI test job 同一失败）。改用空 tmp_path 作仓库目录。
+    """
     monkeypatch.setenv("TOUCHSTONE_EXPERIENCE_ENABLED", "true")
     monkeypatch.delenv("GITHUB_EVENT_NAME", raising=False)
     monkeypatch.delenv("TOUCHSTONE_EXPERIENCE_REF", raising=False)
-    import sys
-    monkeypatch.setitem(sys.modules, "learning_loop",
-                        type("M", (), {"render_injection": lambda s: (_ for _ in ()).throw(RuntimeError("x")),
-                                       "load_store": lambda: {}})())
-    assert RP._experience_injection(".") == ""
+    # 有效遮蔽：直接替换 touchstone 包属性（from touchstone import learning_loop 走 getattr）
+    monkeypatch.setattr("touchstone.learning_loop",
+                        type("M", (), {"render_injection": staticmethod(lambda *a, **k: (_ for _ in ()).throw(RuntimeError("x"))),
+                                       "load_store": staticmethod(lambda: {})})(),
+                        raising=False)
+    assert RP._experience_injection(str(tmp_path)) == ""
+    # 异常路径真的被走到（不再是假绿）：降级 [warn] 留痕可观测
+    assert "引擎经验库注入异常" in capsys.readouterr().err
 
 
 # ---------------- stack_rules ----------------

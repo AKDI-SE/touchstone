@@ -1,7 +1,8 @@
 # .github/workflows/touchstone.yml
-# Touchstone —— 默认顾问式评审 + 可插拔质量门禁（对外只发一个总闸）。
-# 链路：touchstone(评审+风险，不拦截) → (按需) verify_plan(持密不执行)→verify_execute(执行零凭据) → gate(聚合并发布那一个总闸) → (可选) auto_merge。
-# verify 与 auto_merge 都是可选、默认关的进阶路径。
+# Touchstone —— 顾问式评审 + 质量门禁（对外只发一个总闸）。
+# 链路：gitleaks(前置密钥扫) → touchstone(评审+风险，不拦截) → 末尾 Post gate 步内联发总闸。
+# 注：verify_plan/verify_execute/gate/auto_merge 四个 vars 门控 job 已移除——org 从未设
+# VERIFY_ENABLED/AUTONOMY_ENABLED，每个 PR 恒 4 条 skipped 占位；需要重启整链时 git revert 本提交。
 name: Touchstone
 
 on:
@@ -37,11 +38,25 @@ jobs:
       contents: read
       checks: write          # 手动建 gitleaks check-run（relay 按名读结论折进总闸）
     steps:
-      - uses: actions/checkout@v4
+      # checkout 钉到具体 SHA（=v4.4.0，2026-07-20 起的 v4 tip）：allow-unsafe-pr-checkout 是
+      # v4.4.0 新增输入，浮动 @v4 下未来大版本漂移或本地缓存旧版会静默忽略该输入（只打 warning）
+      # → fork PR 仍死在 checkout。该 SHA 正是 PR #186 上实际发出"Refusing…"拒绝的版本，实证支持。
+      # ① 受信 base checkout：只为取 .gitleaks.toml（扫描配置源，见下方扫描步注释）
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.base.ref }}
+          path: trusted-config          # base 受信，无需 unsafe 放行
+          persist-credentials: false
+      # ② fork head checkout：被扫对象
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: ${{ github.event.pull_request.head.sha }}   # 扫 PR 代码（非 base）
           fetch-depth: 0       # 完整历史——commit-range 扫描需 base..head 的提交都在
           persist-credentials: false
+          # fork PR + pull_request_target：新版 actions/checkout（Node24 时代补丁）默认拒绝 checkout
+          # fork 代码（防 pwn request），须显式放行，否则 PR #186 式死在 checkout 步、扫描从未跑。
+          # 本 job 安全：gitleaks 只读扫描、不执行 PR 代码（上方注释），token 亦 persist-credentials:false 不落盘。
+          allow-unsafe-pr-checkout: true
       - name: 安装 gitleaks
         run: |
           VERSION=8.30.1
@@ -52,9 +67,18 @@ jobs:
         id: scan
         continue-on-error: true    # gitleaks 退出 1=发现泄露——要让 job 继续到建 check-run 步
         run: |
+          # 防 fork 压制扫描结果（round-3 review item 1，gitleaks 8.30.1 本地实测复现三种豁免面）：
+          # ① --config 指受信 base 的配置——fork 改自己树里的 .gitleaks.toml（如清空规则）不再生效
+          #    （旧写法 --config .gitleaks.toml 读的是 fork 工作树，可被 PR 作者换掉）
+          # ② rm 源根 .gitleaksignore——gitleaks 认源根该文件的 fingerprint（commit:file:rule）豁免，
+          #    且实测 --gitleaks-ignore-path 无法覆盖源根文件；fork 作者可算出自己泄漏的指纹自我豁免。
+          #    本仓 base 无 .gitleaksignore（若有需要走受信 base 版本，勿用 fork 的）
+          # ③ --ignore-gitleaks-allow——fork 在泄漏行旁加 "gitleaks:allow" 注释不再豁免（纵深防御）
+          rm -f .gitleaksignore
           # 扫 PR 提交范围（base..head）——只拦本 PR 引入的泄露，不翻历史旧账
           gitleaks detect --source . \
-            --config .gitleaks.toml \
+            --config trusted-config/.gitleaks.toml \
+            --ignore-gitleaks-allow \
             --log-opts="${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}" \
             --redact --report-format json --report-path /tmp/gitleaks.json
           echo "code=$?" >> "$GITHUB_OUTPUT"
@@ -85,21 +109,18 @@ jobs:
               output: { title: `gitleaks · ${conclusion}`, summary }
             });
 
-  # ---- 判断层：评审（advisory，不拦截；不在此发总闸，交给 gate job）----
-  # needs gitleaks + !cancelled()：gitleaks 完成（无论成败）后才跑——relay 读 gitleaks check-run
-  # 折进总闸。gitleaks 失败（发现泄露）时 touchstone 仍跑（!cancelled 不被上游失败挡），relay 读到
-  # failure → 总闸 failure，统一出口。gitleaks 不会跳过（无 if），故无 skipped 态需兜。
+  # ---- 判断层：评审（advisory，不拦截；总闸由本 job 末尾 Post gate 步内联发布）----
+  # needs gitleaks + !cancelled()：gitleaks 完成（无论成败）后才跑——Post gate 的 checks relay 读
+  # gitleaks check-run 折进总闸。gitleaks 失败（发现泄露）时 touchstone 仍跑（!cancelled 不被上游
+  # 失败挡），relay 读到 failure → 总闸 failure，统一出口。gitleaks 不会跳过（无 if），故无 skipped 态需兜。
   touchstone:
     needs: [gitleaks]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest          # 自托管 runner 见下方网络注记
-    outputs:
-      decision: ${{ steps.run.outputs.verification_decision }}
-      risk_band: ${{ steps.run.outputs.risk_band }}
     permissions:
       contents: read
       pull-requests: write      # orchestrator 发评审评论
-      checks: write             # 默认 SKIP_GATE=true 由 gate job 发总闸；保留以兼容关 SKIP_GATE 的部署
+      checks: write             # SKIP_GATE=true 下 orchestrator 不自发闸；总闸由本 job 末尾 Post gate 步发
       actions: read             # 只读 .pragent-venv 缓存。写缓存已移至 warm-pragent-cache.yml（可信触发器）：
                                 # GitHub 2026-06-26 起 pull_request_target 属低信任触发器，对默认分支缓存【只读】，
                                 # save 永远失败（"token has no writable scopes"）且被 continue-on-error 静默——
@@ -108,6 +129,19 @@ jobs:
       # pr-agent 版本单一来源：下方 cache key 与 pip install 同引此变量，升版只改这一行（两处自动同步刷新）。
       PRA_VERSION: "0.39.0"
     steps:
+      # fail-loud 守卫（round-2 review item 2）：verify/gate/auto_merge 链移除后，若有人再设
+      # vars.VERIFY_ENABLED/AUTONOMY_ENABLED=true，这两个 vars 会【静默 no-op】——期望的 verify
+      # 深检不再发生且无人察觉。本步把静默 no-op 转成显式红：设了即 fail，提示先 git revert
+      # 移除提交（重启整链）或清除 vars。不设（现状）→ 步骤 skipped，零行为变化。
+      # round-3 item 3：守卫红不再连坐评审链——下方 Run review / Post gate 等步按 outcome != 'failure'
+      # 门控，守卫触发时留下【唯一且归因清晰】的信号（红 job + ::error 注解），不误导性地发
+      # "未产出结果" 总闸、也不对无辜 PR 发半截评审。
+      - name: "Guard: removed verify/autonomy chain must not be requested"
+        id: guard
+        if: ${{ vars.VERIFY_ENABLED == 'true' || vars.AUTONOMY_ENABLED == 'true' }}
+        run: |
+          echo "::error::VERIFY_ENABLED/AUTONOMY_ENABLED 为 true，但 verify/gate/auto_merge 链已移除（见文件头注释）——vars 现为静默 no-op。重启整链：git revert 移除提交；或清除这两个 vars。"
+          exit 1
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.base.ref }}
@@ -227,7 +261,7 @@ jobs:
                                                           # 仅临时诊断用：DEBUG 走 stderr，会把 failure_stderr_tail 的 600 字符
                                                           # 窗口挤满、真实报错被推出——默认关闭。
           # TOUCHSTONE_LLM_PING: "false"                  # 端点已确认健康的部署可关预检 ping（默认开；fan-out 下省 2 次往返）
-          TOUCHSTONE_SKIP_GATE: "true"                 # 不自发总闸：由下方 gate job 在(可选)verify 之后统一发
+          TOUCHSTONE_SKIP_GATE: "true"                 # 不自发总闸：由本 job 末尾 Post gate 步统一发
           # 经验库路径：必须用 learning_loop 认的 env 名 TOUCHSTONE_EXPERIENCE（不是 STORE_PATH），
           # 否则评审侧 load_store() 读不到 learn.yml 维护的 data/experience_store.json。
           TOUCHSTONE_EXPERIENCE: "data/experience_store.json"
@@ -275,7 +309,7 @@ jobs:
           name: pr-agent-interaction
           path: pr-agent-interaction.log
           if-no-files-found: ignore
-      - name: Upload findings (校准入口 + gate/auto_merge 组装输入)
+      - name: Upload findings (校准入口 + 评审可观测性)
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -289,22 +323,17 @@ jobs:
           name: touchstone-metrics
           path: touchstone-metrics.json
           if-no-files-found: ignore
-      # P1⑥（端到端耗时治理）：默认路径（verify+autonomy 都关）下把 gate 内联进本 job，省掉
-      # 整条 gate job（checkout + setup-python + pip install -e . + download-artifact + 再 upload）
-      # 的串行开销——36 run 实测默认路径占 100%（verify/auto_merge 全 skipped），gate job 恒跑却
-      # 只做"读本地 findings → 发一个 check"。本步与 gate job 互斥（下方 gate.if 收紧为
-      # verify‖autonomy 才跑），保证【对外仍只发一个总闸】不变式。互斥由 if 条件保证：
-      #   本步 = `!V && !A`（De Morgan），gate job = `V || A`——两者必有一个为假、不会双发闸。
-      # findings.json 已由 Run review 写在 cwd；checks.py 缺失时据 TOUCHSTONE_HEAD_SHA 发
-      # "未产出结果" failure check（与 gate job 行为逐字一致）。verify-result.json 在默认路径
-      # （verify 关）从不产出：checks._check_verify 的 `except (OSError, ValueError)` 把"文件
-      # 不存在"（本步）与"artifact 下载 continue-on-error 静默失败"（gate job）归一为同一中性
-      # 结论 → 两路逐字一致。verify/autonomy 任一开则本步跳过、仍由独立 gate job 聚合 verify
-      # 结果发闸——凭据隔离设计（§6.6）零变化。
-      # `!cancelled()`：与 gate job 的 `if: !cancelled() && ...` 对齐——被取消时不发 check
-      # （否则 `always()` 含取消态、会对每个被取消的 run 发"未产出结果" failure check，偏离旧行为）。
-      - name: "Post gate (default path: verify + autonomy off)"
-        if: ${{ always() && !cancelled() && vars.VERIFY_ENABLED != 'true' && vars.AUTONOMY_ENABLED != 'true' }}
+      # 总闸内联发布（P1⑥ 由"默认路径内联"收敛为唯一路径——verify/gate/auto_merge 链已整体移除）：
+      # 读 Run review 写在 cwd 的 touchstone-findings.json → checks relay 聚合 gitleaks 等结论 →
+      # 发对外唯一的 "touchstone/gate" check-run。findings 缺失时据 TOUCHSTONE_HEAD_SHA 发
+      # "未产出结果" failure check（fail-closed，不静默）。verify-result.json 恒不存在：
+      # checks._check_verify 的 except (OSError, ValueError) 归一为中性结论，不挡。
+      # `!cancelled()`：被取消时不发 check（always() 含取消态，否则会对每个被取消的 run 发
+      # "未产出结果" failure check，偏离旧行为）。
+      # `steps.guard.outcome != 'failure'`（round-3 item 3）：守卫（vars 误设）红时不再发
+      # "未产出结果" 的误导性总闸——配置错误的信号是红 job + ::error 注解本身，唯一且归因清晰。
+      - name: "Post gate"
+        if: ${{ always() && !cancelled() && steps.guard.outcome != 'failure' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
@@ -312,165 +341,3 @@ jobs:
           REPO_DIR: "."
         run: python -m touchstone.checks
 
-  # ---- 可选深检：verify（默认关；vars.VERIFY_ENABLED=='true' 且风险分流判为需验证时才跑）----
-  # 凭据隔离（设计 §6.6 的落地）：verify 拆成两个 job——
-  #   verify_plan    持有 LLM 凭据，但【绝不执行】PR 代码（只读接口 + LLM 生成验收测试，
-  #                  见 verify_change.plan_verification 的不变式），产出 acceptance-tests.json。
-  #   verify_execute 真正在 worktree 里执行 PR 代码（pytest/mvn 收集期即可任意执行），
-  #                  env 零 secret + persist-credentials:false（.git/config 也无 token）+
-  #                  job 权限降为 contents:read——PR 代码既无凭据可窃、拿到 token 也伪造不了总闸。
-  # 结果写 verify-result.json，由 gate job 经 verify 插件折进总闸。
-  verify_plan:
-    needs: touchstone
-    if: ${{ vars.VERIFY_ENABLED == 'true' && (needs.touchstone.outputs.decision == 'targeted_tests' || needs.touchstone.outputs.decision == 'full_suite') }}
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read             # 覆盖 workflow 级继承——本 job 不需要 checks/pr 写权
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.base.ref }}
-          fetch-depth: 0           # plan 需读 head 接口（只读 worktree，不执行）
-          persist-credentials: false   # 不把 token 写进 .git/config
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.13"
-          cache: pip       # 复用 touchstone job / warm 预热的 pip 下载缓存，省 pip install -e . 的下载
-      - name: Install deps
-        run: pip install -e .
-      - name: plan（持密；不执行 PR 代码）
-        env:
-          LLM_BASE_URL: ${{ secrets.LLM_BASE_URL }}
-          LLM_API_KEY:  ${{ secrets.LLM_API_KEY }}
-          LLM_TEST_MODEL: ${{ secrets.LLM_TEST_MODEL }}
-          BASE_REF: ${{ github.event.pull_request.base.sha }}
-          HEAD_REF: ${{ github.event.pull_request.head.sha }}
-          VERIFY_MODE: ${{ needs.touchstone.outputs.decision }}
-          PR_TITLE: ${{ github.event.pull_request.title }}
-          REPO_DIR: "."
-        run: python -m verify.verify_change --phase plan
-      - uses: actions/upload-artifact@v4
-        with:
-          name: verify-plan
-          path: acceptance-tests.json
-
-  verify_execute:
-    needs: [touchstone, verify_plan]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read             # 最小权限：继承 workflow 级的 checks:write 会让 PR 代码
-                                 # 拿 .git/config 里的 token 伪造 touchstone/gate（绕闸链）
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.base.ref }}
-          fetch-depth: 0           # worktree 需要 base/head 两个 commit
-          persist-credentials: false   # 关键：本 job 执行 PR 代码——env 零 secret 之外，
-                                       # 还必须保证 .git/config 里也没有 token 可窃
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.13"
-          cache: pip       # 复用 touchstone job / warm 预热的 pip 下载缓存，省 pip install -e . 的下载
-      - name: Install deps
-        run: pip install -e .
-      - uses: actions/download-artifact@v4
-        with:
-          name: verify-plan
-      - name: execute（执行 PR 代码；env 零 secret）
-        env:
-          BASE_REF: ${{ github.event.pull_request.base.sha }}
-          HEAD_REF: ${{ github.event.pull_request.head.sha }}
-          VERIFY_MODE: ${{ needs.touchstone.outputs.decision }}
-          REPO_DIR: "."
-        run: python -m verify.verify_change --phase execute
-      - name: Upload verify result
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: verify-result
-          path: verify-result.json
-          if-no-files-found: ignore
-
-  # ---- 质量门禁：聚合 touchstone 规则 + 转达检查 +（若跑过）verify → 对外发【一个】总闸 ----
-  # needs verify_execute 但用 !cancelled() 兜底：verify 链被跳过（默认）时本 job 仍运行，verify 插件记中性、不挡。
-  # P1⑥：默认路径（verify+autonomy 都关）下总闸已由 touchstone job 的 "Post gate" 步内联发出，
-  # 本 job 收紧为【仅在 verify‖autonomy 开启时】才跑——否则与 touchstone 内联步互发两个总闸。
-  # 默认路径占绝大多数（36 run 实测 100% verify/auto_merge 全 skipped），跳过本 job 省一整条
-  # 串行 job（checkout + setup-python + pip install + artifact I/O，约 18–28s/轮 + job 间排队）。
-  # verify 开：本 job 聚合 verify-result 发闸（凭据隔离不变）；autonomy 开：auto_merge 需本 job
-  # re-upload 的含总闸 findings（下方 Re-upload 步），故 autonomy 开时也须经此路径。
-  gate:
-    needs: [touchstone, verify_execute]
-    if: ${{ !cancelled() && (vars.VERIFY_ENABLED == 'true' || vars.AUTONOMY_ENABLED == 'true') }}
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: write
-      checks: write
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.base.ref }}
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.13"
-          cache: pip       # 复用 touchstone job / warm 预热的 pip 下载缓存，省 pip install -e . 的下载
-      - run: pip install -e .
-      - name: Download touchstone (+ verify if ran) outputs
-        uses: actions/download-artifact@v4
-        with:
-          merge-multiple: true     # touchstone-findings.json (+ verify-result.json) → cwd
-        continue-on-error: true
-      - name: Aggregate & post the single gate
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-          TOUCHSTONE_HEAD_SHA: ${{ github.event.pull_request.head.sha }}   # findings 缺失时据它发"未产出结果"failure check
-          REPO_DIR: "."
-        run: python -m touchstone.checks    # 发总闸并把含 verify 的结论写回 touchstone-findings.json
-      - name: Re-upload findings with final gate (供 auto_merge 读含 verify 的总闸)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: touchstone-findings
-          path: touchstone-findings.json
-          overwrite: true
-          if-no-files-found: ignore
-
-  # ── 自动放行（可选，默认关；§4.7）──autonomy 只读总闸结论，不再依赖 verify job/CI_GREEN ──
-  auto_merge:
-    needs: [touchstone, gate]
-    if: ${{ vars.AUTONOMY_ENABLED == 'true' }}
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write          # 仅本 job 需要写权限（merge）
-      pull-requests: write
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.base.ref }}
-      - uses: actions/setup-python@v5
-        with: { python-version: "3.13", cache: pip }
-      - run: pip install -e .
-      - name: Download touchstone findings (final, gate-updated)
-        uses: actions/download-artifact@v4
-        with:
-          name: touchstone-findings
-          continue-on-error: true
-      - name: Stage graduated change-classes
-        run: cp .touchstone/graduated-classes.json graduated-classes.json 2>/dev/null || echo '{"graduated_classes":[]}' > graduated-classes.json
-      - name: Decide & (maybe) auto-merge
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-          AUTONOMY_TRIPPED: ${{ vars.AUTONOMY_TRIPPED }}
-          AUTONOMY_ENABLED: ${{ vars.AUTONOMY_ENABLED }}
-          AUTONOMY_SHADOW: ${{ vars.AUTONOMY_SHADOW }}
-          TOUCHSTONE_AUTONOMY_TRUSTED_ASSOCIATIONS: "OWNER,MEMBER,COLLABORATOR"
-                                          # 作者信任闸（第 9 闸）：仅这些 GitHub author_association 的作者
-                                          # 可被自动放行——三者均需仓库/组织侧授予、作者不可自证；
-                                          # CONTRIBUTOR/NONE 等任意人可达成的关联不信。产物缺作者信息时
-                                          # fail-closed 不放行。
-          # TOUCHSTONE_AUTONOMY_AUTHOR_ALLOWLIST: ""   # 额外放行 login 白名单（逗号分隔、大小写不敏感），
-                                          # 与关联闸取并集；给外协/机器人账号开口子用，默认空。
-        run: python -m touchstone.autonomy --execute
