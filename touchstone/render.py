@@ -10,6 +10,7 @@
 # 个别测试文件污染 sys.path 而在全量测试中被掩盖（单跑文件才炸）。现改为顶层包导入。
 # ============================================================================
 
+import html
 import os
 import re
 import sys
@@ -351,6 +352,11 @@ def render_findings_checklist(findings, checklist, review_reliable=True):
     return "\n".join(lines)
 
 
+def _ack_skill_path():
+    here = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(here, os.pardir, "skills", "touchstone-ack", "SKILL.md")
+
+
 def _ack_skill_ref():
     """给【提交代码的 agent】的销项规程指针（评审评论必经之地 = 最可靠的提醒触点）。
 
@@ -360,8 +366,7 @@ def _ack_skill_ref():
     部署未带 skills/）→ 整段不提示（不出 404 链接、不出不存在的本地路径）。
     末行内联时序要点：无文件无网络的 agent 也能从评论本身拿到最易错的规则
     （与 SKILL.md §4 同源，改时序须两处同步）。"""
-    here = os.path.dirname(os.path.abspath(__file__))
-    if not os.path.exists(os.path.join(here, os.pardir, "skills", "touchstone-ack", "SKILL.md")):
+    if not os.path.exists(_ack_skill_path()):
         return ""
     ref = ("Agent 销项完整规程（可安装为 skill 或直接参考）：仓内 "
            "<code>skills/touchstone-ack/SKILL.md</code>")
@@ -372,6 +377,29 @@ def _ack_skill_ref():
     return (ref + "\n"
             "时序要点：改码 → 提交 → 发 ack 评论 → 推送（推送后补 ack 本轮不计；"
             "纯 ack 轮用空提交承载）。")
+
+
+def _ack_skill_body():
+    """skill 正本正文贴进评论（链接下方）——运行时读文件，永远与正本同步（无副本可漂移，
+    正好回应 SKILL.md §0 的副本漂移担忧）。评论自身即自足：无网、无本地克隆的 agent
+    也能照办。
+
+    两个渲染约束（#168 HTML block 教训）：
+    - <details> 内不得有空行（空行截断 type-6 HTML block）→ 正文空行折叠为单个换行；
+    - 正文含 <签名> 等尖括号 → html.escape 后进 <pre>（保留换行、原样可读）。
+    frontmatter（name/description）剥除——那是 skill 装载器的元数据，不是规程内容。"""
+    try:
+        with open(_ack_skill_path(), encoding="utf-8") as f:
+            raw = f.read()
+    except OSError:
+        return ""
+    m = re.match(r"^---\n.*?\n---\n", raw, re.DOTALL)   # 剥 frontmatter（首个 ---…--- 块）
+    if m:
+        raw = raw[m.end():]
+    body = re.sub(r"\n\s*\n+", "\n", raw.strip())   # 空行折叠（HTML block 约束）
+    if not body:
+        return ""
+    return f"<pre>{html.escape(body)}</pre>"
 
 
 def render_reference(verification_blocks=None, has_checklist_items=False):
@@ -389,6 +417,9 @@ def render_reference(verification_blocks=None, has_checklist_items=False):
         skill_ref = _ack_skill_ref()
         if skill_ref:
             body += "\n" + skill_ref                # 换行拼接，绝无空行（#168 HTML block 约束）
+            skill_body = _ack_skill_body()          # 同一 file-gate：正文只随指针出现
+            if skill_body:
+                body += "\n" + skill_body           # 正本正文贴在链接下方（<pre>，自足评论）
         blocks.append(f"<details><summary>如何申报销项</summary>\n{body}\n</details>")
     if not blocks:
         return ""

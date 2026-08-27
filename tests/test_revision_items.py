@@ -874,6 +874,7 @@ def test_loop_reliable_converges_normally(rule_index):
 def test_report_layout_invariants():
     """铁律（v2）：全文唯一 H2；③④⑤ 并列段一律 H3；状态行 blockquote（循环+风险合一）。
     v2 版面：七段→六段——AI 评审 + 清单合为「评审发现与销项」；验证/日志 + 申报指引折进「参考信息」。"""
+    import re as _re
     from touchstone import render, checklist as cl
     risk = {"risk_band": "mid", "human_action": "a", "verification_decision": "v",
             "blast_radius": ["x"]}
@@ -886,7 +887,9 @@ def test_report_layout_invariants():
         loop_info=("continue", "待 author 逐项申报", ""),
         verification_blocks=["📄 完整 LLM 交互日志：http://x"],
         markers="<!-- m -->", gate_line="1/1")
-    lines = body.split("\n")
+    # <pre> 内的 skill 正文按字面渲染（## 不会成标题）——版面不变量只看会被渲染的行
+    visible = _re.sub(r"<pre>.*?</pre>", "", body, flags=_re.DOTALL)
+    lines = visible.split("\n")
     h2 = [l for l in lines if l.startswith("## ")]
     h3 = [l for l in lines if l.startswith("### ") and not l.startswith("#### ")]
     assert len(h2) == 1 and "Touchstone · AI Committer 代码检视" in h2[0]  # 唯一 H2 承载品牌与定位
@@ -1236,10 +1239,12 @@ def test_reference_includes_ack_skill_pointer(monkeypatch):
     # BASE_REF 缺省（push 事件等）→ main 兜底
     monkeypatch.delenv("GITHUB_BASE_REF")
     assert "blob/main/skills/touchstone-ack/SKILL.md" in render.render_reference(has_checklist_items=True)
-    # 离线（无 GITHUB_REPOSITORY，如本地 dry-run / 无网 agent）：本地路径仍在、无 URL 也自足
+    # 离线（无 GITHUB_REPOSITORY，如本地 dry-run / 无网 agent）：本地路径仍在、
+    # 指针行无 URL 也自足（skill 正文示例里的 https:// 属字面内容，不算指针 URL）
     monkeypatch.delenv("GITHUB_REPOSITORY")
     md2 = render.render_reference(has_checklist_items=True)
-    assert local in md2 and "https://" not in md2 and "推送后补 ack" in md2
+    pointer2 = md2.split("<pre>")[0]
+    assert local in pointer2 and "https://" not in pointer2 and "推送后补 ack" in pointer2
     # #168 HTML block 约束：details 内不得出现空行（换行拼接、无空行）
     blk = md.split("<details><summary>如何申报销项</summary>")[1].split("</details>")[0]
     assert "\n\n" not in blk
@@ -1248,6 +1253,19 @@ def test_reference_includes_ack_skill_pointer(monkeypatch):
     monkeypatch.setattr(render.os.path, "exists", lambda p: False)
     md3 = render.render_reference(has_checklist_items=True)
     assert "如何申报销项" in md3 and "skills/touchstone-ack" not in md3 and "推送后补" not in md3
-    # 既有行为不回归：空清单仍不出申报指引
+    # 正本正文贴在链接下方（<pre>、转义、空行折叠、剥 frontmatter）——评论自足：
+    # 无网无本地克隆的 agent 也能照办；运行时读文件 = 与正本同步，无副本漂移。
     monkeypatch.undo()
+    md4 = render.render_reference(has_checklist_items=True)
+    blk4 = md4.split("<details><summary>如何申报销项</summary>")[1].split("</details>")[0]
+    assert "<pre>" in blk4 and "以仓正本为准" in blk4            # skill 正文在
+    assert "&lt;签名&gt;" in blk4                               # 尖括号已转义（防 HTML 吃掉）
+    assert "name: touchstone-ack" not in blk4                   # frontmatter 已剥
+    assert "\n\n" not in blk4                                  # 无空行（#168 HTML block 约束）
+    # file-gate 同管正文：skill 文件不在 → 正文也不出（正文只随指针出现）
+    monkeypatch.setattr(render.os.path, "exists", lambda p: False)
+    md5 = render.render_reference(has_checklist_items=True)
+    assert "<pre>" not in md5 and "以仓正本为准" not in md5
+    monkeypatch.undo()
+    # 既有行为不回归：空清单仍不出申报指引
     assert "如何申报销项" not in render.render_reference(has_checklist_items=False)
