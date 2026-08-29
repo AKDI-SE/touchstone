@@ -131,7 +131,7 @@ permissions:
 env:
   # 引擎版本单一来源。三选一：
   #   latest  → 自动跟最新 release tag（零摩擦跟 patch；breaking change 有 schema_version 告警兜底）
-  #   v0.2.2  → 钉具体 tag（可复现，升级时手动改这一行）
+  #   v0.2.8  → 钉具体 tag（可复现，升级时手动改这一行）
   #   main    → 追主干（最激进，不推荐生产用）
   TOUCHSTONE_ENGINE_REPO: "AKDI-SE/touchstone"
   TOUCHSTONE_ENGINE_REF: "latest"
@@ -188,7 +188,7 @@ jobs:
 | 值 | 行为 | 适用 |
 |---|---|---|
 | `latest` | 自动解析为最新 release tag（默认） | 日常零摩擦跟 patch；若拉到改了 pr.yaml 字段的版本，引擎运行时会 stderr 告警 |
-| `v0.2.2` | 钉具体 tag | 要求可复现；升级手动改这一行 |
+| `v0.2.8` | 钉具体 tag | 要求可复现；升级手动改这一行 |
 | `main` | 追主干 | 实验性，不推荐生产 |
 
 **Step 2**：配置 Secrets（Settings → Secrets and variables → Actions → New repository secret）:
