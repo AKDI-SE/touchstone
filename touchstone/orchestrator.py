@@ -393,11 +393,14 @@ def _collapse_review_body(orig):
     """单条历史评审评论 → 折叠体。
 
     - 状态行（品牌 H2 后首条 blockquote）提到折叠体外做摘要——折叠后仍一眼可见每轮结论；
-    - 原文空行折叠 + html.escape 进 <pre>（#168 HTML block 约束：details 内不得有空行；
+    - 原文逐行 html.escape 进 <pre>（#168 HTML block 约束：details 内不得有空行——空行
+      以 &nbsp; 占位行保留，段落分隔在 <pre> 里仍可见，不再静默塌掉（round-8 销项）；
       尖括号防吞；<pre> 保留换行）；
-    - 机器 marker（loop/checklist/result 的 HTML 注释）从原文抽出、**原样**附在折叠体末尾
-      ——HTML 注释不渲染（视觉零成本），但保持可解析：loop 状态派生、lineage 台账从已关
-      PR 评论重建轮次预算都依赖它们。
+    - 尾部区机器 marker（loop/checklist/result 的 HTML 注释）从原文抽出、**原样**附在
+      折叠体末尾——HTML 注释不渲染（视觉零成本），但保持可解析：loop 状态派生、lineage
+      台账从已关 PR 评论重建轮次预算都依赖它们。归档只剥离这些【已外化】的 marker；
+      正文引用的 marker（信任域外、不外置）留在 <pre> 原位转义——「原文不删、只折叠」
+      对正文片段同样成立（round-8 销项：此前 _MARKER_RE.sub 全删，归档静默缺内容）。
     """
     status = _collapse_status_line(orig)
     matches = list(_MARKER_RE.finditer(orig))
@@ -425,12 +428,25 @@ def _collapse_review_body(orig):
         k = re.match(r"<!-- touchstone-(loop|checklist|result):", mk).group(1)
         by_kind[k] = mk
     markers = [by_kind[k] for k in ("loop", "checklist", "result") if k in by_kind]
-    stripped = _MARKER_RE.sub("", orig)
-    folded = re.sub(r"\n\s*\n+", "\n", stripped.strip())
+    # round-8 销项（PRA-REVIEW）：归档只剥离【已外化】的尾部区 marker——正文引用的
+    # marker 留在 <pre> 原位（转义后可见）。此前 _MARKER_RE.sub 全删：引用片段从归档
+    # 静默消失，「原文与 marker 全保留」的自述对它们不成立。
+    keep = [(m.start(), m.end()) for m in matches if m.start() >= tail_start]
+    parts, last = [], 0
+    for a, b in keep:
+        parts.append(orig[last:a])
+        last = b
+    parts.append(orig[last:])
+    stripped = "".join(parts)
+    # 空行 → &nbsp; 占位行：#168 禁空行是渲染约束，但内容版面不该静默丢——占位行非空
+    # （HTML block 完整），<pre> 里渲染为一条空行，段落分隔保真。转义在行内做：&nbsp;
+    # 必须在 escape 之后注入（否则 & 被 escape 成 &amp;nbsp;）。
+    folded = "\n".join("&nbsp;" if not ln.strip() else html.escape(ln)
+                       for ln in stripped.strip().split("\n"))
     out = (f"{_COLLAPSED_SENTINEL}\n"
            f"🔁 历史评审已折叠（最新轮次见最新评论）· {status.removeprefix('> ').strip()}\n"
            "<details><summary>展开本轮完整评审原文</summary>\n"
-           f"<pre>{html.escape(folded)}</pre>\n"
+           f"<pre>{folded}</pre>\n"          # folded 已逐行转义（上方），此处不得二次 escape
            "</details>")
     if markers:
         out += "\n" + "\n".join(markers)

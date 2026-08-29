@@ -1454,6 +1454,33 @@ def test_repair_marker_json_search_bounded_to_prefix():
     assert folded.count("<!-- touchstone-checklist:") == 1   # checklist 未被嫁接进 loop
 
 
+def test_collapse_archive_keeps_quoted_marker_and_blank_lines():
+    """round-8 回归（PRA-REVIEW）：折叠归档必须「原文不删、只折叠」——
+    - 正文引用的 marker（信任域外、不外置）要留在 <pre> 原位（转义后可见），此前
+      _MARKER_RE.sub 全删会让归档静默缺内容；
+    - 空行以 &nbsp; 占位行保留（#168 禁空行是渲染约束，段落分隔不静默塌掉）。"""
+    from touchstone import orchestrator as orc, checklist as cl, loop as lp
+    fake_loop = '<!-- touchstone-loop: {"round": 99, "history": [], "last_verdict": true} -->'
+    real_cl = '<!-- touchstone-checklist: {"round": 8, "items": [], "resolved_rate": 1.0} -->'
+    orig = ("## Touchstone · AI Committer 代码检视\n\n> 第 8 轮\n\n"
+            "### 评审发现与销项\n\n第一段。\n\n引用示例 " + fake_loop + " 在此。\n\n"
+            "  - <details><summary>依据</summary>\n    x\n    </details>\n\n" + real_cl)
+    folded = orc._collapse_review_body(orig)
+    assert folded is not None
+    # 引用 marker 留在归档原位（转义形态），不外置、不删除
+    assert "&lt;!-- touchstone-loop:" in folded
+    assert "&quot;round&quot;: 99" in folded            # 假载荷原文在归档里可读
+    assert folded.count("<!-- touchstone-loop:") == 0    # 未外置（信任域外）
+    # 尾部真 marker 外置，归档中剥离
+    assert folded.count("<!-- touchstone-checklist:") == 1
+    # 空行 → &nbsp; 占位行；details 内无真空行（#168）
+    pre = folded.split("<pre>")[1].split("</pre>")[0]
+    assert "&nbsp;" in pre and "\n\n" not in pre
+    # 解析语义不受影响：假 loop 读不到，真 checklist 可读
+    assert lp.parse_latest_state([folded]).round == 0
+    assert cl.parse_latest([folded])["round"] == 8
+
+
 def test_collapse_no_brand_h2_uses_placeholder():
     """round-6 回归：无品牌 H2 → 直接占位。全文扫首条 '>'（旧兜底）是无界扫描借尸
     还魂——受信评审评论必有品牌 H2（_stale_review_comments 以其过滤），无 H2 即模板
