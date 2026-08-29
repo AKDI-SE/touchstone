@@ -7,6 +7,77 @@
 
 （下个版本的新变更记于此。）
 
+## [0.3.0] — 2026-08-29（历史折叠 + 报告注释防御三层 + 销项指引三触点 + GitCode 适配）
+
+本版收录 v0.2.8 以来 20 个 PR（#182–#201），主线是「多轮销项的体验与报告完整性」。
+
+### 历史轮次评审评论自动折叠（#190、#191）
+
+多轮销项不再刷屏：每轮新评审发布成功后，更早轮次的 bot 评论自动折叠为
+`<details>「🔁 历史评审已折叠」</details>` 归档——逐行转义、原文保全、可展开；收敛清单
+在每条新评论里自足累积，人与 agent 只需读最新一条。经 9 轮评审淬炼出的边界：
+
+- 只在 POST 成功后折叠（POST 失败/重试不误伤旧评论）；折叠失败的评论保持原样，不固化截断残片。
+- 损坏 marker（历史乱文评论）先修复再折叠；marker JSON 搜索限定在名字前缀之后（防把后一个
+  marker 的 payload 嫁接到前一个名字上）；只外化尾部信任区的 marker——正文里"引用 marker 语法"
+  的文字留在原位按普通文本转义。
+- 归档原文不删引用 marker、空行以 `&nbsp;` 占位保版式；状态行扫描锚定品牌 H2 头部区；
+  GitCode 平台跳过折叠（防跨命名空间 PATCH 改错评论）。
+
+### 评审报告注释防御三层（#196、#197、#198/#200）
+
+修复实录缺陷：LLM 自由文字里的字面 `<!--` 在 `<details>` HTML 区块（CommonMark type-6）内
+会开一段**真** HTML 注释，把后文整段吞掉——某轮评审的「参考信息/如何申报销项」整节在
+GitHub 渲染后消失。防御分三层，任一层漏了还有下一层兜底：
+
+- **L1 站点转义**：所有自由文字嵌入点（处置方向/依据/rationale/note/guard/question）统一经
+  `_html_text` 转义；机器字段（sig/rule_id/status）与自产 marker 保持原样。
+- **L2 文档闸门**：POST 前全文扫描 `sanitize_report_body`——每个 `<!--` 必须是已知机器
+  marker 且 payload 可被 `json.raw_decode` 解析为完整 JSON（引号里"长得像 marker 的话"
+  payload 是散文，过不了检验），否则机械中性化（`&lt;!--`）并 stderr 告警；`<details>`
+  `<summary>`/`<pre>` 标签平衡只在注释区外计数（marker payload 存原文，计入会误报）。
+- **L3 对抗回归**：torture 语料属性测试覆盖全部自由字段，锁不变量的**类别**而非已知洞。
+- 发射侧统一转义 `-->`（#196 hotfix）：防 marker 内 JSON 含 `-->` 提前终止 HTML 注释裸露正文。
+
+### 销项指引三触点 + 要点速览（#190、#192、#194、#195、#199）
+
+- 「如何申报销项」节改 **skill 链接-only**（正本进二级折叠），`<br>` 行距修正可读性。
+- 「要点速览」五要点内联进每条评审评论——与 SKILL.md 正本逐字同步，防漂移测试锁定
+  （改任一侧不同步即红）。新增 ⑤：**销项是多轮交互**——推送申报后每 2 分钟检查一次最新
+  bot 评论（判新轮只认 bot `created_at`），直到 ✅ 收敛或 ⬆️ 升级到人。
+- PR 模板/评审评论/CLAUDE.md 三触点提醒安装 touchstone-ack skill。
+
+### GitCode 平台适配（#186，外部贡献）
+
+orchestrator/pr_agent_runner/review_provider/run/atomicio 适配 GitCode（企业内代码托管）。
+全部改动经 `_is_gitcode()`/环境开关门控，GitHub 路径行为不变。
+
+### loop 轮次治理（#188、#189）
+
+引擎故障轮（infra failure，如 LLM 端点不可用）**不消耗轮次预算**——轮次号不再滞后于实际
+推送；`TOUCHSTONE_MAX_ROUNDS` 改走 Actions variable（免改工作流调上限）；删「连续故障升级」
+闸（#189，复盘确认其威胁模型不存在——评审意见驱动）。
+
+### TF-GRPO 奖励错位修复（#183）
+
+c1 词表对齐进 rollout/内省提示词——修 TF-GRPO 奖励错位根因（词表不一致导致评分与生成
+目标脱节）。
+
+### 经验库与种子治理（#182、#184、#185）
+
+- seeds.yaml 按校准统计落 **PRA-REVIEW emphasize / PRA-GENERAL suppress** 种子。
+- 清洗引擎经验库 310→11 条，丢弃 299 个幻觉 finding_type 候选（防污染注入）。
+- standards+seeds：suppress speculative defensive-coding suggest（抑制臆想防御性编码建议）。
+
+### CI 修复（#187）
+
+删 4 个恒 skipped 占位 check；修 gitleaks fork checkout；修存量坏测试。
+
+### README（#201）
+
+补历史折叠、三层注释防御、多轮轮询说明；规模数字刷新（1220 用例/46 文件、生产约
+11700 行/35 模块）；钉 tag 示例 v0.2.2→v0.2.8。
+
 ## [0.2.8] — 2026-08-17（touchstone-ack 消项 skill + push-guard 机器闸 + README 审计补正）
 
 ### touchstone-ack 销项规程 skill（#177）
