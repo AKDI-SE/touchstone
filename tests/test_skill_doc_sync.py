@@ -89,6 +89,8 @@ def test_render_digest_phrases_exist_in_skill_doc():
     skill = _skill_text()
     for phrase in ("改码 → 提交 → 发 ack 评论 → 推送",
                    "行内评论线程一律不计数",
-                   "空提交"):
+                   "空提交",
+                   "每 2 分钟检查一次",        # ⑤ 多轮轮询节奏（用户 2026-08-29 指定）
+                   "直到 ✅ 收敛"):
         assert phrase in skill, f"SKILL.md 缺逐字措辞：{phrase}"
         assert phrase in digest, f"渲染速览缺逐字措辞：{phrase}"
