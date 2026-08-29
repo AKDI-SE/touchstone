@@ -94,3 +94,16 @@ def test_render_digest_phrases_exist_in_skill_doc():
                    "直到 ✅ 收敛"):
         assert phrase in skill, f"SKILL.md 缺逐字措辞：{phrase}"
         assert phrase in digest, f"渲染速览缺逐字措辞：{phrase}"
+
+
+def test_version_bump_has_changelog_section():
+    """release 纪律（防漂移）：__version__ 必须有对应的 CHANGELOG 小节——
+    bump 版本忘写 changelog 的 release PR 在此红；changelog 先行而版本号
+    忘 bump 同样红。非恒真断言：任一侧独走即挂。"""
+    import os
+    from touchstone import __version__
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    changelog = open(os.path.join(root, "CHANGELOG.md"), encoding="utf-8").read()
+    assert f"## [{__version__}]" in changelog, (
+        f"CHANGELOG 缺 [{__version__}] 小节——版本号已 bump 但未记录发布内容")
+    assert "## [未发布]" in changelog, "CHANGELOG 缺「未发布」占位段（新变更的记入口）"
