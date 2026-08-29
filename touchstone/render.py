@@ -10,6 +10,7 @@
 # 个别测试文件污染 sys.path 而在全量测试中被掩盖（单跑文件才炸）。现改为顶层包导入。
 # ============================================================================
 
+import html
 import os
 import re
 import sys
@@ -85,6 +86,25 @@ _TEASER_MAX = 60                          # <details> summary 露首句/前 N �
 _SENTENCE_END = re.compile(r"[。！？]|[.!?](?=\s|$)")
 
 
+def _html_text(text):
+    """LLM/清单来源的自由文本进报告前的中性化：html.escape(quote=False)——`&`/`<`/`>` 转实体。
+
+    动机（PR #191 round-7 实录）：依据折叠的 <details> body 处在 CommonMark type-6 HTML
+    block 内——块内 markdown（含反引号 code span）一律不生效，全是 raw HTML。LLM 在依据
+    里引用 marker 语法写字面 `<!-- touchstone-checklist:` 时，浏览器把它当真注释开符，
+    一路吞到下一个 `-->`（恰好是页尾 loop marker 的闭符），中间的 清单尾部/参考信息/
+    如何申报销项/验证与日志/要点速览 在渲染层整体消失（GraphQL bodyHTML 证实：四段
+    find=-1）——评论源码仍在、marker 存 reasoning 原文，API 取全文零丢失，仅 UI 不可见。
+    反方向（#196 修的是 marker 载荷）：字面 `-->` 作孤儿闭符裸露成可见乱文。转义后两向
+    皆中性：`&lt;!--`/`--&gt;` 渲染回原字符，纯文本视觉无损；quote=False 不动引号。
+
+    站点纪律：凡 findings/清单项（LLM 产出或作者 ack 文本）来源的自由字段进报告必经此
+    函数——direction/rationale/reasoning/note/guard/复核问题，以及折叠 body/summary teaser。
+    机器字段（sig、rule_id、status 标签等）由本系统构造、不含 `<>`，不经此函数保持原样；
+    自产 marker（<!-- touchstone-* -->）是机器可读结构，同样保持原样。"""
+    return html.escape(text or "", quote=False)
+
+
 def _reasoning_teaser(reasoning, max_len=_TEASER_MAX):
     """取 reasoning 首句（或前 max_len 字）作 <details> summary 的关键信息预览。
 
@@ -126,7 +146,7 @@ def _render_reasoning(reasoning, indent="   "):
         return ""
     body_indent = " " * (len(indent) + 2)   # indent + "- " 2 字符 → body 留在子列表项内容区
     if len(reasoning) <= _REASONING_COLLAPSE_THRESHOLD:
-        return f"{indent}- 依据：{reasoning}"
+        return f"{indent}- 依据：{_html_text(reasoning)}"
     # 折叠：summary 露字数 + 首句预览（关键信息），body 完整保留（author 需细节时展开）。
     # 用 f-string 而非 .format()：reasoning 含 { 或 } 时（代码片段/JSON 示例），
     # .format(body=reasoning) 虽不解析值里的 {}（值不被二次扫描），但 .format() 调用
@@ -145,7 +165,11 @@ def _render_reasoning(reasoning, indent="   "):
     # 空白（\s+→空格）成单行——内容一字不丢，仅丢多段排版（折叠区内的显示形态本就不重要）；
     # 机器可读的 <!-- touchstone-checklist --> marker 存的是 reasoning 原文，API 取全文不受影响。
     teaser = _reasoning_teaser(reasoning)
-    body = re.sub(r"\s+", " ", reasoning).strip()
+    # 中性化（round-7 实录，见 _html_text）：teaser 进 summary、body 进 details——两处都在
+    # HTML block 语境，字面 `<!--`/`-->` 分别会开注释吞段/裸露乱文。转义在空白折叠之后做：
+    # 转义只加长源码不改显示，先折叠保证 len(reasoning) 字数与 teaser 截断口径不受影响。
+    teaser = _html_text(teaser)
+    body = _html_text(re.sub(r"\s+", " ", reasoning).strip())
     # body 与 </details> 须缩进到与 <details> 同列（indent + 2：子列表项 "- " 占 2 字符）。
     # 此前 body 缩进不足会让 body 脱出子列表项的内容区，CommonMark 判其不属于该列表项 →
     # HTML block 在 body 行处截断 → <details> 变空壳、body 渲染成列表项外的松散段落（始终
@@ -175,7 +199,8 @@ def _render_done_criteria(dc):
     if (dc or {}).get("kind") == "review":
         q = _spec.get("question", "")
         # q 非空=有具体复核问题；q 空=诚实降级（描述 reconcile 实际机制）。
-        return f"需人工复核：{q}" if q else "下一轮复检不再命中即销项"
+        # q 是 LLM 自由文本（进 HTML block 语境，须中性化——见 render._html_text）
+        return f"需人工复核：{_html_text(q)}" if q else "下一轮复检不再命中即销项"
     return ""
 
 
@@ -320,7 +345,7 @@ def render_findings_checklist(findings, checklist, review_reliable=True):
         # 已销项项（done/waived/split）方向是历史快照、本就可能未留存，「待补」会误导（待补=待办，
         # 但已销项无需再补）→ 标「已销项」（PRA-REVIEW round-3 data-loss）。
         if direction:
-            title = f"**{direction}**"
+            title = f"**{_html_text(direction)}**"
         elif it["status"] == "open":
             title = "（待补修复方向）"
         else:
@@ -328,7 +353,7 @@ def render_findings_checklist(findings, checklist, review_reliable=True):
         lines.append(f"{mark} {title}" + (f" {label}" if label else "") + f" — `{it['sig']}`")
         # rationale（问题陈述）作首条子项；与 direction 同文则省（去冗余，同 _finding_entry 纪律）
         if rationale and rationale != direction:
-            lines.append(f"  - {rationale}")
+            lines.append(f"  - {_html_text(rationale)}")
         # reasoning（依据）与 rationale 或 direction 同文则省——成对去冗余（PRA-REVIEW round-4：
         # 已销项项 rationale="" 时 `reasoning != ""` 恒真，若 reasoning==direction 会复读标题，
         # 补 `!= direction` 守卫使两分支（open 有 finding / resolved 无 finding）去冗余一致）。
@@ -340,9 +365,11 @@ def render_findings_checklist(findings, checklist, review_reliable=True):
         if dc_line:
             lines.append(f"  - 达成判据：{dc_line}")
         if it.get("note"):
-            lines.append(f"  - 说明：{it['note']}")
+            lines.append(f"  - 说明：{_html_text(it['note'])}")
         if it.get("guard"):                    # 守卫事实（issue #139）：确定性 AST 事实，供 waived 佐证
-            lines.append(f"  - 守卫事实：{it['guard']}")
+            # guard 可含字面 `<module>`（裸路径守卫的函数名占位）——不转义会被浏览器当
+            # 未知内联标签吞掉（round-7 实测：`函数 <module>：无守卫` 渲染丢 `<module>`）
+            lines.append(f"  - 守卫事实：{_html_text(it['guard'])}")
         if f:
             lines.append(_render_finding_meta(f))
     if capped:
