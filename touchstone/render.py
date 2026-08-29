@@ -11,6 +11,7 @@
 # ============================================================================
 
 import html
+import json
 import os
 import re
 import sys
@@ -103,6 +104,126 @@ def _html_text(text):
     机器字段（sig、rule_id、status 标签等）由本系统构造、不含 `<>`，不经此函数保持原样；
     自产 marker（<!-- touchstone-* -->）是机器可读结构，同样保持原样。"""
     return html.escape(text or "", quote=False)
+
+
+# ---------------- 文档级不变量：报告正文的 HTML 注释配对必须封闭在自产 marker 上 ----------------
+# 这是 L2 运行时闸门（L1=各嵌入点 _html_text 转义；L3=对抗性属性测试）。点修（#196 修
+# marker 载荷、#197 修自由文本）锁的是已知洞；本层锁的是洞的【类别】——无论未来哪个新
+# 嵌入点漏了转义，POST 前的单遍扫描都能发现并把坏 token 中性化，坏文档不再出门。
+_COMMENT_OPEN = "<!--"
+_COMMENT_CLOSE = "-->"
+# 自产 marker 的已知种类：loop/checklist/result/finding（带载荷）+ collapsed 哨兵（无载荷）。
+# 刻意穷举而非 `touchstone-\w+`：白名单外的 `<!-- touchstone-...` 本身就该被拦下（防伪造）。
+_KNOWN_MARKER_RE = re.compile(
+    r"<!-- touchstone-(?:loop|checklist|result|finding):|<!-- touchstone-collapsed -->")
+
+
+def _marker_payload_ok(body, m, close_at):
+    """marker 前缀（m.match）到闭符 close_at 之间的载荷必须是完整 JSON——只认前缀不够：
+    LLM 常在正文里【原样引用】marker 语法（round-7 实录：`` `<!-- touchstone-checklist:` ``），
+    前缀完全相同。真 marker 载荷是 html_comment_safe_json 产物，raw_decode 必然吃满；
+    引用/伪造的载荷是自然语言，必失败 → 归 bad-open。collapsed 哨兵无载荷，单独放行。"""
+    if m.group(0).endswith(_COMMENT_CLOSE):        # `<!-- touchstone-collapsed -->`
+        return True
+    seg = body[m.end():close_at].strip()
+    try:
+        _obj, end = json.JSONDecoder().raw_decode(seg)
+    except ValueError:
+        return False
+    return end == len(seg)
+
+
+def scan_report_body(body):
+    """按浏览器 HTML 注释配对规则单遍扫描正文，返回事件列表（validate/sanitize 共用）：
+
+    ("marker", i, j)        自产 marker：i 处开符到闭符 j（不含 j 后内容），合法
+    ("bad-open", i)         非自产 `<!--`（含前缀对但载荷非 JSON 的引用/伪造 marker）：
+                            会开真注释吞掉后文（#197 修的洞——渲染层丢段）
+    ("orphan-close", i)     孤儿 `-->`：不在任何配对内，裸露成可见乱文（#196 修的洞）
+    ("unclosed-marker", i)  自产 marker 开符后无闭符（载荷被截断/损坏）
+
+    模型与浏览器一致：开符吞到【第一个】闭符。marker 载荷经 html_comment_safe_json 保证
+    无内嵌 `-->`，故「第一个闭符」即 marker 闭符；坏开符同样吞到第一个闭符——扫描对
+    坏开符之后的配对可能过度报告（ swallowed 区内事件仍逐个报），验证器只取首因即可。
+    纯函数。"""
+    events = []
+    i, n = 0, len(body or "")
+    while i < n:
+        o = body.find(_COMMENT_OPEN, i)
+        c = body.find(_COMMENT_CLOSE, i)
+        if o == -1 and c == -1:
+            break
+        if o != -1 and (c == -1 or o < c):
+            m = _KNOWN_MARKER_RE.match(body, o)
+            j = body.find(_COMMENT_CLOSE, o) if m else -1
+            if not m or j == -1 or not _marker_payload_ok(body, m, j):
+                if m and j == -1:
+                    events.append(("unclosed-marker", o))
+                else:
+                    events.append(("bad-open", o))
+                i = o + len(_COMMENT_OPEN)
+                continue
+            events.append(("marker", o, j + len(_COMMENT_CLOSE)))
+            i = j + len(_COMMENT_CLOSE)
+        else:
+            events.append(("orphan-close", c))
+            i = c + len(_COMMENT_CLOSE)
+    return events
+
+
+def validate_report_body(body):
+    """报告正文不变量校验：返回违例描述列表（空=通过）。
+    不变量：每个 `<!--` 都是自产 marker 且在本文件内闭合；可见区无孤儿 `-->`。
+    附带 `<details>/<summary>/<pre>` 开闭计数平衡检查（不平=有内容被意外折叠/吞掉，
+    只报告不自愈——无法机械断定该转义哪一个）。计数只看【注释外】文本：marker 载荷
+    JSON 里存的是 reasoning/note 原文，含 `<details>` 等标签属正常（浏览器不解析注释
+    内部），计入则误报。"""
+    events = scan_report_body(body)
+    issues = []
+    for ev in events:
+        if ev[0] == "marker":
+            continue
+        pos = ev[1]
+        issues.append(f"{ev[0]}@{pos}: …{body[pos:pos+40]}…")
+    spans = [(ev[1], ev[2]) for ev in events if ev[0] == "marker"]
+
+    def _outside_count(sub):
+        cnt, k = 0, 0
+        while True:
+            k = body.find(sub, k)
+            if k == -1:
+                return cnt
+            if not any(a <= k < b for a, b in spans):
+                cnt += 1
+            k += len(sub)
+
+    for tag in ("details", "summary", "pre"):
+        o, c = _outside_count(f"<{tag}>"), _outside_count(f"</{tag}>")
+        if o != c:
+            issues.append(f"tag-balance <{tag}>: open={o} close={c}")
+    return issues
+
+
+def sanitize_report_body(body):
+    """L2 自愈：把违例 token 机械中性化（坏 `<!--`/未闭合 marker 开符→`&lt;!--`、孤儿
+    `-->`→`--&gt;`），返回 (修复后正文, 修复次数)。marker 闭符永不改写；
+    tag-balance 类只交 validate 报告（无法机械断定该转义哪一个）。
+    迭代到不变量满足（每轮至少消掉一批坏 token，必然收敛；上限 5 轮防意外死循环）。
+    测试纪律：新嵌入点漏转义时，本函数保证坏文档不出门——stderr 由调用方打点。"""
+    fixes = 0
+    for _ in range(5):
+        repl = []
+        for ev in scan_report_body(body):
+            if ev[0] in ("bad-open", "unclosed-marker"):
+                repl.append((ev[1], _COMMENT_OPEN, "&lt;!--"))
+            elif ev[0] == "orphan-close":
+                repl.append((ev[1], _COMMENT_CLOSE, "--&gt;"))
+        if not repl:
+            break
+        for pos, old, new in sorted(repl, reverse=True):   # 右到左替换，免偏移失效
+            body = body[:pos] + new + body[pos + len(old):]
+        fixes += len(repl)
+    return body, fixes
 
 
 def _reasoning_teaser(reasoning, max_len=_TEASER_MAX):
