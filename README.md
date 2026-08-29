@@ -36,7 +36,7 @@ Touchstone 把一个 PR 上要回答的问题分成三类,各用各的依据:
 1. PR 打开或更新,`touchstone.yml` 触发。
 2. Touchstone 调用 PR-Agent 做评审,把它的输出**归一**成内部统一的 `Finding`,并据此做**风险分流**(`RiskAssessment`:风险档 + 影响面 → 是否需要验证、需要哪一档)。
 3. 跑**确定性核对**:契约一致性(`contract_check`)与栈专项规则(`stack_rules`),这些不依赖 LLM,命中即为红线。
-4. 把评审建议与发现**回贴**到 PR(advisory)。
+4. 把评审建议与发现**回贴**到 PR(advisory);回贴成功后,更早轮次的 bot 评论自动折叠成归档,多轮销项也不刷屏。
 5. 所有"必须通过才能合"的检查折进**单一总闸** `touchstone/gate`;它绿,才满足分支保护。是否点合并,由人决定。
 
 开启可选能力后,在第 3 步与第 5 步之间会多出独立验证(verify),在第 5 步之后可由 autonomy 在达标类上替人点合并——两者默认都关。
@@ -96,7 +96,7 @@ python -m touchstone.run --repo owner/name --pr 314 --post
 
 你的仓库 PR 若被 Touchstone 评审，负责写代码的 agent 需要知道如何逐条处置发现并
 申报销项——协议权威文档在 [skills/touchstone-ack/SKILL.md](skills/touchstone-ack/SKILL.md)
-（申报格式、done/waived/split 语义、复检时序、收敛与停止线）。接线方式（任选其一）：
+（申报格式、done/waived/split 语义、复检时序、多轮轮询、收敛与停止线）。接线方式（任选其一）：
 
 ```bash
 # 方式 A：拷进你的仓（推荐——随仓版本化，agent 一定能读到）
@@ -107,6 +107,9 @@ mkdir -p .claude/skills && cp -r /path/to/touchstone/skills/touchstone-ack .clau
 ```
 
 评审报告内嵌的申报指引为最简版；完整规程（含反博弈语义与轮询纪律）以 skill 正本为准。
+**销项是多轮交互，不是一发即中**：每轮复检可能新增 findings（评审看到修复后给出下一层
+意见是常态）——agent 推送申报后应启动定时任务，**每 2 分钟检查一次**最新一条 bot 评论
+（判新轮只认 bot `created_at`），直到 ✅ 收敛或 ⬆️ 升级到人才停。
 
 ### 快速部署到你的仓库（3 分钟）
 
@@ -241,6 +244,26 @@ pr-agent **取 PR** 用 workflow 自带的 `GITHUB_TOKEN`——**无需额外配
 
 这样人一眼就能看出"这次到底有没有 AI 评审",不会被空评审误导。
 
+### 报告可读性与完整性:历史折叠 + 三层注释防御
+
+**历史折叠**:多轮销项期间,每轮新评审发布成功后,更早轮次的 bot 评论自动折叠为
+`<details>「🔁 历史评审已折叠」</details>` 归档(逐行转义、原文保全、可展开)。
+收敛清单在每条新评论里自足累积——人与 agent 永远只需读最新一条。
+
+**三层注释防御**:LLM 生成的自由文字(处置方向/依据/提醒等)若含字面 `<!--`,会在
+`<details>` HTML 区块内打开一段**真** HTML 注释、把后文整段吞掉——曾实际发生:某轮
+评审的「参考信息 / 如何申报销项」整节在 GitHub 渲染后消失。防御分三层,任一层漏了
+还有下一层兜底:
+
+| 层 | 机制 | 兜的是什么 |
+|---|---|---|
+| L1 站点转义 | 所有自由文字嵌入点统一经 `_html_text` 转义 | 首道防线 |
+| L2 文档闸门 | POST 前全文扫描:每个 `<!--` 必须是已知机器 marker 且 payload 可解析为完整 JSON,否则机械中性化(`&lt;!--`)并 stderr 告警 | L1 的漏点(未来新增嵌入点忘转义) |
+| L3 对抗回归 | torture 语料属性测试覆盖全部自由字段 | 未来改动破坏不变量 |
+
+marker 是机器自产的注释(`<!-- touchstone-checklist: {...} -->` 等);引号里"长得像
+marker 的话"payload 是散文、过不了 JSON 检验,即被 L2 判为普通文字而非信任根。
+
 ## 让评审懂你的团队：手写规范与学习回路
 
 Touchstone 评审默认用通用规则。让评审**懂你团队的特定规范**有两条路径——按需选一或叠加：
@@ -312,10 +335,10 @@ Touchstone 评审默认用通用规则。让评审**懂你团队的特定规范*
 │   ├── best_practices.md       # 主观规则库(评审 prompt 素材)
 │   └── acceptance.yaml.example # 人核准验收规格样例(verify 用)
 ├── touchstone/                 # 评审判断 + 门禁/集成 + 闭环/治理 + 可观测 + 入口
-│   ├── orchestrator.py         # 主编排:评审归一 → 风险分流 → 回贴(advisory)
+│   ├── orchestrator.py         # 主编排:评审归一 → 风险分流 → 回贴(advisory;历史轮折叠 + 报告闸门前置)
 │   ├── review_provider.py      # 评审来源适配(PR-Agent / 优雅降级)
 │   ├── pr_agent_runner.py      # PR-Agent 调用(独立 venv 子进程)+ LLM 调用调优(重试/流式/自评换模)
-│   ├── render.py               # 评审报告渲染(分段 + rdjson)
+│   ├── render.py               # 评审报告渲染(分段 + rdjson + 自由文本转义 L1/注释不变量闸门 L2)
 │   ├── stack_rules.py          # 栈专项确定性规则(DI/事务/equals/异常/日志/路径契约)
 │   ├── contract_check.py       # 确定性契约一致性核对(无 LLM)
 │   ├── gen_best_practices.py   # 主观规则 → PR-Agent prompt 素材
@@ -344,11 +367,11 @@ Touchstone 评审默认用通用规则。让评审**懂你团队的特定规范*
 ├── verify/
 │   ├── verify_change.py        # 质量门禁核心:独立验收测试 + 改前/改后对比 + 充分性阶梯
 │   └── runners.py              # Python(pytest+coverage)/Java(Maven+JaCoCo+PIT) runner + 外部变异接缝(防伪)
-├── tests/                      # 818 个离线用例 / 37 个文件(无需 LLM / 网络 / 外部服务)
+├── tests/                      # 1220 个离线用例 / 46 个文件(无需 LLM / 网络 / 外部服务)
 └── .github/workflows/          # touchstone.yml · calibrate.yml · govern.yml · learn.yml · seed.yml
 ```
 
-生产代码约 8350 行 / 31 个模块;测试 818 个用例 / 37 个文件,全绿、离线;行覆盖率 93%(核心逻辑模块 90–100%;GitHub API / 子进程 / LLM / CLI 等集成层经 mock 覆盖)。
+生产代码约 11700 行 / 35 个模块;测试 1220 个用例 / 46 个文件,全绿、离线;行覆盖率 93%(核心逻辑模块 90–100%;GitHub API / 子进程 / LLM / CLI 等集成层经 mock 覆盖)。
 
 ## 状态与边界(诚实交代)
 
