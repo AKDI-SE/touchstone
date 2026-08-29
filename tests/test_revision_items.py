@@ -1261,11 +1261,68 @@ def test_ack_section_readable_layout():
     assert "\n\n" not in frag                                 # 无空行（#168）
 
 
+def test_collapse_skipped_on_gitcode(monkeypatch, capsys):
+    """合并 #186 后守卫：GitCode 的 PR 评论 id 与 GitHub /issues/comments 命名空间
+    未必一致——拿 pulls 侧 id PATCH issues/comments/{id} 可能改错评论；编辑端点
+    无法离线核实，故 GitCode 整体跳过折叠（纯视觉功能，降级无状态损失）。"""
+    from touchstone import orchestrator as orc
+    monkeypatch.setattr(orc, "_is_gitcode", lambda: True)
+    calls = []
+
+    def fake_gh(method, path, token, data=None, **k):
+        calls.append(method)
+
+    monkeypatch.setattr(orc, "gh", fake_gh)
+    review = "## Touchstone · AI Committer 代码检视\n\n> 第 1 轮\n<!-- touchstone-loop: {} -->"
+    orc._collapse_stale_reviews("o", "r", "t", [{"id": 21, "body": review}])
+    assert calls == []                                   # 绝不 PATCH（防改错评论）
+    assert "GitCode" in capsys.readouterr().err          # 有告警可观测
+    monkeypatch.setattr(orc, "_is_gitcode", lambda: False)
+    orc._collapse_stale_reviews("o", "r", "t", [{"id": 22, "body": review}])
+    assert calls == ["PATCH"]                            # GitHub 侧行为不变
+
+
+def test_collapse_summary_keeps_nested_quote_marker():
+    """round-3 回归（orchestrator:340）：lstrip('> ') 是字符集过剥——嵌套引用状态行
+    "> > 回复"会把第二个 '>' 也吃掉。removeprefix("> ") 只剥一层前缀，嵌套标记保留。"""
+    from touchstone import orchestrator as orc
+    orig = ("## Touchstone · AI Committer 代码检视\n\n"
+            "> > 嵌套引用的结论行\n\n"
+            '<!-- touchstone-loop: {"round": 1, "history": []} -->')
+    summary = orc._collapse_review_body(orig).split("\n")[1]
+    assert summary.endswith("· > 嵌套引用的结论行")    # 内层 '>' 保留（旧 lstrip 会吃掉）
+    # 状态行本身以 "> >" 开头时 _collapse_status_line 仍能选中它（startswith "> "）
+    assert "> 嵌套引用的结论行" in summary
+
+
+def test_collapse_status_bounded_to_header():
+    """round-4 回归（orchestrator:310）：头部缺状态行（旧模板/降级轮）时，无界扫描
+    会抓正文深处首个 '> '（LLM 引用片段/深层告警）冒充摘要。界到首个 ### 小节标题，
+    头部没有状态行就用占位——绝不深挖正文。"""
+    from touchstone import orchestrator as orc
+    orig = ("## Touchstone · AI Committer 代码检视\n\n"
+            "### 评审发现与销项（共 1 条）\n\n"
+            "> 深处正文里的引用片段，不该被当成状态行\n\n"
+            '<!-- touchstone-loop: {"round": 2, "history": []} -->')
+    summary = orc._collapse_review_body(orig).split("\n")[1]
+    assert summary.endswith("Touchstone 历史轮次")           # 占位
+    assert "深处正文" not in summary                          # 不冒充（原文仍在 <pre>）
+    # 头部区内（### 之前）的状态行照常命中——界不误伤
+    orig2 = ("## Touchstone · AI Committer 代码检视\n\n"
+             "> 🔁 继续 · 第 5 轮 · 销项率 80%\n\n"
+             "### 评审发现与销项\n\n"
+             "> 深处正文里的引用片段\n")
+    summary2 = orc._collapse_review_body(orig2).split("\n")[1]
+    assert "第 5 轮" in summary2 and "深处正文" not in summary2
+
+
 def test_markers_html_comment_safe_roundtrip():
-    """PR #191 round-5 实录回归：marker payload 含字面 '-->' 时 GitHub 提前终止
-    HTML 注释——余下 JSON 裸露成可见乱文（"参考信息"后格式混乱信息的根因）。
-    发射侧统一转义 '-->' 为 '--\\u003e'（json.loads 解回 '>'，round-trip 无损）。"""
+    """round-5 实录回归（PR #191 评论区乱文根因）：marker payload 含字面 '-->' 时
+    GitHub 提前终止 HTML 注释——余下 JSON 裸露成可见乱文。发射侧统一转义 '-->' 为
+    '--\\u003e'（json.loads 解回 '>'，round-trip 无损）；三个 marker 源都走
+    checklist.html_comment_safe_json。"""
     from touchstone import checklist as cl, loop as lp, orchestrator as orc
+    # checklist：reasoning 引用字面 -->（LLM 转述正则终止符的实录场景）
     cl_obj = {"round": 3, "items": [
         {"sig": "PRA-X:a.py:1", "direction": "match up to the literal `-->` terminator",
          "reasoning": "non-greedy to `-->`; also `->` and `>=` appear", "status": "open"}],
@@ -1275,9 +1332,16 @@ def test_markers_html_comment_safe_roundtrip():
     assert "--\\u003e" in m                                     # payload 内已转义
     back = cl.parse_latest([m])
     assert back["items"][0]["reasoning"].count("-->") == 1      # 解析复原原文
+    assert back["items"][0]["direction"].endswith("terminator")
+    # loop：history 含 --> 的签名同 round-trip
     lm = lp.render_marker(lp.LoopState(2, [["sig with --> inside"]], True))
     assert lm.count("-->") == 1
     assert lp.parse_latest_state([lm]).history == [["sig with --> inside"]]
+    # 折叠抽取：安全化 marker 仍整条原样外置、可解析
+    folded = orc._collapse_review_body("## Touchstone · AI Committer 代码检视\n\n> 第 3 轮\n" + m)
+    assert m in folded                                  # 折叠抽取：整条原样外置
+    assert cl.parse_latest([folded])["round"] == 3      # 折叠后仍可解析
+    # orchestrator result marker 源已接 helper（防回退到裸 json.dumps 的漂移哨兵）
     import inspect
     assert "html_comment_safe_json" in inspect.getsource(orc.post_results)  # result 源已接（漂移哨兵）
 
@@ -1442,3 +1506,188 @@ def test_post_results_gate_neutralizes_before_post(monkeypatch):
     assert "<!-- touchstone-result:" in body             # 完好 marker 原样保留
     assert render.validate_report_body(body) == [] or all(
         i.startswith("tag-balance") for i in render.validate_report_body(body))
+
+
+
+
+def test_collapse_repairs_broken_marker():
+    """round-5 回归（升级为修复语义）：历史裸 dumps 评论的 marker 含字面 '-->'——
+    findall 截在 payload 内首个 '-->' 上。折叠时从原文完整区间 raw_decode 修复 +
+    重新安全化序列化：旧乱文评论可折叠、marker 痊愈可解析（而非固化残片/放弃折叠）。"""
+    from touchstone import orchestrator as orc, checklist as cl
+    broken = ("## Touchstone · AI Committer 代码检视\n\n> 第 3 轮\n\n"
+              '<!-- touchstone-checklist: {"round": 3, "items": [{"sig": "PRA-X:a.py:1", '
+              '"reasoning": "match up to the literal `-->` instead.", "status": "open"}]} -->')
+    folded = orc._collapse_review_body(broken)
+    assert folded is not None                              # 修复成功 → 照常折叠
+    back = cl.parse_latest([folded])
+    assert back["round"] == 3 and back["items"][0]["sig"] == "PRA-X:a.py:1"
+    assert "`-->`" in back["items"][0]["reasoning"]        # reasoning 原文完整复原
+    assert "--\\u003e" in folded                          # 外置 marker 已安全化
+    assert folded.count("<!-- touchstone-checklist:") == 1  # 修复版恰一条（残片未重复外置）
+
+
+def test_collapse_skips_unrepairable_marker():
+    """修复兜底：marker payload 真不是 JSON（连 raw_decode 都失败）→ 放弃折叠该评论，
+    整条保持原样（绝不固化残片）。"""
+    from touchstone import orchestrator as orc
+    junk = ("## Touchstone · AI Committer 代码检视\n\n> 第 1 轮\n\n"
+            "<!-- touchstone-loop: not-json-at-all -->")
+    assert orc._collapse_review_body(junk) is None
+    good = ("## Touchstone · AI Committer 代码检视\n\n> 第 2 轮\n\n"
+            '<!-- touchstone-loop: {"round": 2, "history": []} -->')
+    assert orc._collapse_review_body(good) is not None
+    import touchstone.orchestrator as O
+    import unittest.mock as um
+    patched = []
+
+    def fake_gh(method, path, token, data=None, **k):
+        if method == "PATCH":
+            patched.append(path)
+
+    with um.patch.object(O, "gh", fake_gh):
+        O._collapse_stale_reviews("o", "r", "t", [{"id": 41, "body": junk},
+                                                 {"id": 42, "body": good}])
+    assert patched and patched[0].endswith("/issues/comments/42")   # 只折叠好评论
+
+
+def test_collapse_dedupes_quoted_markers_keeps_last():
+    """round-6 回归：正文散文里 LLM 转述 marker 语法（引用/示例一个假 marker）时，
+    抽出的假 marker 若原样外置会污染 parse_latest。真实 marker 统一追加在报告尾部
+    ——同类去重保最后一个，折叠体每类恰一条、解析取到真实轮次。"""
+    from touchstone import orchestrator as orc, checklist as cl
+    fake = '<!-- touchstone-checklist: {"round": 99, "items": [], "resolved_rate": 1.0} -->'
+    real = '<!-- touchstone-checklist: {"round": 7, "items": [{"sig": "PRA-Y:b.py:2"}], "resolved_rate": 0.0} -->'
+    orig = ("## Touchstone · AI Committer 代码检视\n\n> 第 7 轮\n\n"
+            "正文里引用了 marker 语法示例：\n" + fake + "\n\n<!-- touchstone-loop: {\"round\": 7, \"history\": []} -->\n"
+            + real)
+    folded = orc._collapse_review_body(orig)
+    assert folded.count("<!-- touchstone-checklist:") == 1    # 假的被去掉，不外置
+    assert folded.count("<!-- touchstone-loop:") == 1
+    assert cl.parse_latest([folded])["round"] == 7            # 解析取真实轮次，非 99
+    assert "PRA-Y:b.py:2" in folded                           # 真实清单内容保留
+
+
+def test_collapse_drops_quoted_marker_of_never_emitted_kind():
+    """round-7 回归（PRA-GENERAL）：同类去重保最后只在假 marker 之后还有同类【真】
+    marker 时兜得住。依据 details 里引用一个本评论从未真实发射过的 kind（假 loop
+    round=99，载荷是合法 JSON——payload 校验拦不住）+ 尾部真 checklist：keep-last
+    会把假货原样外置，parse_latest_state 读到 round 99。修法：只外化尾部区（最后
+    一个 </details> 之后）——正文引用不外化，kind 仅正文出现则整类消失。"""
+    from touchstone import orchestrator as orc, checklist as cl, loop as lp
+    fake_loop = '<!-- touchstone-loop: {"round": 99, "history": [], "last_verdict": true} -->'
+    real_cl = ('<!-- touchstone-checklist: {"round": 7, "items": [{"sig": "PRA-Y:b.py:2"}], '
+               '"resolved_rate": 0.0} -->')
+    orig = ("## Touchstone · AI Committer 代码检视\n\n> 第 7 轮\n\n"
+            "### 评审发现与销项\n\n- [ ] **t** — `PRA-X:a.py:1`\n"
+            "  - <details><summary>依据（10 字）：quoted marker</summary>\n"
+            "    prose quoting " + fake_loop + " as example\n"
+            "    </details>\n\n" + real_cl)
+    folded = orc._collapse_review_body(orig)
+    assert folded is not None
+    assert folded.count("<!-- touchstone-loop:") == 0        # 假 loop 不外置（整类丢弃）
+    assert folded.count("<!-- touchstone-checklist:") == 1   # 真 checklist 照常外置
+    assert lp.parse_latest_state([folded]).round == 0        # 读不到 round 99
+    assert cl.parse_latest([folded])["round"] == 7
+    assert "round\": 99" not in folded                        # 假载荷不进折叠体 marker 区
+
+
+def test_repair_marker_json_search_bounded_to_prefix():
+    """round-7 回归（PRA-POSSIBLE_ISSUE）：坏 marker 载荷没有 '{' 时，无界
+    orig.find("{", pos) 会落到【后续】真 marker 的 '{' 上——raw_decode 成功即产出
+    张冠李戴的"修复"（loop 名挂 checklist 载荷）。修法：'{' 必须紧跟名前缀（跳空白），
+    否则判不可修复。"""
+    from touchstone import orchestrator as orc, loop as lp
+    real_cl = ('<!-- touchstone-checklist: {"round": 7, "items": [{"sig": "PRA-Y:b.py:2"}], '
+               '"resolved_rate": 0.0} -->')
+    # 尾部：无 '{' 的坏 loop marker 在前、真 checklist 在后——旧代码会把 checklist
+    # 载荷嫁接到 loop 名下；新代码判不可修复 → 放弃折叠（不产出张冠李戴的 marker）
+    orig = ("## Touchstone · AI Committer 代码检视\n\n> 第 4 轮\n\n"
+            "<!-- touchstone-loop: not-json -->\n" + real_cl)
+    assert orc._collapse_review_body(orig) is None
+    # 对照：前缀后确是 '{' 的损坏 loop marker（载荷内嵌 '-->' 被正则截断）→ 正常
+    # 修复回 loop 自己的载荷，轮次不丢、不跨类嫁接
+    broken_loop = ('<!-- touchstone-loop: {"round": 4, "history": '
+                   '[["sig with `-->` inside"]], "last_verdict": true} -->')
+    orig2 = ("## Touchstone · AI Committer 代码检视\n\n> 第 4 轮\n\n"
+             + broken_loop + "\n" + real_cl)
+    folded = orc._collapse_review_body(orig2)
+    assert folded is not None
+    st = lp.parse_latest_state([folded])
+    assert st.round == 4 and st.history == [["sig with `-->` inside"]]
+    assert folded.count("<!-- touchstone-checklist:") == 1   # checklist 未被嫁接进 loop
+
+
+def test_collapse_archive_keeps_quoted_marker_and_blank_lines():
+    """round-8 回归（PRA-REVIEW）：折叠归档必须「原文不删、只折叠」——
+    - 正文引用的 marker（信任域外、不外置）要留在 <pre> 原位（转义后可见），此前
+      _MARKER_RE.sub 全删会让归档静默缺内容；
+    - 空行以 &nbsp; 占位行保留（#168 禁空行是渲染约束，段落分隔不静默塌掉）。"""
+    from touchstone import orchestrator as orc, checklist as cl, loop as lp
+    fake_loop = '<!-- touchstone-loop: {"round": 99, "history": [], "last_verdict": true} -->'
+    real_cl = '<!-- touchstone-checklist: {"round": 8, "items": [], "resolved_rate": 1.0} -->'
+    orig = ("## Touchstone · AI Committer 代码检视\n\n> 第 8 轮\n\n"
+            "### 评审发现与销项\n\n第一段。\n\n引用示例 " + fake_loop + " 在此。\n\n"
+            "  - <details><summary>依据</summary>\n    x\n    </details>\n\n" + real_cl)
+    folded = orc._collapse_review_body(orig)
+    assert folded is not None
+    # 引用 marker 留在归档原位（转义形态），不外置、不删除
+    assert "&lt;!-- touchstone-loop:" in folded
+    assert "&quot;round&quot;: 99" in folded            # 假载荷原文在归档里可读
+    assert folded.count("<!-- touchstone-loop:") == 0    # 未外置（信任域外）
+    # 尾部真 marker 外置，归档中剥离
+    assert folded.count("<!-- touchstone-checklist:") == 1
+    # 空行 → &nbsp; 占位行；details 内无真空行（#168）
+    pre = folded.split("<pre>")[1].split("</pre>")[0]
+    assert "&nbsp;" in pre and "\n\n" not in pre
+    # 解析语义不受影响：假 loop 读不到，真 checklist 可读
+    assert lp.parse_latest_state([folded]).round == 0
+    assert cl.parse_latest([folded])["round"] == 8
+
+
+def test_post_results_collapses_only_after_post_success(monkeypatch):
+    """round-9（PRA-POSSIBLE_ISSUE:596）验证：折叠只在摘要评论 POST 真成功后发生。
+    gh 非非 2xx 不可能"不抛异常返回 404 dict"——ghclient.request 末尾 raise_for_status
+    （HTTPError ⊂ RequestException）→ except 吞掉 → posted=False → 绝不折叠。若丢掉
+    posted 门禁：旧 marker 折叠转义后不可解析、新评论又不存在 → round 状态归零。"""
+    import requests as _rq
+    from touchstone import orchestrator as orc
+    risk = {"risk_band": "low", "human_action": "skip", "verification_decision": "cheap_only",
+            "blast_radius": []}
+    stale = [{"id": 77, "body": "## Touchstone · AI Committer 代码检视\n\n> 第 1 轮\n\n"
+              '<!-- touchstone-loop: {"round": 1, "history": []} -->'}]
+
+    calls = []
+
+    def gh_fail(method, path, token, data=None, **k):
+        calls.append((method, path))
+        if method == "POST" and path.endswith("/comments"):
+            raise _rq.exceptions.HTTPError("404 Client Error")   # 非 2xx：raise_for_status 语义
+        return {}
+
+    monkeypatch.setattr(orc, "gh", gh_fail)
+    orc.post_results("o", "r", 9, "sha", "t", risk, [], stale_comments=stale)
+    assert not any(m == "PATCH" for m, _ in calls)                # POST 失败 → 不折叠
+
+    calls.clear()
+
+    def gh_ok(method, path, token, data=None, **k):
+        calls.append((method, path))
+        return {"id": 1}
+
+    monkeypatch.setattr(orc, "gh", gh_ok)
+    orc.post_results("o", "r", 9, "sha", "t", risk, [], stale_comments=stale)
+    assert any(m == "PATCH" and p.endswith("/issues/comments/77") for m, p in calls)  # 成功 → 折叠
+
+
+def test_collapse_no_brand_h2_uses_placeholder():
+    """round-6 回归：无品牌 H2 → 直接占位。全文扫首条 '>'（旧兜底）是无界扫描借尸
+    还魂——受信评审评论必有品牌 H2（_stale_review_comments 以其过滤），无 H2 即模板
+    面目全非，头部区无从锚定。（round-1「锚定 H2」测试在合并中遗失，此为补位+升级。）"""
+    from touchstone import orchestrator as orc
+    fb = orc._collapse_review_body("> 无品牌但有序\n").split("\n")[1]
+    assert fb.endswith("· Touchstone 历史轮次")            # 占位，不冒充正文引用
+    # 有 H2 时锚定语义不变：H2 后头部区第一条 blockquote 即状态行
+    orig = ("## Touchstone · AI Committer 代码检视\n\n> 🔁 继续 · 第 3 轮\n\n"
+            "### 评审发现与销项\n\n> 深处正文引用\n")
+    assert "第 3 轮" in orc._collapse_review_body(orig).split("\n")[1]
