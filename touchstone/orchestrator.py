@@ -12,6 +12,7 @@
 #   GITHUB_API_URL  缺省 https://api.github.com；用 GitHub Enterprise 在此改。
 # ============================================================================
 
+import html
 import json
 import os
 import time
@@ -288,6 +289,215 @@ def _render_engine_detail(engine_status, engine_detail):
             "更完整的 litellm 调用轨迹 / 真实 HTTP 错误见交互日志 artifact `pr-agent-interaction.log`。")
 
 
+# --- 历史轮次折叠（视觉降噪；原文与 marker 全保留）----------------------------
+# 动机：每轮评审各发一条全量报告评论，9 轮下来整屏重复信息。新评论发出后，把历史轮次
+# 评论【就地编辑】为折叠形态：一行摘要 + <details> 包住转义原文——数据不删（GitHub 评论
+# 编辑历史仍可查全量），屏幕只剩最新轮展开。
+# 顺序铁律：只在新评论 POST 成功后折叠。旧 marker 随正文转义后不可再解析，若新评论没发出
+# 去就折叠旧的，PR 上将无任何可解析 marker → 下一轮 round 归零、台账断链。
+_COLLAPSED_SENTINEL = "<!-- touchstone-collapsed -->"
+_REVIEW_BRAND = "## Touchstone · AI Committer 代码检视"
+# marker 提取：非贪婪到字面终止符 -->（行内，不跨行——marker 是 json.dumps 单行产物）。
+# 【不得用 [^>]*】（round-1 评审）：result/checklist marker 的 payload 是自由文本 JSON
+# （LLM direction/reasoning 可含 "->" / ">="），[^>]* 遇 payload 内首个 '>' 即失配 →
+# 整条 marker 匹配失败 → 随正文转义进 <pre> 永久不可解析，恰好毁掉折叠要保护的
+# loop 状态/lineage 台账。残余风险（有意接受）：payload 字符串里出现字面 "-->" 会提前
+# 截断——json.dumps 不转义 '>'，但 marker 消费方（parse_latest_state 等）本就容忍坏
+# JSON 跳过，且发生频率远低于裸 '>'。
+_MARKER_RE = re.compile(r"<!-- touchstone-(?:loop|checklist|result):[^\n]*?-->")
+
+
+def _marker_payload_ok(marker):
+    """整条 marker 的 payload 必须是合法 JSON（round-5 评审）：历史裸 dumps 评论的
+    marker 含字面 '-->' 时，findall 截在 payload 内首个 '-->' 上——残片外置等于
+    固化坏 marker，完整原文随转义进 <pre> 再无人可解析（round 归零风险）。"""
+    m = re.match(r"^<!-- touchstone-(?:loop|checklist|result):\s*(.*?)\s*-->$", marker, re.DOTALL)
+    if not m:
+        return False
+    try:
+        json.loads(m.group(1))
+        return True
+    except (ValueError, TypeError):
+        return False
+
+
+def _repair_marker(orig, pos):
+    """从原文 pos 起修复损坏 marker：raw_decode 从首个 '{' 取完整 JSON（字符串内的
+    '-->' 不干扰——checklist.parse_latest 同技），重新序列化 + html_comment_safe_json
+    转义。修复不了（真不是 JSON）返回 None——调用方放弃折叠该评论。
+
+    round-7 销项（PRA-POSSIBLE_ISSUE）：'{' 的搜索必须限定在 marker 名前缀紧邻之后——
+    此前无界 orig.find("{", pos) 在坏 marker 载荷没有 '{' 时会一路落到【后续】真 marker
+    或正文的 '{' 上，raw_decode 成功即产出张冠李戴的"修复"（loop 名挂着 checklist 载荷）。
+    前缀后跳过空白若非 '{'，直接判不可修复。"""
+    name = re.match(r"<!-- touchstone-(loop|checklist|result):", orig[pos:])
+    if not name:
+        return None
+    i = pos + name.end()                     # 名前缀（含冒号）之后
+    while i < len(orig) and orig[i] in " \t":
+        i += 1
+    if i >= len(orig) or orig[i] != "{":
+        return None
+    try:
+        obj, _ = json.JSONDecoder().raw_decode(orig[i:])
+    except ValueError:
+        return None
+    return (f"<!-- touchstone-{name.group(1)}: "
+            + checklist_mod.html_comment_safe_json(obj) + " -->")
+
+
+def _tail_marker_start(orig, matches):
+    """尾部区（真 marker 的信任域）起点判定：真 marker 统一追加在报告最后（⑥ 段，
+    位于最后一个 </details> 之后）。round-7 销项（PRA-GENERAL）：
+
+    - 正文含 </details> → 尾部区 = 最后一个 </details> 之后——正文中引用/示例的假
+      marker（LLM 转述 marker 语法）几乎都在 依据/reference 的 details 体内，天然
+      落在信任域外；
+    - 无 </details> 的退化正文（极简夹具/异常输入）→ 尾部区无从锚定，退回信任全域：
+      宁可保守外置（round-6 的同类去重保最后仍是防线），不误杀真 marker——尤其别
+      把「历史裸 dumps 损坏 marker」的修复路径堵死（损坏 marker 的正则残片截在载荷
+      中段，任何「从末尾回扫连续 marker 段」的口径都会把它判到信任域外）。
+
+    同类去重保最后（round-6）只在假 marker 之后还有同类真 marker 时兜得住；引用了
+    本评论从未真实发射过的 kind（如只有 checklist 的评论里引用 loop round=99）时假货
+    是同类唯一出现，keep-last 会原样外置污染 parse_latest_state——信任域把这类假货
+    整类挡在门外（不外化 ≠ 丢失：原文仍在折叠 <pre> 里）。"""
+    k = orig.rfind("</details>")
+    if k != -1:
+        return k + len("</details>")
+    return 0
+
+
+def _collapse_status_line(orig):
+    """折叠摘要取状态行：品牌 H2 之后、**头部区内**的第一条 blockquote（v2 版面结构：
+    ①标题+状态行 ②告警——告警也是 "> " 开头，如降级轮的 [!CAUTION]；头部区止于首个
+    小节标题 ###）。取「全文第一条 > 」在模板演化或正文含前置引用时会拿错（round-1）；
+    H2 后无界扫描会在头部缺状态行（旧模板/降级轮）时抓到正文深处的引用片段冒充摘要
+    （round-4）——界到 ###，头部没有就用占位，绝不深挖正文。"""
+    lines = orig.split("\n")
+    for i, ln in enumerate(lines):
+        if ln.startswith(_REVIEW_BRAND):
+            for l2 in lines[i + 1:]:
+                if l2.startswith("###"):       # 头部区止于首个小节标题
+                    break
+                if l2.startswith("> "):
+                    return l2
+            return "> Touchstone 历史轮次"     # 头部无状态行 → 占位（不冒充、不深挖）
+    # 无品牌 H2（异常输入）也直接占位（round-6）：受信评审评论必有品牌 H2
+    # （_stale_review_comments 以其过滤），无 H2 = 模板已面目全非，头部区无从锚定，
+    # 全文扫首条 '>' 是 round-4 刚消灭的无界扫描借尸还魂——占位不冒充。
+    return "> Touchstone 历史轮次"
+
+
+def _collapse_review_body(orig):
+    """单条历史评审评论 → 折叠体。
+
+    - 状态行（品牌 H2 后首条 blockquote）提到折叠体外做摘要——折叠后仍一眼可见每轮结论；
+    - 原文逐行 html.escape 进 <pre>（#168 HTML block 约束：details 内不得有空行——空行
+      以 &nbsp; 占位行保留，段落分隔在 <pre> 里仍可见，不再静默塌掉（round-8 销项）；
+      尖括号防吞；<pre> 保留换行）；
+    - 尾部区机器 marker（loop/checklist/result 的 HTML 注释）从原文抽出、**原样**附在
+      折叠体末尾——HTML 注释不渲染（视觉零成本），但保持可解析：loop 状态派生、lineage
+      台账从已关 PR 评论重建轮次预算都依赖它们。归档只剥离这些【已外化】的 marker；
+      正文引用的 marker（信任域外、不外置）留在 <pre> 原位转义——「原文不删、只折叠」
+      对正文片段同样成立（round-8 销项：此前 _MARKER_RE.sub 全删，归档静默缺内容）。
+    """
+    status = _collapse_status_line(orig)
+    matches = list(_MARKER_RE.finditer(orig))
+    # 只外化【尾部区】marker（round-7 销项 PRA-GENERAL，信任域判定见 _tail_marker_start）：
+    # 正文引用的假 marker 不外化（原文仍在折叠 <pre> 里可见），kind 仅正文出现则整类消失
+    # ——防引用伪造污染 parse_latest_state/lineage。尾部区的损坏 marker（历史裸 dumps
+    # 截断）才走修复；修不好（真不是 JSON）放弃折叠该评论。
+    tail_start = _tail_marker_start(orig, matches)
+    markers = []
+    for m in matches:
+        if m.start() < tail_start:
+            continue                             # 正文引用：不外化
+        frag = m.group(0)
+        if _marker_payload_ok(frag):
+            markers.append(frag)
+            continue
+        rep = _repair_marker(orig, m.start())   # 损坏（历史裸 dumps 截断）→ 从原文
+        if rep is None:                         # 完整区间修复；修不好才放弃折叠
+            return None
+        markers.append(rep)
+    # 同类去重保最后一个（round-6）：尾部区同类多次出现（如损坏残片与其真身）取最后；
+    # 定序 loop/checklist/result 保持稳定输出。
+    by_kind = {}
+    for mk in markers:
+        k = re.match(r"<!-- touchstone-(loop|checklist|result):", mk).group(1)
+        by_kind[k] = mk
+    markers = [by_kind[k] for k in ("loop", "checklist", "result") if k in by_kind]
+    # round-8 销项（PRA-REVIEW）：归档只剥离【已外化】的尾部区 marker——正文引用的
+    # marker 留在 <pre> 原位（转义后可见）。此前 _MARKER_RE.sub 全删：引用片段从归档
+    # 静默消失，「原文与 marker 全保留」的自述对它们不成立。
+    keep = [(m.start(), m.end()) for m in matches if m.start() >= tail_start]
+    parts, last = [], 0
+    for a, b in keep:
+        parts.append(orig[last:a])
+        last = b
+    parts.append(orig[last:])
+    stripped = "".join(parts)
+    # 空行 → &nbsp; 占位行：#168 禁空行是渲染约束，但内容版面不该静默丢——占位行非空
+    # （HTML block 完整），<pre> 里渲染为一条空行，段落分隔保真。转义在行内做：&nbsp;
+    # 必须在 escape 之后注入（否则 & 被 escape 成 &amp;nbsp;）。
+    folded = "\n".join("&nbsp;" if not ln.strip() else html.escape(ln)
+                       for ln in stripped.strip().split("\n"))
+    out = (f"{_COLLAPSED_SENTINEL}\n"
+           f"🔁 历史评审已折叠（最新轮次见最新评论）· {status.removeprefix('> ').strip()}\n"
+           "<details><summary>展开本轮完整评审原文</summary>\n"
+           f"<pre>{folded}</pre>\n"          # folded 已逐行转义（上方），此处不得二次 escape
+           "</details>")
+    if markers:
+        out += "\n" + "\n".join(markers)
+    return out
+
+
+def _stale_review_comments(comments, bot_login):
+    """待折叠的历史评论：受信 bot 发的【评审报告】（品牌 H2 识别），且尚未折叠过。"""
+    out = []
+    for c in comments or []:
+        login = ((c.get("user") or {}).get("login"))
+        if bot_login:
+            if login != bot_login:
+                continue
+        elif not loop._is_bot_login(login):
+            continue
+        body = c.get("body", "") or ""
+        if _REVIEW_BRAND not in body or _COLLAPSED_SENTINEL in body:
+            continue
+        if not c.get("id"):
+            continue
+        out.append(c)
+    return out
+
+
+def _collapse_stale_reviews(owner, repo, token, stale):
+    """就地编辑（PATCH）历史评论为折叠体。逐条隔离：单条失败只告警，不阻塞评审主链。
+
+    GitCode 平台整体跳过（合并 origin/main #186 后补的守卫）：GitCode 的 PR 评论走
+    /pulls/{n}/comments，其评论 id 与 GitHub /issues/comments 命名空间未必一致——
+    拿 pulls 侧 id 去 PATCH issues/comments/{id} 有改错评论的风险，而 GitCode 的
+    编辑端点无法离线核实（不猜端点）。折叠是纯视觉功能：跳过 = 历史评论保持原样
+    （marker 完整，状态无损），等端点核实后再开。"""
+    if _is_gitcode():
+        if stale:
+            print("[info] GitCode 平台暂不折叠历史评审评论（编辑端点未核实，保持原样）",
+                  file=sys.stderr)
+        return
+    for c in stale:
+        folded = _collapse_review_body(c.get("body", "") or "")
+        if folded is None:
+            print(f"[info] 历史评论含损坏 marker，跳过折叠保持原样(id={c.get('id')})",
+                  file=sys.stderr)
+            continue
+        try:
+            gh("PATCH", f"/repos/{owner}/{repo}/issues/comments/{c['id']}", token,
+               {"body": folded})
+        except requests.exceptions.RequestException as e:
+            print(f"[warn] 历史评论折叠失败(id={c.get('id')})，保持原样: {e}", file=sys.stderr)
+
+
 def post_results(owner, repo, number, head_sha, token, risk, findings, loop_info=None,
                  change_class=None, diff=None, injected_types=None, injected_experience_ids=None,
                  shadow_types=None, shadow_experience_ids=None,
@@ -295,7 +505,7 @@ def post_results(owner, repo, number, head_sha, token, risk, findings, loop_info
                  scope_facts=None, checklist=None, rounds_left=None, ledger=None,
                  review_reliable=True,
                  llm_notes=None, raw_excerpt=None, unverified_claims=0, telemetry_status="disabled",
-                 engine_detail=""):
+                 engine_detail="", stale_comments=None):
     # (1) 摘要评论——总是成功；按 v2 六段版面模板组装：
     #     ①标题+状态行 ②告警 ③静态检查 ④评审发现与销项 ⑤参考信息 ⑥机器 marker
     # 评审不可信时，降级说明/0-发现溯源统一并入 render 层的 [!CAUTION] 置顶告警
@@ -383,13 +593,19 @@ def post_results(owner, repo, number, head_sha, token, risk, findings, loop_info
         "unverified_claims": unverified_claims,
     }) + " -->"
     body = body + "\n\n" + result_marker
+    posted = False
     try:
         # GitCode 适配：PR 评论端点是 /pulls/{n}/comments（GitHub 是 /issues/{n}/comments）。
         _cmt = (f"/repos/{owner}/{repo}/pulls/{number}/comments" if _is_gitcode()
                 else f"/repos/{owner}/{repo}/issues/{number}/comments")
         gh("POST", _cmt, token, {"body": body})
+        posted = True
     except requests.exceptions.RequestException as e:
         print(f"[warn] 摘要评论失败: {e}", file=sys.stderr)
+    # 新评论已落地 → 历史轮次评论折叠（视觉降噪，原文与 marker 全保留）。仅在 posted 后做：
+    # 若新评论没发出去就折叠旧的，旧 marker（转义后不再可解析）会丢状态——round 归零。
+    if posted and stale_comments is not None:
+        _collapse_stale_reviews(owner, repo, token, stale_comments)
     # (2) 尽力内联评论（event=COMMENT，绝不 REQUEST_CHANGES）
     #     锚定到 diff 可评论行（删除行/超界行就近锚或降级）；每条附自识别隐藏标记
     if diff is not None:
@@ -618,6 +834,7 @@ def main():
     # 反馈循环：从历史评论 marker 取状态 → 决策 → 回贴附状态与新 marker。
     # 只信机器人自己发的评论（按发帖人过滤）——否则 author 可自己发伪造 marker 洗掉抗博弈闸。
     all_bodies = []          # 全量评论正文（含 author）——只用于解析 ack 申报（申报是输入信号）
+    stale_reviews = []       # 历史评审评论（bot 发、未折叠）——新评论落地后折叠（视觉降噪）
     try:
         # GitCode 适配：PR 评论读取同走 /pulls/{n}/comments（与回贴端点一致）。
         _cmt_path = (f"/repos/{owner}/{repo}/pulls/{number}/comments" if _is_gitcode()
@@ -634,6 +851,8 @@ def main():
             # [bot] 后缀过滤（github-actions[bot]），防伪造仍生效（人无法注册 [bot] 后缀）。
             print("[info] GET /user 未返回身份：loop marker 改按 [bot] 后缀过滤（防伪造仍生效）",
                   file=sys.stderr)
+        # 此刻列表不含即将发出的本轮新评论——正是「历史」的定义；外层 except 路径保持 []。
+        stale_reviews = _stale_review_comments(comments, bot_login)
         bodies = loop.trusted_bodies(comments, bot_login)
     except requests.exceptions.RequestException:
         bodies = []
@@ -801,7 +1020,7 @@ def main():
                  engine_status=engine_status, det_warning=det_warning,
                  ai_raw_count=ai_raw_count, added_lines=added_lines, n_changed=n_changed,
                  scope_facts=scope_facts, checklist=cur_cl, rounds_left=_rounds_left,
-                 ledger=ledger,
+                 ledger=ledger, stale_comments=stale_reviews,
                  review_reliable=reliable, llm_notes=llm_notes,
                  raw_excerpt=raw_excerpt, unverified_claims=n_unverified,
                  telemetry_status=_tel_res, engine_detail=engine_detail)
