@@ -1481,6 +1481,41 @@ def test_collapse_archive_keeps_quoted_marker_and_blank_lines():
     assert cl.parse_latest([folded])["round"] == 8
 
 
+def test_post_results_collapses_only_after_post_success(monkeypatch):
+    """round-9（PRA-POSSIBLE_ISSUE:596）验证：折叠只在摘要评论 POST 真成功后发生。
+    gh 非非 2xx 不可能"不抛异常返回 404 dict"——ghclient.request 末尾 raise_for_status
+    （HTTPError ⊂ RequestException）→ except 吞掉 → posted=False → 绝不折叠。若丢掉
+    posted 门禁：旧 marker 折叠转义后不可解析、新评论又不存在 → round 状态归零。"""
+    import requests as _rq
+    from touchstone import orchestrator as orc
+    risk = {"risk_band": "low", "human_action": "skip", "verification_decision": "cheap_only",
+            "blast_radius": []}
+    stale = [{"id": 77, "body": "## Touchstone · AI Committer 代码检视\n\n> 第 1 轮\n\n"
+              '<!-- touchstone-loop: {"round": 1, "history": []} -->'}]
+
+    calls = []
+
+    def gh_fail(method, path, token, data=None, **k):
+        calls.append((method, path))
+        if method == "POST" and path.endswith("/comments"):
+            raise _rq.exceptions.HTTPError("404 Client Error")   # 非 2xx：raise_for_status 语义
+        return {}
+
+    monkeypatch.setattr(orc, "gh", gh_fail)
+    orc.post_results("o", "r", 9, "sha", "t", risk, [], stale_comments=stale)
+    assert not any(m == "PATCH" for m, _ in calls)                # POST 失败 → 不折叠
+
+    calls.clear()
+
+    def gh_ok(method, path, token, data=None, **k):
+        calls.append((method, path))
+        return {"id": 1}
+
+    monkeypatch.setattr(orc, "gh", gh_ok)
+    orc.post_results("o", "r", 9, "sha", "t", risk, [], stale_comments=stale)
+    assert any(m == "PATCH" and p.endswith("/issues/comments/77") for m, p in calls)  # 成功 → 折叠
+
+
 def test_collapse_no_brand_h2_uses_placeholder():
     """round-6 回归：无品牌 H2 → 直接占位。全文扫首条 '>'（旧兜底）是无界扫描借尸
     还魂——受信评审评论必有品牌 H2（_stale_review_comments 以其过滤），无 H2 即模板
