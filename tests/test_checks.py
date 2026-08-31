@@ -525,6 +525,45 @@ def test_service_pins_dns_against_rebinding(monkeypatch):
     assert posted["n"] == 0                                 # 未发请求
 
 
+def test_service_pin_serialized_under_concurrent_checks(monkeypatch):
+    """pr-agent 第四轮 PRA-SECURITY：run_checks 用 ThreadPoolExecutor 并发——两个 service check
+    同时进/出 _pin_dns 会互相覆盖还原（A exit 还原掉 B 的 pin / B exit 装回 A 的陈旧闭包，
+    getaddrinfo 永久滞留假解析）。_SERVICE_PIN_LOCK 串行化钉死窗口后：各 host 各自命中自己的
+    钉死结果、结束后模块级 getaddrinfo 完整还原（identity 断言）。"""
+    import socket as S
+    import urllib.parse as _up
+    from concurrent.futures import ThreadPoolExecutor
+    monkeypatch.delenv("TOUCHSTONE_SERVICE_ALLOW", raising=False)
+    pub = {h: [(S.AF_INET, S.SOCK_STREAM, 6, "", (ip, 443))]
+           for h, ip in [("a.example", "93.184.216.34"), ("b.example", "93.184.216.35")]}
+    calls = {"n": 0}
+    def fake_gai(h, *a, **k):
+        calls["n"] += 1
+        return pub[(h or "").lower()]
+    monkeypatch.setattr(S, "getaddrinfo", fake_gai)
+    seen = {}
+    class _R:
+        status_code = 200
+        def raise_for_status(self): pass
+        def json(self): return {"passed": True, "summary": "ok"}
+    def fake_post(url, json=None, timeout=None, **k):
+        h = (_up.urlsplit(url).hostname or "").lower()
+        seen[h] = S.getaddrinfo(h, 443)           # 连接期解析（钉死后应命中各自 pin）
+        return _R()
+    monkeypatch.setattr(checks.requests, "post", fake_post)
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        futs = [ex.submit(checks._run_service, _PR, {"url": f"https://{h}/hook"})
+                for h in ("a.example", "b.example")]
+        results = [f.result() for f in futs]
+    assert all(p is True for p, _ in results)
+    assert seen["a.example"] == pub["a.example"] and seen["b.example"] == pub["b.example"]
+    # 钉注消干净（无陈旧 pin）：后续同名解析走回原函数（fake_gai 计数应增长）
+    assert checks._pin_get("a.example") is None and checks._pin_get("b.example") is None
+    n0 = calls["n"]
+    assert S.getaddrinfo("a.example", 443) == pub["a.example"]   # 常驻派发器透传
+    assert calls["n"] > n0
+
+
 def test_service_url_policy_allowlist_exempts(monkeypatch):
     monkeypatch.setenv("TOUCHSTONE_SERVICE_ALLOW", "my-svc.corp")
     def fake_post(url, json=None, timeout=None, **k):

@@ -19,6 +19,7 @@ import socket
 import sys
 import contextlib
 import ipaddress
+import threading
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -160,37 +161,62 @@ def _service_allow_hosts():
             os.environ.get("TOUCHSTONE_SERVICE_ALLOW", "").split(",") if h.strip()}
 
 
+_PIN_TLS = threading.local()          # {host: 已校验 addrinfo}，每线程独立（并发 service check 互不串扰）
+_PIN_ORIG_GAI = None                  # 派发器捕获的原 getaddrinfo（未钉死 host 原样透传给它）
+
+
+def _pin_get(h):
+    pins = getattr(_PIN_TLS, "pins", None)
+    return (pins or {}).get((h or "").lower())
+
+
+def _pin_dispatcher(h, *a, **k):
+    ai = _pin_get(h)
+    if ai is not None:
+        return ai
+    return _PIN_ORIG_GAI(h, *a, **k)
+
+
+def _ensure_pin_dispatcher():
+    """安装常驻派发器（幂等）。首次 service 请求时装一次、进程内常驻——不随请求卸载，
+    规避并发线程互相覆盖还原的窗口（pr-agent 第四轮 PRA-SECURITY）。非钉死 host 的解析
+    语义不变（透传原函数）。"""
+    global _PIN_ORIG_GAI
+    if socket.getaddrinfo is not _pin_dispatcher:
+        _PIN_ORIG_GAI = socket.getaddrinfo
+        socket.getaddrinfo = _pin_dispatcher
+
+
 class _pin_dns:
     """DNS 钉死上下文（pr-agent 评审"SSRF residual"收口）。
 
     残留缺口：_service_url_allowed 校验时的 getaddrinfo 与 requests 发起连接时的
     getaddrinfo 是两次独立解析——短 TTL 的 rebinding DNS 可让前者返回公网 A 记录、
-    后者返回 169.254.169.254/内网地址（经典 TOCTOU）。本上下文把该 host 在窗口内的
-    全部解析重定向到已校验的 addrinfo：连接只能落在校验过的公网 IP 上。
+    后者返回 169.254.169.254/内网地址（经典 TOCTOU）。本上下文把【本线程】对该 host
+    的全部解析重定向到已校验的 addrinfo：连接只能落在校验过的公网 IP 上。
 
-    实现权衡：patch 模块级 socket.getaddrinfo 是全局状态（本进程 checks 为串行执行、
-    无并发竞争；若未来并发化需换 urllib3 自定义 resolver 挂点位）。非目标 host 的
-    解析原样透传（_pin 闭包内保留原函数引用）。"""
+    并发正确性（pr-agent 第四轮 PRA-SECURITY）：service checks 经 ThreadPoolExecutor
+    并行执行（见 test_service_checks_run_in_parallel 的既有契约）——不能换装/卸载全局
+    getaddrinfo（并发进/出会互相覆盖还原）。改为：常驻 TLS 派发器（_pin_dispatcher，
+    未钉死的 host 透传）+ 本线程注册表登记/注销。线程间零共享写、并行度不受损。"""
 
     def __init__(self, host, addrinfos):
         self._host = (host or "").strip().lower()
         self._ai = addrinfos
-        self._orig = None
 
     def __enter__(self):
-        self._orig = socket.getaddrinfo
-        host, ai, orig = self._host, self._ai, self._orig
-
-        def _gai(h, *a, **k):
-            if (h or "").lower() == host:
-                return ai
-            return orig(h, *a, **k)
-
-        socket.getaddrinfo = _gai
+        _ensure_pin_dispatcher()
+        pins = getattr(_PIN_TLS, "pins", None)
+        if pins is None:
+            pins = {}
+            _PIN_TLS.pins = pins
+        pins[self._host] = self._ai
         return self
 
     def __exit__(self, *exc):
-        socket.getaddrinfo = self._orig
+        pins = getattr(_PIN_TLS, "pins", None)
+        if pins is not None:
+            pins.pop(self._host, None)
         return False
 
 
