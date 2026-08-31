@@ -98,7 +98,8 @@ class ReviewEngineDegraded(RuntimeError):
 
 # 可疑空收敛阈值（改动新增行 >= 此值 且 LLM 0 原始建议 -> 评审不可信）。
 # 与 orchestrator._clean_review_trace 的 suspicious 判据同源；经 env 可调（如超大 PR 调参）。
-_SUSPICIOUS_EMPTY_LINES = int((os.environ.get("TOUCHSTONE_SUSPICIOUS_EMPTY_LINES") or "").strip() or "20")
+from touchstone.envutil import env_int as _env_int_   # 审计 #18：import 期坏值回落默认（此处崩=所有 PR 评审全灭）
+_SUSPICIOUS_EMPTY_LINES = max(0, _env_int_("TOUCHSTONE_SUSPICIOUS_EMPTY_LINES", 20))
 
 
 def review_reliable(engine_status, ai_raw_count, added_lines, engaged=False):
@@ -468,7 +469,7 @@ def _provider_mode(pr_ctx):
             or _load_provider_cfg(pr_ctx.get("repo_dir", ".")).get("mode") or "improve+review")
 
 
-def _experience_injection(repo_dir):
+def _experience_injection(repo_dir, stack=None):
     """两条来源 → PR-Agent extra_instructions（只读、可空、失败即空）。
 
     路 1 引擎经验库（data/experience_store.json，TF-GRPO 学的）：跨仓共享、走
@@ -529,9 +530,11 @@ def _experience_injection(repo_dir):
         print("[warn] PR 评审未配置 TOUCHSTONE_EXPERIENCE_REF → 跳过引擎经验库注入（防投毒）。"
               "如本仓有 .touchstone/seeds.yaml，其团队规范仍注入（仓内配置不走该闸）。", file=sys.stderr)
 
-    # 路 2：消费方 seeds.yaml（仓内配置）—— 受合并权限保护、不走 EXPERIENCE_REF 闸
+    # 路 2：消费方 seeds.yaml（仓内配置）—— 受合并权限保护、不走 EXPERIENCE_REF 闸。
+    # 审计 #51：stack 透传（orchestrator 从 diff 粗判，pr_ctx["stack"]）——seeds.yaml 的
+    # stack 字段自此在主评审路径生效（此前"已知 gap"：调用方不传 → 永不过滤）。
     try:
-        seed_text = seed_loader.load_seed_injection(repo_dir)
+        seed_text = seed_loader.load_seed_injection(repo_dir, stack=stack)
         if seed_text:
             parts.append(seed_text)
     except Exception as _e:
@@ -814,14 +817,17 @@ class PRAgentProvider:
         pr_url = pr_ctx.get("pr_url") or _build_pr_url(pr_ctx)
         if not pr_url:
             raise RuntimeError("无法确定 PR URL：pr_ctx 需含 pr_url 或 owner/repo/number")
-        cmd = shlex.split(os.environ.get("TOUCHSTONE_PRAGENT_CMD", "python -m touchstone.pr_agent_runner"))
+        # 审计 #29：默认命令用 sys.executable——裸 "python" 在无 python 别名的环境直接
+        # FileNotFoundError，pr-agent 侧整链评审静默降级。
+        _default_cmd = f"{shlex.quote(sys.executable)} -m touchstone.pr_agent_runner"
+        cmd = shlex.split(os.environ.get("TOUCHSTONE_PRAGENT_CMD") or _default_cmd)
         base_mode = _provider_mode(pr_ctx)            # improve+review（默认）/ improve / review
         repo_dir = pr_ctx.get("repo_dir", ".")
-        timeout = int((os.environ.get("TOUCHSTONE_PRAGENT_TIMEOUT") or "").strip() or "600")
+        timeout = max(1, _env_int_("TOUCHSTONE_PRAGENT_TIMEOUT", 600))   # 审计 #18：坏值回落默认
         # best_practices.md 不经此传：pr-agent 的本地 best_practices 是文件式——放到被审仓库根即可。
         extra = pr_ctx.get("extra_instructions")
         if extra is None:
-            extra = _experience_injection(repo_dir)   # 学习回路 active 经验 → extra_instructions（只读、可空）
+            extra = _experience_injection(repo_dir, stack=pr_ctx.get("stack"))   # 学习回路 active 经验 + seeds（只读、可空）
         # 守卫上下文注入（issue #139 方案 B/C，与经验注入同边界：只调建议、失败即空）：
         #   B 生成侧——本次变更 hunk 的守卫摘要，降低「看 hunk 不看守卫」型误报产出；
         #   C 判后核销——上轮未销项的守卫事实（orchestrator 预取入 pr_ctx），守卫已覆盖的

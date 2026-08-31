@@ -86,7 +86,7 @@ def test_ci_verdict_http_error_returns_none(monkeypatch):
 def test_invoke_endpoint_logs_raw_count_and_cleans(monkeypatch, tmp_path):
     from touchstone import review_provider as RP
     import json
-    monkeypatch.setattr(RP, "_experience_injection", lambda d: "be strict")   # 触发临时文件路径
+    monkeypatch.setattr(RP, "_experience_injection", lambda d, stack=None: "be strict")   # 触发临时文件路径
     created = {}
     monkeypatch.setattr(RP.subprocess, "run",
                         lambda cmd, **k: created.update(cmd=cmd) or

@@ -44,9 +44,10 @@ def load_seed_injection(repo_dir=".", stack=None):
     无文件 / 解析失败 / 空列表 → 返回 ""（优雅降级，不阻塞评审）。
     格式不对的条目（kind 非 emphasize/suppress、缺 finding_type/text）逐条跳过、不整体失败。
 
-    已知 gap（诚实标注）：主评审路径 ``_experience_injection`` 不持有当前 PR 的技术栈上下文，
-    故调用时不传 stack → 带 ``stack`` 字段的种子也会注入（不按栈过滤）。多数团队规范是通用的
-    （不标 stack），不受影响；按栈过滤的种子需由显式持有栈上下文的调用方自行调本函数。
+    已知 gap（已闭合，审计 #51）：orchestrator 现从 diff 后缀粗判技术栈放进
+    ``pr_ctx["stack"]``，``_experience_injection`` 透传到本参数——seeds.yaml 的
+    ``stack`` 字段在主评审路径已生效。不确定的栈（""）与未标 stack 的种子均不过滤
+    （通用规范语义不变）。
     """
     # abspath 归一化（round-2 review）：防 repo_dir 带尾斜杠/相对分量致 join 行为意外。
     abs_dir = os.path.abspath(repo_dir or ".")

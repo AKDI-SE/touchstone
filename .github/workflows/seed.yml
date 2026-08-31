@@ -12,14 +12,17 @@ jobs:
   seed:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: write        # 推 bot 分支
+      pull-requests: write   # 开种子经验 PR（审计 #50：不再直推 main）
 
     steps:
+      # 审计 #50：去掉硬编码 ref: main——checkout 默认即默认分支，硬编码在仓改名默认分支
+      # （main→master 等）后静默 404/检错分支。fetch-depth: 0 供推滚动分支用。
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          ref: main
           token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -35,3 +38,30 @@ jobs:
           SEED_FILE: ${{ github.event.inputs.seed_file }}
         run: |
           python "$SEED_FILE"
+
+      # 审计 #50：经验库改动经 bot 分支 + PR 落库（与 learn.yml 的 B3 约定同构）——
+      # workflow_dispatch 直推默认分支绕过一切评审/门禁，且 GITHUB_TOKEN 直推不受
+      # 分支保护约束的路径恰是种子经验（会注入所有后续评审的 prompt）最该走 review 的地方。
+      - name: Push seed update to bot branch + open PR
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -u
+          if git status --porcelain | grep -q .; then
+            git config user.name "Touchstone Bot"
+            git config user.email "touchstone-bot@users.noreply.github.com"
+            BOT_BRANCH="bot/seed-experiences"
+            git checkout -B "$BOT_BRANCH"
+            git add data/ 2>/dev/null || true
+            if git diff --cached --quiet; then echo "种子未产生改动"; exit 0; fi
+            git commit -m "chore(bot): seed experiences update"
+            git push -f origin "$BOT_BRANCH"
+            for n in $(gh pr list --head "$BOT_BRANCH" --state open --json number -q '.[].number' 2>/dev/null || true); do
+              gh pr close "$n" || true
+            done
+            gh pr create --head "$BOT_BRANCH" --title "chore(bot): seed experiences update (run $RUN_ID)" \
+              --body "由 seed.yml 手动触发产出。种子经验会注入后续评审 prompt，请人工确认后合入。"
+          else
+            echo "种子未产生改动（store 无变化）"
+          fi
