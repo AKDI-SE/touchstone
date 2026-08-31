@@ -71,3 +71,12 @@ jobs:
         with:
           path: .pragent-venv
           key: pragent-venv-${{ runner.os }}-${{ runner.arch }}-py${{ steps.pyminor.outputs.minor }}-pragent${{ env.PRA_VERSION }}-lock${{ hashFiles('pragent-constraints.txt') }}-v2
+      - name: Keep pip cache dir present on venv-cache-hit runs
+        # 缓存命中路径的隐藏红：venv 命中 → Build venv 跳过 → 本轮无任何 pip 安装 →
+        # ~/.cache/pip 从未创建 → setup-python(cache: pip) 的 post-save 以
+        # "Cache folder path is retrieved for pip but doesn't exist on disk" 硬失败。
+        # 自 2026-08-12 venv 缓存进入稳定命中期后，warm 连续 7 次运行全红（run 8–14）。
+        # mkdir 保底让存在性检查通过：键不存在则存入一次（近乎空的）条目，键已存在时
+        # reserve 冲突在 actions/cache 里仅 warning——两种情况 job 均绿。
+        if: steps.pv.outputs.cache-hit == 'true'
+        run: mkdir -p "$HOME/.cache/pip"
