@@ -270,7 +270,12 @@ def _run_service(pr, cfg):
         r = requests.post(url, json={
             "owner": pr["owner"], "repo": pr["repo"], "sha": pr["sha"],
             "files": pr.get("files", [])},
-            timeout=cfg.get("timeout", 60), allow_redirects=False)
+            # pr-agent 第七轮评审：重定向禁令对【豁免主】放开——内网服务常坐 http→https 或
+            # 域前置网关后（一跳重定向是常态），全禁重定向等于豁免名单形同虚设。豁免=运维明示
+            # 信任该 host（scheme/网段检查本就已全免），其重定向落点属同一信任面；非豁免主维持
+            # 禁止（落点不受任何校验约束，是 SSRF 借道面）。
+            timeout=cfg.get("timeout", 60),
+            allow_redirects=host in _service_allow_hosts())
         r.raise_for_status()
         d = r.json()
     return _truthy(d.get("passed")), str(d.get("summary", ""))
