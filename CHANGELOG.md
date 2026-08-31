@@ -7,6 +7,59 @@
 
 （下个版本的新变更记于此。）
 
+## [0.3.1] — 2026-08-31（审计 51 项全量修复 + 评审 14 轮淬炼 + CI 三修）
+
+补丁版：对外消费方接口（`gitcode_check` / CLI / checks.yaml 契约）零变化，全部为健壮性、
+fail-closed 与安全收口。收录 v0.3.0 以来 3 个 PR（#203/#205/#206，32 commits），
+主线是**系统性代码审计的全量修复与多轮评审淬炼**。全量测试 1239 通过 / 11 跳过
+（较 v0.3.0 净增 28 个用例，1250→1278）。
+
+### 审计 51 项发现全量修复（#203，按链路分组）
+
+- **GitHub API 健壮性（#1–4）**：仅幂等 GET 重试——POST 的 5xx/403+Retry-After 重放会重复
+  评论/check-run/看板 issue；Retry-After 双格式（秒数/HTTP-date）解析 + 120s 上限；分页分隔符
+  按原 path 一次判定（>100 条列表不再因畸形 URL 404 打穿调用链）。
+- **编排层取数与规则索引（#5–8）**：check-runs 翻页取全（矩阵 CI >30 个 check 的大仓不再基于
+  残缺首屏判 CI）；规则索引跳过缺 id 条目并告警；内联正文同过 `_redact_secrets`。
+- **学习环数据完整性（#9–14/#17/#19/#43/#45）**：经验库写回闸（盘上有数据而读得空库 → 拒绝
+  运行，防瞬态失败静默清空 locked/human 经验）；changed 检测纳入 evidence/source_prs（graduate
+  不再永不可达）；反注入闸扩展到 `pull_request_target` 事件族（marker 不再虚报从未发生的注入）；
+  畸形候选/存量条目容错（非 dict 条目在唯一加载边界剔除+告警）。
+- **GitHub 取数静默截断（#15–16/#20–24）**：calibrate/fetch_review_threads 等翻页取全 + 逐页
+  失败可见（partial 结果 + 告警，不再整链打穿或静默缺数）。
+- **GitCode diff 获取与供应链（#25–28）**：显式 `GITCODE_DIFF_CMD` 失败不回落内置 git 链
+  （拿错对象还看似正常）；全部 diff 来源失败时总闸 fail-closed；降级路径大声告警范围不符；
+  pr-agent 版本钉死安装（约束文件不经管道静默吞错）。
+- **verify 链 fail-closed 与度量口径（#29–37）**：全套件 oracle 先验基线（套件本身红时跳过
+  变异评分——分数虚高无意义）；`sys.executable` 替代裸 `python`；verify-result.json 畸形值
+  中性不崩；变异源文件读取失败跳过该文件。
+- **自治链安全（#38–42）**：service URL SSRF 白名单（仅 https 公网、禁内网/云元数据端点——
+  checks.yaml 是 PR 可改内容，author 不得借门禁 runner 打内网）；自动合闸 `base_fresh`
+  只认显式 True（None=评不了 → 不放行，与 author_trusted 同哲学）。
+- **看板 issue 取数（#46–47）**：label 查询 URL 编码（含 `/` 的 label 此前 404 静默空列表）。
+- **工作流配置与注入链（#18/#48–51）**：种子经验改走 bot 分支 + PR（不再 workflow_dispatch
+  直推 main 绕过评审——种子会注入所有后续评审 prompt，恰是最该走 review 的路径）。
+
+### 评审 14 轮淬炼（#203 内，同链路深化）
+
+- **SSRF 收口链（checks.py）**：豁免面 host → `host:port` 端口粒度；重定向改手写跳循环逐跳过闸
+  （payload 永不发给未校验落点、跳数封顶、303/301/302 换 GET、307/308 保 POST）；豁免不授明文
+  （仅条目显式 `http://host` 放行明文）；坏白名单条目跳过+告警；非法端口先拦；3xx 缺 Location
+  显式拒绝。
+- **DNS rebinding TOCTOU 闭环**：常驻 TLS 派发器 + 双检锁安装（校验期/连接期两次独立解析间
+  的 rebinding 被钉死到已校验 addrinfo；并发 service check 的既有并行契约保持）。
+- **翻页上限单一事实源**：`PAGINATE_PER_PAGE/PAGINATE_MAX_PAGES` 常量化，calibrate 据此推导
+  校准窗口上限，取不满窗口（撞上限/小仓不足）均打印可见。
+- **种子分支免强推**：普通推 → 非快进 rebase 重推 → 冲突才告警回落 `-f`。
+
+### CI 修复（#205、#206）
+
+- **#205**：`vars.TOUCHSTONE_MAX_DIFF_LINES` 接线进评审工作流 env（此前变量是死配置，SIZE-001
+  恒用 1000 默认）。
+- **#206**：warm 工作流 venv 缓存【命中】路径转绿——命中时无 pip 运行、缓存目录不存在，
+  setup-python post-save 硬失败（自 2026-08-12 连红 7 次）；补目录推导步骤（setup-python
+  解释器、仅边缘空白、仅绝对路径、空/相对回落默认）。
+
 ## [0.3.0] — 2026-08-29（历史折叠 + 报告注释防御三层 + 销项指引三触点 + GitCode 适配）
 
 本版收录 v0.2.8 以来 20 个 PR（#182–#201），主线是「多轮销项的体验与报告完整性」。
