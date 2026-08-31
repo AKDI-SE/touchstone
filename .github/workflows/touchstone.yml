@@ -127,7 +127,7 @@ jobs:
                                 # 上游报告问题一：36 次运行缓存零命中、每轮白重建 venv ~57s。
     env:
       # pr-agent 版本单一来源：下方 cache key 与 pip install 同引此变量，升版只改这一行（两处自动同步刷新）。
-      PRA_VERSION: "0.39.0"
+      PRA_VERSION: "0.44.0"
     steps:
       # fail-loud 守卫（round-2 review item 2）：verify/gate/auto_merge 链移除后，若有人再设
       # vars.VERIFY_ENABLED/AUTONOMY_ENABLED=true，这两个 vars 会【静默 no-op】——期望的 verify

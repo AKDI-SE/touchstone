@@ -27,7 +27,7 @@ permissions:
   actions: write             # 可信触发器下写缓存有效（与低信任触发器的只读限制相对）
 
 env:
-  PRA_VERSION: "0.39.0"      # 与 touchstone.yml 的 env.PRA_VERSION 保持一致（升版两处同改）
+  PRA_VERSION: "0.44.0"      # 与 touchstone.yml 的 env.PRA_VERSION 保持一致（升版两处同改）
 
 jobs:
   warm:

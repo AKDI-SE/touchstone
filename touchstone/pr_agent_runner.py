@@ -312,6 +312,13 @@ def run(pr_url, mode, extra_instructions=None):
     s = get_settings()
     s.config.publish_output = False           # 关键：不往 PR 发评论，只取结构化结果
     s.config.publish_output_progress = False
+    # fail-closed（pr-agent 0.44 新旋钮，默认 false）：默认时工具 run() 顶层吞异常只打日志，
+    # "评审内部崩了"与"模型真没发现问题"不可区分——空结果伪装成干净评审（假绿灯）。
+    # 开启后 pr_reviewer/pr_code_suggestions 对内部错误 re-raise，落进我们下方 tools 块的
+    # except → _degraded=llm_failed → orchestrator 降级说明。与 touchstone 全线 fail-closed
+    # 哲学同构（经验库读取失败即拒运行、mutation 基线红即弃权）。
+    # 0.39-及更早无此键：赋值进 dynaconf 只是多一个无人读的键，无害（升级回退也安全）。
+    s.config.propagate_tool_errors = True
     # git_provider 经 env 可覆盖：默认 github（headless 运行避免 provider 自动探测失败）。
     # 设 TOUCHSTONE_GIT_PROVIDER=local → LocalGitProvider：审【本地分支】（HEAD vs --pr-url 给的
     # 目标分支），不经 GitHub、无需 token。用于本地端到端 / pre-push 自查。
@@ -528,9 +535,11 @@ def run(pr_url, mode, extra_instructions=None):
                     "reason": f"取 PR / git provider 失败（pre-LLM）：{type(e).__name__}: {e}"}
         # 阶段二：跑工具（LLM 调用）+ 解析。失败归 llm_failed。
         try:
-            # 结构性事实（对 pr-agent 0.37 核实）：improve 与 review 的 run() 都在顶层全量
-            # 捕获异常并只打日志——异常永远不会穿透到本 try，下面的 llm_failed 分支在自然
-            # 情况下不可能触发。故工具级故障只能靠【专属 stderr 标记】外化，供
+            # 结构性事实（pr-agent 0.37–0.43 核实）：improve 与 review 的 run() 都在顶层全量
+            # 捕获异常并只打日志——异常不会穿透到本 try，llm_failed 分支对其为死代码。
+            # 0.44 起我们开启 config.propagate_tool_errors（见上），工具内部错误 re-raise
+            # 穿透至此 → llm_failed 真正可达。但【空结果静默路径】（无异常、data/prediction
+            # 为空：LLM 空响应、早退、截断）仍不抛——专属 stderr 标记依旧必要，供
             # review_provider 的签名检测与部分降级诊断使用。标记串是检测契约的一部分，
             # 与 review_provider._PRED_FAILURE_SIGS / partial_tool_failure 联动，勿随意改写。
             if "cs" in instances:
@@ -542,6 +551,16 @@ def run(pr_url, mode, extra_instructions=None):
                 out["code_suggestions"] = (_cs_data or {}).get("code_suggestions") or []
             if "rv" in instances:
                 asyncio.run(instances["rv"].run())           # rv.prediction 是原始 YAML 串；自行解析
+                # 评审覆盖面（pr-agent 0.44 的 remaining_files_list，0.39-0.43 无此属性）：
+                # diff 总 token 超预算时被裁掉、未经 LLM 评审的文件清单。上游只把它渲染进
+                # 发布评论的 coverage footer（pr_reviewer._get_review_coverage_footer），而
+                # publish_output=False 闸掉了整条发布路径——展示被屏蔽、数据可绕：实例属性
+                # 在 diff 处理期填充（构造后即有值），这里直接取数跨 JSON 边界透出，由
+                # orchestrator 贴横幅。缺失（旧版/local provider 差异）→ 空清单：不过度
+                # 声明覆盖缺口，也不静默假装全覆盖。上限 100 防畸形巨表撑爆产物。
+                _rfl = getattr(instances["rv"], "remaining_files_list", None) or []
+                out["review"]["_unreviewed_files"] = [f.strip() for f in _rfl
+                                                     if isinstance(f, str) and f.strip()][:100]
                 _pred = (instances["rv"].prediction or "").strip()
                 if not _pred:
                     print("[runner] review produced empty prediction（LLM 空响应或早退，真实原因见上文日志）",
