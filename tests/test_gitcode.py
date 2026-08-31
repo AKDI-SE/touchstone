@@ -68,6 +68,17 @@ def test_get_diff_all_succeed_but_empty_is_ok(monkeypatch):
     assert gc.get_diff_from_git("main") == (None, True)
 
 
+def test_get_diff_two_dot_fallback_warns_scope(monkeypatch, capsys):
+    """pr-agent 第十二轮：三点式失败回落两点式（`origin/base..HEAD`）时必须告警——
+    两点式 = diff base HEAD（非 merge-base），base 侧自分叉后的新提交被反向计入，
+    范围可能大于/异于本 PR；静默采用会让人误读绿灯的覆盖范围。"""
+    seq = [_R(1, ""), _R(0, "two-dot diff")]
+    monkeypatch.setattr(gc.subprocess, "run", lambda *a, **k: seq.pop(0))
+    assert gc.get_diff_from_git("main") == ("two-dot diff", True)
+    err = capsys.readouterr().err
+    assert "两点式" in err and "反向计入" in err
+
+
 def test_get_diff_subprocess_exception_returns_none(monkeypatch):
     import subprocess as sp
     def boom(*a, **k):

@@ -286,8 +286,14 @@ def main(argv=None):
             with open(store_path, encoding="utf-8") as _f:
                 _d = json.load(_f)
             _disk = len((_d or {}).get("experiences") or []) if isinstance(_d, dict) else 0
-        except (OSError, ValueError):
-            _disk = 0
+        except FileNotFoundError:
+            _disk = 0                        # 盘上无文件 = 真空库（首跑），放行
+        except (OSError, ValueError) as e:
+            # pr-agent 第十二轮：盘上文件在但读不了/解析不了 = 真值【未知】——按本闸
+            # 「评不了当不过」的哲学拒绝运行；旧版吞掉异常按 _disk=0 放行，save_store
+            # 会把空库写回、覆盖可能含条目的（暂坏）文件。
+            sys.exit(f"[learn] 拒绝运行：经验库 {store_path} 存在但读取/解析失败（{e}）——"
+                     "真值未知，本轮不学习不写回；人工修复后重跑。")
         if _disk > 0:
             sys.exit(f"[learn] 拒绝运行：经验库读得空（{store_path}）但该文件盘上有 {_disk} 条经验——"
                      "疑似 TOUCHSTONE_EXPERIENCE_REF 读取瞬态失败，本轮不学习不写回；恢复后重跑。")

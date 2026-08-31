@@ -187,6 +187,40 @@ def test_bootstrap_disabled_by_default(monkeypatch):
     assert L.bootstrap_from_calibrate(agg, {"experiences": []}) == []
 
 
+def test_main_writeback_guard_failclosed(monkeypatch, tmp_path):
+    """审计 #9 写回闸 + pr-agent 第十二轮扩展：①盘上有条目而 load_store 得空（EXPERIENCE_REF
+    瞬态失败）→ 拒绝运行；②【新增】盘上文件存在但读不了/解析不了（真值未知）→ 同样拒绝——
+    旧版吞异常按空库放行，save_store 会把空库写回覆盖（暂坏）文件；③文件缺失（首跑）→ 放行。"""
+    store_path = tmp_path / "exp.json"
+    (tmp_path / "agg.json").write_text(
+        json.dumps({"aggregate": {"by_rule": {}}}), encoding="utf-8")
+    monkeypatch.setattr(L, "STORE_PATH", str(store_path))
+    monkeypatch.setenv("TOUCHSTONE_CALIB_AGG", str(tmp_path / "agg.json"))
+    monkeypatch.delenv("TOUCHSTONE_BOOTSTRAP_SEED", raising=False)
+
+    # ① 盘上完好含条目、load_store 却得空（mock 瞬态失败）→ 拒绝、不写回
+    store_path.write_text(
+        json.dumps({"experiences": [{"id": "x", "status": "active"}]}), encoding="utf-8")
+    _real = L.load_store
+    monkeypatch.setattr(L, "load_store", lambda p=None: {"experiences": []})
+    with pytest.raises(SystemExit) as ei:
+        L.main()
+    assert "盘上有 1 条经验" in str(ei.value)
+    monkeypatch.setattr(L, "load_store", _real)
+
+    # ② 盘上文件存在但 JSON 损坏（真值未知）→ 拒绝、不写回（旧版按空库放行会覆盖）
+    store_path.write_text('{"experiences": [', encoding="utf-8")   # 截断 JSON
+    with pytest.raises(SystemExit) as ei2:
+        L.main()
+    assert "读取/解析失败" in str(ei2.value) and "真值未知" in str(ei2.value)
+    assert store_path.read_text(encoding="utf-8") == '{"experiences": ['   # 未被空库覆盖
+
+    # ③ 文件缺失 = 真空库（首跑）→ 放行，正常学习并落盘
+    store_path.unlink()
+    L.main()
+    assert json.loads(store_path.read_text(encoding="utf-8"))["experiences"] == []
+
+
 def test_main_bootstraps_active_before_merge_when_enabled(tmp_path, monkeypatch):
     """main 在 merge_candidates【前】调 bootstrap（env 开时）：高采纳全新 type 直接 seed active，
     随后 distill 同 id candidate 经 merge 补 evidence 但不降级 active。env 关时 distill 只产 candidate 无 active。"""

@@ -65,6 +65,13 @@ def get_diff_from_git(base_branch="main"):
                         print(f"[gitcode_check] ⚠️ 降级回退到 '{' '.join(cmd)}'：前序 diff 命令失败或为空，"
                               f"本结论只覆盖该 diff，不保证是本 PR 相对 {base_branch} 的完整改动范围。",
                               file=sys.stderr)
+                    elif idx == 1:    # pr-agent 第十二轮：两点式也非同义替换——
+                        # `A..B` = diff A B（非 merge-base），base 侧自分叉后的新提交会被
+                        # 反向计入：范围可能大于/异于本 PR，静默采用会让人误读绿灯范围。
+                        print(f"[gitcode_check] ⚠️ 降级到两点式 '{' '.join(cmd)}'（三点式失败或为空）："
+                              f"它把 {base_branch} 侧自 merge-base 以来的提交也反向计入，"
+                              f"范围可能大于/异于本 PR——结论按此范围理解。",
+                              file=sys.stderr)
                     return result.stdout, True
                 # rc==0 但输出为空 → 继续试下一条（push 事件下 origin/base...HEAD 恒空，
                 # 靠 HEAD~1 取增量——这不是失败，不告警）
