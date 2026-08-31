@@ -86,5 +86,7 @@ jobs:
         if: steps.pv.outputs.cache-hit == 'true'
         run: |
           d="$("${{ steps.py.outputs.python-path }}" -m pip cache dir 2>/dev/null | tail -n 1)"
-          d="${d//[[:space:]]/}"
+          d="${d#"${d%%[![:space:]]*}"}"     # 仅去【前导】空白：内部含空格的合法路径不被破坏
+          d="${d%"${d##*[![:space:]]}"}"     # 仅去【尾随】空白
+          case "$d" in /*) ;; *) d="" ;; esac  # 仅接受绝对路径：相对路径 mkdir 会落到 workspace
           mkdir -p "${d:-$HOME/.cache/pip}"
