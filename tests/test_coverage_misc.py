@@ -22,7 +22,7 @@ def test_run_service(monkeypatch):
         headers = {}
         def raise_for_status(self): pass
         def json(self): return {"passed": True, "summary": "ok"}
-    monkeypatch.setenv("TOUCHSTONE_SERVICE_ALLOW", "x")     # 审计 #40：URL 白名单豁免测试假主机
+    monkeypatch.setenv("TOUCHSTONE_SERVICE_ALLOW", "http://x")   # 审计 #40：豁免假主机（明文需显式声明，第十轮）
     monkeypatch.setattr(checks.requests, "post", lambda *a, **k: _R())
     passed, summ = checks._run_service({"owner": "o", "repo": "r", "sha": "s"}, {"url": "http://x"})
     assert passed is True and summ == "ok"
@@ -33,7 +33,7 @@ def test_run_checks_unknown_type_and_isolation(monkeypatch):
         {"name": "?", "type": "wat", "required": True},
         {"name": "boom", "type": "service", "url": "http://x", "required": False},
     ]}
-    monkeypatch.setenv("TOUCHSTONE_SERVICE_ALLOW", "x")     # 审计 #40：URL 白名单豁免测试假主机
+    monkeypatch.setenv("TOUCHSTONE_SERVICE_ALLOW", "http://x")   # 审计 #40：豁免假主机（明文需显式声明，第十轮）
     monkeypatch.setattr(checks.requests, "post",
                         lambda *a, **k: (_ for _ in ()).throw(RuntimeError("net")))
     res = checks.run_checks(cfg, {"owner": "o", "repo": "r", "sha": "s", "token": "t"})

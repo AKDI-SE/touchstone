@@ -120,8 +120,9 @@ def _service_url_allowed(url):
       · 仅 https（明文 http 的响应可被链路伪造 passed=true）；
       · 禁 localhost/环回/链路本地/私网与云元数据地址（按主机名字面量 + 解析后 IP 双查——
         字面量查堵 `http://169.254.169.254`；解析查堵 `http://attacker.com` → 私网 A 记录）；
-      · 禁重定向（redirect 落点不受上述任何约束）。
-    部署方确需内网服务时挂 TOUCHSTONE_SERVICE_ALLOW=host[,host...] 白名单（明示豁免）。"""
+      · 重定向逐跳过闸（第九轮）：非豁免主禁跟随；豁免主可跟随但每跳 Location 重新过本闸。
+    部署方确需内网服务时挂 TOUCHSTONE_SERVICE_ALLOW 白名单（明示豁免网段检查；
+    `host:port` 限端口粒度、`http://host` 显式放行明文——见 _service_allow_map）。"""
     import ipaddress
     import urllib.parse
     try:
@@ -132,7 +133,12 @@ def _service_url_allowed(url):
     if not host:
         return False, "URL 无主机名"
     if _service_exempt(u):
-        return True, "allowlist 豁免"          # 明示豁免：scheme/网段检查全免（测试与内网部署；端口粒度见 _service_allow_map）
+        # pr-agent 第十轮：豁免=目标可及性豁免，传输完整性仍守——明文响应可被链路伪造
+        # passed=true，若豁免即免 scheme 闸，改 checks.yaml 的 author 可借豁免主域名走
+        # http 拿伪造放行。明文仅当条目显式写 http://host（运维明示）。
+        if (u.scheme or "").lower() != "https" and host not in _service_allow_map()[1]:
+            return False, "豁免主默认仍要求 https（明文响应可被链路伪造；确需明文请在 TOUCHSTONE_SERVICE_ALLOW 写 http://host）"
+        return True, "allowlist 豁免"          # 明示豁免：网段检查免（测试与内网部署；端口/明文粒度见 _service_allow_map）
     if u.scheme != "https":
         return False, f"仅允许 https（当前 {u.scheme!r}）"
     if host in ("localhost",) or host.endswith(".localhost") or host.endswith(".internal") \
@@ -162,37 +168,44 @@ def _norm_host(h):
 
 
 def _service_allow_map():
-    """TOUCHSTONE_SERVICE_ALLOW → {host: 端口集合 | None}。
+    """TOUCHSTONE_SERVICE_ALLOW → ({host: 端口集合 | None}, 显式明文 host 集)。
 
     条目容错（pr-agent 第五轮"silent mismatches"）：接受裸主机名，也接受带 scheme/
     端口/路径的写法（urlsplit 解析），统一 _norm_host 归一。
     端口粒度（pr-agent 第八轮"Honor allowlist ports"）：`host` 裸写 = 该 host 全端口
     豁免；`host:port` = 仅该端口——内网服务常用非标端口分流（8080 对公、8443 内部），
-    全 host 豁免面大于运维明示的信任面。多条目同 host 并集，与全端口条目混写时取全端口。"""
-    m = {}
+    全 host 豁免面大于运维明示的信任面。多条目同 host 并集，与全端口条目混写时取全端口。
+    明文粒度（pr-agent 第十轮）：豁免的是【目标可及性】，不是【传输完整性】——裸 host/
+    `https://` 条目对命中 URL 仍强制 https（明文响应可被链路伪造 passed=true）；仅当条目
+    显式写 `http://host` 时该 host 放行明文（运维明示的无 TLS 内网服务）。"""
+    m, http_ok = {}, set()
     for raw in os.environ.get("TOUCHSTONE_SERVICE_ALLOW", "").split(","):
         h = raw.strip()
         if not h:
             continue
-        if "://" not in h:
+        had_scheme = "://" in h
+        if not had_scheme:
             h = "https://" + h                 # 补哑 scheme 让 urlsplit 统一处理 host[:port][/path]
         u = urllib.parse.urlsplit(h)
         host = _norm_host(u.hostname)
         if not host:
             continue
+        if had_scheme and (u.scheme or "").lower() == "http":
+            http_ok.add(host)                  # 明文是条目里的明示选择，不是缺省
         if u.port is None:
             m[host] = None                     # 未标端口 = 全端口（最宽，后续条目不再收窄）
         elif host in m and m[host] is None:
             pass                               # 已是全端口：端口条目不再收窄
         else:
             m[host] = (m.get(host) or set()) | {u.port}   # 首条端口条目：m.get 为 None 时也正确建集
-    return m
+    return m, http_ok
 
 
 def _service_exempt(u):
     """urlsplit 结果是否命中豁免（host 匹配 + 端口粒度）。未标端口的 URL 按 scheme 缺省
-    （https=443 / 其他=80）比对。校验、钉死跳过、重定向放开三处共用同一口径。"""
-    m = _service_allow_map()
+    （https=443 / 其他=80）比对。校验、钉死跳过、重定向放开三处共用同一口径。
+    注意：豁免≠免 scheme 闸——明文放行要条目显式写 http://（见 _service_allow_map）。"""
+    m, _ = _service_allow_map()
     host = _norm_host(u.hostname)
     if host not in m or m[host] is None:
         return host in m

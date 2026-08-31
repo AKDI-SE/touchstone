@@ -394,8 +394,13 @@ def main():
     token = os.environ["GITHUB_TOKEN"]
     owner, repo = os.environ["GITHUB_REPOSITORY"].split("/", 1)
     bot = os.environ.get("TOUCHSTONE_BOT_LOGIN", "github-actions[bot]")
-    prs = gh(f"/repos/{owner}/{repo}/pulls?state=closed&sort=updated&direction=desc"
-             f"&per_page={WINDOW}", token)
+    # pr-agent 第十轮：不要把 WINDOW 塞进 per_page——GitHub 硬顶 100，CALIBRATE_WINDOW>100
+    # 会被静默截到 100（校准窗口悄悄缩水）；且 gh_paginate 追加自己的 per_page=100，路径里
+    # 再带一个 per_page 会产生重复参数。改为翻页取全（100/页）后截到 WINDOW。
+    prs = gh_paginate("/repos/{o}/{r}/pulls?state=closed&sort=updated&direction=desc"
+                      .format(o=owner, r=repo), token)[:WINDOW]
+    if WINDOW > len(prs) == 2000:             # 撞翻页硬顶（20 页 × 100）才算截断；小仓不足窗口是正常
+        print(f"[calibrate] ⚠️ 翻页上限截断：窗口要求 {WINDOW}，只取到 2000——校准样本不足")
     records = []
     skipped = 0
     for pr in prs:

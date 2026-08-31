@@ -319,7 +319,8 @@ class _FakeResp:
 def _allow_service_hosts(monkeypatch):
     """审计 #40：_run_service 现校验 URL 白名单（仅 https 公网，TOUCHSTONE_SERVICE_ALLOW 豁免）。
     测试打桩的假主机全在此豁免，专注测并发/解析逻辑；白名单本身的拦截面有专项测试。"""
-    monkeypatch.setenv("TOUCHSTONE_SERVICE_ALLOW", "a,b,c,crash,ok,svc,x")
+    # 条目显式写 http://host：第十轮起裸 host 条目对 URL 仍强制 https（明文=运维明示）
+    monkeypatch.setenv("TOUCHSTONE_SERVICE_ALLOW", "http://a,http://b,http://c,http://crash,http://ok,http://svc,http://x")
 
 
 def _concurrent_post(active, payload=None, sleep=0.05):
@@ -630,19 +631,40 @@ def test_service_allowlist_entry_normalization(monkeypatch):
     """pr-agent 第五轮评审"silent mismatches"：allowlist 条目写成带 scheme/端口/路径/
     尾点/大写时应仍与 URL 主机名匹配（两侧统一 _norm_host 归一）。"""
     monkeypatch.setenv("TOUCHSTONE_SERVICE_ALLOW",
-                       "https://A.com/x, b.com:8443, c.com., plain.d")
+                       "http://A.com/x, http://b.com:8443, c.com., plain.d")
     def fake_post(url, json=None, timeout=None, **k):
         return _FakeResp({"passed": True, "summary": "ok"})
     monkeypatch.setattr(checks.requests, "post", fake_post)
-    # 裸 host（a.com/c.com./plain.d，含 scheme/尾点/大小写容错）= 全端口豁免；
-    # b.com:8443 = 端口粒度（pr-agent 第八轮）：仅 8443 豁免，:9000 不再全 host 放行
-    for u in ("http://a.com/h", "http://b.com:8443/h", "https://c.com./h", "http://plain.d/h"):
+    # 裸 host（c.com./plain.d，含尾点/大小写容错）= 全端口豁免但【不授明文】（第十轮）；
+    # 显式 http:// 条目（A.com/b.com:8443）= 豁免 + 明文；b.com:8443 端口外回落 scheme 闸
+    for u in ("http://a.com/h", "http://b.com:8443/h", "https://c.com./h", "https://plain.d/h"):
         assert checks._run_service(_PR, {"url": u}) == (True, "ok"), u
     assert checks._run_service(_PR, {"url": "http://b.com:9000/h"})[0] is None   # 端口外：回落 scheme 闸
+    assert checks._run_service(_PR, {"url": "http://plain.d/h"})[0] is None      # 裸条目不授明文（第十轮）
+
+
+def test_service_allowlist_bare_host_still_requires_https(monkeypatch):
+    """pr-agent 第十轮 PRA-SECURITY：豁免的是【目标可及性】不是【传输完整性】——
+    裸 host/https:// 条目对命中 URL 仍强制 https（明文响应可被链路伪造 passed=true，
+    豁免即免 scheme 闸 = 改 checks.yaml 的 author 可借豁免主域名走 http 拿伪造放行）；
+    明文仅当条目显式写 http://host 才放行（运维明示的无 TLS 内网服务）。"""
+    monkeypatch.setenv("TOUCHSTONE_SERVICE_ALLOW", "svc")
+    assert checks._service_url_allowed("https://svc/hook") == (True, "allowlist 豁免")
+    ok, why = checks._service_url_allowed("http://svc/hook")
+    assert ok is False and "https" in why                     # 裸条目：明文不放行
+    # 显式 http:// 条目：明文放行（同 host）
+    monkeypatch.setenv("TOUCHSTONE_SERVICE_ALLOW", "http://svc")
+    assert checks._service_url_allowed("http://svc/hook")[0] is True
+    # 端口条目同理：裸端口条目不授明文，http://host:port 显式才授
+    monkeypatch.setenv("TOUCHSTONE_SERVICE_ALLOW", "svc:8080")
+    assert checks._service_url_allowed("http://svc:8080/x")[0] is False
+    monkeypatch.setenv("TOUCHSTONE_SERVICE_ALLOW", "http://svc:8080")
+    assert checks._service_url_allowed("http://svc:8080/x")[0] is True
+    assert checks._service_url_allowed("https://svc:8080/x")[0] is True   # https 本就放行
 
 
 def test_service_url_policy_allowlist_exempts(monkeypatch):
-    monkeypatch.setenv("TOUCHSTONE_SERVICE_ALLOW", "my-svc.corp")
+    monkeypatch.setenv("TOUCHSTONE_SERVICE_ALLOW", "http://my-svc.corp")   # 明文需显式声明（第十轮）
     def fake_post(url, json=None, timeout=None, **k):
         return _FakeResp({"passed": True, "summary": "ok"})
     monkeypatch.setattr(checks.requests, "post", fake_post)
