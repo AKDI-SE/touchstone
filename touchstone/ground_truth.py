@@ -11,7 +11,8 @@
 import os
 import sys
 
-GT_WINDOW = int((os.environ.get("TOUCHSTONE_GT_WINDOW") or "").strip() or "30")   # 重建真值集回看的最近已关闭 PR 数
+from touchstone.envutil import env_int as _env_int_   # 审计 #16：坏值回落默认，import 不崩
+GT_WINDOW = max(1, _env_int_("TOUCHSTONE_GT_WINDOW", 30))   # 重建真值集回看的最近已关闭 PR 数
 GT_DIFF_BUDGET = 8000                                            # 单 PR diff 截断字符预算（喂 TF-GRPO 的上下文）
 
 # --- 盲区2 坏真值检测（B/C/D 信号 → trust_weight；env 默认全关 = 零行为变化）-----------
@@ -45,6 +46,25 @@ def _gh_get(path, token, accept="application/vnd.github+json"):
     from touchstone import ghclient
     base = os.environ.get("GITHUB_API_URL", "https://api.github.com")
     return ghclient.request("GET", base + path, token, accept=accept)
+
+
+def _gh_paginate(path, token, per_page=100, max_pages=20):
+    """GitHub 列表翻页取全（审计 #22：per_page=100 单页截断污染学习真值）。
+
+    评论/评审/文件列表 >100 时首页截断：评论丢 result marker → 整个 PR 被当成
+    「未经 touchstone 评审」跳过（学习样本无谓流失）；reviews/files 截断 → 人审
+    state 与文件清单失真。逐页经 _gh_get（测试的注入点保持单一）；分隔符按原
+    path 一次判定（审计 #2 同款教训）。"""
+    q = "&" if "?" in path else "?"
+    out = []
+    for page in range(1, max_pages + 1):
+        data = _gh_get(f"{path}{q}page={page}&per_page={per_page}", token)
+        if not isinstance(data, list):
+            break
+        out.extend(data)
+        if len(data) < per_page:
+            break
+    return out
 
 
 def _stack_of(filenames):
@@ -153,10 +173,10 @@ def _truth_signals(reviews, findings_fa, diff, human_state, bot_login, *, diff_t
     from touchstone import calibrate as C
     resolved_fa = [f for f in (findings_fa or []) if f.get("resolved")]
     low_weight = any((f.get("resolver_association") or "") in LOW_ASSOCIATIONS for f in resolved_fa)
-    tiny_lines = int((os.environ.get("TOUCHSTONE_TRUTH_TINY_DIFF_LINES") or "").strip() or str(TRUTH_TINY_DIFF_LINES_DEFAULT))
+    tiny_lines = _env_int_("TOUCHSTONE_TRUTH_TINY_DIFF_LINES", TRUTH_TINY_DIFF_LINES_DEFAULT)   # 审计 #16
     added = _diff_added_lines(diff)
     tiny_diff = (not diff_truncated) and 0 < added < tiny_lines and bool(resolved_fa)
-    body_max = int((os.environ.get("TOUCHSTONE_TRUTH_LGTM_BODY_MAX") or "").strip() or str(TRUTH_LGTM_BODY_MAX_DEFAULT))
+    body_max = _env_int_("TOUCHSTONE_TRUTH_LGTM_BODY_MAX", TRUTH_LGTM_BODY_MAX_DEFAULT)   # 审计 #16
     return {"lgtm_only": C._lgtm_only(reviews, human_state, bot_login, body_max),
             "low_weight_reviewer": low_weight,
             "tiny_diff_resolved": tiny_diff}
@@ -166,8 +186,9 @@ def _trust_weight(signals):
     """从命中信号算 trust_weight（0–1，纯函数）。每命中信号扣 penalty；命中数≥hard_drop→0（硬剔除）。
     默认 penalty=0.34 / hard_drop=3：1 信号→0.66、2→0.32、3+→0。"""
     active = sum(1 for v in (signals or {}).values() if v)
-    penalty = float((os.environ.get("TOUCHSTONE_TRUTH_PENALTY") or "").strip() or str(TRUTH_PENALTY_DEFAULT))
-    hard_drop = int((os.environ.get("TOUCHSTONE_TRUTH_HARD_DROP") or "").strip() or str(TRUTH_HARD_DROP_DEFAULT))
+    from touchstone.envutil import env_float as _env_float_   # 审计 #16：调用期坏值回落默认
+    penalty = _env_float_("TOUCHSTONE_TRUTH_PENALTY", TRUTH_PENALTY_DEFAULT)
+    hard_drop = max(1, _env_int_("TOUCHSTONE_TRUTH_HARD_DROP", TRUTH_HARD_DROP_DEFAULT))
     if active >= hard_drop:
         return 0.0
     return round(max(0.0, 1.0 - penalty * active), 3)
@@ -267,7 +288,7 @@ def build_ground_truth(owner, repo, token, *, window=GT_WINDOW, bot_login=None,
         if since_pr and n <= since_pr:
             continue                  # 增量水位：已处理的 PR 跳过取数（省 ~5 次 per-PR API 调用）
         try:
-            comments = _gh_get(f"/repos/{owner}/{repo}/issues/{n}/comments?per_page=100", token) or []
+            comments = _gh_paginate(f"/repos/{owner}/{repo}/issues/{n}/comments", token)
             # 信任根①：result marker 只信受信作者（与 calibrate.py 既有调用点同口径）——此前传全部评论
             # body，非受信作者（author/任意 [bot] 账号）发的假 result marker 会伪造 raised_types/
             # injected_types 核心信号。改经 _trusted_bodies 过滤（_is_trusted_marker_author 已收紧）。
@@ -284,8 +305,8 @@ def build_ground_truth(owner, repo, token, *, window=GT_WINDOW, bot_login=None,
             human_waived = (_waived_types(comments, bot_login, ts_findings, merged=True)
                             if merged else set())
             try:
-                threads = C.parse_review_threads(
-                    C.gql(C._GQL_THREADS, {"owner": owner, "repo": repo, "num": n}, token))
+                # fetch_review_threads 自带游标翻页（审计 #23）——>100 线程的大 PR 不再首页截断
+                threads = C.fetch_review_threads(owner, repo, n, token)
                 # pr_author=作者 login：作者自 resolve 自己 PR 的发现线程不算人审采纳（否则伪造正例
                 # 毒化 TF-GRPO 奖励——契约见 calibrate.thread_findings 的 pr_author 参数 +
                 # test_author_self_resolve_not_counted_as_adoption）。build_ground_truth 曾漏传。
@@ -315,7 +336,7 @@ def build_ground_truth(owner, repo, token, *, window=GT_WINDOW, bot_login=None,
             #   无 line 的仅进 resolved_types 做类型匹配，不进 positions，免产 line=null 的废位置）
             resolved_findings = [f for f in fa if f.get("resolved")
                                  and (f.get("line") is not None or f.get("line_start") is not None)]
-            reviews = _gh_get(f"/repos/{owner}/{repo}/pulls/{n}/reviews?per_page=100", token) or []
+            reviews = _gh_paginate(f"/repos/{owner}/{repo}/pulls/{n}/reviews", token)
             human_state = C._human_verdict(reviews, bot_login)
             diff_truncated = False
             try:
@@ -327,8 +348,7 @@ def build_ground_truth(owner, repo, token, *, window=GT_WINDOW, bot_login=None,
             except Exception as e:
                 print(f"[learning_loop] PR#{n} diff 获取失败（以空 diff 继续）: {e}", file=sys.stderr)
                 diff = ""
-            files = [f.get("filename") for f in
-                     (_gh_get(f"/repos/{owner}/{repo}/pulls/{n}/files?per_page=100", token) or [])]
+            files = [f.get("filename") for f in _gh_paginate(f"/repos/{owner}/{repo}/pulls/{n}/files", token)]
             # 盲区2 坏真值检测：TOUCHSTONE_TRUTH_QUALITY 开时算 B/C/D 信号 + trust_weight；
             # weight==0（命中≥hard_drop 信号）→ 硬剔除，不 append（distill 与 aggregate_ab 都不再见它）。
             # 关时 signals=None/weight=1.0 → make_gt_entry 默认值，reward 路径字节级不变。

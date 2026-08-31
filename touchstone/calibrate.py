@@ -22,7 +22,8 @@ from touchstone.atomicio import atomic_write_json, atomic_write_text   # 状态�
 from touchstone.artifacts import artifact_path
 import requests
 
-WINDOW = int((os.environ.get("CALIBRATE_WINDOW") or "").strip() or "50")   # 取最近 N 个已关闭 PR
+from touchstone.envutil import env_int as _env_int_   # 审计 #15：坏值回落默认，import 不崩
+WINDOW = max(1, _env_int_("CALIBRATE_WINDOW", 50))   # 取最近 N 个已关闭 PR
 NOISY_MIN_FIRES = 5          # agent/rule 命中达到此数才判定噪声
 NOISY_CR_RATE = 0.2          # 命中 PR 的"人要求改动"比例低于此 → 噪声
 NOISY_ADOPT_RATE = 0.2       # finding 级：命中条数多但被采纳(线程 resolved)比例低于此 → 噪声
@@ -43,12 +44,17 @@ def gh_paginate(path, token):
 
 
 # --- GitHub GraphQL：取 PR 评论线程的 isResolved（REST 不暴露线程解决状态）------
+# 审计 #23：$cursor + pageInfo 支持线程游标翻页——旧版 first:100 无翻页，>100 线程的
+# 大 PR 首页截断，旧线程的 resolved/done 信号整条丢失（校准与真值双双失真）。
+# 线程内 comments 提到 first:50：发现 marker 与驳回回复都在线程头部，>50 楼的线程
+# 属病态长论战，截断尾部不影响信号（保留单查询复杂度，不做嵌套翻页）。
 _GQL_THREADS = """
-query($owner:String!,$repo:String!,$num:Int!){
+query($owner:String!,$repo:String!,$num:Int!,$cursor:String){
   repository(owner:$owner,name:$repo){
     pullRequest(number:$num){
-      reviewThreads(first:100){
-        nodes{ isResolved resolvedBy{login} path line comments(first:20){ nodes{ author{login} authorAssociation body } } }
+      reviewThreads(first:100, after:$cursor){
+        nodes{ isResolved resolvedBy{login} path line comments(first:50){ nodes{ author{login} authorAssociation body } } }
+        pageInfo{ hasNextPage endCursor }
       }
     }
   }
@@ -139,9 +145,27 @@ def thread_findings(threads, bot_login=None, pr_author=None):
     return out
 
 
-def fetch_review_threads(owner, repo, number, token):
-    data = gql(_GQL_THREADS, {"owner": owner, "repo": repo, "num": number}, token)
-    return parse_review_threads(data)
+def fetch_review_threads(owner, repo, number, token, max_pages=10):
+    """取 PR 全部评审线程（游标翻页，审计 #23）。
+
+    每页 100 条、hasNextPage 则带 endCursor 续查（上限 max_pages 防异常环）。
+    节点聚合回单个响应结构再交纯函数 parse_review_threads——解析逻辑零改动、
+    测试可继续直接喂假响应。中途某页抛错即把已到手的节点返回（部分好过没有，
+    与「校准是增强不阻塞」的既有降级语义一致）。"""
+    cursor = None
+    nodes = []
+    for _ in range(max_pages):
+        data = gql(_GQL_THREADS, {"owner": owner, "repo": repo, "num": number,
+                                  "cursor": cursor}, token)
+        rt = ((((data or {}).get("data") or {}).get("repository") or {})
+              .get("pullRequest") or {}).get("reviewThreads") or {}
+        nodes.extend(rt.get("nodes") or [])
+        info = rt.get("pageInfo") or {}
+        if not info.get("hasNextPage") or not info.get("endCursor"):
+            break
+        cursor = info["endCursor"]
+    return parse_review_threads({"data": {"repository": {"pullRequest":
+                                            {"reviewThreads": {"nodes": nodes}}}}})
 
 
 def _parse_result(comment_bodies, bot_login):
@@ -324,6 +348,13 @@ def aggregate(records):
 
 def render_report(agg):
     L = [f"# 校准报告（最近 {agg['total']} 个已关闭 PR）", ""]
+    # 审计 #24：显式披露"窗口内取到但未入样"的 PR——被跳过的 PR 不再静默蒸发。
+    # 窗口被大量非 touchstone PR 占据时样本量虚缩，读报告的人必须能看见（.get 兼容
+    # 旧调用方/测试直接构造的 agg）。
+    if agg.get("scanned_prs") is not None and agg.get("skipped_prs"):
+        L.append(f"窗口取到 {agg['scanned_prs']} 个已关闭 PR，其中 {agg['skipped_prs']} 个"
+                 f"未经 touchstone 评审被跳过（入样 {agg['total']}）——样本量偏小时下列"
+                 f"比例置信度低。")
     cr = agg["overall_changes_requested_rate"]
     L.append(f"含发现的 PR：{agg['prs_with_findings']}/{agg['total']}　"
              f"整体人要求改动比例：{cr if cr is None else round(cr,2)}")
@@ -359,11 +390,13 @@ def main():
     prs = gh(f"/repos/{owner}/{repo}/pulls?state=closed&sort=updated&direction=desc"
              f"&per_page={WINDOW}", token)
     records = []
+    skipped = 0
     for pr in prs:
         n = pr["number"]
         comments = gh_paginate(f"/repos/{owner}/{repo}/issues/{n}/comments", token)
         result = _parse_result(_trusted_bodies(comments, bot), bot)
         if not result:
+            skipped += 1                  # 审计 #24：跳过要可见，不静默蒸发
             continue                      # 该 PR 没经过 touchstone，跳过
         # 真实自动放行标记（autonomy.execute_auto_merge 发布的隐藏 marker）；只信 bot 发的（防伪造）
         auto_handled = any("touchstone:auto_handled" in b for b in _trusted_bodies(comments, bot))
@@ -385,6 +418,8 @@ def main():
                     "merge_commit_sha": pr.get("merge_commit_sha"), "auto_handled": auto_handled})
         records.append(rec)
     agg = aggregate(records)
+    agg["scanned_prs"] = len(prs)         # 审计 #24：窗口实际取到的 PR 数（入样=total）
+    agg["skipped_prs"] = skipped
     report = render_report(agg)
     print(report)
     # atomic_write_text：自建 OUTPUT_DIR 父目录（设隔离目录时不 FileNotFoundError）+ 原子落盘

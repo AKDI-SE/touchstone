@@ -29,6 +29,24 @@ LOOKBACK_DAYS = 30       # 只比对近 N 天关闭的 PR
 RESET_LABEL = "rounds-reset"
 
 
+def _api_paginate(api, path, per_page=100, max_pages=10):
+    """经注入 api() 翻页取全列表（审计 #20/#21：单页 per_page=30/100 的静默截断）。
+
+    台账走 api 注入而非 ghclient 直连（测试可注入假实现），故翻页逻辑内置在此。
+    分隔符按原 path 一次判定（同 ghclient.paginate 的教训，审计 #2）：path 带 "?" 用 "&"。
+    任何一页异常/非列表即停——台账是增强，宁可少算不多崩。返回尽力而为的全量列表。"""
+    q = "&" if "?" in path else "?"
+    out = []
+    for page in range(1, max_pages + 1):
+        data = api("GET", f"{path}{q}page={page}&per_page={per_page}")
+        if not isinstance(data, list):
+            break
+        out.extend(data)
+        if len(data) < per_page:
+            break
+    return out
+
+
 def fresh_ledger(fingerprint, max_rounds=None, reset_by=None):
     mr = max_rounds if max_rounds is not None else loop.MAX_ROUNDS
     return {"fingerprint": fingerprint or {}, "lineage": [], "rounds_spent": 0,
@@ -101,8 +119,10 @@ def detect_lineage(scope_fp, api, owner, repo, current_number, current_labels=No
     if not scope_fp or not scope_fp.get("fileset"):
         return fresh_ledger(scope_fp, mr)
     try:
-        closed = api("GET", f"/repos/{owner}/{repo}/pulls?state=closed&sort=updated"
-                            f"&direction=desc&per_page=30") or []
+        # 审计 #20：原 per_page=30 只看最近 30 个关闭 PR——关闭密集的仓库里 30 天窗口内的
+        # 关旧开新样本会被顶出首页而漏检。翻页取全（updated 降序 + 下方时间窗早停）。
+        closed = _api_paginate(api, f"/repos/{owner}/{repo}/pulls"
+                             f"?state=closed&sort=updated&direction=desc", per_page=50)
     except Exception as e:                                    # 台账是增强，不阻塞评审主链
         print(f"[lineage] 关闭 PR 检索失败，按全新台账处理：{e}", file=sys.stderr)
         return fresh_ledger(scope_fp, mr)
@@ -115,10 +135,16 @@ def detect_lineage(scope_fp, api, owner, repo, current_number, current_labels=No
         if pr.get("merged_at"):
             continue          # 已合入的 PR 不是「关旧开新刷轮次」，不入台账
         if not _recent_enough(pr.get("closed_at") or pr.get("updated_at"), days, now):
+            # 列表按 updated 降序：updated_at 已出窗 ⇒ 之后全部更旧（closed_at ≤ updated_at），
+            # 继续翻页只剩白费请求——早停（与时间窗语义一致，不改变命中集合）。
+            if not _recent_enough(pr.get("updated_at"), days, now):
+                break
             continue
         try:
-            # 文件集初筛（列表 API 便宜）：files 端点取变更文件名
-            files = api("GET", f"/repos/{owner}/{repo}/pulls/{num}/files?per_page=100") or []
+            # 文件集初筛（列表 API 便宜）：files 端点取变更文件名。
+            # 审计 #21：>100 文件的大 PR 首页截断 → 文件集指纹残缺 → Jaccard 虚低 → 同源漏检。
+            # 翻页取全（files 端点单页上限恰为 100）。
+            files = _api_paginate(api, f"/repos/{owner}/{repo}/pulls/{num}/files")
             fileset = [f.get("filename") for f in files if f.get("filename")]
             shape = {f.get("filename"): [int(f.get("additions", 0)), int(f.get("deletions", 0))]
                      for f in files if f.get("filename")}
@@ -142,7 +168,9 @@ def detect_lineage(scope_fp, api, owner, repo, current_number, current_labels=No
 def _history_from_comments(api, owner, repo, number):
     """从关闭 PR 的评论重建：已消耗轮次（loop marker）+ 未销项清单项（checklist marker）。"""
     try:
-        comments = api("GET", f"/repos/{owner}/{repo}/issues/{number}/comments?per_page=100")
+        # 审计 #21：>100 条评论的 PR 首页截断——loop marker 若不在首页，历史轮次重建为 0，
+        # 关旧开新者的欠账被洗白。翻页取全。
+        comments = _api_paginate(api, f"/repos/{owner}/{repo}/issues/{number}/comments")
         comments = comments if isinstance(comments, list) else []
     except Exception:
         return 0, []
