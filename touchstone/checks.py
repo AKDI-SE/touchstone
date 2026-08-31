@@ -180,7 +180,7 @@ def _service_allow_hosts():
 
 
 _PIN_TLS = threading.local()          # {host: 已校验 addrinfo}，每线程独立（并发 service check 互不串扰）
-_PIN_ORIG_GAI = None                  # 派发器捕获的原 getaddrinfo（未钉死 host 原样透传给它）
+_PIN_ORIG_GAI = socket.getaddrinfo    # 派发器透传的原 getaddrinfo（import 期即绑定，永非 None——pr-agent 第六轮评审）
 
 
 def _pin_get(h):
@@ -192,6 +192,7 @@ def _pin_dispatcher(h, *a, **k):
     ai = _pin_get(h)
     if ai is not None:
         return ai
+    # _PIN_ORIG_GAI 在 import 期即绑定真实 getaddrinfo，永非 None（pr-agent 第六轮评审收口）
     return _PIN_ORIG_GAI(h, *a, **k)
 
 

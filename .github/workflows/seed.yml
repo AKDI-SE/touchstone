@@ -57,11 +57,22 @@ jobs:
             if git diff --cached --quiet; then echo "种子未产生改动"; exit 0; fi
             git commit -m "chore(bot): seed experiences update"
             git push -f origin "$BOT_BRANCH"
-            for n in $(gh pr list --head "$BOT_BRANCH" --state open --json number -q '.[].number' 2>/dev/null || true); do
-              gh pr close "$n" || true
-            done
-            gh pr create --head "$BOT_BRANCH" --title "chore(bot): seed experiences update (run $RUN_ID)" \
-              --body "由 seed.yml 手动触发产出。种子经验会注入后续评审 prompt，请人工确认后合入。"
+            # pr-agent 第六轮评审：已有 open PR 时优雅复用——force-push 已让 PR 自动带上新提交，
+            # 不必关旧开新（关后 create 再失败会白丢一条待评审 PR）；仅清理同 head 的多余 PR。
+            EXISTING=$(gh pr list --head "$BOT_BRANCH" --state open --json number -q '.[].number' 2>/dev/null || true)
+            if [ -n "$EXISTING" ]; then
+              FIRST=1
+              for n in $EXISTING; do
+                if [ "$FIRST" = "1" ]; then
+                  FIRST=0; echo "种子 PR #$n 已存在，随本次 push 自动更新"; continue
+                fi
+                gh pr close "$n" || true
+              done
+            else
+              gh pr create --head "$BOT_BRANCH" --title "chore(bot): seed experiences update (run $RUN_ID)" \
+                --body "由 seed.yml 手动触发产出。种子经验会注入后续评审 prompt，请人工确认后合入。" \
+                || echo "[warn] 种子 PR 创建失败（种子已推到 $BOT_BRANCH，可手动开 PR）"
+            fi
           else
             echo "种子未产生改动（store 无变化）"
           fi
