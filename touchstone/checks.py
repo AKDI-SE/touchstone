@@ -131,9 +131,8 @@ def _service_url_allowed(url):
     host = _norm_host(u.hostname)
     if not host:
         return False, "URL 无主机名"
-    allow = _service_allow_hosts()
-    if host in allow:
-        return True, "allowlist 豁免"          # 明示豁免：scheme/网段检查全免（测试与内网部署）
+    if _service_exempt(u):
+        return True, "allowlist 豁免"          # 明示豁免：scheme/网段检查全免（测试与内网部署；端口粒度见 _service_allow_map）
     if u.scheme != "https":
         return False, f"仅允许 https（当前 {u.scheme!r}）"
     if host in ("localhost",) or host.endswith(".localhost") or host.endswith(".internal") \
@@ -162,21 +161,43 @@ def _norm_host(h):
     return (h or "").strip().lower().rstrip(".")
 
 
-def _service_allow_hosts():
-    """TOUCHSTONE_SERVICE_ALLOW 豁免主机集合。条目容错（pr-agent 第五轮评审"silent
-    mismatches"）：接受裸主机名，也接受带 scheme/端口/路径的写法（urlsplit 取 hostname），
-    统一 _norm_host 归一。校验与钉死两处共用同一口径。"""
-    hosts = set()
+def _service_allow_map():
+    """TOUCHSTONE_SERVICE_ALLOW → {host: 端口集合 | None}。
+
+    条目容错（pr-agent 第五轮"silent mismatches"）：接受裸主机名，也接受带 scheme/
+    端口/路径的写法（urlsplit 解析），统一 _norm_host 归一。
+    端口粒度（pr-agent 第八轮"Honor allowlist ports"）：`host` 裸写 = 该 host 全端口
+    豁免；`host:port` = 仅该端口——内网服务常用非标端口分流（8080 对公、8443 内部），
+    全 host 豁免面大于运维明示的信任面。多条目同 host 并集，与全端口条目混写时取全端口。"""
+    m = {}
     for raw in os.environ.get("TOUCHSTONE_SERVICE_ALLOW", "").split(","):
         h = raw.strip()
         if not h:
             continue
         if "://" not in h:
             h = "https://" + h                 # 补哑 scheme 让 urlsplit 统一处理 host[:port][/path]
-        host = _norm_host(urllib.parse.urlsplit(h).hostname)
-        if host:
-            hosts.add(host)
-    return hosts
+        u = urllib.parse.urlsplit(h)
+        host = _norm_host(u.hostname)
+        if not host:
+            continue
+        if u.port is None:
+            m[host] = None                     # 未标端口 = 全端口（最宽，后续条目不再收窄）
+        elif host in m and m[host] is None:
+            pass                               # 已是全端口：端口条目不再收窄
+        else:
+            m[host] = (m.get(host) or set()) | {u.port}   # 首条端口条目：m.get 为 None 时也正确建集
+    return m
+
+
+def _service_exempt(u):
+    """urlsplit 结果是否命中豁免（host 匹配 + 端口粒度）。未标端口的 URL 按 scheme 缺省
+    （https=443 / 其他=80）比对。校验、钉死跳过、重定向放开三处共用同一口径。"""
+    m = _service_allow_map()
+    host = _norm_host(u.hostname)
+    if host not in m or m[host] is None:
+        return host in m
+    port = u.port or (443 if (u.scheme or "https") == "https" else 80)
+    return port in m[host]
 
 
 _PIN_TLS = threading.local()          # {host: 已校验 addrinfo}，每线程独立（并发 service check 互不串扰）
@@ -252,7 +273,7 @@ def _run_service(pr, cfg):
     u = urllib.parse.urlsplit(url)
     host = _norm_host(u.hostname)
     pin = None
-    if host in _service_allow_hosts():
+    if _service_exempt(u):
         pass                                      # 豁免主：明示信任（内网名常无法公网解析），不解析不钉死
     else:
         try:
@@ -275,7 +296,7 @@ def _run_service(pr, cfg):
             # 信任该 host（scheme/网段检查本就已全免），其重定向落点属同一信任面；非豁免主维持
             # 禁止（落点不受任何校验约束，是 SSRF 借道面）。
             timeout=cfg.get("timeout", 60),
-            allow_redirects=host in _service_allow_hosts())
+            allow_redirects=_service_exempt(u))
         r.raise_for_status()
         d = r.json()
     return _truthy(d.get("passed")), str(d.get("summary", ""))

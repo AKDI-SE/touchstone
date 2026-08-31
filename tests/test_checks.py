@@ -572,8 +572,11 @@ def test_service_allowlist_entry_normalization(monkeypatch):
     def fake_post(url, json=None, timeout=None, **k):
         return _FakeResp({"passed": True, "summary": "ok"})
     monkeypatch.setattr(checks.requests, "post", fake_post)
-    for u in ("http://a.com/h", "http://b.com:9000/h", "https://c.com./h", "http://plain.d/h"):
+    # 裸 host（a.com/c.com./plain.d，含 scheme/尾点/大小写容错）= 全端口豁免；
+    # b.com:8443 = 端口粒度（pr-agent 第八轮）：仅 8443 豁免，:9000 不再全 host 放行
+    for u in ("http://a.com/h", "http://b.com:8443/h", "https://c.com./h", "http://plain.d/h"):
         assert checks._run_service(_PR, {"url": u}) == (True, "ok"), u
+    assert checks._run_service(_PR, {"url": "http://b.com:9000/h"})[0] is None   # 端口外：回落 scheme 闸
 
 
 def test_service_url_policy_allowlist_exempts(monkeypatch):
