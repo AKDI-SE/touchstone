@@ -1590,6 +1590,10 @@ def test_shadow_failure_does_not_wipe_active_injection(monkeypatch):
     vs 实验路径失败隔离）。直接测 _collect_injection——shadow_types 抛异常时返回的 injected_types
     仍保留 active 结果、shadow 为空。"""
     from touchstone import orchestrator as orc
+    # PR CI 环境泄漏防御（审计 #44 闸 + Actions 自动注入 GITHUB_EVENT_NAME=pull_request）：
+    # 不清掉事件名则闸②命中、_collect_injection 短路返空——本测试在本地绿、在 Actions 红。
+    monkeypatch.delenv("GITHUB_EVENT_NAME", raising=False)
+    monkeypatch.delenv("TOUCHSTONE_EXPERIENCE_REF", raising=False)
     monkeypatch.setattr(L, "load_store", lambda: {"experiences": []})
     monkeypatch.setattr(L, "active_types", lambda s: ["PRA-ACTIVE"])
     monkeypatch.setattr(L, "active_ids", lambda s: ["emphasize:::PRA-ACTIVE"])

@@ -844,6 +844,30 @@ def test_calibrate_gh_gql_and_fetch(monkeypatch):
     assert CAL.fetch_review_threads("o", "r", 1, "t") == []
 
 
+def test_fetch_review_threads_partial_on_page_failure(monkeypatch, capsys):
+    """pr-agent 评审：中途某页 gql 抛错 → 返回已到手的部分线程（响亮告警），
+    不让整段已翻页数据随异常一起丢失。"""
+    def node(i):
+        return {"isResolved": False, "path": "a.py", "line": i, "comments": {"nodes": []}}
+    pages = [
+        {"data": {"repository": {"pullRequest": {"reviewThreads": {
+            "nodes": [node(1), node(2)],
+            "pageInfo": {"hasNextPage": True, "endCursor": "c1"}}}}}},
+        RuntimeError("graphql 502"),
+    ]
+    calls = []
+    def gql(q, v, t):
+        calls.append(v.get("cursor"))
+        r = pages[len(calls) - 1]
+        if isinstance(r, Exception):
+            raise r
+        return r
+    monkeypatch.setattr(CAL, "gql", gql)
+    out = CAL.fetch_review_threads("o", "r", 1, "t")
+    assert [t["line"] for t in out] == [1, 2]           # 首页两条保住
+    assert "第 2 页拉取失败" in capsys.readouterr().err   # 告警可见
+
+
 def test_calibrate_main(monkeypatch, tmp_path, capsys):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("GITHUB_TOKEN", "tok")

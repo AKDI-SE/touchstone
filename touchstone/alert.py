@@ -141,8 +141,9 @@ def _list_open_issues(gh_call, owner, repo, token, labels_q):
     per_page=30）——同 label 开 issue >30 时既有跟踪 Issue 落在第 2 页 → 判"无"→
     每轮重复开新 Issue 刷屏（恰是 _open_or_update_issue 要防的事）。逐页取到短页。"""
     out, page = [], 1
+    q = urllib.parse.quote(str(labels_q), safe="")   # pr-agent 评审：label 含空格/中文时不经编码会拼进裸 URL（与 metrics_issue._find_issue 同款）
     while page <= 20:
-        found = gh_call("GET", f"/repos/{owner}/{repo}/issues?state=open&labels={labels_q}"
+        found = gh_call("GET", f"/repos/{owner}/{repo}/issues?state=open&labels={q}"
                         f"&page={page}&per_page=100", token) or []
         if not isinstance(found, list) or not found:
             break

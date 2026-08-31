@@ -154,9 +154,16 @@ def fetch_review_threads(owner, repo, number, token, max_pages=10):
     与「校准是增强不阻塞」的既有降级语义一致）。"""
     cursor = None
     nodes = []
-    for _ in range(max_pages):
-        data = gql(_GQL_THREADS, {"owner": owner, "repo": repo, "num": number,
-                                  "cursor": cursor}, token)
+    for page in range(1, max_pages + 1):
+        try:
+            data = gql(_GQL_THREADS, {"owner": owner, "repo": repo, "num": number,
+                                      "cursor": cursor}, token)
+        except Exception as e:
+            # pr-agent 评审：docstring 承诺"中途某页抛错返回已到手节点"但实现直接让异常
+            # 打穿——已翻到的整段线程全部丢失。改为响亮告警 + 部分返回（校准是增强不阻塞）。
+            print(f"[calibrate] PR#{number} 评审线程第 {page} 页拉取失败"
+                  f"（以已取到的 {len(nodes)} 条继续）：{e}", file=sys.stderr)
+            break
         rt = ((((data or {}).get("data") or {}).get("repository") or {})
               .get("pullRequest") or {}).get("reviewThreads") or {}
         nodes.extend(rt.get("nodes") or [])

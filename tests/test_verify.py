@@ -325,6 +325,20 @@ def test_mutation_check_weak_test_survives(tmp_path):
     assert V._mutation_check(str(tmp_path), weak, ["m.py"]) == 0.0     # a-b 仍非 None → 变异存活
 
 
+def test_mutation_check_full_suite_red_baseline_skips_scoring(monkeypatch, tmp_path, capsys):
+    """pr-agent 评审：全套件 oracle（test_code=None）基线即红 → 跳过评分返回 None + 响亮告警，
+    不产出"击杀率 1.0"的虚高分数（红套件上任何变异体都会挂，分数无意义且白烧预算）。"""
+    (tmp_path / "m.py").write_text("def f(a, b):\n    return a + b\n", encoding="utf-8")
+    ran = []
+    def fake_run(cmd, wd, timeout=None):
+        ran.append(cmd)
+        return False, "pre-existing failure: test_x"          # 基线红
+    monkeypatch.setattr(R, "_run", fake_run)
+    assert V._mutation_check(str(tmp_path), None, ["m.py"]) is None
+    assert len(ran) == 1                                       # 基线 1 次后即止，零变异体运行
+    assert "基线即红" in capsys.readouterr().err
+
+
 # ---------------- 边界：纯函数（评级/重构判定/diff 解析/覆盖率）----------------
 def test_grade_verdicts_boundaries():
     assert V._grade(0.8, True, None).verdict == "adequate"

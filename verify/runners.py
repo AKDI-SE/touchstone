@@ -352,6 +352,16 @@ def _mutation_check(work_dir, test_code, changed_files, max_mutants=None):
         if test_code:
             return _run_tests(work_dir, test_code)
         return _run([sys.executable, "-m", "pytest", "-q"], work_dir)   # 全套件 oracle
+    if test_code is None:
+        # pr-agent 评审：全套件 oracle 先验基线——套件本身已红时任何变异体都会"挂"，
+        # 击杀率虚高到 ~1.0 且每个变异体白烧一整轮全套件。跳过评分返回 None（=未测度；
+        # 与 #32 的"静默 None"不同：此处响亮告警，且调用方 _verify_regression 的
+        # head_pass 门已就同一套件判 FAIL，不依赖此分数兜底）。
+        base_pass, base_out = _oracle()
+        if not base_pass:
+            print(f"[verify] 全套件基线即红，跳过变异评分（分数将虚高无意义）："
+                  f"{(base_out or '')[-300:]}", file=sys.stderr)
+            return None
     applied = killed = 0
     for fp in [f for f in changed_files if f.endswith(".py")]:
         path = os.path.join(work_dir, fp)
