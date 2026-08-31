@@ -91,6 +91,16 @@ def load_store(path=None):
         # 回落安全默认，不抛、不崩、不把坏数据静默传下去。
         if not isinstance(store, dict) or not isinstance(store.get("experiences"), list):
             return {"experiences": []}
+        # pr-agent 第十三轮：非 dict 的畸形条目（旧格式/手改/半损坏）在【唯一加载边界】剔除
+        # + 大声告警——下游 canonicalize/_snap/save 全按 dict 消费，留着的畸形条目会在学习轮
+        # 中途以 AttributeError/TypeError 打穿（且 git 历史仍保有原文，可人工恢复）。
+        exps = store["experiences"]
+        if any(not isinstance(e, dict) for e in exps):
+            import sys as _sys
+            bad = [e for e in exps if not isinstance(e, dict)]
+            print(f"[experience_store] ⚠️ 经验库含 {len(bad)} 条非 dict 畸形条目，已剔除"
+                  f"（原文见 git 历史）：{[str(e)[:60] for e in bad]}", file=_sys.stderr)
+            store["experiences"] = [e for e in exps if isinstance(e, dict)]
         return store
     except (OSError, json.JSONDecodeError):
         return {"experiences": []}
@@ -376,6 +386,10 @@ def canonicalize_store(store):
                        e.get("kind", ""), e.get("repo", ""), e.get("stack", ""))
 
     def _touchable(e):
+        # 非 dict 的畸形存量条目（旧格式/手改/半损坏）→ 不动不并入（pr-agent 第十三轮：
+        # 旧版 e.get 直接 AttributeError 打穿整个学习轮）。原样保留，不静默丢弃。
+        if not isinstance(e, dict):
+            return False
         # locked / human / 规范后为空 → 不动（权威或无法规范）
         return not (e.get("locked") or e.get("source") == "human"
                     or not _canonical_type(e.get("finding_type", "")))
@@ -397,7 +411,10 @@ def canonicalize_store(store):
 
     # locked / human 权威条目按原样保留，其 id 被"占用"——非权威条目规范化时不得并入这些 id，
     # 否则会把一条非权威变体重命名成与权威条目同 id（破坏 id 唯一性）。见 test_canonicalize_store_*
-    reserved = {e.get("id") for e in exps if not _touchable(e)}
+    # 畸形非 dict 条目同样原样保留（见 _touchable）；其"id"以原文占位（None 会与真空 id 条目
+    # 互撞，且畸形条目本就不参与规范化分组）。pr-agent 第十三轮。
+    reserved = {e.get("id") if isinstance(e, dict) else repr(e)
+                for e in exps if not _touchable(e)}
 
     out = []
     seen = set()

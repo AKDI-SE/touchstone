@@ -301,9 +301,17 @@ def main(argv=None):
     # source_prs 时 changed=false → 学习产物永不提交、证据永不入库（graduate 永不可达）。
     # 现把 evidence 与 source_prs 纳入快照（canonical JSON，键序无关）。
     def _snap(e):
+        # pr-agent 第十三轮：畸形历史条目（非 dict / source_prs 不可迭代）不得打崩快照——
+        # 旧格式/手改/半损坏的存量条目以稳定序列化入快照（该条目任何变化仍可检测），
+        # 学习照常进行；与 merge_candidates 对畸形候选的容错纪律一致。
+        if not isinstance(e, dict):
+            return ("__malformed__", json.dumps(e, ensure_ascii=False, default=str))
+        sp = e.get("source_prs")
+        if not isinstance(sp, (list, tuple, set)):
+            sp = [sp] if sp is not None else []
         return (e.get("id"), e.get("status"), e.get("text"),
                 json.dumps(e.get("evidence"), sort_keys=True, ensure_ascii=False, default=str),
-                tuple(sorted(str(x) for x in (e.get("source_prs") or []))))
+                tuple(sorted(str(x) for x in sp)))
     before = {_snap(e) for e in store.get("experiences", [])}
 
     # ① 真值集：按需从 GitHub 人审裁决重建（"人工合入好坏" → TF-GRPO 学习信号）

@@ -688,6 +688,36 @@ def test_service_allowlist_entry_normalization(monkeypatch):
     assert checks._run_service(_PR, {"url": "http://plain.d/h"})[0] is None      # 裸条目不授明文（第十轮）
 
 
+def test_service_allowlist_bad_entry_skipped(monkeypatch, capsys):
+    """pr-agent 第十三轮：TOUCHSTONE_SERVICE_ALLOW 坏条目（端口超界 :99999）跳过+告警，
+    不让一个运维手误以栈回溯打穿所有 service 检查；好条目照常生效。"""
+    monkeypatch.setenv("TOUCHSTONE_SERVICE_ALLOW", "good.corp, bad.corp:99999, ,ok.corp")
+    def fake_post(url, json=None, timeout=None, **k):
+        return _FakeResp({"passed": True, "summary": "ok"})
+    monkeypatch.setattr(checks.requests, "post", fake_post)
+    assert checks._run_service(_PR, {"url": "https://good.corp/x"}) == (True, "ok")
+    assert "bad.corp:99999" in capsys.readouterr().err           # 坏条目可见地跳过
+    assert checks._run_service(_PR, {"url": "https://bad.corp:99999/x"})[0] is None  # 不再豁免
+
+
+def test_service_url_invalid_port_rejected(monkeypatch):
+    """URL 端口值非法（:99999）——urlsplit 不报、.port 才抛；须在豁免分支前先拦，
+    以明确拒绝收场而非栈回溯。合法 URL（含缺省端口）不受影响。"""
+    monkeypatch.setenv("TOUCHSTONE_SERVICE_ALLOW", "svc")
+    ok, why = checks._service_url_allowed("https://svc:99999/x")
+    assert ok is False and "端口值非法" in why
+    assert checks._service_url_allowed("https://svc/x") == (True, "allowlist 豁免")
+
+
+def test_service_redirect_missing_location_rejected(monkeypatch):
+    """3xx 无 Location 头：显式拒绝——此前会落到 r.json() 以解码崩溃收场（被插件隔离
+    吞成"插件异常"，语义含糊且难排查）。"""
+    monkeypatch.setattr(checks.requests, "post",
+                        lambda *a, **k: _FakeResp({}, status_code=302, headers={}))
+    passed, summary = checks._run_service(_PR, {"url": "http://a"})
+    assert passed is None and "缺 Location 头" in summary
+
+
 def test_service_allowlist_bare_host_still_requires_https(monkeypatch):
     """pr-agent 第十轮 PRA-SECURITY：豁免的是【目标可及性】不是【传输完整性】——
     裸 host/https:// 条目对命中 URL 仍强制 https（明文响应可被链路伪造 passed=true，

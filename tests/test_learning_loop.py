@@ -187,6 +187,24 @@ def test_bootstrap_disabled_by_default(monkeypatch):
     assert L.bootstrap_from_calibrate(agg, {"experiences": []}) == []
 
 
+def test_main_snap_tolerates_malformed_entries(tmp_path, monkeypatch):
+    """pr-agent 第十三轮：存量经验库里的畸形条目（非 dict / source_prs 不可迭代）不得
+    打崩 changed 快照——旧版 _snap 直接 e.get(...) AttributeError 打穿整个学习轮。"""
+    store_path = tmp_path / "exp.json"
+    (tmp_path / "agg.json").write_text(
+        json.dumps({"aggregate": {"by_rule": {}}}), encoding="utf-8")
+    monkeypatch.setattr(L, "STORE_PATH", str(store_path))
+    monkeypatch.setenv("TOUCHSTONE_CALIB_AGG", str(tmp_path / "agg.json"))
+    monkeypatch.delenv("TOUCHSTONE_BOOTSTRAP_SEED", raising=False)
+    store_path.write_text(json.dumps({"experiences": [
+        "legacy-string-entry",                                    # 非 dict
+        {"id": "e1", "status": "candidate", "text": "t",
+         "evidence": ["x"], "source_prs": 123},                   # source_prs 不可迭代
+    ]}), encoding="utf-8")
+    L.main()                                   # 不抛即过：快照/changed 检测容忍畸形条目
+    assert store_path.exists()
+
+
 def test_main_writeback_guard_failclosed(monkeypatch, tmp_path):
     """审计 #9 写回闸 + pr-agent 第十二轮扩展：①盘上有条目而 load_store 得空（EXPERIENCE_REF
     瞬态失败）→ 拒绝运行；②【新增】盘上文件存在但读不了/解析不了（真值未知）→ 同样拒绝——

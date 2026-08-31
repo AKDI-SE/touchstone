@@ -132,6 +132,8 @@ def _service_url_allowed(url):
     host = _norm_host(u.hostname)
     if not host:
         return False, "URL 无主机名"
+    if _port_invalid(u):
+        return False, "URL 端口值非法"          # :99999 这类——urlsplit 不报、.port 才抛；先拦先说
     if _service_exempt(u):
         # pr-agent 第十轮：豁免=目标可及性豁免，传输完整性仍守——明文响应可被链路伪造
         # passed=true，若豁免即免 scheme 闸，改 checks.yaml 的 author 可借豁免主域名走
@@ -167,6 +169,26 @@ def _norm_host(h):
     return (h or "").strip().lower().rstrip(".")
 
 
+def _port_invalid(u):
+    """端口值是否非法（:99999 这类）。urlsplit 本身不报错、访问 .port 才抛 ValueError——
+    单独成谓词供 _service_url_allowed 在豁免分支前先拦（pr-agent 第十三轮）。"""
+    try:
+        _ = u.port
+        return False
+    except ValueError:
+        return True
+
+
+def _safe_port(u):
+    """urlsplit 结果的端口，非法端口值（如 :99999）urlsplit 不报错、访问 .port 才抛
+    ValueError——此处吞掉返回 None（调用方按「无可比对端口」处理），不让一条坏 URL/坏
+    条目以栈回溯打穿整个门禁（pr-agent 第十三轮）。"""
+    try:
+        return u.port
+    except ValueError:
+        return None
+
+
 def _service_allow_map():
     """TOUCHSTONE_SERVICE_ALLOW → ({host: 端口集合 | None}, 显式明文 host 集)。
 
@@ -186,18 +208,28 @@ def _service_allow_map():
         had_scheme = "://" in h
         if not had_scheme:
             h = "https://" + h                 # 补哑 scheme 让 urlsplit 统一处理 host[:port][/path]
-        u = urllib.parse.urlsplit(h)
+        try:                                   # pr-agent 第十三轮：坏条目（如端口超界）跳过+告警，
+            u = urllib.parse.urlsplit(h)       # 不让一个运维手误以栈回溯打穿所有 service 检查
+        except ValueError as e:
+            print(f"[checks] ⚠️ TOUCHSTONE_SERVICE_ALLOW 条目无法解析（跳过）: {raw!r}: {e}",
+                  file=sys.stderr)
+            continue
         host = _norm_host(u.hostname)
         if not host:
             continue
+        if _port_invalid(u):                   # :99999 这类——urlsplit 不报、.port 才抛
+            print(f"[checks] ⚠️ TOUCHSTONE_SERVICE_ALLOW 条目端口值非法（跳过）: {raw!r}",
+                  file=sys.stderr)
+            continue
+        _p = _safe_port(u)                     # 至此端口必为合法 int 或未标（None）
         if had_scheme and (u.scheme or "").lower() == "http":
             http_ok.add(host)                  # 明文是条目里的明示选择，不是缺省
-        if u.port is None:
+        if _p is None:
             m[host] = None                     # 未标端口 = 全端口（最宽，后续条目不再收窄）
         elif host in m and m[host] is None:
             pass                               # 已是全端口：端口条目不再收窄
         else:
-            m[host] = (m.get(host) or set()) | {u.port}   # 首条端口条目：m.get 为 None 时也正确建集
+            m[host] = (m.get(host) or set()) | {_p}   # 首条端口条目：m.get 为 None 时也正确建集
     return m, http_ok
 
 
@@ -209,7 +241,10 @@ def _service_exempt(u):
     host = _norm_host(u.hostname)
     if host not in m or m[host] is None:
         return host in m
-    port = u.port or (443 if (u.scheme or "https") == "https" else 80)
+    port = _safe_port(u)
+    if port is None:
+        return False                           # 端口值非法：无可比对端口，不豁免（回落主闸）
+    port = port or (443 if (u.scheme or "https") == "https" else 80)
     return port in m[host]
 
 
@@ -336,7 +371,9 @@ def _run_service(pr, cfg):
             else:
                 r = requests.get(url, timeout=cfg.get("timeout", 60), allow_redirects=False)
         loc = r.headers.get("Location")
-        if r.status_code in (301, 302, 303, 307, 308) and loc:
+        if r.status_code in (301, 302, 303, 307, 308):
+            if not loc:                        # 3xx 无 Location：显式拒绝，不让 r.json() 以
+                return None, f"重定向 {r.status_code} 缺 Location 头"   # 解码崩溃收场
             if not _service_exempt(u):
                 return None, "非豁免主禁止重定向（落点不受校验约束）"
             hop += 1
