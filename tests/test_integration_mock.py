@@ -467,6 +467,19 @@ def test_anchor_inline_in_diff_nearest_and_skip():
     assert lines == [2, 3] and len(out) == 2
 
 
+def test_rule_index_skips_missing_id_and_warns(capsys):
+    """审计 #7 / pr-agent 评审"missing helper"复核：orchestrator._rule_index 对缺 id/非 dict
+    条目跳过 + stderr 告警（fail-degraded），不 KeyError 崩评审链；run.py 主路径同用此助手。"""
+    rules = [{"id": "R1", "severity": "warn"}, {"severity": "warn"}, "not-a-dict", None,
+             {"id": "R2"}, {"id": "R1", "note": "后写覆盖"}]
+    idx = ORC._rule_index(rules, src="t.yaml")
+    assert set(idx) == {"R1", "R2"}
+    assert idx["R1"]["note"] == "后写覆盖"           # 同 id 后写覆盖（dict 语义保留）
+    assert ORC._rule_index(None) == {} and ORC._rule_index([]) == {}
+    err = capsys.readouterr().err
+    assert err.count("缺 id") == 3 and "t.yaml" in err  # 3 个坏条目（缺 id dict/str/None）逐条告警
+
+
 def test_ci_verdict_branches(monkeypatch):
     # 审计 #8：ci_verdict 改走 ghclient.paginate_check_runs（翻页取全），mock 点随之更新。
     def mk(runs):

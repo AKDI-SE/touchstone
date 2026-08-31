@@ -65,7 +65,10 @@ jobs:
             echo '{"code_suggestions":[],"review":{"key_issues_to_review":[]}}' > pr_agent_output.json
             exit 0
           fi
-          pip install "pr-agent==${PRA_VERSION}" -c pragent-constraints.txt 2>&1 | tail -3
+          # pr-agent 评审：`2>&1 | tail -3` 会吞掉 pip 的退出码（管道状态=tail 的 0）——
+          # 装失败静默过关、到运行 pr-agent 时才莫名报 command not found。改 -q 安静安装，
+          # 退出码原样传递，失败即刻在 Steps UI 显形。
+          pip install -q "pr-agent==${PRA_VERSION}" -c pragent-constraints.txt
           echo "[touchstone] PR-Agent installed, running review..."
 
           # 构建 PR URL（GitCode 格式：https://gitcode.com/{owner}/{repo}/pulls/{num}）
