@@ -37,7 +37,12 @@ def load_yaml(path, default=None):
 
 
 def get_diff_from_git(base_branch="main"):
-    """尝试多种方式获取 diff：PR merge-base diff → HEAD~1 → 工作区变更"""
+    """尝试多种方式获取 diff：PR merge-base diff → HEAD~1 → 工作区变更。
+
+    返回 (diff_text or None, any_ok)。any_ok = 至少一条命令成功执行（rc==0，哪怕输出为空）。
+    审计 #25：调用方据此区分「真没改动」（PASS 合法）与「git 全挂/仓库缺失」（fail-closed）。
+    审计 #26：降级到 HEAD~1/工作区 diff 时大声告警——它们检查的【不是】本 PR 相对 base 的
+    完整范围，静默降级会让"范围查不全的门禁绿灯"看起来与正常通过无异。"""
     commands = [
         # PR 场景：从 base 到 HEAD 的 diff
         ["git", "diff", f"origin/{base_branch}...HEAD"],
@@ -48,15 +53,27 @@ def get_diff_from_git(base_branch="main"):
         # 备选：工作区变更
         ["git", "diff", "HEAD"],
     ]
-    for cmd in commands:
+    any_ok = False
+    for idx, cmd in enumerate(commands):
         try:
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-            if result.returncode == 0 and result.stdout.strip():
-                print(f"[gitcode_check] 使用 diff 命令: {' '.join(cmd)}")
-                return result.stdout
-        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-            continue
-    return None
+            if result.returncode == 0:
+                any_ok = True
+                if result.stdout.strip():
+                    print(f"[gitcode_check] 使用 diff 命令: {' '.join(cmd)}")
+                    if idx >= 2:      # 审计 #26：降级路径大声说清楚"查的不是全范围"
+                        print(f"[gitcode_check] ⚠️ 降级回退到 '{' '.join(cmd)}'：前序 diff 命令失败或为空，"
+                              f"本结论只覆盖该 diff，不保证是本 PR 相对 {base_branch} 的完整改动范围。",
+                              file=sys.stderr)
+                    return result.stdout, True
+                # rc==0 但输出为空 → 继续试下一条（push 事件下 origin/base...HEAD 恒空，
+                # 靠 HEAD~1 取增量——这不是失败，不告警）
+            else:
+                print(f"[gitcode_check] ⚠️ diff 命令失败 (rc={result.returncode}): "
+                      f"{' '.join(cmd)}: {(result.stderr or '').strip()[-160:]}", file=sys.stderr)
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
+            print(f"[gitcode_check] ⚠️ diff 命令异常: {' '.join(cmd)}: {e}", file=sys.stderr)
+    return None, any_ok
 
 
 def _format_finding(f, idx):
@@ -76,6 +93,7 @@ def main():
     # 解析参数
     base_branch = "main"
     diff_text = None
+    explicit = False        # 审计 #25：显式提供 diff（--diff/GITCODE_DIFF_CMD）= 范围可信，空即真空
 
     args = sys.argv[1:]
     i = 0
@@ -85,6 +103,7 @@ def main():
                 diff_text = sys.stdin.read()
             else:
                 diff_text = args[i + 1]
+            explicit = True
             i += 2
         elif args[i] == "--base" and i + 1 < len(args):
             base_branch = args[i + 1]
@@ -93,6 +112,7 @@ def main():
             i += 1
 
     # 获取 diff
+    diff_any_ok = False
     if diff_text is None:
         diff_cmd = os.environ.get("GITCODE_DIFF_CMD")
         if diff_cmd:
@@ -101,17 +121,29 @@ def main():
             try:
                 result = subprocess.run(shlex.split(diff_cmd), capture_output=True,
                                         text=True, timeout=30)
-                diff_text = result.stdout
+                if result.returncode == 0:
+                    # 部署方显式指定了 diff 源：rc==0 即采信其输出（空输出=真无改动，
+                    # 不再回落 git 链——那条链可能查到与本事件无关的 HEAD~1）
+                    diff_text, diff_any_ok = result.stdout, True
+                else:
+                    print(f"[gitcode_check] ⚠️ 自定义 diff 命令非零退出 (rc={result.returncode})："
+                          f"{(result.stderr or '').strip()[-200:]}", file=sys.stderr)
             except (subprocess.TimeoutExpired, OSError) as e:
                 print(f"[gitcode_check] 自定义 diff 命令失败: {e}", file=sys.stderr)
 
     if diff_text is None:
-        diff_text = get_diff_from_git(base_branch)
+        diff_text, diff_any_ok = get_diff_from_git(base_branch)
 
     if not diff_text or not diff_text.strip():
-        print("[gitcode_check] ⚠️ 无法获取 diff，跳过确定性检查（非 PR 事件或空 diff）")
-        print("[gitcode_check] ✅ 总闸: PASS (无可检查内容)")
-        return 0
+        if explicit or diff_any_ok:
+            print("[gitcode_check] ✅ diff 为空（无文本改动/非 PR 事件）——无可检查内容，总闸 PASS")
+            return 0
+        # 审计 #25：一条 diff 命令都没成功——门禁在「不知道改了什么」的状态下必须 fail-closed，
+        # 绝不能报 PASS（浅克隆无 origin/ref 名不对/git 不在 PATH 都会走到这里，旧版一律绿灯）。
+        print("[gitcode_check] ❌ 所有 diff 来源均失败——无法确定检查范围，门禁 fail-closed（拒绝放行）",
+              file=sys.stderr)
+        print("[gitcode_check] ❌ 总闸: FAIL (无法获取 diff)")
+        return 1
 
     # 加载规范与契约
     standards_path = os.environ.get("TOUCHSTONE_STANDARDS", ".touchstone/standards.yaml")
@@ -122,7 +154,13 @@ def main():
         print(f"[gitcode_check] ❌ 未找到规范文件 {standards_path}")
         return 1
 
-    rule_index = {r["id"]: r for r in standards.get("rules", [])}
+    rule_index = {}
+    for r in standards.get("rules", []) or []:
+        _rid = (r or {}).get("id") if isinstance(r, dict) else None   # 审计 #7：缺 id 跳过+告警
+        if not _rid:
+            print(f"[gitcode_check] ⚠️ 规则缺 id（跳过该条）: {r!r}"[:300], file=sys.stderr)
+            continue
+        rule_index[_rid] = r
     contract = load_yaml(contract_path, {})
 
     # ─── 运行确定性检查 ───────────────────────────────────────────

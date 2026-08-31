@@ -49,19 +49,30 @@ jobs:
           python -m pytest tests/ -q --tb=short
 
       # ── 5. PR-Agent AI 评审（顾问式建议）──
+      # 审计 #27：仅 PR 事件跑（push 事件无 PR 可审；旧版 `${CI_PULL_REQUEST_NUMBER:-1}`
+      # 回落到 PR#1 会让每次 push 都带着 secret 去"评审"一个无关旧 PR）。审计 #28：钉版本
+      # + 约束锁（与 .github/workflows/touchstone.yml 的 PRA_VERSION=0.39.0 同口径）——
+      # 裸 `pip install pr-agent` 装到上游新版时 JSON 输出契约漂移，评审静默变成空结果。
       - name: PR-Agent review
         env:
           OPENAI_API_KEY: ${{ secrets.LLM_API_KEY }}
           OPENAI_API_BASE: ${{ secrets.LLM_BASE_URL }}
+          PRA_VERSION: "0.39.0"
         run: |
           cd repo_workspace
-          pip install pr-agent 2>&1 | tail -3
+          if [ -z "${CI_PULL_REQUEST_NUMBER:-}" ]; then
+            echo "[touchstone] 非 PR 事件（无 CI_PULL_REQUEST_NUMBER），跳过 PR-Agent 评审"
+            echo '{"code_suggestions":[],"review":{"key_issues_to_review":[]}}' > pr_agent_output.json
+            exit 0
+          fi
+          pip install "pr-agent==${PRA_VERSION}" -c pragent-constraints.txt 2>&1 | tail -3
           echo "[touchstone] PR-Agent installed, running review..."
 
           # 构建 PR URL（GitCode 格式：https://gitcode.com/{owner}/{repo}/pulls/{num}）
           # GitCode Pipeline 注入的上下文变量（按实际环境调整）：
           #   CI_REPO_OWNER / CI_REPO_NAME / CI_PULL_REQUEST_NUMBER
-          PR_URL="https://gitcode.com/${CI_REPO_OWNER:-akdi-distribution}/${CI_REPO_NAME:-touchstone}/pulls/${CI_PULL_REQUEST_NUMBER:-1}"
+          # （上方已保证 CI_PULL_REQUEST_NUMBER 非空，这里不再 :-1 回落到无关 PR）
+          PR_URL="https://gitcode.com/${CI_REPO_OWNER:-akdi-distribution}/${CI_REPO_NAME:-touchstone}/pulls/${CI_PULL_REQUEST_NUMBER}"
           echo "[touchstone] PR URL: $PR_URL"
 
           # 调 PR-Agent（不发评论，JSON 打到 stdout）
