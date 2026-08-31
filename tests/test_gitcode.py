@@ -92,6 +92,24 @@ def test_main_no_diff_but_git_ok_passes(monkeypatch, tmp_path, capsys):
     assert "无可检查内容" in capsys.readouterr().out
 
 
+def test_main_explicit_diff_cmd_failure_no_fallback(monkeypatch, tmp_path, capsys):
+    """pr-agent 第五轮评审：显式 GITCODE_DIFF_CMD 失败（非零退出/启动异常）不得静默回落
+    内置 git 链——部署方指定它恰因内置链查错对象；回落=拿错 diff 评审还看似正常。
+    应保持空 diff + not-ok → 总闸 fail-closed exit 1。"""
+    called = {"builtin": 0}
+    def fake_builtin(base):
+        called["builtin"] += 1
+        return ("BUILTIN DIFF", True)
+    monkeypatch.setattr(gc, "get_diff_from_git", fake_builtin)
+    monkeypatch.setattr(gc.subprocess, "run",
+                        lambda *a, **k: type("R", (), {"returncode": 2, "stdout": "", "stderr": "boom"})())
+    monkeypatch.setenv("GITCODE_DIFF_CMD", "my-diff-tool --flag")
+    assert gc.main() == 1                       # 总闸 fail-closed
+    assert called["builtin"] == 0               # 关键：未回落内置链
+    out = capsys.readouterr()
+    assert "不回落" in out.err and "无法获取 diff" in out.out
+
+
 def test_main_all_diff_failed_fail_closed(monkeypatch, tmp_path, capsys):
     """审计 #25：所有 diff 来源失败 → 绝不报 PASS，fail-closed 退出 1。"""
     monkeypatch.setattr(gc, "get_diff_from_git", lambda base: (None, False))

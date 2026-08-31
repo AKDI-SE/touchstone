@@ -822,8 +822,11 @@ def _injected_active(store):
     from touchstone.envutil import env_int as _env_int_
     active = _resolve_conflicts(
         [e for e in (store or {}).get("experiences", []) if e.get("status") == "active"])
+    # pr-agent 第五轮评审：严格 cap——旧版 `if cap and ...` 把 0 当"无上限"（falsy 跳过截断），
+    # 而把上限设成 0 的运维意图几乎必然是"关掉 active 注入"（kill-switch）。语义改为：
+    # 0 = 一条不注入；默认 10；要"不设限"请给一个大数（截断按证据强度降序取前 N）。
     cap = max(0, _env_int_("TOUCHSTONE_INJECT_MAX_ACTIVE", 10))
-    if cap and len(active) > cap:
+    if len(active) > cap:
         active = sorted(active, key=_evidence_strength, reverse=True)[:cap]
     return active
 
@@ -837,7 +840,7 @@ def render_injection(store, *, include_shadow=False):
     抽样（shadow_candidates）、每条前缀 [shadow] 标灰（采数期、advisory only、未达门槛）。
     shadow 候选只影响 PR-Agent 建议、不进 contract_check/verify/总闸——铁律不变。
     输出纯指令文本——只影响 PR-Agent 的建议，不触碰确定性 contract_check / 总闸（评审与合入闸的边界）。
-    审计 #43：active 条数有上限（TOUCHSTONE_INJECT_MAX_ACTIVE，默认 10，min 0）——经验库
+    审计 #43：active 条数有上限（TOUCHSTONE_INJECT_MAX_ACTIVE，默认 10；0=一条不注入/kill-switch）——经验库
     长期累积后全量注入会稀释/挤爆 PR-Agent 的 prompt 上下文，注入越多单条权重越低。
     截断口径见 _injected_active（与 active_types/active_ids 归因同源）。"""
     active = _injected_active(store)

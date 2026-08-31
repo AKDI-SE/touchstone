@@ -113,6 +113,7 @@ def main():
 
     # 获取 diff
     diff_any_ok = False
+    explicit_cmd_failed = False
     if diff_text is None:
         diff_cmd = os.environ.get("GITCODE_DIFF_CMD")
         if diff_cmd:
@@ -126,12 +127,18 @@ def main():
                     # 不再回落 git 链——那条链可能查到与本事件无关的 HEAD~1）
                     diff_text, diff_any_ok = result.stdout, True
                 else:
-                    print(f"[gitcode_check] ⚠️ 自定义 diff 命令非零退出 (rc={result.returncode})："
-                          f"{(result.stderr or '').strip()[-200:]}", file=sys.stderr)
+                    # pr-agent 第五轮评审：显式 diff 源失败【不得静默回落】内置 git 链——部署方
+                    # 指定它恰恰因为内置链查错对象（HEAD~1 无关事件）；回落=拿错 diff 评审还看似
+                    # 正常。保持空 diff + not-ok，交给末尾总闸 fail-closed（exit 1）。
+                    print(f"[gitcode_check] ⚠️ 自定义 diff 命令非零退出 (rc={result.returncode})，"
+                          f"不回落内置 git 链（总闸将 FAIL）：{(result.stderr or '').strip()[-200:]}",
+                          file=sys.stderr)
+                    explicit_cmd_failed = True
             except (subprocess.TimeoutExpired, OSError) as e:
-                print(f"[gitcode_check] 自定义 diff 命令失败: {e}", file=sys.stderr)
+                print(f"[gitcode_check] 自定义 diff 命令失败（不回落内置 git 链）：{e}", file=sys.stderr)
+                explicit_cmd_failed = True
 
-    if diff_text is None:
+    if diff_text is None and not explicit_cmd_failed:
         diff_text, diff_any_ok = get_diff_from_git(base_branch)
 
     if not diff_text or not diff_text.strip():

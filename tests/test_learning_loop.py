@@ -1585,6 +1585,24 @@ def test_orchestrator_review_pr_writes_shadow_to_marker_when_enabled(monkeypatch
     assert result2["shadow_types"] == [] and result2["shadow_experience_ids"] == []
 
 
+def test_injected_active_cap_semantics(monkeypatch):
+    """pr-agent 第五轮评审：cap=0 曾因 `if cap and ...` 的 falsy 判断变成"无上限"——
+    设 0 的运维意图是关掉 active 注入（kill-switch）。严格 cap：0=一条不注入；
+    默认 10；超限按证据强度降序截断。"""
+    monkeypatch.delenv("TOUCHSTONE_INJECT_MAX_ACTIVE", raising=False)
+    from touchstone import experience_store as ES
+    mk = lambda i, fires: {"id": f"e{i}", "finding_type": f"T{i}", "kind": "emphasize",
+                           "text": f"x{i}", "status": "active",
+                           "evidence": {"fires": fires, "adopted": 0, "ab_lift": 0.0}}
+    store = {"experiences": [mk(1, 5), mk(2, 50), mk(3, 9)]}
+    assert len(ES._injected_active(store)) == 3                 # 默认 10：不截断
+    monkeypatch.setenv("TOUCHSTONE_INJECT_MAX_ACTIVE", "2")
+    got = ES._injected_active(store)
+    assert [e["id"] for e in got] == ["e2", "e3"]                 # 按证据强度降序取前 2
+    monkeypatch.setenv("TOUCHSTONE_INJECT_MAX_ACTIVE", "0")
+    assert ES._injected_active(store) == []                     # 0=kill-switch（旧版会返回全部 3 条）
+
+
 def test_merge_candidates_malformed_no_crash(capsys):
     """pr-agent 第三轮评审（审计 #12 同类、候选侧）：缺 id/缺 finding_type/非 dict 候选不再
     KeyError 崩轮——留痕跳过；规范类型缺 id 的候选由 canonicalize 补齐后正常入池。"""

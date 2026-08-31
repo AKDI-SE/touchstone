@@ -564,6 +564,18 @@ def test_service_pin_serialized_under_concurrent_checks(monkeypatch):
     assert calls["n"] > n0
 
 
+def test_service_allowlist_entry_normalization(monkeypatch):
+    """pr-agent 第五轮评审"silent mismatches"：allowlist 条目写成带 scheme/端口/路径/
+    尾点/大写时应仍与 URL 主机名匹配（两侧统一 _norm_host 归一）。"""
+    monkeypatch.setenv("TOUCHSTONE_SERVICE_ALLOW",
+                       "https://A.com/x, b.com:8443, c.com., plain.d")
+    def fake_post(url, json=None, timeout=None, **k):
+        return _FakeResp({"passed": True, "summary": "ok"})
+    monkeypatch.setattr(checks.requests, "post", fake_post)
+    for u in ("http://a.com/h", "http://b.com:9000/h", "https://c.com./h", "http://plain.d/h"):
+        assert checks._run_service(_PR, {"url": u}) == (True, "ok"), u
+
+
 def test_service_url_policy_allowlist_exempts(monkeypatch):
     monkeypatch.setenv("TOUCHSTONE_SERVICE_ALLOW", "my-svc.corp")
     def fake_post(url, json=None, timeout=None, **k):

@@ -128,7 +128,7 @@ def _service_url_allowed(url):
         u = urllib.parse.urlsplit(url)
     except ValueError:
         return False, "URL 解析失败"
-    host = (u.hostname or "").strip().lower()
+    host = _norm_host(u.hostname)
     if not host:
         return False, "URL 无主机名"
     allow = _service_allow_hosts()
@@ -155,10 +155,28 @@ def _service_url_allowed(url):
     return True, "ok"
 
 
+def _norm_host(h):
+    """主机名归一化：小写、去空白、去 FQDN 尾点。URL 侧与 allowlist 侧共用同一口径——
+    pr-agent 第五轮评审：两侧归一不一致会让看似匹配的豁免静默不生效（fail-closed 但
+    无从排查）。"""
+    return (h or "").strip().lower().rstrip(".")
+
+
 def _service_allow_hosts():
-    """TOUCHSTONE_SERVICE_ALLOW 豁免主机集合（小写、去空）。校验与钉死两处共用同一口径。"""
-    return {h.strip().lower() for h in
-            os.environ.get("TOUCHSTONE_SERVICE_ALLOW", "").split(",") if h.strip()}
+    """TOUCHSTONE_SERVICE_ALLOW 豁免主机集合。条目容错（pr-agent 第五轮评审"silent
+    mismatches"）：接受裸主机名，也接受带 scheme/端口/路径的写法（urlsplit 取 hostname），
+    统一 _norm_host 归一。校验与钉死两处共用同一口径。"""
+    hosts = set()
+    for raw in os.environ.get("TOUCHSTONE_SERVICE_ALLOW", "").split(","):
+        h = raw.strip()
+        if not h:
+            continue
+        if "://" not in h:
+            h = "https://" + h                 # 补哑 scheme 让 urlsplit 统一处理 host[:port][/path]
+        host = _norm_host(urllib.parse.urlsplit(h).hostname)
+        if host:
+            hosts.add(host)
+    return hosts
 
 
 _PIN_TLS = threading.local()          # {host: 已校验 addrinfo}，每线程独立（并发 service check 互不串扰）
@@ -231,7 +249,7 @@ def _run_service(pr, cfg):
     if not ok:
         return None, f"service URL 不在白名单（{why}）"
     u = urllib.parse.urlsplit(url)
-    host = (u.hostname or "").strip().lower()
+    host = _norm_host(u.hostname)
     pin = None
     if host in _service_allow_hosts():
         pass                                      # 豁免主：明示信任（内网名常无法公网解析），不解析不钉死
