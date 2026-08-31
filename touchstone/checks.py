@@ -15,6 +15,7 @@
 # ============================================================================
 
 import os
+import socket
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -107,11 +108,62 @@ def _truthy(v):
     return bool(v)
 
 
+def _service_url_allowed(url):
+    """service URL 白名单校验（审计 #40：checks.yaml 是仓库内容，PR 可改）。
+
+    URL 若允许任意目标，改 checks.yaml 的 author 即可让门禁 runner 向内网/云元数据端点
+    （169.254.169.254 等）发 POST——SSRF 借道总闸机器。收口：
+      · 仅 https（明文 http 的响应可被链路伪造 passed=true）；
+      · 禁 localhost/环回/链路本地/私网与云元数据地址（按主机名字面量 + 解析后 IP 双查——
+        字面量查堵 `http://169.254.169.254`；解析查堵 `http://attacker.com` → 私网 A 记录）；
+      · 禁重定向（redirect 落点不受上述任何约束）。
+    部署方确需内网服务时挂 TOUCHSTONE_SERVICE_ALLOW=host[,host...] 白名单（明示豁免）。"""
+    import ipaddress
+    import urllib.parse
+    try:
+        u = urllib.parse.urlsplit(url)
+    except ValueError:
+        return False, "URL 解析失败"
+    host = (u.hostname or "").strip().lower()
+    if not host:
+        return False, "URL 无主机名"
+    allow = {h.strip().lower() for h in
+             os.environ.get("TOUCHSTONE_SERVICE_ALLOW", "").split(",") if h.strip()}
+    if host in allow:
+        return True, "allowlist 豁免"          # 明示豁免：scheme/网段检查全免（测试与内网部署）
+    if u.scheme != "https":
+        return False, f"仅允许 https（当前 {u.scheme!r}）"
+    if host in ("localhost",) or host.endswith(".localhost") or host.endswith(".internal") \
+            or host.endswith(".local"):
+        return False, f"内网/本地主机的名 {host!r} 不允许"
+    try:
+        ip = ipaddress.ip_address(host)           # 主机名本身即 IP 字面量
+    except ValueError:
+        ip = None
+    if ip is not None and not ip.is_global:
+        return False, f"非公网 IP {ip} 不允许"
+    try:                                            # 域名解析到私网 → SSRF 中转（DNS rebinding 残留见下）
+        for ai in socket.getaddrinfo(host, None):
+            ip = ipaddress.ip_address(ai[4][0])
+            if not ip.is_global:
+                return False, f"{host} 解析到非公网地址 {ip}"
+    except socket.gaierror:
+        return False, f"主机名 {host!r} 解析失败"
+    return True, "ok"
+
+
 def _run_service(pr, cfg):
-    """POST PR 上下文到一个 HTTP 服务（未来自建质量服务的挂点）。"""
-    r = requests.post(cfg["url"], json={
+    """POST PR 上下文到一个 HTTP 服务（未来自建质量服务的挂点）。
+    审计 #40：URL 经 _service_url_allowed 白名单校验（仅 https 公网、禁内网/元数据端点、
+    禁重定向），不再对 checks.yaml 里的任意 URL 直接发请求。"""
+    url = cfg.get("url", "")
+    ok, why = _service_url_allowed(url)
+    if not ok:
+        return None, f"service URL 不在白名单（{why}）"
+    r = requests.post(url, json={
         "owner": pr["owner"], "repo": pr["repo"], "sha": pr["sha"],
-        "files": pr.get("files", [])}, timeout=cfg.get("timeout", 60))
+        "files": pr.get("files", [])},
+        timeout=cfg.get("timeout", 60), allow_redirects=False)
     r.raise_for_status()
     d = r.json()
     return _truthy(d.get("passed")), str(d.get("summary", ""))

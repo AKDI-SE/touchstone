@@ -4,6 +4,7 @@ import os
 import threading
 import time
 
+import pytest
 import requests
 
 from touchstone import checks
@@ -311,6 +312,13 @@ class _FakeResp:
         return self._p
 
 
+@pytest.fixture(autouse=True)
+def _allow_service_hosts(monkeypatch):
+    """审计 #40：_run_service 现校验 URL 白名单（仅 https 公网，TOUCHSTONE_SERVICE_ALLOW 豁免）。
+    测试打桩的假主机全在此豁免，专注测并发/解析逻辑；白名单本身的拦截面有专项测试。"""
+    monkeypatch.setenv("TOUCHSTONE_SERVICE_ALLOW", "a,b,c,crash,ok,svc,x")
+
+
 def _concurrent_post(active, payload=None, sleep=0.05):
     """造一个会记并发数 + sleep 的 requests.post 打桩，用于证真并行 / 测上限。"""
     lock = threading.Lock()
@@ -371,10 +379,10 @@ def test_service_passed_string_false_is_not_passed(monkeypatch):
     assert summary == "tests failed"
     # 真值字符串（大小写/变体）仍通过
     monkeypatch.setattr(checks.requests, "post", fake_post({"passed": "True"}))
-    assert checks._run_service(_PR, {"url": "x"})[0] is True
+    assert checks._run_service(_PR, {"url": "http://x"})[0] is True
     # 非白名单字符串 fail-closed（门禁对模糊输入不 lenient 放行）
     monkeypatch.setattr(checks.requests, "post", fake_post({"passed": "ok"}))
-    assert checks._run_service(_PR, {"url": "x"})[0] is False
+    assert checks._run_service(_PR, {"url": "http://x"})[0] is False
 
 
 def test_service_order_preserved_when_interleaved_with_builtin(monkeypatch):
@@ -394,7 +402,7 @@ def test_service_concurrency_capped(monkeypatch):
     active = {"n": 0, "max": 0}
     monkeypatch.setattr(checks.requests, "post", _concurrent_post(active, sleep=0.03))
     n = checks._MAX_SERVICE_WORKERS + 4
-    cfg = {"checks": [{"name": f"s{i}", "type": "service", "url": f"http://x{i}", "required": True}
+    cfg = {"checks": [{"name": f"s{i}", "type": "service", "url": "http://x", "required": True}
                       for i in range(n)]}
     results = checks.run_checks(cfg, _PR)
     assert 2 <= active["max"] <= checks._MAX_SERVICE_WORKERS   # 并行了且有上限
@@ -462,3 +470,25 @@ def test_verify_plugin_non_dict_json_failclosed(tmp_path, monkeypatch):
     (tmp_path / "verify-result.json").write_text(
         _json.dumps({"passed": True, "spec_source": "human_curated"}), encoding="utf-8")
     assert checks._BUILTINS["verify"]({}, {})[0] is True
+
+
+# ---------------- 审计 #40：service URL SSRF 白名单 ----------------
+def test_service_url_policy_blocks_non_https_and_metadata(monkeypatch):
+    """checks.yaml 是 PR 可改内容——URL 白名单是防 author 借门禁 runner 打内网/元数据端点的闸。"""
+    monkeypatch.delenv("TOUCHSTONE_SERVICE_ALLOW", raising=False)
+    passed, summary = checks._run_service(_PR, {"url": "http://169.254.169.254/latest/meta-data"})
+    assert passed is None and "https" in summary          # 明文 http 拒
+    passed, summary = checks._run_service(_PR, {"url": "https://169.254.169.254/latest"})
+    assert passed is None and "非公网" in summary          # 云元数据端点拒
+    passed, summary = checks._run_service(_PR, {"url": "https://localhost:9/x"})
+    assert passed is None and "localhost" in summary      # 环回拒
+    passed, summary = checks._run_service(_PR, {"url": "https://10.1.2.3/x"})
+    assert passed is None and "非公网" in summary          # 私网拒
+
+
+def test_service_url_policy_allowlist_exempts(monkeypatch):
+    monkeypatch.setenv("TOUCHSTONE_SERVICE_ALLOW", "my-svc.corp")
+    def fake_post(url, json=None, timeout=None, **k):
+        return _FakeResp({"passed": True, "summary": "ok"})
+    monkeypatch.setattr(checks.requests, "post", fake_post)
+    assert checks._run_service(_PR, {"url": "http://my-svc.corp/x"}) == (True, "ok")

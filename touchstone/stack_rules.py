@@ -54,6 +54,13 @@ def _mk(rule_id, rule_index, path, lineno, why):
         "agent": "touchstone-rules",
         "consumable_by": "both",
         "rationale": f"确定性栈规则 {rule_id}：{why}（{r.get('description','')[:60]}）",
+        # 审计 #42：补齐 checklist/render 消费的完整 Finding 形状——缺这三键时收敛清单的
+        # direction 回落空串、done_criteria 走兜底，栈规则发现对人不可执行、销项标准含糊。
+        "fix_direction": r.get("fix_direction") or f"按 {rule_id} 修正：{why}",
+        "fix_reasoning": f"确定性栈规则 {rule_id} 命中（正则行级扫描）",
+        "suggested_fix": r.get("suggested_fix") or f"消除 {rule_id} 的命中模式：{why}",
+        "done_criteria": {"kind": "deterministic",
+                          "spec": {"recheck": f"stack-rule:{rule_id}:{path}:{lineno}"}},
     }
 
 
