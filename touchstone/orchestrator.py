@@ -24,6 +24,7 @@ import requests
 import yaml
 
 from touchstone import ghclient             # GitHub HTTP 客户端(requests)
+from touchstone.envutil import env_pr_event  # PR 类事件判定（pull_request_target 族，pr-agent 第三轮评审）
 from touchstone import checks                # 可插拔检查框架 + 总闸
 from touchstone import loop                  # 反馈循环控制器
 from touchstone import contract_check        # 提交契约一致性核对（确定性）
@@ -688,8 +689,9 @@ def _collect_injection():
     #   会读到 PR 可篡改的工作树），marker 同样必须空。
     if os.environ.get("TOUCHSTONE_EXPERIENCE_ENABLED", "true").lower() not in ("1", "true", "yes", "on"):
         return [], [], [], []
-    if os.environ.get("GITHUB_EVENT_NAME") == "pull_request" \
-            and not os.environ.get("TOUCHSTONE_EXPERIENCE_REF"):
+    # pr-agent 评审（第三轮）：事件匹配改前缀族——本仓 workflow 触发器是 pull_request_target，
+    # 精确 == "pull_request" 时闸②在生产路径上永不生效（pull_request_target ≠ pull_request）。
+    if env_pr_event() and not os.environ.get("TOUCHSTONE_EXPERIENCE_REF"):
         return [], [], [], []
     try:
         from touchstone import learning_loop as _ll

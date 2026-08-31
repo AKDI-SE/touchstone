@@ -17,6 +17,9 @@
 import os
 import socket
 import sys
+import contextlib
+import ipaddress
+import urllib.parse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
@@ -127,8 +130,7 @@ def _service_url_allowed(url):
     host = (u.hostname or "").strip().lower()
     if not host:
         return False, "URL 无主机名"
-    allow = {h.strip().lower() for h in
-             os.environ.get("TOUCHSTONE_SERVICE_ALLOW", "").split(",") if h.strip()}
+    allow = _service_allow_hosts()
     if host in allow:
         return True, "allowlist 豁免"          # 明示豁免：scheme/网段检查全免（测试与内网部署）
     if u.scheme != "https":
@@ -152,20 +154,80 @@ def _service_url_allowed(url):
     return True, "ok"
 
 
+def _service_allow_hosts():
+    """TOUCHSTONE_SERVICE_ALLOW 豁免主机集合（小写、去空）。校验与钉死两处共用同一口径。"""
+    return {h.strip().lower() for h in
+            os.environ.get("TOUCHSTONE_SERVICE_ALLOW", "").split(",") if h.strip()}
+
+
+class _pin_dns:
+    """DNS 钉死上下文（pr-agent 评审"SSRF residual"收口）。
+
+    残留缺口：_service_url_allowed 校验时的 getaddrinfo 与 requests 发起连接时的
+    getaddrinfo 是两次独立解析——短 TTL 的 rebinding DNS 可让前者返回公网 A 记录、
+    后者返回 169.254.169.254/内网地址（经典 TOCTOU）。本上下文把该 host 在窗口内的
+    全部解析重定向到已校验的 addrinfo：连接只能落在校验过的公网 IP 上。
+
+    实现权衡：patch 模块级 socket.getaddrinfo 是全局状态（本进程 checks 为串行执行、
+    无并发竞争；若未来并发化需换 urllib3 自定义 resolver 挂点位）。非目标 host 的
+    解析原样透传（_pin 闭包内保留原函数引用）。"""
+
+    def __init__(self, host, addrinfos):
+        self._host = (host or "").strip().lower()
+        self._ai = addrinfos
+        self._orig = None
+
+    def __enter__(self):
+        self._orig = socket.getaddrinfo
+        host, ai, orig = self._host, self._ai, self._orig
+
+        def _gai(h, *a, **k):
+            if (h or "").lower() == host:
+                return ai
+            return orig(h, *a, **k)
+
+        socket.getaddrinfo = _gai
+        return self
+
+    def __exit__(self, *exc):
+        socket.getaddrinfo = self._orig
+        return False
+
+
 def _run_service(pr, cfg):
     """POST PR 上下文到一个 HTTP 服务（未来自建质量服务的挂点）。
     审计 #40：URL 经 _service_url_allowed 白名单校验（仅 https 公网、禁内网/元数据端点、
-    禁重定向），不再对 checks.yaml 里的任意 URL 直接发请求。"""
+    禁重定向），不再对 checks.yaml 里的任意 URL 直接发请求。
+    pr-agent 第三轮评审：校验与连接之间的 DNS rebinding 残留收口——非 IP 字面量 host
+    在请求前【再解析一次并复检】，然后把连接钉死到这批已校验 addrinfo（_pin_dns）。"""
     url = cfg.get("url", "")
     ok, why = _service_url_allowed(url)
     if not ok:
         return None, f"service URL 不在白名单（{why}）"
-    r = requests.post(url, json={
-        "owner": pr["owner"], "repo": pr["repo"], "sha": pr["sha"],
-        "files": pr.get("files", [])},
-        timeout=cfg.get("timeout", 60), allow_redirects=False)
-    r.raise_for_status()
-    d = r.json()
+    u = urllib.parse.urlsplit(url)
+    host = (u.hostname or "").strip().lower()
+    pin = None
+    if host in _service_allow_hosts():
+        pass                                      # 豁免主：明示信任（内网名常无法公网解析），不解析不钉死
+    else:
+        try:
+            ipaddress.ip_address(host)            # IP 字面量：连接不再解析，无 rebinding 面
+        except ValueError:
+            try:
+                addrinfos = socket.getaddrinfo(host, u.port or 443, proto=socket.IPPROTO_TCP)
+            except socket.gaierror as e:
+                return None, f"service URL 主机名解析失败（{e}）"
+            for ai in addrinfos:                  # 连接期复检：解析结果变化本身也要过闸
+                if not ipaddress.ip_address(ai[4][0]).is_global:
+                    return None, f"{host} 连接期解析到非公网地址 {ai[4][0]}（拒绝）"
+            pin = _pin_dns(host, addrinfos)
+    with (pin if pin is not None else contextlib.nullcontext()):
+        r = requests.post(url, json={
+            "owner": pr["owner"], "repo": pr["repo"], "sha": pr["sha"],
+            "files": pr.get("files", [])},
+            timeout=cfg.get("timeout", 60), allow_redirects=False)
+        r.raise_for_status()
+        d = r.json()
     return _truthy(d.get("passed")), str(d.get("summary", ""))
 
 

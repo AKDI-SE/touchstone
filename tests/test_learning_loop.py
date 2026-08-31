@@ -1585,6 +1585,40 @@ def test_orchestrator_review_pr_writes_shadow_to_marker_when_enabled(monkeypatch
     assert result2["shadow_types"] == [] and result2["shadow_experience_ids"] == []
 
 
+def test_merge_candidates_malformed_no_crash(capsys):
+    """pr-agent 第三轮评审（审计 #12 同类、候选侧）：缺 id/缺 finding_type/非 dict 候选不再
+    KeyError 崩轮——留痕跳过；规范类型缺 id 的候选由 canonicalize 补齐后正常入池。"""
+    store = {"experiences": []}
+    L.merge_candidates(store, [
+        {"finding_type": "PRA-ACTIVE", "kind": "emphasize", "text": "t"},   # 缺 id → 补齐入池
+        {"kind": "emphasize", "text": "t2"},                                  # 缺 finding_type → 跳过
+        "not-a-dict", None,                                                   # 非 dict → 跳过
+    ], taxonomy=None)
+    assert len(store["experiences"]) == 1
+    e = store["experiences"][0]
+    assert e["id"].endswith("PRA-ACTIVE") and e["finding_type"] == "PRA-ACTIVE"
+    assert "畸形候选" in capsys.readouterr().err                 # 非静默：stderr 留痕
+    # 既有条目 + 只带部分键的更新候选（缺 text/updated_at）→ 保留旧值不 KeyError
+    L.merge_candidates(store, [{"id": e["id"], "finding_type": "PRA-ACTIVE",
+                                "kind": "emphasize"}], taxonomy=None)
+    assert store["experiences"][0]["text"] == "t"
+
+
+def test_collect_injection_pr_target_event_gated(monkeypatch):
+    """pr-agent 第三轮评审：GITHUB_EVENT_NAME=pull_request_target（本仓 workflow 真实触发器）
+    同样命中审计 #44 闸②——marker 不得声称注入了从未注入的经验。"""
+    from touchstone import orchestrator as orc
+    monkeypatch.delenv("TOUCHSTONE_EXPERIENCE_REF", raising=False)
+    monkeypatch.setattr(L, "load_store", lambda: {"experiences": []})
+    monkeypatch.setattr(L, "active_types", lambda s: ["PRA-A"])
+    monkeypatch.setattr(L, "active_ids", lambda s: ["emphasize:::PRA-A"])
+    for ev in ("pull_request_target", "pull_request_review"):
+        monkeypatch.setenv("GITHUB_EVENT_NAME", ev)
+        assert orc._collect_injection() == ([], [], [], []), ev      # PR 族事件：必拦
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "push")
+    assert orc._collect_injection()[0] == ["PRA-A"]                  # 非 PR：放行
+
+
 def test_shadow_failure_does_not_wipe_active_injection(monkeypatch):
     """shadow 取值抛异常不能 wipe 已成功取到的 active injection（pr-agent review #117：生产路径
     vs 实验路径失败隔离）。直接测 _collect_injection——shadow_types 抛异常时返回的 injected_types

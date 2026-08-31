@@ -535,6 +535,35 @@ def test_shadow_does_not_bypass_experience_ref_gate(monkeypatch, tmp_path):
         importlib.reload(experience_store); importlib.reload(learning_loop)
 
 
+def test_pr_target_event_also_gates_engine_store(monkeypatch, tmp_path):
+    """pr-agent 第三轮评审：GITHUB_EVENT_NAME=pull_request_target（本仓 touchstone workflow 的
+    真实触发器）必须同样命中 EXPERIENCE_REF 防投毒闸——旧版精确匹配 == "pull_request" 使闸在
+    生产路径上永不生效。env_pr_event 前缀族匹配。"""
+    import importlib
+    from touchstone import experience_store, learning_loop
+    from touchstone import review_provider as rp
+    store = tmp_path / "exp.json"
+    store.write_text(json.dumps({"experiences": [
+        {"id": "e:::S", "finding_type": "S", "kind": "emphasize",
+         "text": "FLAG-S", "status": "active", "updated_at": 1},
+    ]}), encoding="utf-8")
+    monkeypatch.setenv("TOUCHSTONE_STORE_PATH", str(store))
+    importlib.reload(experience_store); importlib.reload(learning_loop)
+    try:
+        monkeypatch.setenv("TOUCHSTONE_EXPERIENCE_ENABLED", "true")
+        monkeypatch.delenv("TOUCHSTONE_EXPERIENCE_REF", raising=False)
+        for ev in ("pull_request_target", "pull_request_review", "pull_request"):
+            monkeypatch.setenv("GITHUB_EVENT_NAME", ev)
+            assert rp._experience_injection(str(tmp_path)) == "", ev   # 全部 PR 族事件：必拦
+        monkeypatch.setenv("GITHUB_EVENT_NAME", "push")
+        assert "FLAG-S" in rp._experience_injection(str(tmp_path))     # 非 PR 事件：放行
+    finally:
+        for k in ("TOUCHSTONE_STORE_PATH",):
+            monkeypatch.delenv(k, raising=False)
+        monkeypatch.delenv("TOUCHSTONE_EXPERIENCE_REF", raising=False)
+        importlib.reload(experience_store); importlib.reload(learning_loop)
+
+
 def test_shadow_detection_failure_does_not_disable_active_injection(monkeypatch, tmp_path, capsys):
     """pr-agent #118 r1+r2：_shadow_injection_enabled() 抛异常 → 降级 include_shadow=False（只禁 shadow 段），
     不级联进外层 except 禁用整个经验注入——active 经验仍正常渲染（不返 ""）；且降级非静默（r2）——

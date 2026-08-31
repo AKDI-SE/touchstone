@@ -99,7 +99,11 @@ def client(token):
         for attempt in range(2):
             r = sess.request(method, url, headers=headers,
                              json=data if data is not None else None, timeout=timeout)
-            if r.status_code == 403 and r.headers.get("Retry-After") and attempt == 0:
+            # pr-agent 评审（第三轮）：手动 403+Retry-After 分支与 urllib3 Retry 层同律（审计 #1）——
+            # 仅幂等 GET 重试。POST 的 403 可能发生在服务端【已处理】之后（限流在落库后触发），
+            # 重放 = 重复评论/重复 check-run/重复看板 issue；直接抛给调用方决定重试语义。
+            if (r.status_code == 403 and r.headers.get("Retry-After") and attempt == 0
+                    and method.upper() == "GET"):
                 time.sleep(_retry_after_seconds(r.headers["Retry-After"]))
                 continue
             break
@@ -169,7 +173,10 @@ def request(method, url, token, data=None, accept="application/vnd.github+json",
     for attempt in range(2):
         r = sess.request(method, url, headers=headers,
                          json=data if data is not None else None, timeout=timeout)
-        if r.status_code == 403 and r.headers.get("Retry-After") and attempt == 0:
+        # pr-agent 评审（第三轮）：与 client._req 的手动 403 分支同律（审计 #1）——仅幂等 GET
+        # 重试；POST 403 重放会重复评论/check-run/issue，直接抛给调用方。
+        if (r.status_code == 403 and r.headers.get("Retry-After") and attempt == 0
+                and method.upper() == "GET"):
             time.sleep(_retry_after_seconds(r.headers["Retry-After"]))
             continue
         break

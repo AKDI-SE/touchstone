@@ -486,6 +486,45 @@ def test_service_url_policy_blocks_non_https_and_metadata(monkeypatch):
     assert passed is None and "非公网" in summary          # 私网拒
 
 
+def test_service_pins_dns_against_rebinding(monkeypatch):
+    """pr-agent 第三轮评审"SSRF residual"收口：校验期与连接期是两次独立 getaddrinfo——
+    短 TTL rebinding 可让前者返回公网 A 记录、后者返回元数据地址。_run_service 须：
+    ① 连接前再解析并复检（解析到私网即拒）；② 把连接钉死到已校验 addrinfo（_pin_dns）——
+    请求窗口内的解析被重定向到公网结果，rebinding 无法生效。"""
+    import socket as S
+    import ipaddress as _ipa
+    monkeypatch.delenv("TOUCHSTONE_SERVICE_ALLOW", raising=False)
+    pub = [(S.AF_INET, S.SOCK_STREAM, 6, "", ("93.184.216.34", 443))]
+    priv = [(S.AF_INET, S.SOCK_STREAM, 6, "", ("169.254.169.254", 443))]
+    state = {"n": 0}
+    def flip(h, *a, **k):                     # 第 1 次校验、第 2 次连接期复检：公网；之后"rebinding"成私网
+        state["n"] += 1
+        return pub if state["n"] <= 2 else priv
+    monkeypatch.setattr(S, "getaddrinfo", flip)
+    seen = {}
+    class _R:
+        status_code = 200
+        def raise_for_status(self): pass
+        def json(self): return {"passed": True, "summary": "ok"}
+    def fake_post(url, json=None, timeout=None, **k):
+        seen["gai"] = S.getaddrinfo("svc.example", 443)   # 模拟 requests 内部连接期解析
+        return _R()
+    monkeypatch.setattr(checks.requests, "post", fake_post)
+    passed, _ = checks._run_service(_PR, {"url": "https://svc.example/hook"})
+    assert passed is True
+    assert seen["gai"] == pub                              # 钉死生效：rebinding 后的私网解析被拦截在 pin 层
+    assert all(_ipa.ip_address(ai[4][0]).is_global for ai in seen["gai"])
+
+    # 连接期复检分支：解析结果已翻成私网（复检阶段即拒绝，请求不发出）
+    state["n"] = 1                                          # 下一次解析（复检）即 priv
+    posted = {"n": 0}
+    monkeypatch.setattr(checks.requests, "post",
+                        lambda *a, **k: posted.__setitem__("n", posted["n"] + 1) or _R())
+    passed, summary = checks._run_service(_PR, {"url": "https://svc.example/hook"})
+    assert passed is None and "连接期解析到非公网" in summary
+    assert posted["n"] == 0                                 # 未发请求
+
+
 def test_service_url_policy_allowlist_exempts(monkeypatch):
     monkeypatch.setenv("TOUCHSTONE_SERVICE_ALLOW", "my-svc.corp")
     def fake_post(url, json=None, timeout=None, **k):

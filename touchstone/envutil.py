@@ -56,3 +56,24 @@ def env_float(name, default, *, minimum=None):
         print(f"[envutil] {name}={n} 低于下限 {minimum}，夹取为 {minimum}", file=sys.stderr)
         n = minimum
     return n
+
+
+def env_flag(name, default=False):
+    """env → 布尔开关。default 通常给 False（kill-switch 风格：显式 "1/true/yes/on" 才开）。
+    与 learning_loop 的 TOUCHSTONE_RETIRE_NEGATIVE_LIFT、checks 的阴影开关同一口径。"""
+    v, present = _raw(name)
+    if not present:
+        return default
+    return v.lower() in ("1", "true", "yes", "on")
+
+
+def env_pr_event():
+    """GITHUB_EVENT_NAME 是否 PR 类事件（pull_request / pull_request_target / pull_request_review…）。
+
+    pr-agent 评审（PR #203 第三轮）收口：本仓 touchstone workflow 的触发器是
+    **pull_request_target**，GITHUB_EVENT_NAME 即 "pull_request_target"——若精确匹配
+    == "pull_request"，防投毒闸（EXPERIENCE_REF 门）在真实生产路径上【永不生效】，
+    恰好保护了它要防的场景。前缀匹配覆盖全部 PR 类事件；schedule/push/workflow_dispatch
+    等非 PR 事件不受影响。"""
+    ev = (os.environ.get("GITHUB_EVENT_NAME") or "").strip().lower()
+    return ev == "pull_request" or ev.startswith("pull_request_")

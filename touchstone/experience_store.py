@@ -183,11 +183,17 @@ def _canonical_type(ftype):
 
 def _canonicalize_candidate(c):
     """把候选的 finding_type 规范化为生态形并同步重算 id（id 含 finding_type）。不丢弃——仅归一化。
-    已规范或 finding_type 为空 → 原样返回。纯函数（返回新 dict，不改输入）。"""
+    已规范或 finding_type 为空 → 原样返回。纯函数（返回新 dict，不改输入）。
+    pr-agent 评审（第三轮）：finding_type 已规范但【缺 id】的候选此前原样返回，merge_candidates
+    的 `c["id"]` 随即 KeyError（审计 #12 同类，但漏了候选侧）——现对缺 id/空 id 一并补齐。"""
+    if not isinstance(c, dict):
+        return c                                   # 非 dict：由 merge_candidates 按 dropped 跳过（防 .get 崩）
     ft = _canonical_type(c.get("finding_type", ""))
-    if ft and ft != c.get("finding_type"):
-        return dict(c, finding_type=ft,
-                    id=_exp_id(ft, c.get("kind", ""), c.get("repo", ""), c.get("stack", "")))
+    if not ft:
+        return c                                   # 空 finding_type：由 merge_candidates 按 dropped 跳过
+    nid = _exp_id(ft, str(c.get("kind") or ""), str(c.get("repo") or ""), str(c.get("stack") or ""))
+    if ft != c.get("finding_type") or not c.get("id"):
+        return dict(c, finding_type=ft, id=nid)
     return c
 
 
@@ -239,6 +245,10 @@ def merge_candidates(store, candidates, *, taxonomy=None):
     dropped = []
     for c in candidates:
         c = _canonicalize_candidate(c)              # 先规范化 finding_type/id（合并重复变体，不丢弃）
+        if not isinstance(c, dict) or not c.get("finding_type") or not c.get("id"):
+            _why = (c.get("finding_type") if isinstance(c, dict) else None) or f"<畸形候选 {type(c).__name__}>"
+            dropped.append(str(_why))       # 统一 str：dropped 汇总 print 的 sorted() 混类型会 TypeError
+            continue        # 非 dict/缺 finding_type（canonicalize 无法归一）/仍缺 id：留痕跳过，不 KeyError 崩轮（pr-agent 第三轮评审）
         if taxonomy is not None:
             ft = coerce_type(c.get("finding_type", ""), taxonomy)
             if ft is None:
@@ -271,8 +281,8 @@ def merge_candidates(store, candidates, *, taxonomy=None):
                 if _pid not in _prs:
                     _prs.append(_pid)
             e["source_prs"] = _prs
-            e["text"] = c["text"]
-            e["updated_at"] = c["updated_at"]
+            e["text"] = c.get("text") or e.get("text", "")          # 候选缺 text/updated_at 不 KeyError（同上）
+            e["updated_at"] = c.get("updated_at") or e.get("updated_at")
         else:
             store.setdefault("experiences", []).append(c)
             idx[c["id"]] = c

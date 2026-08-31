@@ -99,6 +99,7 @@ class ReviewEngineDegraded(RuntimeError):
 # 可疑空收敛阈值（改动新增行 >= 此值 且 LLM 0 原始建议 -> 评审不可信）。
 # 与 orchestrator._clean_review_trace 的 suspicious 判据同源；经 env 可调（如超大 PR 调参）。
 from touchstone.envutil import env_int as _env_int_   # 审计 #18：import 期坏值回落默认（此处崩=所有 PR 评审全灭）
+from touchstone.envutil import env_pr_event               # PR 类事件判定（pull_request_target 族，pr-agent 第三轮评审）：import 期坏值回落默认（此处崩=所有 PR 评审全灭）
 _SUSPICIOUS_EMPTY_LINES = max(0, _env_int_("TOUCHSTONE_SUSPICIOUS_EMPTY_LINES", 20))
 
 
@@ -497,7 +498,7 @@ def _experience_injection(repo_dir, stack=None):
     # 读同一开关，否则 marker 说"注入了 shadow X"但此处未渲染 → with 臂归因失真；两处 env 默认关。
     # _shadow_injection_enabled() 独立求值 + 安全降级（pr-agent #118 r1）：它抛异常时降级 False
     # （只禁 shadow 段），不级联进外层 except 禁用整个经验注入含 active（与 step3 :504 同类隔离）。
-    engine_ref_ok = not (os.environ.get("GITHUB_EVENT_NAME") == "pull_request"
+    engine_ref_ok = not (env_pr_event()
                          and not os.environ.get("TOUCHSTONE_EXPERIENCE_REF"))
     if engine_ref_ok:
         try:

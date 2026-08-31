@@ -70,6 +70,22 @@ def test_request_retries_after_header(monkeypatch):
     assert len(s.calls) == 2
 
 
+def test_request_403_retry_get_only(monkeypatch):
+    """pr-agent 第三轮评审：手动 403+Retry-After 分支与 urllib3 Retry 层同律（审计 #1）——
+    仅幂等 GET 重试；POST 的 403 直接抛给调用方（重放会重复评论/check-run/issue）。"""
+    import pytest, requests
+    # GET：403+Retry-After → 重试一次成功
+    s = _mock_session(monkeypatch,
+                      [_Resp(403, "", {"Retry-After": "0"}), _Resp(200, {"ok": 1})])
+    assert ghclient.request("GET", "u", "t") == {"ok": 1}
+    assert len(s.calls) == 2
+    # POST：403+Retry-After → 不重试（1 次调用即抛）
+    s2 = _mock_session(monkeypatch, [_Resp(403, "", {"Retry-After": "0"})])
+    with pytest.raises(requests.exceptions.HTTPError):
+        ghclient.request("POST", "u", "t", data={"a": 1})
+    assert len(s2.calls) == 1
+
+
 def test_request_raises_on_http_error(monkeypatch):
     import pytest, requests
     _mock_session(monkeypatch, [_Resp(404, "")])
