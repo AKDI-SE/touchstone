@@ -87,8 +87,10 @@ class CensusIssue:                     # L0 产物
 @dataclass(frozen=True)
 class TestCommand:
     """复用项目在 Touchstone 配置里声明的测试命令；Probe 不自行发现/调度测试。
-    cmd 为 shell 字符串（如 'python -m pytest -q'）；targeted 可选，追加到 cmd 后做定向运行。"""
-    cmd: str = "python -m pytest -q"
+    cmd 为 shell 字符串（如 'python -m pytest -q'）；targeted 可选，追加到 cmd 后做定向运行。
+    审计 #29：默认命令用 sys.executable（shlex.quote 防路径含空格）——裸 "python" 在
+    无 python 别名的环境（部分 CI 镜像/Arch 系）FileNotFoundError，探针直接链路故障。"""
+    cmd: str = f"{shlex.quote(sys.executable)} -m pytest -q"
     cwd: str = "."
     env: dict = field(default_factory=dict)
 
@@ -474,7 +476,9 @@ def _node_byte_span(original_bytes, span):
 
 
 def _run_tests(test_cmd, timeout):
-    """跑一次测试命令。返回 (rc, out, timed_out)。rc!=0 视为测试失败=击杀。"""
+    """跑一次测试命令。返回 (rc, out, timed_out)。rc!=0 视为测试失败=击杀；
+    rc=None 且未超时 = 命令启动失败（FileNotFoundError：解释器/命令不存在）——
+    这是 infra 故障【不是】测试挂，调用方必须判 INFRA_ERROR，绝不能当击杀（审计 #34/#29）。"""
     env = dict(os.environ); env.update(test_cmd.env or {})
     try:
         cp = subprocess.run(shlex.split(test_cmd.cmd), cwd=test_cmd.cwd, env=env,
@@ -486,6 +490,8 @@ def _run_tests(test_cmd, timeout):
                 return ""
             return x if isinstance(x, str) else x.decode("utf-8", errors="replace")
         return None, _s(e.stdout) + _s(e.stderr), True
+    except (FileNotFoundError, PermissionError, OSError) as e:
+        return None, f"测试命令启动失败：{e}", False
 
 
 def _inject_and_run(mutant, test_cmd, timeout):
@@ -525,6 +531,9 @@ def _inject_and_run(mutant, test_cmd, timeout):
         elapsed = round(time.monotonic() - t0, 3)
         if timed_out:
             return Verdict(mutant.mutant_id, VerdictKind.TIMEOUT, None, elapsed, mutant.path, mutant.site.start_line)
+        if rc is None:
+            # 命令启动失败（解释器不存在等）：infra 故障，非测试挂——绝不能当击杀（审计 #34）
+            return Verdict(mutant.mutant_id, VerdictKind.INFRA_ERROR, None, elapsed, mutant.path, mutant.site.start_line)
         if rc != 0:
             m = _FAILED_RX.search(out)
             return Verdict(mutant.mutant_id, VerdictKind.KILLED, m.group(1) if m else "(unknown)", elapsed, mutant.path, mutant.site.start_line)
@@ -564,6 +573,25 @@ def run(mutants, test_cmd, budget, census_issues):
         return ProbeRunReport(len(mutants), 0, VerdictKind.INFRA_ERROR, [], census_issues,
                               ReportStatus.INVALID, None,
                               reason="无法选取哨兵变异体 → 链路自检不可用，本轮判决无效")
+
+    # ①' 未变异基线校验（审计 #34）：干净源码上测试必须绿——基线即红时任何"击杀"都只是
+    #     基线红噪（与变异无关），kill_rate 全是假信号。哨兵防的是"注入/判决链路坏"，
+    #     这里防的是"测试自身在干净代码上就挂"——两者缺一不可。
+    bl_rc, bl_out, bl_to = _run_tests(test_cmd, budget.per_mutant_timeout_s)
+    if bl_to:
+        return ProbeRunReport(len(mutants), 0, VerdictKind.INFRA_ERROR, [], census_issues,
+                              ReportStatus.INVALID, None,
+                              reason="未变异基线测试超时 → 无法归因任何击杀，本轮判决无效")
+    if bl_rc is None:
+        return ProbeRunReport(len(mutants), 0, VerdictKind.INFRA_ERROR, [], census_issues,
+                              ReportStatus.INVALID, None,
+                              reason=f"测试命令启动失败 → 探针链路不可用，本轮判决无效：{bl_out[:200]}")
+    if bl_rc != 0:
+        tail = (bl_out or "").strip().splitlines()[-1:] or ["(无输出)"]
+        return ProbeRunReport(len(mutants), 0, VerdictKind.INFRA_ERROR, [], census_issues,
+                              ReportStatus.INVALID, None,
+                              reason=f"未变异基线测试已红（{tail[0][:200]}）→ 击杀信号不可归因，本轮判决无效")
+
     try:
         sv = _inject_and_run(sentinels[0], test_cmd, budget.per_mutant_timeout_s)
     except WorkspaceCorrupted:

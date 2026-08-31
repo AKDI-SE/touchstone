@@ -15,7 +15,12 @@
 # ============================================================================
 
 import os
+import socket
 import sys
+import contextlib
+import ipaddress
+import threading
+import urllib.parse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
@@ -107,11 +112,277 @@ def _truthy(v):
     return bool(v)
 
 
+def _service_url_allowed(url):
+    """service URL 白名单校验（审计 #40：checks.yaml 是仓库内容，PR 可改）。
+
+    URL 若允许任意目标，改 checks.yaml 的 author 即可让门禁 runner 向内网/云元数据端点
+    （169.254.169.254 等）发 POST——SSRF 借道总闸机器。收口：
+      · 仅 https（明文 http 的响应可被链路伪造 passed=true）；
+      · 禁 localhost/环回/链路本地/私网与云元数据地址（按主机名字面量 + 解析后 IP 双查——
+        字面量查堵 `http://169.254.169.254`；解析查堵 `http://attacker.com` → 私网 A 记录）；
+      · 重定向逐跳过闸（第九轮）：非豁免主禁跟随；豁免主可跟随但每跳 Location 重新过本闸。
+    部署方确需内网服务时挂 TOUCHSTONE_SERVICE_ALLOW 白名单（明示豁免网段检查；
+    `host:port` 限端口粒度、`http://host` 显式放行明文——见 _service_allow_map）。"""
+    import ipaddress
+    import urllib.parse
+    try:
+        u = urllib.parse.urlsplit(url)
+    except ValueError:
+        return False, "URL 解析失败"
+    host = _norm_host(u.hostname)
+    if not host:
+        return False, "URL 无主机名"
+    if _port_invalid(u):
+        return False, "URL 端口值非法"          # :99999 这类——urlsplit 不报、.port 才抛；先拦先说
+    if _service_exempt(u):
+        # pr-agent 第十轮：豁免=目标可及性豁免，传输完整性仍守——明文响应可被链路伪造
+        # passed=true，若豁免即免 scheme 闸，改 checks.yaml 的 author 可借豁免主域名走
+        # http 拿伪造放行。明文仅当条目显式写 http://host（运维明示）。
+        if (u.scheme or "").lower() != "https" and host not in _service_allow_map()[1]:
+            return False, "豁免主默认仍要求 https（明文响应可被链路伪造；确需明文请在 TOUCHSTONE_SERVICE_ALLOW 写 http://host）"
+        return True, "allowlist 豁免"          # 明示豁免：网段检查免（测试与内网部署；端口/明文粒度见 _service_allow_map）
+    if u.scheme != "https":
+        return False, f"仅允许 https（当前 {u.scheme!r}）"
+    if host in ("localhost",) or host.endswith(".localhost") or host.endswith(".internal") \
+            or host.endswith(".local"):
+        return False, f"内网/本地主机的名 {host!r} 不允许"
+    try:
+        ip = ipaddress.ip_address(host)           # 主机名本身即 IP 字面量
+    except ValueError:
+        ip = None
+    if ip is not None and not ip.is_global:
+        return False, f"非公网 IP {ip} 不允许"
+    try:                                            # 域名解析到私网 → SSRF 中转（DNS rebinding 残留见下）
+        for ai in socket.getaddrinfo(host, None):
+            ip = ipaddress.ip_address(ai[4][0])
+            if not ip.is_global:
+                return False, f"{host} 解析到非公网地址 {ip}"
+    except socket.gaierror:
+        return False, f"主机名 {host!r} 解析失败"
+    return True, "ok"
+
+
+def _norm_host(h):
+    """主机名归一化：小写、去空白、去 FQDN 尾点。URL 侧与 allowlist 侧共用同一口径——
+    pr-agent 第五轮评审：两侧归一不一致会让看似匹配的豁免静默不生效（fail-closed 但
+    无从排查）。"""
+    return (h or "").strip().lower().rstrip(".")
+
+
+def _port_invalid(u):
+    """端口值是否非法（:99999 这类）。urlsplit 本身不报错、访问 .port 才抛 ValueError——
+    单独成谓词供 _service_url_allowed 在豁免分支前先拦（pr-agent 第十三轮）。"""
+    try:
+        _ = u.port
+        return False
+    except ValueError:
+        return True
+
+
+def _safe_port(u):
+    """urlsplit 结果的端口，非法端口值（如 :99999）urlsplit 不报错、访问 .port 才抛
+    ValueError——此处吞掉返回 None（调用方按「无可比对端口」处理），不让一条坏 URL/坏
+    条目以栈回溯打穿整个门禁（pr-agent 第十三轮）。"""
+    try:
+        return u.port
+    except ValueError:
+        return None
+
+
+def _service_allow_map():
+    """TOUCHSTONE_SERVICE_ALLOW → ({host: 端口集合 | None}, 显式明文 host 集)。
+
+    条目容错（pr-agent 第五轮"silent mismatches"）：接受裸主机名，也接受带 scheme/
+    端口/路径的写法（urlsplit 解析），统一 _norm_host 归一。
+    端口粒度（pr-agent 第八轮"Honor allowlist ports"）：`host` 裸写 = 该 host 全端口
+    豁免；`host:port` = 仅该端口——内网服务常用非标端口分流（8080 对公、8443 内部），
+    全 host 豁免面大于运维明示的信任面。多条目同 host 并集，与全端口条目混写时取全端口。
+    明文粒度（pr-agent 第十轮）：豁免的是【目标可及性】，不是【传输完整性】——裸 host/
+    `https://` 条目对命中 URL 仍强制 https（明文响应可被链路伪造 passed=true）；仅当条目
+    显式写 `http://host` 时该 host 放行明文（运维明示的无 TLS 内网服务）。"""
+    m, http_ok = {}, set()
+    for raw in os.environ.get("TOUCHSTONE_SERVICE_ALLOW", "").split(","):
+        h = raw.strip()
+        if not h:
+            continue
+        had_scheme = "://" in h
+        if not had_scheme:
+            h = "https://" + h                 # 补哑 scheme 让 urlsplit 统一处理 host[:port][/path]
+        try:                                   # pr-agent 第十三轮：坏条目（如端口超界）跳过+告警，
+            u = urllib.parse.urlsplit(h)       # 不让一个运维手误以栈回溯打穿所有 service 检查
+        except ValueError as e:
+            print(f"[checks] ⚠️ TOUCHSTONE_SERVICE_ALLOW 条目无法解析（跳过）: {raw!r}: {e}",
+                  file=sys.stderr)
+            continue
+        host = _norm_host(u.hostname)
+        if not host:
+            continue
+        if _port_invalid(u):                   # :99999 这类——urlsplit 不报、.port 才抛
+            print(f"[checks] ⚠️ TOUCHSTONE_SERVICE_ALLOW 条目端口值非法（跳过）: {raw!r}",
+                  file=sys.stderr)
+            continue
+        _p = _safe_port(u)                     # 至此端口必为合法 int 或未标（None）
+        if had_scheme and (u.scheme or "").lower() == "http":
+            http_ok.add(host)                  # 明文是条目里的明示选择，不是缺省
+        if _p is None:
+            m[host] = None                     # 未标端口 = 全端口（最宽，后续条目不再收窄）
+        elif host in m and m[host] is None:
+            pass                               # 已是全端口：端口条目不再收窄
+        else:
+            m[host] = (m.get(host) or set()) | {_p}   # 首条端口条目：m.get 为 None 时也正确建集
+    return m, http_ok
+
+
+def _service_exempt(u):
+    """urlsplit 结果是否命中豁免（host 匹配 + 端口粒度）。未标端口的 URL 按 scheme 缺省
+    （https=443 / 其他=80）比对。校验、钉死跳过、重定向放开三处共用同一口径。
+    注意：豁免≠免 scheme 闸——明文放行要条目显式写 http://（见 _service_allow_map）。"""
+    m, _ = _service_allow_map()
+    host = _norm_host(u.hostname)
+    if host not in m or m[host] is None:
+        return host in m
+    port = _safe_port(u)
+    if port is None:
+        return False                           # 端口值非法：无可比对端口，不豁免（回落主闸）
+    port = port or (443 if (u.scheme or "https") == "https" else 80)
+    return port in m[host]
+
+
+_PIN_TLS = threading.local()          # {host: 已校验 addrinfo}，每线程独立（并发 service check 互不串扰）
+_PIN_ORIG_GAI = socket.getaddrinfo    # 派发器透传的原 getaddrinfo（import 期即绑定，永非 None——pr-agent 第六轮评审）
+
+
+def _pin_get(h):
+    pins = getattr(_PIN_TLS, "pins", None)
+    return (pins or {}).get((h or "").lower())
+
+
+def _pin_dispatcher(h, *a, **k):
+    ai = _pin_get(h)
+    if ai is not None:
+        return ai
+    # _PIN_ORIG_GAI 在 import 期即绑定真实 getaddrinfo，永非 None（pr-agent 第六轮评审收口）
+    return _PIN_ORIG_GAI(h, *a, **k)
+
+
+_PIN_INSTALL_LOCK = threading.Lock()     # 装派发器的双检锁（pr-agent 第十一轮）
+
+
+def _ensure_pin_dispatcher():
+    """安装常驻派发器（幂等）。首次 service 请求时装一次、进程内常驻——不随请求卸载，
+    规避并发线程互相覆盖还原的窗口（pr-agent 第四轮 PRA-SECURITY）。非钉死 host 的解析
+    语义不变（透传原函数）。
+    pr-agent 第十一轮：原 check-then-act 在【并发首调用】下有竞态——A 装完后 B 才执行
+    `_PIN_ORIG_GAI = socket.getaddrinfo`，读到的已是派发器本身 → 未钉死 host 的解析
+    无限自递归（RecursionError）。双检锁收口：锁内二次确认后才绑定原函数。"""
+    global _PIN_ORIG_GAI
+    if socket.getaddrinfo is _pin_dispatcher:
+        return                               # 快路径：已装（常态无锁）
+    with _PIN_INSTALL_LOCK:
+        if socket.getaddrinfo is _pin_dispatcher:
+            return                           # 双检：等锁期间他人已装
+        _PIN_ORIG_GAI = socket.getaddrinfo
+        socket.getaddrinfo = _pin_dispatcher
+
+
+class _pin_dns:
+    """DNS 钉死上下文（pr-agent 评审"SSRF residual"收口）。
+
+    残留缺口：_service_url_allowed 校验时的 getaddrinfo 与 requests 发起连接时的
+    getaddrinfo 是两次独立解析——短 TTL 的 rebinding DNS 可让前者返回公网 A 记录、
+    后者返回 169.254.169.254/内网地址（经典 TOCTOU）。本上下文把【本线程】对该 host
+    的全部解析重定向到已校验的 addrinfo：连接只能落在校验过的公网 IP 上。
+
+    并发正确性（pr-agent 第四轮 PRA-SECURITY）：service checks 经 ThreadPoolExecutor
+    并行执行（见 test_service_checks_run_in_parallel 的既有契约）——不能换装/卸载全局
+    getaddrinfo（并发进/出会互相覆盖还原）。改为：常驻 TLS 派发器（_pin_dispatcher，
+    未钉死的 host 透传）+ 本线程注册表登记/注销。线程间零共享写、并行度不受损。"""
+
+    def __init__(self, host, addrinfos):
+        self._host = (host or "").strip().lower()
+        self._ai = addrinfos
+
+    def __enter__(self):
+        _ensure_pin_dispatcher()
+        pins = getattr(_PIN_TLS, "pins", None)
+        if pins is None:
+            pins = {}
+            _PIN_TLS.pins = pins
+        pins[self._host] = self._ai
+        return self
+
+    def __exit__(self, *exc):
+        pins = getattr(_PIN_TLS, "pins", None)
+        if pins is not None:
+            pins.pop(self._host, None)
+        return False
+
+
 def _run_service(pr, cfg):
-    """POST PR 上下文到一个 HTTP 服务（未来自建质量服务的挂点）。"""
-    r = requests.post(cfg["url"], json={
-        "owner": pr["owner"], "repo": pr["repo"], "sha": pr["sha"],
-        "files": pr.get("files", [])}, timeout=cfg.get("timeout", 60))
+    """POST PR 上下文到一个 HTTP 服务（未来自建质量服务的挂点）。
+    审计 #40：URL 经 _service_url_allowed 白名单校验（仅 https 公网、禁内网/元数据端点、
+    禁重定向），不再对 checks.yaml 里的任意 URL 直接发请求。
+    pr-agent 第三轮评审：校验与连接之间的 DNS rebinding 残留收口——非 IP 字面量 host
+    在请求前【再解析一次并复检】，然后把连接钉死到这批已校验 addrinfo（_pin_dns）。
+    pr-agent 第七轮评审：重定向禁令对【豁免主】放开——内网服务常坐 http→https 或域前置
+    网关后（一跳重定向是常态），全禁重定向等于豁免名单形同虚设；非豁免主维持禁止。
+    pr-agent 第九轮评审：豁免放开 ≠ 落点免检。豁免只豁免【明示的 host[:port]】，不豁免
+    该 host 引出的任意落点（被入侵/误配的豁免服务 302 到 169.254.169.254 仍是 SSRF 借
+    道面）。改为手写跳循环（allow_redirects=False）：每一跳 Location 先过 _service_url_allowed，
+    过闸才发下一跳——payload 永不发给未校验的目标；跳数封顶防环。
+    pr-agent 第十一轮评审：跟随跳的方法按 RFC 语义分派——303（及现代实现的 301/302）
+    语义为「换 GET 再看」，307/308 才保方法重发 POST；GET 跳天然不携带 payload，
+    暴露面更小。"""
+    url = cfg.get("url", "")
+    ok, why = _service_url_allowed(url)
+    if not ok:
+        return None, f"service URL 不在白名单（{why}）"
+    max_hops = 5
+    hop = 0
+    method = "POST"
+    r = None
+    while True:
+        u = urllib.parse.urlsplit(url)
+        if hop > 0:                                # 落点重过闸：豁免不继承到重定向目标
+            ok, why = _service_url_allowed(url)
+            if not ok:
+                return None, f"重定向第 {hop} 跳落点不过闸（{why}）"
+        pin = None
+        if not _service_exempt(u):                 # 豁免主：明示信任（内网名常无法公网解析），不解析不钉死
+            host = _norm_host(u.hostname)
+            try:
+                ipaddress.ip_address(host)         # IP 字面量：连接不再解析，无 rebinding 面
+            except ValueError:
+                try:
+                    addrinfos = socket.getaddrinfo(host, u.port or 443, proto=socket.IPPROTO_TCP)
+                except socket.gaierror as e:
+                    return None, f"service URL 主机名解析失败（{e}）"
+                for ai in addrinfos:               # 连接期复检：解析结果变化本身也要过闸
+                    if not ipaddress.ip_address(ai[4][0]).is_global:
+                        return None, f"{host} 连接期解析到非公网地址 {ai[4][0]}（拒绝）"
+                pin = _pin_dns(host, addrinfos)
+        with (pin if pin is not None else contextlib.nullcontext()):
+            if method == "POST":
+                r = requests.post(url, json={
+                    "owner": pr["owner"], "repo": pr["repo"], "sha": pr["sha"],
+                    "files": pr.get("files", [])},
+                    timeout=cfg.get("timeout", 60),
+                    allow_redirects=False)         # 重定向由本循环逐跳过闸后手动跟随
+            else:
+                r = requests.get(url, timeout=cfg.get("timeout", 60), allow_redirects=False)
+        loc = r.headers.get("Location")
+        if r.status_code in (301, 302, 303, 307, 308):
+            if not loc:                        # 3xx 无 Location：显式拒绝，不让 r.json() 以
+                return None, f"重定向 {r.status_code} 缺 Location 头"   # 解码崩溃收场
+            if not _service_exempt(u):
+                return None, "非豁免主禁止重定向（落点不受校验约束）"
+            hop += 1
+            if hop > max_hops:
+                return None, f"重定向跳数超限（>{max_hops}）"
+            url = urllib.parse.urljoin(url, loc)   # 相对 Location 以当前 URL 为基
+            method = "POST" if r.status_code in (307, 308) else "GET"   # 303/301/302 → GET
+            continue
+        break
     r.raise_for_status()
     d = r.json()
     return _truthy(d.get("passed")), str(d.get("summary", ""))

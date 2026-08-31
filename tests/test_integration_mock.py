@@ -467,16 +467,30 @@ def test_anchor_inline_in_diff_nearest_and_skip():
     assert lines == [2, 3] and len(out) == 2
 
 
+def test_rule_index_skips_missing_id_and_warns(capsys):
+    """审计 #7 / pr-agent 评审"missing helper"复核：orchestrator._rule_index 对缺 id/非 dict
+    条目跳过 + stderr 告警（fail-degraded），不 KeyError 崩评审链；run.py 主路径同用此助手。"""
+    rules = [{"id": "R1", "severity": "warn"}, {"severity": "warn"}, "not-a-dict", None,
+             {"id": "R2"}, {"id": "R1", "note": "后写覆盖"}]
+    idx = ORC._rule_index(rules, src="t.yaml")
+    assert set(idx) == {"R1", "R2"}
+    assert idx["R1"]["note"] == "后写覆盖"           # 同 id 后写覆盖（dict 语义保留）
+    assert ORC._rule_index(None) == {} and ORC._rule_index([]) == {}
+    err = capsys.readouterr().err
+    assert err.count("缺 id") == 3 and "t.yaml" in err  # 3 个坏条目（缺 id dict/str/None）逐条告警
+
+
 def test_ci_verdict_branches(monkeypatch):
+    # 审计 #8：ci_verdict 改走 ghclient.paginate_check_runs（翻页取全），mock 点随之更新。
     def mk(runs):
         return lambda *a, **k: {"check_runs": runs}
-    monkeypatch.setattr(ORC, "gh", mk([{"name": "ci", "status": "completed", "conclusion": "success"}]))
+    monkeypatch.setattr(ORC.ghclient, "paginate_check_runs", mk([{"name": "ci", "status": "completed", "conclusion": "success"}]))
     assert ORC.ci_verdict("o", "r", "s", "t") is True
-    monkeypatch.setattr(ORC, "gh", mk([{"name": "ci", "status": "completed", "conclusion": "failure"}]))
+    monkeypatch.setattr(ORC.ghclient, "paginate_check_runs", mk([{"name": "ci", "status": "completed", "conclusion": "failure"}]))
     assert ORC.ci_verdict("o", "r", "s", "t") is False
-    monkeypatch.setattr(ORC, "gh", mk([{"name": "ci", "status": "in_progress"}]))
+    monkeypatch.setattr(ORC.ghclient, "paginate_check_runs", mk([{"name": "ci", "status": "in_progress"}]))
     assert ORC.ci_verdict("o", "r", "s", "t") is None
-    monkeypatch.setattr(ORC, "gh", mk([]))            # 仅 touchstone/无数据 → None
+    monkeypatch.setattr(ORC.ghclient, "paginate_check_runs", mk([]))            # 仅 touchstone/无数据 → None
     assert ORC.ci_verdict("o", "r", "s", "t") is None
 
 
@@ -843,12 +857,36 @@ def test_calibrate_gh_gql_and_fetch(monkeypatch):
     assert CAL.fetch_review_threads("o", "r", 1, "t") == []
 
 
+def test_fetch_review_threads_partial_on_page_failure(monkeypatch, capsys):
+    """pr-agent 评审：中途某页 gql 抛错 → 返回已到手的部分线程（响亮告警），
+    不让整段已翻页数据随异常一起丢失。"""
+    def node(i):
+        return {"isResolved": False, "path": "a.py", "line": i, "comments": {"nodes": []}}
+    pages = [
+        {"data": {"repository": {"pullRequest": {"reviewThreads": {
+            "nodes": [node(1), node(2)],
+            "pageInfo": {"hasNextPage": True, "endCursor": "c1"}}}}}},
+        RuntimeError("graphql 502"),
+    ]
+    calls = []
+    def gql(q, v, t):
+        calls.append(v.get("cursor"))
+        r = pages[len(calls) - 1]
+        if isinstance(r, Exception):
+            raise r
+        return r
+    monkeypatch.setattr(CAL, "gql", gql)
+    out = CAL.fetch_review_threads("o", "r", 1, "t")
+    assert [t["line"] for t in out] == [1, 2]           # 首页两条保住
+    assert "第 2 页拉取失败" in capsys.readouterr().err   # 告警可见
+
+
 def test_calibrate_main(monkeypatch, tmp_path, capsys):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("GITHUB_TOKEN", "tok")
     monkeypatch.setenv("GITHUB_REPOSITORY", "o/r")
 
-    def fake_gh(path, token):
+    def fake_gh(path, token, **k):
         if "/pulls?state=closed" in path:
             return [{"number": 1, "merged_at": "t", "merge_commit_sha": "sha"}]
         if "/issues/1/comments" in path:
@@ -877,7 +915,7 @@ def test_calibrate_main_excludes_author_self_resolve(monkeypatch, tmp_path, caps
     threads = [{'isResolved': True, 'resolved_by': 'author1',     # 作者 = 线程解决者
                 'comments': [{'author': 'github-actions[bot]', 'body': body}]}]
 
-    def fake_gh(path, token):
+    def fake_gh(path, token, **k):
         if "/pulls?state=closed" in path:
             return [{"number": 1, "merged_at": "t", "merge_commit_sha": "sha",
                      "user": {"login": "author1"}}]
@@ -919,7 +957,7 @@ def test_calibrate_main_writes_to_calibration_json_override(monkeypatch, tmp_pat
     custom = tmp_path / "sub" / "my-cal.json"            # 非默认名+子目录，排除巧合
     monkeypatch.setenv("CALIBRATION_JSON", str(custom))
 
-    def fake_gh(path, token):
+    def fake_gh(path, token, **k):
         if "/pulls?state=closed" in path:
             return [{"number": 1, "merged_at": "t", "merge_commit_sha": "sha"}]
         if "/issues/1/comments" in path:

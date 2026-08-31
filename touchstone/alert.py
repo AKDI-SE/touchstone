@@ -136,10 +136,28 @@ def _post_pr_comment(al, ctx, gh_call):
             ctx["token"], {"body": _with_link(al, ctx)})
 
 
+def _list_open_issues(gh_call, owner, repo, token, labels_q):
+    """审计 #46：issues 列表翻页取全。旧版单次 GET 只拿第一页（issues API 默认
+    per_page=30）——同 label 开 issue >30 时既有跟踪 Issue 落在第 2 页 → 判"无"→
+    每轮重复开新 Issue 刷屏（恰是 _open_or_update_issue 要防的事）。逐页取到短页。"""
+    out, page = [], 1
+    q = urllib.parse.quote(str(labels_q), safe="")   # pr-agent 评审：label 含空格/中文时不经编码会拼进裸 URL（与 metrics_issue._find_issue 同款）
+    while page <= 20:
+        found = gh_call("GET", f"/repos/{owner}/{repo}/issues?state=open&labels={q}"
+                        f"&page={page}&per_page=100", token) or []
+        if not isinstance(found, list) or not found:
+            break
+        out.extend(found)
+        if len(found) < 100:
+            break
+        page += 1
+    return out
+
+
 def _open_or_update_issue(al, ctx, gh_call):
     """去重开/更新跟踪 Issue：按 label 找已开的同类 Issue，有则追评论，无则新建。防每轮刷屏。"""
     owner, repo, token = ctx["owner"], ctx["repo"], ctx["token"]
-    found = gh_call("GET", f"/repos/{owner}/{repo}/issues?state=open&labels={ISSUE_LABEL}", token) or []
+    found = _list_open_issues(gh_call, owner, repo, token, ISSUE_LABEL)
     marker = f"<!-- touchstone-alert:{al['kind']} -->"
     hit = next((i for i in found if marker in (i.get("body") or "")), None)
     if hit:

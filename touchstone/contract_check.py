@@ -136,7 +136,33 @@ _CODE_EXT = {".java", ".kt", ".py", ".go", ".ts", ".tsx", ".js", ".jsx", ".rs", 
 
 
 def _is_test(p):
-    return "test" in p.lower() or "spec" in p.lower()
+    """按路径【段】判定测试文件（审计 #41）。
+
+    旧版 `"test" in p or "spec" in p` 全路径子串匹配——attestation/protest/latest/
+    specialist 等产线文件全中枪，且构成降级通道：SEC-001 对测试文件的密钥发现从
+    block 降 warn，攻击者把产线文件命名含 test/spec 子串即可借道降级。段级规则：
+      · 任一目录段（小写后）∈ {test, tests, __tests__, spec, specs, testing}
+      · 文件 stem 小写后以 test_/test- 开头或 _test/-test/_spec/-spec 结尾，或恰为 test/tests/spec/specs
+      · Java/Scala 驼峰后缀 Test/Tests/Spec/Specs/TestCase/TestSuite（要求前导字符为
+        小写——"SPLIT" 不因尾缀 "IT" 式巧合中枪；裸 "IT" 后缀因误伤面大不纳入）"""
+    segs = [s for s in p.replace("\\", "/").split("/") if s]
+    if not segs:
+        return False
+    if any(s.lower() in ("test", "tests", "__tests__", "spec", "specs", "testing")
+           for s in segs[:-1]):
+        return True
+    name = segs[-1]
+    stem = name.rsplit(".", 1)[0] if "." in name else name
+    low = stem.lower()
+    if low in ("test", "tests", "spec", "specs"):
+        return True
+    if low.startswith(("test_", "test-")) or low.endswith(
+            ("_test", "-test", "_spec", "-spec", ".test", ".spec")):
+        return True
+    for suf in ("Test", "Tests", "Spec", "Specs", "TestCase", "TestSuite"):
+        if stem.endswith(suf) and len(stem) > len(suf) and stem[-len(suf) - 1].islower():
+            return True
+    return False
 
 
 # 已知引擎数据文件白名单（评审意见：blanket data/*.json 会被攻击者用作降级通道——

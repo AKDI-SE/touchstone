@@ -12,14 +12,17 @@ jobs:
   seed:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: write        # 推 bot 分支
+      pull-requests: write   # 开种子经验 PR（审计 #50：不再直推 main）
 
     steps:
+      # 审计 #50：去掉硬编码 ref: main——checkout 默认即默认分支，硬编码在仓改名默认分支
+      # （main→master 等）后静默 404/检错分支。fetch-depth: 0 供推滚动分支用。
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          ref: main
           token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -35,3 +38,56 @@ jobs:
           SEED_FILE: ${{ github.event.inputs.seed_file }}
         run: |
           python "$SEED_FILE"
+
+      # 审计 #50：经验库改动经 bot 分支 + PR 落库（与 learn.yml 的 B3 约定同构）——
+      # workflow_dispatch 直推默认分支绕过一切评审/门禁，且 GITHUB_TOKEN 直推不受
+      # 分支保护约束的路径恰是种子经验（会注入所有后续评审的 prompt）最该走 review 的地方。
+      - name: Push seed update to bot branch + open PR
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -u
+          if git status --porcelain | grep -q .; then
+            git config user.name "Touchstone Bot"
+            git config user.email "touchstone-bot@users.noreply.github.com"
+            BOT_BRANCH="bot/seed-experiences"
+            git checkout -B "$BOT_BRANCH"
+            git add data/ 2>/dev/null || true
+            if git diff --cached --quiet; then echo "种子未产生改动"; exit 0; fi
+            git commit -m "chore(bot): seed experiences update"
+            # pr-agent 第九轮评审：`push -f` 会静默抹掉并发种子 run 已推的提交（后发者胜
+            # 且无痕）。先尝试普通推送（分支不存在/未动即成）；非快进（分支已被并发 run
+            # 推进）则 rebase 到远端头重推；仍冲突才回落 -f 并大声告警。
+            if ! git push origin "$BOT_BRANCH"; then
+              echo "[warn] 种子分支非快进（并发 run？）——rebase 远端头后重推"
+              if git fetch origin "$BOT_BRANCH" && git rebase FETCH_HEAD; then
+                git push origin "$BOT_BRANCH" || {
+                  echo "[warn] rebase 后仍推送失败——回落 force-push"
+                  git push -f origin "$BOT_BRANCH"
+                }
+              else
+                git rebase --abort 2>/dev/null || true
+                echo "[warn] 种子分支 rebase 失败（冲突）——回落 force-push，并发 run 的种子提交可能被覆盖"
+                git push -f origin "$BOT_BRANCH"
+              fi
+            fi
+            # pr-agent 第六轮评审：已有 open PR 时优雅复用——force-push 已让 PR 自动带上新提交，
+            # 不必关旧开新（关后 create 再失败会白丢一条待评审 PR）；仅清理同 head 的多余 PR。
+            EXISTING=$(gh pr list --head "$BOT_BRANCH" --state open --json number -q '.[].number' 2>/dev/null || true)
+            if [ -n "$EXISTING" ]; then
+              FIRST=1
+              for n in $EXISTING; do
+                if [ "$FIRST" = "1" ]; then
+                  FIRST=0; echo "种子 PR #$n 已存在，随本次 push 自动更新"; continue
+                fi
+                gh pr close "$n" || true
+              done
+            else
+              gh pr create --head "$BOT_BRANCH" --title "chore(bot): seed experiences update (run $RUN_ID)" \
+                --body "由 seed.yml 手动触发产出。种子经验会注入后续评审 prompt，请人工确认后合入。" \
+                || echo "[warn] 种子 PR 创建失败（种子已推到 $BOT_BRANCH，可手动开 PR）"
+            fi
+          else
+            echo "种子未产生改动（store 无变化）"
+          fi

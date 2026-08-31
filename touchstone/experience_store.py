@@ -62,7 +62,17 @@ def _read_store_text(path):
     if ref:
         import subprocess
         r = subprocess.run(["git", "show", f"{ref}:{path}"], capture_output=True, text=True, timeout=30)
-        return r.stdout if r.returncode == 0 else None
+        if r.returncode == 0:
+            return r.stdout
+        # 审计 #9：区分"路径在 ref 里尚不存在"（首轮/合法空库）与其他失败（坏 ref/瞬态故障）。
+        # 后者此前静默回落 None → load_store 得空库 → learning_loop 无条件 save_store 把
+        # 整库清空提交。此处对非 path-missing 失败打 [warn]（调用方 learn 侧另有写回闸）。
+        err = (getattr(r, "stderr", "") or "").strip()   # 防御注入的假结果无 stderr 属性
+        if "exists on disk, but not in" not in err and "does not exist" not in err:
+            import sys as _sys
+            print(f"[warn] 经验库从 {ref} 读取失败（rc={r.returncode}）: {err[:200]}",
+                  file=_sys.stderr)
+        return None
     with open(path, encoding="utf-8") as f:
         return f.read()
 
@@ -81,6 +91,16 @@ def load_store(path=None):
         # 回落安全默认，不抛、不崩、不把坏数据静默传下去。
         if not isinstance(store, dict) or not isinstance(store.get("experiences"), list):
             return {"experiences": []}
+        # pr-agent 第十三轮：非 dict 的畸形条目（旧格式/手改/半损坏）在【唯一加载边界】剔除
+        # + 大声告警——下游 canonicalize/_snap/save 全按 dict 消费，留着的畸形条目会在学习轮
+        # 中途以 AttributeError/TypeError 打穿（且 git 历史仍保有原文，可人工恢复）。
+        exps = store["experiences"]
+        if any(not isinstance(e, dict) for e in exps):
+            import sys as _sys
+            bad = [e for e in exps if not isinstance(e, dict)]
+            print(f"[experience_store] ⚠️ 经验库含 {len(bad)} 条非 dict 畸形条目，已剔除"
+                  f"（原文见 git 历史）：{[str(e)[:60] for e in bad]}", file=_sys.stderr)
+            store["experiences"] = [e for e in exps if isinstance(e, dict)]
         return store
     except (OSError, json.JSONDecodeError):
         return {"experiences": []}
@@ -173,11 +193,17 @@ def _canonical_type(ftype):
 
 def _canonicalize_candidate(c):
     """把候选的 finding_type 规范化为生态形并同步重算 id（id 含 finding_type）。不丢弃——仅归一化。
-    已规范或 finding_type 为空 → 原样返回。纯函数（返回新 dict，不改输入）。"""
+    已规范或 finding_type 为空 → 原样返回。纯函数（返回新 dict，不改输入）。
+    pr-agent 评审（第三轮）：finding_type 已规范但【缺 id】的候选此前原样返回，merge_candidates
+    的 `c["id"]` 随即 KeyError（审计 #12 同类，但漏了候选侧）——现对缺 id/空 id 一并补齐。"""
+    if not isinstance(c, dict):
+        return c                                   # 非 dict：由 merge_candidates 按 dropped 跳过（防 .get 崩）
     ft = _canonical_type(c.get("finding_type", ""))
-    if ft and ft != c.get("finding_type"):
-        return dict(c, finding_type=ft,
-                    id=_exp_id(ft, c.get("kind", ""), c.get("repo", ""), c.get("stack", "")))
+    if not ft:
+        return c                                   # 空 finding_type：由 merge_candidates 按 dropped 跳过
+    nid = _exp_id(ft, str(c.get("kind") or ""), str(c.get("repo") or ""), str(c.get("stack") or ""))
+    if ft != c.get("finding_type") or not c.get("id"):
+        return dict(c, finding_type=ft, id=nid)
     return c
 
 
@@ -207,7 +233,8 @@ def seed_experience(store, finding_type, kind, text, *, repo="", stack="",
            "finding_type": finding_type, "kind": kind, "text": text.strip(),
            "evidence": {"seeded": True}, "status": status, "source": source,
            "locked": bool(locked), "source_prs": [], "created_at": now, "updated_at": now}
-    idx = {e["id"]: e for e in store.get("experiences", [])}
+    idx = {e["id"]: e for e in store.get("experiences", []) if isinstance(e, dict) and e.get("id")}
+    # 审计 #12：缺 id/非 dict 的历史条目不再让 merge/canonicalize 以 KeyError 崩整轮
     if exp["id"] in idx:
         idx[exp["id"]].update({k: exp[k] for k in ("text", "status", "source", "locked", "updated_at")})
         return idx[exp["id"]]
@@ -223,10 +250,15 @@ def merge_candidates(store, candidates, *, taxonomy=None):
     总是先做 _canonicalize_candidate（大小写/分隔符→生态规范形，合并重复变体，不丢弃任何候选）——
     即便 taxonomy 关。防 TF-GRPO 的 LLM 自由产 finding_type（'PRA-COVERAGE-GAP' vs 'PRA-COVERAGE_GAP'
     vs 'PRA-consistency'）把同一规律裂成多条、互相稀释证据。"""
-    idx = {e["id"]: e for e in store.get("experiences", [])}
+    idx = {e["id"]: e for e in store.get("experiences", []) if isinstance(e, dict) and e.get("id")}
+    # 审计 #12：缺 id/非 dict 的历史条目不再让 merge/canonicalize 以 KeyError 崩整轮
     dropped = []
     for c in candidates:
         c = _canonicalize_candidate(c)              # 先规范化 finding_type/id（合并重复变体，不丢弃）
+        if not isinstance(c, dict) or not c.get("finding_type") or not c.get("id"):
+            _why = (c.get("finding_type") if isinstance(c, dict) else None) or f"<畸形候选 {type(c).__name__}>"
+            dropped.append(str(_why))       # 统一 str：dropped 汇总 print 的 sorted() 混类型会 TypeError
+            continue        # 非 dict/缺 finding_type（canonicalize 无法归一）/仍缺 id：留痕跳过，不 KeyError 崩轮（pr-agent 第三轮评审）
         if taxonomy is not None:
             ft = coerce_type(c.get("finding_type", ""), taxonomy)
             if ft is None:
@@ -240,9 +272,27 @@ def merge_candidates(store, candidates, *, taxonomy=None):
             e = idx[c["id"]]
             if e.get("locked") or e.get("source") == "human":
                 continue                      # 人锁定/手写的经验，回路不得静默改写
-            e["evidence"] = c["evidence"]
-            e["text"] = c["text"]
-            e["updated_at"] = c["updated_at"]
+            # 审计 #11：evidence 走 _merge_evidence 合并（fires 求和/adoption 加权/布尔取或，
+            # 与 canonicalize_store 同纪律），不再整体替换——旧值里的 ab_lift、历史 fires 等
+            # 信号此前每次蒸馏都被抹掉。source_prs 取并集（增量证据不丢历史 PR）。
+            _old_ev = e.get("evidence")
+            _new_ev = c.get("evidence")
+            if isinstance(_old_ev, dict) and isinstance(_new_ev, dict):
+                # 代表取新证据（pr 等非合并键随最新），计数类由 _merge_evidence 求和；
+                # 旧证据独有的键（如 ab_lift/历史标记）setdefault 保留，不再被抹掉。
+                _merged_ev = _merge_evidence([_new_ev, _old_ev])
+                for _k, _v in _old_ev.items():
+                    _merged_ev.setdefault(_k, _v)
+                e["evidence"] = _merged_ev
+            else:
+                e["evidence"] = _new_ev
+            _prs = list(e.get("source_prs") or [])
+            for _pid in (c.get("source_prs") or []):
+                if _pid not in _prs:
+                    _prs.append(_pid)
+            e["source_prs"] = _prs
+            e["text"] = c.get("text") or e.get("text", "")          # 候选缺 text/updated_at 不 KeyError（同上）
+            e["updated_at"] = c.get("updated_at") or e.get("updated_at")
         else:
             store.setdefault("experiences", []).append(c)
             idx[c["id"]] = c
@@ -336,6 +386,10 @@ def canonicalize_store(store):
                        e.get("kind", ""), e.get("repo", ""), e.get("stack", ""))
 
     def _touchable(e):
+        # 非 dict 的畸形存量条目（旧格式/手改/半损坏）→ 不动不并入（pr-agent 第十三轮：
+        # 旧版 e.get 直接 AttributeError 打穿整个学习轮）。原样保留，不静默丢弃。
+        if not isinstance(e, dict):
+            return False
         # locked / human / 规范后为空 → 不动（权威或无法规范）
         return not (e.get("locked") or e.get("source") == "human"
                     or not _canonical_type(e.get("finding_type", "")))
@@ -357,7 +411,10 @@ def canonicalize_store(store):
 
     # locked / human 权威条目按原样保留，其 id 被"占用"——非权威条目规范化时不得并入这些 id，
     # 否则会把一条非权威变体重命名成与权威条目同 id（破坏 id 唯一性）。见 test_canonicalize_store_*
-    reserved = {e.get("id") for e in exps if not _touchable(e)}
+    # 畸形非 dict 条目同样原样保留（见 _touchable）；其"id"以原文占位（None 会与真空 id 条目
+    # 互撞，且畸形条目本就不参与规范化分组）。pr-agent 第十三轮。
+    reserved = {e.get("id") if isinstance(e, dict) else repr(e)
+                for e in exps if not _touchable(e)}
 
     out = []
     seen = set()
@@ -493,8 +550,9 @@ def retire_on_negative_lift(store, ab_results, *, min_samples=None, threshold=No
     if min_samples is None:
         min_samples = GRADUATE_MIN_SAMPLES
     if threshold is None:
-        threshold = float(os.environ.get("TOUCHSTONE_RETIRE_NEGATIVE_LIFT",
-                                         RETIRE_NEGATIVE_LIFT_DEFAULT))
+        from touchstone.envutil import env_float as _env_float_   # 审计 #19：坏值回落默认
+        threshold = _env_float_("TOUCHSTONE_RETIRE_NEGATIVE_LIFT",
+                                RETIRE_NEGATIVE_LIFT_DEFAULT)
     retired = []
     for e in store.get("experiences", []):
         if e.get("status") != "active" or e.get("locked") or e.get("source") == "human":
@@ -746,7 +804,7 @@ def retire_on_lift_decline(store, trend, *, m_decline=None, drift=None):
 def disable(store, exp_id):
     """人工单条停用（→retired），可回退。每条经验留来源/证据，便于抽检与回退。"""
     for e in store.get("experiences", []):
-        if e["id"] == exp_id:
+        if e.get("id") == exp_id:
             e["status"] = "retired"
             e["updated_at"] = int(time.time())
             return True
@@ -774,6 +832,22 @@ def _resolve_conflicts(active):
     return [e for e in active if id(e) in keep]
 
 
+def _injected_active(store):
+    """render_injection 实际注入的 active 列表——审计 #43 截断口径的唯一定义点。
+    active_types/active_ids 与 render_injection 同用本函数，保证 marker 归因 = 真注入集
+    （否则截断后 marker 仍记全量，归因把未注入的也当注入了，A/B 数据失真）。"""
+    from touchstone.envutil import env_int as _env_int_
+    active = _resolve_conflicts(
+        [e for e in (store or {}).get("experiences", []) if e.get("status") == "active"])
+    # pr-agent 第五轮评审：严格 cap——旧版 `if cap and ...` 把 0 当"无上限"（falsy 跳过截断），
+    # 而把上限设成 0 的运维意图几乎必然是"关掉 active 注入"（kill-switch）。语义改为：
+    # 0 = 一条不注入；默认 10；要"不设限"请给一个大数（截断按证据强度降序取前 N）。
+    cap = max(0, _env_int_("TOUCHSTONE_INJECT_MAX_ACTIVE", 10))
+    if len(active) > cap:
+        active = sorted(active, key=_evidence_strength, reverse=True)[:cap]
+    return active
+
+
 def render_injection(store, *, include_shadow=False):
     """把 active 经验渲染成注入 PR-Agent 的 extra_instructions 文本。
 
@@ -782,8 +856,11 @@ def render_injection(store, *, include_shadow=False):
     review_provider._experience_injection）：active 段后追加 shadow 段，从 candidate 池确定性
     抽样（shadow_candidates）、每条前缀 [shadow] 标灰（采数期、advisory only、未达门槛）。
     shadow 候选只影响 PR-Agent 建议、不进 contract_check/verify/总闸——铁律不变。
-    输出纯指令文本——只影响 PR-Agent 的建议，不触碰确定性 contract_check / 总闸（评审与合入闸的边界）。"""
-    active = _resolve_conflicts([e for e in store.get("experiences", []) if e["status"] == "active"])
+    输出纯指令文本——只影响 PR-Agent 的建议，不触碰确定性 contract_check / 总闸（评审与合入闸的边界）。
+    审计 #43：active 条数有上限（TOUCHSTONE_INJECT_MAX_ACTIVE，默认 10；0=一条不注入/kill-switch）——经验库
+    长期累积后全量注入会稀释/挤爆 PR-Agent 的 prompt 上下文，注入越多单条权重越低。
+    截断口径见 _injected_active（与 active_types/active_ids 归因同源）。"""
+    active = _injected_active(store)
     if not active and not include_shadow:
         return ""
     lines = []
@@ -802,16 +879,17 @@ def render_injection(store, *, include_shadow=False):
 
 def active_types(store):
     """当前 active 经验的 finding_type 列表——即本轮评审会被注入（render_injection）的类型。
-    供 orchestrator 写入 result marker，为未来 shadow A/B 采纳率分臂采集留接口。"""
-    return [e.get("finding_type") for e in (store or {}).get("experiences", [])
-            if e.get("status") == "active" and e.get("finding_type")]
+    供 orchestrator 写入 result marker，为未来 shadow A/B 采纳率分臂采集留接口。
+    审计 #43：与 render_injection 同走 _injected_active（截断+冲突消解同口径），
+    marker 归因与真注入集一致。"""
+    return [e.get("finding_type") for e in _injected_active(store) if e.get("finding_type")]
 
 
 def active_ids(store):
     """当前 active 经验的 id 列表——供 orchestrator 写入 result marker 的 injected_experience_ids，
-    使坏经验可【单条】归因与回退（类型级的 active_types 只能归因到类型，见数据采集设计 取舍 2）。"""
-    return [e.get("id") for e in (store or {}).get("experiences", [])
-            if e.get("status") == "active" and e.get("id")]
+    使坏经验可【单条】归因与回退（类型级的 active_types 只能归因到类型，见数据采集设计 取舍 2）。
+    审计 #43：同走 _injected_active 截断口径。"""
+    return [e.get("id") for e in _injected_active(store) if e.get("id")]
 
 
 # --- shadow 注入：candidate 池 → 采 A/B with 臂数据的隔离标灰注入（冷启动破死锁）-------------
@@ -832,10 +910,13 @@ def _shadow_hash(exp_id):
 def _shadow_env_params():
     """从 env 读 shadow 注入三参数（render_injection/shadow_types/shadow_ids 统一来源，保证
     本轮渲染的 shadow 段与 marker 归因的 shadow_types/shadow_ids 取的是同一批候选）。"""
+    # 审计 #19：三参数统一走 envutil（坏值回落默认）——shadow 开启时这是每轮评审必经路径，
+    # 且 TOUCHSTONE_SHADOW_MIN_EVIDENCE 已挂 repo variable（手滑即崩评审链）。
+    from touchstone.envutil import env_int as _env_int_, env_float as _env_float_
     return {
-        "ratio": float((os.environ.get("TOUCHSTONE_SHADOW_RATIO") or "").strip() or str(SHADOW_RATIO_DEFAULT)),
-        "max_per_review": int((os.environ.get("TOUCHSTONE_SHADOW_MAX_PER_REVIEW") or "").strip() or str(SHADOW_MAX_PER_REVIEW_DEFAULT)),
-        "min_evidence": int((os.environ.get("TOUCHSTONE_SHADOW_MIN_EVIDENCE") or "").strip() or str(SHADOW_MIN_EVIDENCE_DEFAULT)),
+        "ratio": min(1.0, max(0.0, _env_float_("TOUCHSTONE_SHADOW_RATIO", SHADOW_RATIO_DEFAULT))),
+        "max_per_review": max(0, _env_int_("TOUCHSTONE_SHADOW_MAX_PER_REVIEW", SHADOW_MAX_PER_REVIEW_DEFAULT)),
+        "min_evidence": max(1, _env_int_("TOUCHSTONE_SHADOW_MIN_EVIDENCE", SHADOW_MIN_EVIDENCE_DEFAULT)),
     }
 
 
@@ -894,8 +975,9 @@ def bootstrap_from_calibrate(calib_agg, store, repo="", stack=""):
         return []
     by_rule = (calib_agg or {}).get("by_rule") or {}
     protected = _protected_types()
-    min_fires = int((os.environ.get("TOUCHSTONE_BOOTSTRAP_MIN_FIRES") or "").strip() or str(BOOTSTRAP_MIN_FIRES_DEFAULT))
-    min_adopt = float((os.environ.get("TOUCHSTONE_BOOTSTRAP_MIN_ADOPT") or "").strip() or str(BOOTSTRAP_MIN_ADOPT_DEFAULT))
+    from touchstone.envutil import env_int as _env_int_, env_float as _env_float_   # 审计 #19：坏值回落默认
+    min_fires = max(0, _env_int_("TOUCHSTONE_BOOTSTRAP_MIN_FIRES", BOOTSTRAP_MIN_FIRES_DEFAULT))
+    min_adopt = _env_float_("TOUCHSTONE_BOOTSTRAP_MIN_ADOPT", BOOTSTRAP_MIN_ADOPT_DEFAULT)
     existing = {_exp_id(e.get("finding_type"), "emphasize", repo, stack)
                 for e in (store or {}).get("experiences", []) if e.get("kind") == "emphasize"}
     produced = []

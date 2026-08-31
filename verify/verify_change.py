@@ -154,13 +154,12 @@ def parse_changed_lines(diff_text):
     注意：unidiff 对 /dev/null（纯删除）的解析在某些格式下会抛异常，
     需逐 hunk 块解析并容错跳过（与 contract_check.parse_diff 的容错策略一致）。"""
     from unidiff import PatchSet
-    from unidiff.errors import UnidiffParseError
     out = {}
     # 逐 diff 块（以 --- 开头分割）解析，跳过含 /dev/null 的块（unidiff 对此会报错）
     for chunk in _split_diff_chunks(diff_text or ""):
         try:
             patch = PatchSet(chunk)
-        except (UnidiffParseError, Exception):
+        except Exception:            # UnidiffParseError 已被 Exception 吞并（审计 #33 收窄写法）；unidiff 对畸形块还可能抛 UnicodeDecodeError 等
             continue
         for pf in patch:
             if pf.is_removed_file:
@@ -417,9 +416,17 @@ def main(argv=None):
         print("缺少 BASE_REF/HEAD_REF（配置错误）", file=sys.stderr)
         return 2
     mode = os.environ.get("VERIFY_MODE", "targeted_tests")
-    changed = subprocess.run(["git", "-C", repo, "diff", "--name-only",
-                             f"{base_ref}..{head_ref}"],
-                            capture_output=True, encoding="utf-8", errors="replace").stdout.split()
+    # 审计 #35：diff 失败（坏 ref/仓库缺失）此前被静默当成"无改动"→ select_runner=None →
+    # passed=None 中性放行——配置错误被伪装成"验不了"。rc!=0 一律 exit 2（配置错档），
+    # stderr 进日志可诊断。
+    diff = subprocess.run(["git", "-C", repo, "diff", "--name-only",
+                           f"{base_ref}..{head_ref}"],
+                          capture_output=True, encoding="utf-8", errors="replace")
+    if diff.returncode != 0:
+        print(f"git diff {base_ref}..{head_ref} 失败（rc={diff.returncode}）："
+              f"{(diff.stderr or '').strip()[-400:]}", file=sys.stderr)
+        return 2
+    changed = diff.stdout.split()
 
     if phase in ("plan", "all"):
         print(f"[verify:plan] base_url={base_url} model={model}")

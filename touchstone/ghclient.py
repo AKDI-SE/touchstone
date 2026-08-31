@@ -19,20 +19,34 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-GH_RETRY_MAX = int((os.environ.get("GH_RETRY_MAX") or "").strip() or "5")
+# 坏值（空串/非数字/负数）→ 默认 5，绝不在 import 时崩整链（对齐 loop.py MAX_ROUNDS 的兜底风格）。
+try:
+    GH_RETRY_MAX = max(0, int((os.environ.get("GH_RETRY_MAX") or "").strip() or "5"))
+except (TypeError, ValueError):
+    GH_RETRY_MAX = 5
 
 
 def _base_url():
     return os.environ.get("GITHUB_API_URL", "https://api.github.com")
 
 
+# 翻页参数单一事实源（pr-agent 第十一轮）：单页条数与页数上限此前散落 4 个签名默认值，
+# 调用方（如 calibrate 推导「最多能取多少条」）只能本地硬编码同款数字——两处漂移即静默
+# 截断。常量化后调用方 `PAGINATE_PER_PAGE * PAGINATE_MAX_PAGES` 推导上限。
+PAGINATE_PER_PAGE = 100      # GitHub 列表接口单页硬顶
+PAGINATE_MAX_PAGES = 20      # 翻页安全顶（防异常大列表把 job 拖死）
+
+
 def make_session():
+    # 只重试幂等的 GET：POST 评论/check-run/issue 并非幂等——5xx 后重放会造成重复副作用
+    # （重复评审评论、重复 check-run、重复看板 issue）。POST 的 5xx 直接抛给调用方处理，
+    # 由调用方决定重试语义（如"评论发失败可整轮重跑"）。审计 #1。
     retry = Retry(
         total=GH_RETRY_MAX, connect=GH_RETRY_MAX, read=GH_RETRY_MAX,
         backoff_factor=1.0,
         status_forcelist=(429, 500, 502, 503, 504),
         respect_retry_after_header=True,
-        allowed_methods=frozenset(["GET", "POST"]),
+        allowed_methods=frozenset(["GET"]),
     )
     s = requests.Session()
     adapter = HTTPAdapter(max_retries=retry)
@@ -49,6 +63,29 @@ def _session():
     if _SESSION is None:
         _SESSION = make_session()
     return _SESSION
+
+
+def _retry_after_seconds(value, cap=120.0):
+    """Retry-After 头 → 秒数（上限 cap）。审计 #3。
+
+    RFC 7231 允许两种格式：延迟秒数（"120"）或 HTTP-date（"Fri, 28 Aug 2026 08:00:00 GMT"）。
+    旧实现 ``float(value)`` 对 HTTP-date 直接 ValueError 打穿调用链；且无上限——服务端发
+    大值（如 3600）会让进程静默挂到 job 超时。现：HTTP-date 换算剩余秒、非数字回落 60s、
+    一律夹到 [0, cap]。纯函数。"""
+    import email.utils
+    try:
+        secs = float(str(value).strip())
+    except (TypeError, ValueError):
+        try:  # HTTP-date 形式：剩余时间 = 目标时刻 - 现在
+            target = email.utils.parsedate_to_datetime(str(value).strip())
+            import datetime
+            now = datetime.datetime.now(datetime.timezone.utc)
+            if target.tzinfo is None:
+                target = target.replace(tzinfo=datetime.timezone.utc)
+            secs = (target - now).total_seconds()
+        except (TypeError, ValueError, OverflowError):
+            secs = 60.0          # 解析不出（含缺头）→ 保守 60s，绝不崩
+    return max(0.0, min(secs, cap))
 
 
 # ---- 统一客户端（替代各模块的 gh()/_gh_get()/_gh() wrapper）-------------------
@@ -69,8 +106,12 @@ def client(token):
         for attempt in range(2):
             r = sess.request(method, url, headers=headers,
                              json=data if data is not None else None, timeout=timeout)
-            if r.status_code == 403 and r.headers.get("Retry-After") and attempt == 0:
-                time.sleep(float(r.headers["Retry-After"]))
+            # pr-agent 评审（第三轮）：手动 403+Retry-After 分支与 urllib3 Retry 层同律（审计 #1）——
+            # 仅幂等 GET 重试。POST 的 403 可能发生在服务端【已处理】之后（限流在落库后触发），
+            # 重放 = 重复评论/重复 check-run/重复看板 issue；直接抛给调用方决定重试语义。
+            if (r.status_code == 403 and r.headers.get("Retry-After") and attempt == 0
+                    and method.upper() == "GET"):
+                time.sleep(_retry_after_seconds(r.headers["Retry-After"]))
                 continue
             break
         r.raise_for_status()
@@ -91,29 +132,30 @@ def client(token):
         # 【重试】，不约束可发 method）；403+Retry-After 的二级限流兜底在 _req 内仍生效。
         return _req("PATCH", path, data=data)
 
-    def paginate(path, per_page=100, max_pages=20):
-        sep = "&" if "?" in path else "?"
+    def paginate(path, per_page=PAGINATE_PER_PAGE, max_pages=PAGINATE_MAX_PAGES):
+        # 分隔符按【原 path】一次性判定且不再变更（审计 #2）：旧实现翻到第 2 页时无条件
+        # sep="&"，对不带 "?" 的 path 产出 `path&page=2` 这类无查询串起点的畸形 URL → 404
+        # → raise_for_status 抛 HTTPError 打穿调用链（>100 条记录的列表必然触发）。
+        q = "&" if "?" in path else "?"
         out = []
         for page in range(1, max_pages + 1):
-            data = _req("GET", f"{path}{sep}page={page}&per_page={per_page}")
+            data = _req("GET", f"{path}{q}page={page}&per_page={per_page}")
             if not isinstance(data, list):
                 break
             out.extend(data)
             if len(data) < per_page:
                 break
-            sep = "&"
         return out
 
-    def paginate_check_runs(path, per_page=100, max_pages=20):
-        sep = "&" if "?" in path else "?"
+    def paginate_check_runs(path, per_page=PAGINATE_PER_PAGE, max_pages=PAGINATE_MAX_PAGES):
+        q = "&" if "?" in path else "?"   # 同 paginate：sep 恒定（审计 #2）
         all_runs = []
         for page in range(1, max_pages + 1):
-            data = _req("GET", f"{path}{sep}page={page}&per_page={per_page}")
+            data = _req("GET", f"{path}{q}page={page}&per_page={per_page}")
             runs = (data or {}).get("check_runs") or []
             all_runs.extend(runs)
             if len(runs) < per_page:
                 break
-            sep = "&"
         return {"check_runs": all_runs, "total_count": len(all_runs)}
 
     return type("GHClient", (), {
@@ -138,8 +180,11 @@ def request(method, url, token, data=None, accept="application/vnd.github+json",
     for attempt in range(2):
         r = sess.request(method, url, headers=headers,
                          json=data if data is not None else None, timeout=timeout)
-        if r.status_code == 403 and r.headers.get("Retry-After") and attempt == 0:
-            time.sleep(float(r.headers["Retry-After"]))
+        # pr-agent 评审（第三轮）：与 client._req 的手动 403 分支同律（审计 #1）——仅幂等 GET
+        # 重试；POST 403 重放会重复评论/check-run/issue，直接抛给调用方。
+        if (r.status_code == 403 and r.headers.get("Retry-After") and attempt == 0
+                and method.upper() == "GET"):
+            time.sleep(_retry_after_seconds(r.headers["Retry-After"]))
             continue
         break
     r.raise_for_status()
@@ -148,30 +193,32 @@ def request(method, url, token, data=None, accept="application/vnd.github+json",
     return r.json() if r.text else {}
 
 
-def paginate(url, token, *, per_page=100, max_pages=20, accept="application/vnd.github+json"):
-    """GitHub 列表翻页（旧接口，逐步迁移到 client(token).paginate）。"""
-    sep = "&" if "?" in url else "?"
+def paginate(url, token, *, per_page=PAGINATE_PER_PAGE, max_pages=PAGINATE_MAX_PAGES,
+             accept="application/vnd.github+json"):
+    """GitHub 列表翻页（旧接口，逐步迁移到 client(token).paginate）。
+
+    分隔符按原 url 一次判定、全程不变（审计 #2）：旧实现第 2 页起无条件用 "&"，
+    对无 "?" 的 url 产出 `url&page=2` 畸形 URL → 404 → HTTPError 未捕获打穿调用链。"""
+    q = "&" if "?" in url else "?"
     out = []
     for page in range(1, max_pages + 1):
-        data = request("GET", f"{url}{sep}page={page}&per_page={per_page}", token, accept=accept)
+        data = request("GET", f"{url}{q}page={page}&per_page={per_page}", token, accept=accept)
         if not isinstance(data, list):
             break
         out.extend(data)
         if len(data) < per_page:
             break
-        sep = "&"
     return out
 
 
-def paginate_check_runs(url, token, *, per_page=100, max_pages=20):
+def paginate_check_runs(url, token, *, per_page=PAGINATE_PER_PAGE, max_pages=PAGINATE_MAX_PAGES):
     """check-runs 专用翻页（旧接口，逐步迁移到 client(token).paginate_check_runs）。"""
-    sep = "&" if "?" in url else "?"
+    q = "&" if "?" in url else "?"   # 同 paginate：sep 恒定（审计 #2）
     all_runs = []
     for page in range(1, max_pages + 1):
-        data = request("GET", f"{url}{sep}page={page}&per_page={per_page}", token)
+        data = request("GET", f"{url}{q}page={page}&per_page={per_page}", token)
         runs = (data or {}).get("check_runs") or []
         all_runs.extend(runs)
         if len(runs) < per_page:
             break
-        sep = "&"
     return {"check_runs": all_runs, "total_count": len(all_runs)}

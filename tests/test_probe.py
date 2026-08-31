@@ -1,6 +1,7 @@
 """Probe（测试有效性探针）测试：§3 数据结构 → census → plan(含哨兵) → run/replay → to_findings。
 静态部分纯内存快测；run/replay 各一条真跑 pytest 的端到端（hermetic 临时工程）。"""
 import os
+import shlex
 import sys
 import textwrap
 import pytest
@@ -195,7 +196,7 @@ def test_run_invalid_when_no_sentinel_in_nonempty_plan(tmp_path):
     """R1-01：非空 plan 无哨兵 ⇒ invalid（链路自检不可用，绝不 fail-open 绿灯）。"""
     m = probe.Mutant("mut-nosent", "pkg/x.py", "f(...)", "CMP",
                      probe.SourceSpan("pkg/x.py", 1, 1), "a<b", "a<=b")
-    rep = probe.run([m], probe.TestCommand(cmd="python -c pass", cwd=str(tmp_path)),
+    rep = probe.run([m], probe.TestCommand(cmd=f"{shlex.quote(sys.executable)} -c pass", cwd=str(tmp_path)),
                     probe.ProbeBudget(per_mutant_timeout_s=5, total_timeout_s=10), [])
     assert rep.status == "invalid"
     assert rep.verdicts == () and rep.kill_rate is None
@@ -294,7 +295,7 @@ def test_inject_and_run_raises_on_restore_failure(tmp_path, monkeypatch):
             raise OSError("simulated restore failure")
         return real_open(path, mode, *a, **kw)
     monkeypatch.setattr(probe, "open", flaky, raising=False)
-    tc = probe.TestCommand(cmd="python -c pass", cwd=sf["_repo_dir"])
+    tc = probe.TestCommand(cmd=f"{shlex.quote(sys.executable)} -c pass", cwd=sf["_repo_dir"])
     with pytest.raises(probe.WorkspaceCorrupted):
         probe._inject_and_run(mutant, tc, 60)
 
@@ -309,7 +310,7 @@ def test_run_invalid_when_restore_fails(tmp_path, monkeypatch):
             raise OSError("simulated restore failure")
         return real_open(path, mode, *a, **kw)
     monkeypatch.setattr(probe, "open", flaky, raising=False)
-    tc = probe.TestCommand(cmd="python -c pass", cwd=sf["_repo_dir"])
+    tc = probe.TestCommand(cmd=f"{shlex.quote(sys.executable)} -c pass", cwd=sf["_repo_dir"])
     rep = probe.run(ms, tc, probe.ProbeBudget(max_mutants=8, per_mutant_timeout_s=60), [])
     assert rep.status == "invalid"
     assert "恢复失败" in (rep.reason or "")

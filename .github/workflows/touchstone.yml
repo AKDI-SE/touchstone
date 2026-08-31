@@ -146,6 +146,16 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.base.ref }}
           fetch-depth: 0
+      # 审计 #48：guard_context 的守卫事实须按【PR head】源码解析——本 job 主 checkout 是
+      # base ref（经验库防投毒等按受信基线读），拿 base 文件对 PR diff 的 target 行号会错位
+      # （改动行在 base 里根本不存在/位置不同），守卫摘要系统性失真。head 单独 checkout 到
+      # 子目录，只经 TOUCHSTONE_GUARD_REPO_DIR 喂给 guard_context（_parse 内解析），
+      # 评审链其余读路径（经验库/seeds/契约）仍走受信 base，边界不变。
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: pr-head-src
+          fetch-depth: 1
       - uses: actions/setup-python@v5
         id: py
         with:
@@ -308,6 +318,9 @@ jobs:
           # 评审生效（每轮 run 重新读 env）。注意：引擎级故障轮（LLM 调用失败等）不消耗轮次
           # 预算（loop.INFRA_FAILURE_STATUSES），本值只约束「成功执行的评审轮」上限。
           TOUCHSTONE_MAX_ROUNDS: ${{ vars.TOUCHSTONE_MAX_ROUNDS || '9' }}
+          # 审计 #48：guard_context 按 PR head 源码解析（上方 pr-head-src checkout）；未设时
+          # guard_context 回落调用方 repo_dir（base 主 checkout）——仅影响守卫摘要/核销注入。
+          TOUCHSTONE_GUARD_REPO_DIR: "pr-head-src"
         run: python -m touchstone.orchestrator
       # 「Save PR-Agent venv」步已移除（上游报告问题一）：pull_request_target 下缓存写入被 GitHub
       # 2026-06-26 政策永久拒绝，continue-on-error 把这个永久失败伪装成瞬态黄警告。写缓存改由

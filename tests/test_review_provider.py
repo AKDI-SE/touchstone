@@ -264,7 +264,7 @@ def test_invoke_endpoint_subprocess_success(monkeypatch):
         captured["args"] = args
         return _Proc(0, out=json.dumps(_RAW))
     monkeypatch.setattr(RP.subprocess, "run", fake_run)
-    monkeypatch.setattr(RP, "_experience_injection", lambda d: "")     # 隔离学习回路
+    monkeypatch.setattr(RP, "_experience_injection", lambda d, stack=None: "")     # 隔离学习回路
     items = RP.fetch({"owner": "o", "repo": "r", "number": 3})
     assert len(items) == 4                                            # 子进程 JSON → 解析成 ReviewItem
     assert "--pr-url" in captured["args"] and "--mode" in captured["args"]
@@ -272,14 +272,14 @@ def test_invoke_endpoint_subprocess_success(monkeypatch):
 
 def test_invoke_endpoint_nonzero_raises(monkeypatch):
     monkeypatch.setattr(RP.subprocess, "run", lambda a, **k: _Proc(2, err="boom-detail"))
-    monkeypatch.setattr(RP, "_experience_injection", lambda d: "")
+    monkeypatch.setattr(RP, "_experience_injection", lambda d, stack=None: "")
     with pytest.raises(RuntimeError, match="boom-detail"):
         RP.fetch({"owner": "o", "repo": "r", "number": 3})
 
 
 def test_invoke_endpoint_bad_json_raises(monkeypatch):
     monkeypatch.setattr(RP.subprocess, "run", lambda a, **k: _Proc(0, out="not json"))
-    monkeypatch.setattr(RP, "_experience_injection", lambda d: "")
+    monkeypatch.setattr(RP, "_experience_injection", lambda d, stack=None: "")
     with pytest.raises(RuntimeError, match="JSON"):
         RP.fetch({"owner": "o", "repo": "r", "number": 3})
 
@@ -288,13 +288,13 @@ def test_invoke_endpoint_missing_runner_raises(monkeypatch):
     def boom(a, **k):
         raise FileNotFoundError("no such cmd")
     monkeypatch.setattr(RP.subprocess, "run", boom)
-    monkeypatch.setattr(RP, "_experience_injection", lambda d: "")
+    monkeypatch.setattr(RP, "_experience_injection", lambda d, stack=None: "")
     with pytest.raises(RuntimeError, match="pip install pr-agent"):
         RP.fetch({"owner": "o", "repo": "r", "number": 3})
 
 
 def test_invoke_endpoint_no_pr_url_raises(monkeypatch):
-    monkeypatch.setattr(RP, "_experience_injection", lambda d: "")
+    monkeypatch.setattr(RP, "_experience_injection", lambda d, stack=None: "")
     with pytest.raises(RuntimeError, match="PR URL"):
         RP.fetch({"sha": "s"})                                       # 无 pr_url / owner-repo-number
 
@@ -303,7 +303,7 @@ def test_invoke_endpoint_degraded_json_raises_typed(monkeypatch):
     # 适配器结构化降级：子进程退出 0 但 JSON 带 _degraded → 抛 ReviewEngineDegraded（带 degraded/reason）
     monkeypatch.setattr(RP.subprocess, "run", lambda a, **k:
                         _Proc(0, out=json.dumps({"_degraded": "llm_failed", "reason": "AuthError: 401"})))
-    monkeypatch.setattr(RP, "_experience_injection", lambda d: "")
+    monkeypatch.setattr(RP, "_experience_injection", lambda d, stack=None: "")
     with pytest.raises(RP.ReviewEngineDegraded) as ei:
         RP.fetch({"owner": "o", "repo": "r", "number": 3})
     assert ei.value.degraded == "llm_failed"
@@ -530,6 +530,35 @@ def test_shadow_does_not_bypass_experience_ref_gate(monkeypatch, tmp_path):
         assert rp._experience_injection(str(tmp_path)) == ""       # shadow 不绕闸（引擎库）
     finally:
         for k in ("TOUCHSTONE_STORE_PATH", "TOUCHSTONE_SHADOW_INJECTION"):
+            monkeypatch.delenv(k, raising=False)
+        monkeypatch.delenv("TOUCHSTONE_EXPERIENCE_REF", raising=False)
+        importlib.reload(experience_store); importlib.reload(learning_loop)
+
+
+def test_pr_target_event_also_gates_engine_store(monkeypatch, tmp_path):
+    """pr-agent 第三轮评审：GITHUB_EVENT_NAME=pull_request_target（本仓 touchstone workflow 的
+    真实触发器）必须同样命中 EXPERIENCE_REF 防投毒闸——旧版精确匹配 == "pull_request" 使闸在
+    生产路径上永不生效。env_pr_event 前缀族匹配。"""
+    import importlib
+    from touchstone import experience_store, learning_loop
+    from touchstone import review_provider as rp
+    store = tmp_path / "exp.json"
+    store.write_text(json.dumps({"experiences": [
+        {"id": "e:::S", "finding_type": "S", "kind": "emphasize",
+         "text": "FLAG-S", "status": "active", "updated_at": 1},
+    ]}), encoding="utf-8")
+    monkeypatch.setenv("TOUCHSTONE_STORE_PATH", str(store))
+    importlib.reload(experience_store); importlib.reload(learning_loop)
+    try:
+        monkeypatch.setenv("TOUCHSTONE_EXPERIENCE_ENABLED", "true")
+        monkeypatch.delenv("TOUCHSTONE_EXPERIENCE_REF", raising=False)
+        for ev in ("pull_request_target", "pull_request_review", "pull_request"):
+            monkeypatch.setenv("GITHUB_EVENT_NAME", ev)
+            assert rp._experience_injection(str(tmp_path)) == "", ev   # 全部 PR 族事件：必拦
+        monkeypatch.setenv("GITHUB_EVENT_NAME", "push")
+        assert "FLAG-S" in rp._experience_injection(str(tmp_path))     # 非 PR 事件：放行
+    finally:
+        for k in ("TOUCHSTONE_STORE_PATH",):
             monkeypatch.delenv(k, raising=False)
         monkeypatch.delenv("TOUCHSTONE_EXPERIENCE_REF", raising=False)
         importlib.reload(experience_store); importlib.reload(learning_loop)
@@ -923,7 +952,7 @@ def test_invoke_endpoint_swallowed_failure_raises_llm_failed(monkeypatch):
     monkeypatch.setattr(RP.subprocess, "run", lambda a, **k: _Proc(
         0, out=json.dumps({"code_suggestions": [], "review": {"key_issues_to_review": []}}),
         err="...Failed to generate prediction with openai/glm-5.2\nFailed to generate...any model"))
-    monkeypatch.setattr(RP, "_experience_injection", lambda d: "")
+    monkeypatch.setattr(RP, "_experience_injection", lambda d, stack=None: "")
     with pytest.raises(RP.ReviewEngineDegraded) as ei:
         RP.fetch({"owner": "o", "repo": "r", "number": 3})
     assert ei.value.degraded == "llm_failed"
@@ -936,7 +965,7 @@ def test_invoke_endpoint_partial_success_not_degraded(monkeypatch):
         0, out=json.dumps({"code_suggestions": [],
                            "review": {"key_issues_to_review": [{"relevant_file": "x.py"}]}}),
         err="Failed to generate prediction with openai/glm-5.2"))
-    monkeypatch.setattr(RP, "_experience_injection", lambda d: "")
+    monkeypatch.setattr(RP, "_experience_injection", lambda d, stack=None: "")
     items = RP.fetch({"owner": "o", "repo": "r", "number": 3})
     assert len(items) == 1                                    # review 的 1 条意见照常返回
 
@@ -950,7 +979,7 @@ def test_invoke_endpoint_json_with_trailing_litellm_noise(monkeypatch):
     noisy = (RP._JSON_BEGIN + json.dumps(_RAW) + RP._JSON_END +
              "\nLogging Details LiteLLM-Async Success Call, cache_hit=None")
     monkeypatch.setattr(RP.subprocess, "run", lambda a, **k: _Proc(0, out=noisy))
-    monkeypatch.setattr(RP, "_experience_injection", lambda d: "")
+    monkeypatch.setattr(RP, "_experience_injection", lambda d, stack=None: "")
     assert len(RP.fetch({"owner": "o", "repo": "r", "number": 3})) == 4
 
 
@@ -959,14 +988,14 @@ def test_invoke_endpoint_json_with_leading_noise(monkeypatch):
     noisy = ("LiteLLM.Info: Give Feedback ...\n" + RP._JSON_BEGIN +
              json.dumps(_RAW) + RP._JSON_END)
     monkeypatch.setattr(RP.subprocess, "run", lambda a, **k: _Proc(0, out=noisy))
-    monkeypatch.setattr(RP, "_experience_injection", lambda d: "")
+    monkeypatch.setattr(RP, "_experience_injection", lambda d, stack=None: "")
     assert len(RP.fetch({"owner": "o", "repo": "r", "number": 3})) == 4
 
 
 def test_invoke_endpoint_json_with_noise_both_sides(monkeypatch):
     noisy = ("preamble\n" + RP._JSON_BEGIN + json.dumps(_RAW) + RP._JSON_END + "\ntrailing")
     monkeypatch.setattr(RP.subprocess, "run", lambda a, **k: _Proc(0, out=noisy))
-    monkeypatch.setattr(RP, "_experience_injection", lambda d: "")
+    monkeypatch.setattr(RP, "_experience_injection", lambda d, stack=None: "")
     assert len(RP.fetch({"owner": "o", "repo": "r", "number": 3})) == 4
 
 
@@ -975,7 +1004,7 @@ def test_invoke_endpoint_sentinel_absent_raw_decode_fallback(monkeypatch):
     # 不再 "Extra data" 崩成 no_engine（这正是 PR #49 修复前的失败模式）。
     noisy = json.dumps(_RAW) + "\nLogging Details LiteLLM-Async Success Call"
     monkeypatch.setattr(RP.subprocess, "run", lambda a, **k: _Proc(0, out=noisy))
-    monkeypatch.setattr(RP, "_experience_injection", lambda d: "")
+    monkeypatch.setattr(RP, "_experience_injection", lambda d, stack=None: "")
     assert len(RP.fetch({"owner": "o", "repo": "r", "number": 3})) == 4
 
 
@@ -1004,7 +1033,7 @@ def test_invoke_endpoint_nondict_json_raises_not_fake_ok(monkeypatch):
     # → parse_pr_agent 空 → 假 engine_status=ok。修复后：非 dict 抛 → ReviewEngineDegraded("no_engine")。
     for nondict in ("123", "[1, 2, 3]", "null", "\"oops\""):
         monkeypatch.setattr(RP.subprocess, "run", lambda a, _out=nondict, **kw: _Proc(0, out=_out))
-        monkeypatch.setattr(RP, "_experience_injection", lambda d: "")
+        monkeypatch.setattr(RP, "_experience_injection", lambda d, stack=None: "")
         with pytest.raises(RP.ReviewEngineDegraded) as ei:
             RP.fetch({"owner": "o", "repo": "r", "number": 3})
         assert ei.value.degraded == "no_engine"
@@ -1206,7 +1235,7 @@ def test_invoke_endpoint_swallowed_caution_surfaces_specific_error(monkeypatch):
         "Async Wrapper: Completed Call, calling async_success_handler\n")
     monkeypatch.setattr(RP.subprocess, "run", lambda a, **k: _Proc(
         0, out=json.dumps({"code_suggestions": [], "review": {"key_issues_to_review": []}}), err=stderr))
-    monkeypatch.setattr(RP, "_experience_injection", lambda d: "")
+    monkeypatch.setattr(RP, "_experience_injection", lambda d, stack=None: "")
     with pytest.raises(RP.ReviewEngineDegraded) as ei:
         RP.fetch({"owner": "o", "repo": "r", "number": 3})
     assert ei.value.degraded == "llm_failed"
@@ -1227,7 +1256,7 @@ def test_invoke_endpoint_swallowed_caution_excludes_success_log_noise(monkeypatc
         "Async Wrapper: Completed Call, calling async_success_handler\n")
     monkeypatch.setattr(RP.subprocess, "run", lambda a, **k: _Proc(
         0, out=json.dumps({"code_suggestions": [], "review": {"key_issues_to_review": []}}), err=stderr))
-    monkeypatch.setattr(RP, "_experience_injection", lambda d: "")
+    monkeypatch.setattr(RP, "_experience_injection", lambda d, stack=None: "")
     with pytest.raises(RP.ReviewEngineDegraded) as ei:
         RP.fetch({"owner": "o", "repo": "r", "number": 3})
     assert "async_success_handler" not in ei.value.reason
@@ -1411,7 +1440,7 @@ def test_collect_passes_distinct_log_env(monkeypatch):
         seen[_mode_of(args)] = k.get("env", {}).get("TOUCHSTONE_INTERACTION_LOG")
         return _Proc(0, out=json.dumps(_IMP_OUT if _mode_of(args) == "improve" else _REV_OUT))
     monkeypatch.setattr(RP.subprocess, "run", fake)
-    monkeypatch.setattr(RP, "_experience_injection", lambda d: "")
+    monkeypatch.setattr(RP, "_experience_injection", lambda d, stack=None: "")
     monkeypatch.setenv("TOUCHSTONE_INTERACTION_LOG", "/tmp/base.log")
     RP.fetch({"owner": "o", "repo": "r", "number": 3})
     assert seen["improve"].endswith(".improve") and seen["review"].endswith(".review")
@@ -1573,7 +1602,7 @@ def test_fanout_both_success_merges_four_items(monkeypatch):
                             "code_suggestions": _RAW["code_suggestions"], "review": {"key_issues_to_review": []}})),
                                      _Proc(0, out=json.dumps({
                             "code_suggestions": [], "review": _RAW["review"]}))))
-    monkeypatch.setattr(RP, "_experience_injection", lambda d: "")
+    monkeypatch.setattr(RP, "_experience_injection", lambda d, stack=None: "")
     assert len(RP.fetch({"owner": "o", "repo": "r", "number": 3})) == 4   # 3 cs(improve) + 1 ki(review)
 
 
@@ -1582,7 +1611,7 @@ def test_fanout_invokes_two_subprocesses_improve_and_review(monkeypatch):
     monkeypatch.setattr(RP.subprocess, "run",
                         _fanout_mock(_Proc(0, out=json.dumps(_IMP_OUT)), _Proc(0, out=json.dumps(_REV_OUT)),
                                      record=record))
-    monkeypatch.setattr(RP, "_experience_injection", lambda d: "")
+    monkeypatch.setattr(RP, "_experience_injection", lambda d, stack=None: "")
     RP.fetch({"owner": "o", "repo": "r", "number": 3})
     modes = sorted(m for m, _ in record)
     assert modes == ["improve", "review"]                # 确实起了两个子进程
@@ -1595,7 +1624,7 @@ def test_fanout_improve_degraded_review_ok_returns_review_findings(monkeypatch):
     monkeypatch.setattr(RP.subprocess, "run",
                         _fanout_mock(_Proc(0, out=json.dumps({"_degraded": "llm_failed", "reason": "401"})),
                                      _Proc(0, out=json.dumps(_REV_OUT))))
-    monkeypatch.setattr(RP, "_experience_injection", lambda d: "")
+    monkeypatch.setattr(RP, "_experience_injection", lambda d, stack=None: "")
     items = RP.fetch({"owner": "o", "repo": "r", "number": 3})
     assert len(items) == 1 and items[0]["tool"] == "review"   # review 的意见照常返回
     assert RP.invoke_meta()["partial_tool_failure"] == "improve"
@@ -1605,7 +1634,7 @@ def test_fanout_review_degraded_improve_ok_returns_suggestions(monkeypatch):
     monkeypatch.setattr(RP.subprocess, "run",
                         _fanout_mock(_Proc(0, out=json.dumps(_IMP_OUT)),
                                      _Proc(0, out=json.dumps({"_degraded": "llm_failed", "reason": "401"}))))
-    monkeypatch.setattr(RP, "_experience_injection", lambda d: "")
+    monkeypatch.setattr(RP, "_experience_injection", lambda d, stack=None: "")
     items = RP.fetch({"owner": "o", "repo": "r", "number": 3})
     assert len(items) == 1 and items[0]["tool"] == "improve"
     assert RP.invoke_meta()["partial_tool_failure"] == "review"
@@ -1618,7 +1647,7 @@ def test_fanout_improve_timeout_review_ok_partial(monkeypatch):
             raise sp.TimeoutExpired(cmd=args, timeout=600)
         return _Proc(0, out=json.dumps(_REV_OUT))
     monkeypatch.setattr(RP.subprocess, "run", fake)
-    monkeypatch.setattr(RP, "_experience_injection", lambda d: "")
+    monkeypatch.setattr(RP, "_experience_injection", lambda d, stack=None: "")
     items = RP.fetch({"owner": "o", "repo": "r", "number": 3})
     assert len(items) == 1                                  # 超时侧丢弃，review 发现保留
     assert RP.invoke_meta()["partial_tool_failure"] == "improve"
@@ -1627,7 +1656,7 @@ def test_fanout_improve_timeout_review_ok_partial(monkeypatch):
 def test_fanout_improve_crash_review_ok_partial(monkeypatch):
     monkeypatch.setattr(RP.subprocess, "run",
                         _fanout_mock(_Proc(2, err="improve crashed"), _Proc(0, out=json.dumps(_REV_OUT))))
-    monkeypatch.setattr(RP, "_experience_injection", lambda d: "")
+    monkeypatch.setattr(RP, "_experience_injection", lambda d, stack=None: "")
     items = RP.fetch({"owner": "o", "repo": "r", "number": 3})
     assert len(items) == 1
     assert RP.invoke_meta()["partial_tool_failure"] == "improve"
@@ -1642,7 +1671,7 @@ def test_fanout_improve_crash_review_empty_not_swallowed(monkeypatch):
                             _Proc(2, err="Failed to generate prediction with openai/glm-5.2"),
                             _Proc(0, out=json.dumps({"code_suggestions": [],
                                                      "review": {"key_issues_to_review": []}}))))
-    monkeypatch.setattr(RP, "_experience_injection", lambda d: "")
+    monkeypatch.setattr(RP, "_experience_injection", lambda d, stack=None: "")
     items = RP.fetch({"owner": "o", "repo": "r", "number": 3})
     assert items == []                                        # review 空建议=真没意见，不抛
     assert RP.invoke_meta()["partial_tool_failure"] == "improve"   # 失败仍可见，整轮可信
@@ -1659,7 +1688,7 @@ def test_fanout_improve_crash_review_swallowed_raises(monkeypatch):
                             _Proc(0, out=json.dumps({"code_suggestions": [],
                                                      "review": {"key_issues_to_review": []}}),
                                   err="Failed to review PR: Error during LLM inference: connection error")))
-    monkeypatch.setattr(RP, "_experience_injection", lambda d: "")
+    monkeypatch.setattr(RP, "_experience_injection", lambda d, stack=None: "")
     with pytest.raises(RP.ReviewEngineDegraded) as ei:
         RP.fetch({"owner": "o", "repo": "r", "number": 3})
     assert ei.value.degraded == "llm_failed"
@@ -1674,7 +1703,7 @@ def test_fanout_review_crash_improve_swallowed_raises(monkeypatch):
                                                      "review": {"key_issues_to_review": []}}),
                                   err="Failed to generate code suggestions for PR: Error during LLM inference: timeout"),
                             _Proc(2, err="Failed to review PR: boom")))
-    monkeypatch.setattr(RP, "_experience_injection", lambda d: "")
+    monkeypatch.setattr(RP, "_experience_injection", lambda d, stack=None: "")
     with pytest.raises(RP.ReviewEngineDegraded) as ei:
         RP.fetch({"owner": "o", "repo": "r", "number": 3})
     assert ei.value.degraded == "llm_failed"
@@ -1684,7 +1713,7 @@ def test_fanout_both_degraded_raises(monkeypatch):
     monkeypatch.setattr(RP.subprocess, "run",
                         _fanout_mock(_Proc(0, out=json.dumps({"_degraded": "llm_failed", "reason": "401"})),
                                      _Proc(0, out=json.dumps({"_degraded": "llm_failed", "reason": "401"}))))
-    monkeypatch.setattr(RP, "_experience_injection", lambda d: "")
+    monkeypatch.setattr(RP, "_experience_injection", lambda d, stack=None: "")
     with pytest.raises(RP.ReviewEngineDegraded) as ei:
         RP.fetch({"owner": "o", "repo": "r", "number": 3})
     assert ei.value.degraded == "llm_failed"
@@ -1695,7 +1724,7 @@ def test_fanout_both_timeout_raises_llm_failed(monkeypatch):
     def fake(args, **k):
         raise sp.TimeoutExpired(cmd=args, timeout=600)
     monkeypatch.setattr(RP.subprocess, "run", fake)
-    monkeypatch.setattr(RP, "_experience_injection", lambda d: "")
+    monkeypatch.setattr(RP, "_experience_injection", lambda d, stack=None: "")
     with pytest.raises(RP.ReviewEngineDegraded) as ei:
         RP.fetch({"owner": "o", "repo": "r", "number": 3})
     assert ei.value.degraded == "llm_failed"
@@ -1708,7 +1737,7 @@ def test_fanout_both_empty_clean_not_swallowed(monkeypatch):
                                             err="LiteLLM-Async Success Call"),
                                      _Proc(0, out=json.dumps({"code_suggestions": [], "review": {"key_issues_to_review": []}}),
                                             err="LiteLLM-Async Success Call")))
-    monkeypatch.setattr(RP, "_experience_injection", lambda d: "")
+    monkeypatch.setattr(RP, "_experience_injection", lambda d, stack=None: "")
     assert RP.fetch({"owner": "o", "repo": "r", "number": 3}) == []
 
 
@@ -1725,7 +1754,7 @@ def test_fanout_interaction_logs_merged_into_base(monkeypatch, tmp_path):
                 fh.write(f"[{mode}] request/response trace\n")
         return _Proc(0, out=json.dumps(_IMP_OUT if mode == "improve" else _REV_OUT))
     monkeypatch.setattr(RP.subprocess, "run", fake)
-    monkeypatch.setattr(RP, "_experience_injection", lambda d: "")
+    monkeypatch.setattr(RP, "_experience_injection", lambda d, stack=None: "")
     RP.fetch({"owner": "o", "repo": "r", "number": 3})
     merged = base_log.read_text(encoding="utf-8")
     assert "[improve] request/response trace" in merged
@@ -1742,7 +1771,7 @@ def test_fanout_disabled_runs_single_subprocess(monkeypatch):
         calls.append(_mode_of(args))
         return _Proc(0, out=json.dumps(_RAW))              # 单子进程返回完整 improve+review
     monkeypatch.setattr(RP.subprocess, "run", fake)
-    monkeypatch.setattr(RP, "_experience_injection", lambda d: "")
+    monkeypatch.setattr(RP, "_experience_injection", lambda d, stack=None: "")
     monkeypatch.setenv("TOUCHSTONE_PRAGENT_FANOUT", "false")
     assert len(RP.fetch({"owner": "o", "repo": "r", "number": 3})) == 4
     assert calls == ["improve+review"]                     # 只调一次、合并 mode
@@ -1751,7 +1780,7 @@ def test_fanout_disabled_runs_single_subprocess(monkeypatch):
 def test_single_mode_improve_runs_one_subprocess(monkeypatch):
     """mode=improve（只跑建议侧）→ 单子进程、review 占位 _NOT_RUN。"""
     monkeypatch.setattr(RP.subprocess, "run", lambda a, **k: _Proc(0, out=json.dumps(_IMP_OUT)))
-    monkeypatch.setattr(RP, "_experience_injection", lambda d: "")
+    monkeypatch.setattr(RP, "_experience_injection", lambda d, stack=None: "")
     monkeypatch.setattr(RP, "_provider_mode", lambda ctx: "improve")   # 强制单一 mode
     assert len(RP.fetch({"owner": "o", "repo": "r", "number": 3})) == 1
 
@@ -1774,7 +1803,7 @@ def test_fanout_subprocesses_run_in_parallel(monkeypatch):
         out = _IMP_OUT if _mode_of(args) == "improve" else _REV_OUT
         return _Proc(0, out=json.dumps(out))
     monkeypatch.setattr(RP.subprocess, "run", fake)
-    monkeypatch.setattr(RP, "_experience_injection", lambda d: "")
+    monkeypatch.setattr(RP, "_experience_injection", lambda d, stack=None: "")
     RP.fetch({"owner": "o", "repo": "r", "number": 3})
     assert state["max_active"] == 2                        # 两子进程并发（串行=1 → 断言失败）
 

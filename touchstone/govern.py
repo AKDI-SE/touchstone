@@ -19,10 +19,11 @@ import sys
 from touchstone.atomicio import atomic_write_json, atomic_write_text
 from touchstone.artifacts import artifact_path
 
-PROMOTE_MIN_FIRES = int((os.environ.get("PROMOTE_MIN_FIRES") or "").strip() or "5")
-PROMOTE_MIN_ADOPTION = float((os.environ.get("PROMOTE_MIN_ADOPTION") or "").strip() or "0.5")
-REVERT_THRESH = float((os.environ.get("REVERT_THRESH") or "").strip() or "0.10")
-APPROVAL_SPIKE = float((os.environ.get("APPROVAL_SPIKE") or "").strip() or "0.20")
+from touchstone.envutil import env_int as _env_int_, env_float as _env_float_   # 审计 #17：坏值回落默认，import 不崩
+PROMOTE_MIN_FIRES = max(0, _env_int_("PROMOTE_MIN_FIRES", 5))
+PROMOTE_MIN_ADOPTION = _env_float_("PROMOTE_MIN_ADOPTION", 0.5)
+REVERT_THRESH = _env_float_("REVERT_THRESH", 0.10)
+APPROVAL_SPIKE = _env_float_("APPROVAL_SPIKE", 0.20)
 
 
 # --- 建议→拦截桥（纯）--------------------------------------------------------
@@ -148,7 +149,13 @@ def main():
         cal = json.load(f) or {}                 # 空/None JSON → 空字典，防下游 cal.get 崩
     with open(std_path, encoding="utf-8") as f:
         standards = yaml.safe_load(f) or {}      # 空 YAML→None：or {} 兜底，对齐全仓其余 yaml 站点（#136 review）
-    rule_index = {r["id"]: r for r in standards.get("rules", [])}
+    rule_index = {}
+    for r in standards.get("rules", []) or []:
+        _rid = (r or {}).get("id") if isinstance(r, dict) else None   # 审计 #7：缺 id 跳过+告警
+        if not _rid:
+            print(f"[warn] standards.yaml 规则缺 id（跳过）: {r!r}"[:300], file=sys.stderr)
+            continue
+        rule_index[_rid] = r
     agg = cal.get("aggregate", {})
     records = cal.get("records", [])
 

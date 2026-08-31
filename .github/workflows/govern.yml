@@ -39,8 +39,12 @@ jobs:
         run: |
           python -m touchstone.autonomy --graduate
           mkdir -p .touchstone && cp graduated-classes.json .touchstone/graduated-classes.json
+      # 审计 #49：直推默认分支的闸用【专属】变量名——旧版复用 vars.AUTONOMY_ENABLED，
+      # 与 touchstone.yml 的 fail-loud 守卫同词（那边 AUTONOMY_ENABLED=true 即整链红）：
+      # 运维为开治理提交而设它会让每个 PR 的评审 job 直接 fail，语义撞车且无提示。
+      # TOUCHSTONE_GOVERN_COMMIT 只管本步；AUTONOMY_ENABLED 保持"自动放行链"单一含义。
       - name: Commit graduated-classes
-        if: ${{ vars.AUTONOMY_ENABLED == 'true' }}
+        if: ${{ vars.TOUCHSTONE_GOVERN_COMMIT == 'true' }}
         run: |
           git config user.name touchstone
           git config user.email touchstone@users.noreply.github.com

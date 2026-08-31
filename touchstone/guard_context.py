@@ -43,8 +43,14 @@ def _parse(repo_dir, path):
 
     路径边界（PR#140 R3 意见 4）：path 来自 diff 解析/清单签名等外部输入，realpath
     归一后必须落在 repo_dir 内——`../` 穿越或绝对路径一律拒读（守卫摘要会进 LLM
-    prompt，越界读取等于把仓外文件内容外送）。with 确保句柄确定性关闭（意见 1）。"""
+    prompt，越界读取等于把仓外文件内容外送）。with 确保句柄确定性关闭（意见 1）。
+
+    审计 #48：TOUCHSTONE_GUARD_REPO_DIR 优先于调用方 repo_dir——CI 里守卫事实须按
+    【PR head】源码解析（diff 的 target 行号只在 head 版本里有意义），而主 checkout 是
+    受信 base ref。本函数是 guard_context 全部入口（digest/adjudication/attach/facts）
+    的唯一文件读取漏斗，在此解析即可全量生效、调用方零改动。"""
     try:
+        repo_dir = os.environ.get("TOUCHSTONE_GUARD_REPO_DIR") or repo_dir
         base = os.path.realpath(repo_dir)
         full = os.path.realpath(os.path.join(base, path))
         if full != base and not full.startswith(base + os.sep):

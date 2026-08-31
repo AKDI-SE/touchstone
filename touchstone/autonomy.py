@@ -27,18 +27,22 @@ def _envbool(k):
 
 AUTONOMY_ENABLED = _envbool("AUTONOMY_ENABLED")       # 总开关，默认关
 AUTONOMY_SHADOW = _envbool("AUTONOMY_SHADOW")         # 影子模式，默认关
-GRAD_MIN_SAMPLES = int((os.environ.get("GRAD_MIN_SAMPLES") or "").strip() or "20")
-GRAD_MAX_BAD_RATE = float((os.environ.get("GRAD_MAX_BAD_RATE") or "").strip() or "0.05")
+from touchstone.envutil import env_int as _env_int_, env_float as _env_float_   # 审计 #14：坏值回落默认，import 不崩
+GRAD_MIN_SAMPLES = max(1, _env_int_("GRAD_MIN_SAMPLES", 20))
+GRAD_MAX_BAD_RATE = _env_float_("GRAD_MAX_BAD_RATE", 0.05)
 
 
 # --- 变更分类签名（经验在此粒度累积/毕业）------------------------------------
 def file_profile(changed_files):
+    from touchstone.contract_check import _is_test
     kinds = set()
     for f in changed_files or []:
-        base = os.path.basename(f)
         if f.endswith(".md") or "/docs/" in f or f.startswith("docs/"):
             kinds.add("doc")
-        elif "test" in base.lower() or "/test/" in f or "/tests/" in f or "src/test/" in f:
+        # 审计 #41：复用 contract_check._is_test 的段级判定——旧版 `"test" in base.lower()`
+        # 子串匹配把 attestation/latest 等产线文件计成 test_only，变更分类（自动放行的
+        # 毕业类依据）随之失真。两处必须同一口径，故直接复用同一实现。
+        elif _is_test(f) or "/test/" in f or "/tests/" in f or "src/test/" in f:
             kinds.add("test")
         else:
             kinds.add("code")
@@ -131,9 +135,11 @@ def decide_auto_merge(risk, findings, loop_decision, gate,
         "not_tripped": not (autonomy_state or {}).get("tripped"),
         "class_graduated": cls in (graduated_classes or set()),
         # 第七道闸·基线新鲜度（bors「not rocket science」规则）：CI 绿是对旧 main 算的，
-        # 直接合可能引入语义冲突（两个 PR 各自绿、合在一起坏）。base_fresh=False（已确认
-        # 基线过期）→ 拒绝放行、先带上最新 main 重跑；None（未评估，如纯离线决策/测试）→ 不拦。
-        "base_fresh": base_fresh is not False,
+        # 直接合可能引入语义冲突（两个 PR 各自绿、合在一起坏）。审计 #39：只认显式 True——
+        # False（已确认过期）与 None（评估失败/未评估）都拒放行。旧版 None 放行（fail-open）
+        # 意味着 check_base_fresh 的两个 API 一起挂掉时，自动合会基于"未知基线"执行；
+        # 自动放行链路上"评不了"必须当"不新鲜"处理（与 author_trusted 默认 False 同哲学）。
+        "base_fresh": base_fresh is True,
         # 引擎健康度：本轮 LLM 评审不可信（引擎降级/可疑空收敛）-> 收敛不可信，不自动放行。
         # 防"diff 被裁空/LLM 随机性"假收敛被当"低风险+收敛"自动合入未评审代码。
         "review_reliable": review_reliable,
@@ -235,9 +241,15 @@ def execute_auto_merge(repo, pr_number, sha, token, api_url=None, merge_method="
     merged = _req("PUT", f"/repos/{repo}/pulls/{pr_number}/merge",
                   {"sha": sha, "merge_method": merge_method})
     marker = json.dumps({"auto_handled": True, "sha": sha})
-    _req("POST", f"/repos/{repo}/issues/{pr_number}/comments",
-         {"body": f"<!-- touchstone:auto_handled {marker} -->\n"
-                  "Touchstone 自动放行：质量门禁通过 + 变更分类已达标 + 各闸通过。"})
+    # 审计 #38：marker 评论失败不得打穿——merge 已成功，异常上抛会让 main() 按"自动放行
+    # 失败"处理（实际代码已合入）；marker 丢了只损失校准归因，大声告警供人工补记即可。
+    try:
+        _req("POST", f"/repos/{repo}/issues/{pr_number}/comments",
+             {"body": f"<!-- touchstone:auto_handled {marker} -->\n"
+                      "Touchstone 自动放行：质量门禁通过 + 变更分类已达标 + 各闸通过。"})
+    except Exception as e:
+        print(f"[autonomy] ⚠️ auto_handled marker 评论失败（PR 已合并，归因 marker 缺失，"
+              f"请人工补记 calibration 记录）: {e}", file=sys.stderr)
     return merged
 
 
@@ -347,8 +359,10 @@ def main():
         repo = os.environ.get("GITHUB_REPOSITORY")
         pr, sha = co.get("pr"), co.get("sha")
 
+    # 审计 #39：有 token 就评估（不再限于 --execute）——决策/影子模式也按真实闸演练；
+    # base_fresh=None（无 token 离线重放/评估失败）在 decide 里按不新鲜拒放行（fail-closed）。
     base_fresh = None
-    if args.execute and repo and pr and os.environ.get("GITHUB_TOKEN"):
+    if repo and pr and os.environ.get("GITHUB_TOKEN"):
         base_fresh = check_base_fresh(repo, pr, os.environ["GITHUB_TOKEN"])
     dec = decide_auto_merge(d.get("risk", {}), d.get("findings", []), d.get("loop_decision"),
                             d.get("gate"), d.get("autonomy_state"),

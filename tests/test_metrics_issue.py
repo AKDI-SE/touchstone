@@ -39,7 +39,8 @@ class _FakeGH:
     def __call__(self, method, path, token, data=None):
         self.calls.append((method, path, data))
         if method == "GET":
-            label = path.split("labels=", 1)[-1] if "labels=" in path else ""
+            # 审计 #47：列表 URL 现带 &page=N&per_page=100 翻页参数——label 截到 & 为止
+            label = path.split("labels=", 1)[-1].split("&", 1)[0] if "labels=" in path else ""
             return [{"number": n, "body": i["body"]}
                     for n, i in self.issues.items() if label in i.get("labels", [])]
         if method == "POST":

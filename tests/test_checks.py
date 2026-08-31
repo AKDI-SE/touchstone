@@ -4,6 +4,7 @@ import os
 import threading
 import time
 
+import pytest
 import requests
 
 from touchstone import checks
@@ -300,15 +301,26 @@ _PR = {"owner": "o", "repo": "r", "sha": "s", "token": "t", "files": []}
 
 
 class _FakeResp:
-    """假 requests.Response：只实现 _run_service 用到的 raise_for_status / json。"""
-    def __init__(self, payload):
+    """假 requests.Response：只实现 _run_service 用到的 raise_for_status / json /
+    status_code / headers（第九轮重定向跳循环）。"""
+    def __init__(self, payload, status_code=200, headers=None):
         self._p = payload
+        self.status_code = status_code
+        self.headers = headers or {}
 
     def raise_for_status(self):
         return None
 
     def json(self):
         return self._p
+
+
+@pytest.fixture(autouse=True)
+def _allow_service_hosts(monkeypatch):
+    """审计 #40：_run_service 现校验 URL 白名单（仅 https 公网，TOUCHSTONE_SERVICE_ALLOW 豁免）。
+    测试打桩的假主机全在此豁免，专注测并发/解析逻辑；白名单本身的拦截面有专项测试。"""
+    # 条目显式写 http://host：第十轮起裸 host 条目对 URL 仍强制 https（明文=运维明示）
+    monkeypatch.setenv("TOUCHSTONE_SERVICE_ALLOW", "http://a,http://b,http://c,http://crash,http://ok,http://svc,http://x")
 
 
 def _concurrent_post(active, payload=None, sleep=0.05):
@@ -371,10 +383,10 @@ def test_service_passed_string_false_is_not_passed(monkeypatch):
     assert summary == "tests failed"
     # 真值字符串（大小写/变体）仍通过
     monkeypatch.setattr(checks.requests, "post", fake_post({"passed": "True"}))
-    assert checks._run_service(_PR, {"url": "x"})[0] is True
+    assert checks._run_service(_PR, {"url": "http://x"})[0] is True
     # 非白名单字符串 fail-closed（门禁对模糊输入不 lenient 放行）
     monkeypatch.setattr(checks.requests, "post", fake_post({"passed": "ok"}))
-    assert checks._run_service(_PR, {"url": "x"})[0] is False
+    assert checks._run_service(_PR, {"url": "http://x"})[0] is False
 
 
 def test_service_order_preserved_when_interleaved_with_builtin(monkeypatch):
@@ -394,7 +406,7 @@ def test_service_concurrency_capped(monkeypatch):
     active = {"n": 0, "max": 0}
     monkeypatch.setattr(checks.requests, "post", _concurrent_post(active, sleep=0.03))
     n = checks._MAX_SERVICE_WORKERS + 4
-    cfg = {"checks": [{"name": f"s{i}", "type": "service", "url": f"http://x{i}", "required": True}
+    cfg = {"checks": [{"name": f"s{i}", "type": "service", "url": "http://x", "required": True}
                       for i in range(n)]}
     results = checks.run_checks(cfg, _PR)
     assert 2 <= active["max"] <= checks._MAX_SERVICE_WORKERS   # 并行了且有上限
@@ -462,3 +474,273 @@ def test_verify_plugin_non_dict_json_failclosed(tmp_path, monkeypatch):
     (tmp_path / "verify-result.json").write_text(
         _json.dumps({"passed": True, "spec_source": "human_curated"}), encoding="utf-8")
     assert checks._BUILTINS["verify"]({}, {})[0] is True
+
+
+# ---------------- 审计 #40：service URL SSRF 白名单 ----------------
+def test_service_url_policy_blocks_non_https_and_metadata(monkeypatch):
+    """checks.yaml 是 PR 可改内容——URL 白名单是防 author 借门禁 runner 打内网/元数据端点的闸。"""
+    monkeypatch.delenv("TOUCHSTONE_SERVICE_ALLOW", raising=False)
+    passed, summary = checks._run_service(_PR, {"url": "http://169.254.169.254/latest/meta-data"})
+    assert passed is None and "https" in summary          # 明文 http 拒
+    passed, summary = checks._run_service(_PR, {"url": "https://169.254.169.254/latest"})
+    assert passed is None and "非公网" in summary          # 云元数据端点拒
+    passed, summary = checks._run_service(_PR, {"url": "https://localhost:9/x"})
+    assert passed is None and "localhost" in summary      # 环回拒
+    passed, summary = checks._run_service(_PR, {"url": "https://10.1.2.3/x"})
+    assert passed is None and "非公网" in summary          # 私网拒
+
+
+def test_service_pins_dns_against_rebinding(monkeypatch):
+    """pr-agent 第三轮评审"SSRF residual"收口：校验期与连接期是两次独立 getaddrinfo——
+    短 TTL rebinding 可让前者返回公网 A 记录、后者返回元数据地址。_run_service 须：
+    ① 连接前再解析并复检（解析到私网即拒）；② 把连接钉死到已校验 addrinfo（_pin_dns）——
+    请求窗口内的解析被重定向到公网结果，rebinding 无法生效。"""
+    import socket as S
+    import ipaddress as _ipa
+    monkeypatch.delenv("TOUCHSTONE_SERVICE_ALLOW", raising=False)
+    pub = [(S.AF_INET, S.SOCK_STREAM, 6, "", ("93.184.216.34", 443))]
+    priv = [(S.AF_INET, S.SOCK_STREAM, 6, "", ("169.254.169.254", 443))]
+    state = {"n": 0}
+    def flip(h, *a, **k):                     # 第 1 次校验、第 2 次连接期复检：公网；之后"rebinding"成私网
+        state["n"] += 1
+        return pub if state["n"] <= 2 else priv
+    monkeypatch.setattr(S, "getaddrinfo", flip)
+    seen = {}
+    class _R:
+        status_code = 200
+        headers = {}
+        def raise_for_status(self): pass
+        def json(self): return {"passed": True, "summary": "ok"}
+    def fake_post(url, json=None, timeout=None, **k):
+        seen["gai"] = S.getaddrinfo("svc.example", 443)   # 模拟 requests 内部连接期解析
+        return _R()
+    monkeypatch.setattr(checks.requests, "post", fake_post)
+    passed, _ = checks._run_service(_PR, {"url": "https://svc.example/hook"})
+    assert passed is True
+    assert seen["gai"] == pub                              # 钉死生效：rebinding 后的私网解析被拦截在 pin 层
+    assert all(_ipa.ip_address(ai[4][0]).is_global for ai in seen["gai"])
+
+    # 连接期复检分支：解析结果已翻成私网（复检阶段即拒绝，请求不发出）
+    state["n"] = 1                                          # 下一次解析（复检）即 priv
+    posted = {"n": 0}
+    monkeypatch.setattr(checks.requests, "post",
+                        lambda *a, **k: posted.__setitem__("n", posted["n"] + 1) or _R())
+    passed, summary = checks._run_service(_PR, {"url": "https://svc.example/hook"})
+    assert passed is None and "连接期解析到非公网" in summary
+    assert posted["n"] == 0                                 # 未发请求
+
+
+# ---------------- pr-agent 第九轮：豁免主重定向逐跳过闸 ----------------
+def test_service_redirect_hops_revalidated(monkeypatch):
+    """豁免放开重定向（第七轮）≠ 落点免检（第九轮）：豁免只豁免明示的 host[:port]，
+    被入侵/误配的豁免服务 302 到元数据/内网落点仍是 SSRF 借道面。跳循环里每一跳
+    Location 先过 _service_url_allowed，过闸才发下一跳——payload 永不发给未校验目标。"""
+    # ① 豁免主 → 302 到白名单外的内网主机：拒绝，且只发了第一跳
+    hits = []
+    def redir_post(url, json=None, timeout=None, **k):
+        hits.append(url)
+        return _FakeResp(None, status_code=302, headers={"Location": "http://evil.corp/x"})
+    monkeypatch.setattr(checks.requests, "post", redir_post)
+    passed, summary = checks._run_service(_PR, {"url": "http://a"})
+    assert passed is None and "落点不过闸" in summary
+    assert hits == ["http://a"]                             # payload 未发给 evil.corp
+
+    # ② 豁免主 → 302 到另一豁免主（相对 Location）：逐跳跟随，最终结果取末跳；
+    #    302 语义 = 换 GET（第十一轮）：第二跳不带 payload，method 分派正确
+    hits2 = []
+    def follow_post(url, json=None, timeout=None, **k):
+        hits2.append(("POST", url))
+        return _FakeResp(None, status_code=302, headers={"Location": "/v2/hook"})  # 相对落点
+    def follow_get(url, timeout=None, **k):
+        hits2.append(("GET", url))
+        return _FakeResp({"passed": True, "summary": "final"})
+    monkeypatch.setattr(checks.requests, "post", follow_post)
+    monkeypatch.setattr(checks.requests, "get", follow_get)
+    passed, summary = checks._run_service(_PR, {"url": "http://a"})
+    assert passed is True and summary == "final"
+    assert hits2 == [("POST", "http://a"), ("GET", "http://a/v2/hook")]   # 302→GET + 相对落点
+
+    # ③ 307 语义 = 保方法重发 POST（第十一轮）：method 仍是 POST、payload 重发
+    hits3 = []
+    def keep_post(url, json=None, timeout=None, **k):
+        hits3.append(("POST", url))
+        if url == "http://a":
+            return _FakeResp(None, status_code=307, headers={"Location": "http://b/hook"})
+        return _FakeResp({"passed": True, "summary": "final307"})
+    monkeypatch.setattr(checks.requests, "post", keep_post)
+    monkeypatch.setattr(checks.requests, "get",
+                        lambda url, timeout=None, **k: hits3.append(("GET", url)) or _FakeResp({}))
+    passed, summary = checks._run_service(_PR, {"url": "http://a"})
+    assert passed is True and summary == "final307"
+    assert hits3 == [("POST", "http://a"), ("POST", "http://b/hook")]     # 307 保 POST
+
+
+def test_service_redirect_loop_capped(monkeypatch):
+    """重定向成环（或链超长）必须封顶退出，不得无限跟随。"""
+    hits = []
+    def loop_req(url, **k):
+        hits.append(url)
+        return _FakeResp(None, status_code=302, headers={"Location": "loop"})
+    monkeypatch.setattr(checks.requests, "post", loop_req)
+    monkeypatch.setattr(checks.requests, "get", loop_req)
+    passed, summary = checks._run_service(_PR, {"url": "http://a"})
+    assert passed is None and "跳数超限" in summary
+    assert len(hits) == 6                                   # 初始 1 跳 + 上限 5 跳
+
+
+def test_pin_dispatcher_install_race_free(monkeypatch):
+    """pr-agent 第十一轮：_ensure_pin_dispatcher 的 check-then-act 在并发首调用下有竞态
+    ——A 装完后 B 才执行 `_PIN_ORIG_GAI = socket.getaddrinfo`，读到的已是派发器本身
+    → 未钉死 host 的解析无限自递归。双检锁后：N 线程同时首装，_PIN_ORIG_GAI 恒为
+    装前原函数（绝不捕获派发器自身），派发器常驻且透传语义不变。"""
+    import socket as S
+    import threading as T
+    from concurrent.futures import ThreadPoolExecutor
+    real = S.getaddrinfo
+    def fake_orig(h, *a, **k):
+        return [(S.AF_INET, S.SOCK_STREAM, 6, "", ("93.184.216.34", 0))]
+    S.getaddrinfo = fake_orig                 # 复位到「未装」状态的可识别原函数
+    try:
+        bar = T.Barrier(8)
+        def racer():
+            bar.wait()                        # 全员就位再冲，最大化交错窗口
+            checks._ensure_pin_dispatcher()
+        with ThreadPoolExecutor(max_workers=8) as ex:
+            list(ex.map(lambda _: racer(), range(8)))
+        assert S.getaddrinfo is checks._pin_dispatcher      # 派发器已装
+        assert checks._PIN_ORIG_GAI is fake_orig            # 原函数=装前真身，绝非派发器自身
+        assert S.getaddrinfo("any.host", None) == fake_orig("any.host", None)   # 透传不递归
+    finally:
+        S.getaddrinfo = real
+        checks._PIN_ORIG_GAI = real
+
+
+def test_service_non_exempt_redirect_blocked(monkeypatch):
+    """非豁免主维持重定向禁令（第七轮既有语义）：公网 https 主机 302 也拒——
+    落点不受任何校验约束，跟随即 SSRF 借道面。"""
+    import socket as S
+    pub = [(S.AF_INET, S.SOCK_STREAM, 6, "", ("93.184.216.34", 443))]
+    monkeypatch.delenv("TOUCHSTONE_SERVICE_ALLOW", raising=False)
+    monkeypatch.setattr(S, "getaddrinfo", lambda h, *a, **k: pub)
+    hits = []
+    def redir_post(url, json=None, timeout=None, **k):
+        hits.append(url)
+        return _FakeResp(None, status_code=302, headers={"Location": "http://evil.corp/x"})
+    monkeypatch.setattr(checks.requests, "post", redir_post)
+    passed, summary = checks._run_service(_PR, {"url": "https://pub.example/hook"})
+    assert passed is None and "非豁免主禁止重定向" in summary
+    assert hits == ["https://pub.example/hook"]
+
+
+def test_service_pin_serialized_under_concurrent_checks(monkeypatch):
+    """pr-agent 第四轮 PRA-SECURITY：run_checks 用 ThreadPoolExecutor 并发——两个 service check
+    同时进/出 _pin_dns 会互相覆盖还原（A exit 还原掉 B 的 pin / B exit 装回 A 的陈旧闭包，
+    getaddrinfo 永久滞留假解析）。_SERVICE_PIN_LOCK 串行化钉死窗口后：各 host 各自命中自己的
+    钉死结果、结束后模块级 getaddrinfo 完整还原（identity 断言）。"""
+    import socket as S
+    import urllib.parse as _up
+    from concurrent.futures import ThreadPoolExecutor
+    monkeypatch.delenv("TOUCHSTONE_SERVICE_ALLOW", raising=False)
+    pub = {h: [(S.AF_INET, S.SOCK_STREAM, 6, "", (ip, 443))]
+           for h, ip in [("a.example", "93.184.216.34"), ("b.example", "93.184.216.35")]}
+    calls = {"n": 0}
+    def fake_gai(h, *a, **k):
+        calls["n"] += 1
+        return pub[(h or "").lower()]
+    monkeypatch.setattr(S, "getaddrinfo", fake_gai)
+    seen = {}
+    class _R:
+        status_code = 200
+        headers = {}
+        def raise_for_status(self): pass
+        def json(self): return {"passed": True, "summary": "ok"}
+    def fake_post(url, json=None, timeout=None, **k):
+        h = (_up.urlsplit(url).hostname or "").lower()
+        seen[h] = S.getaddrinfo(h, 443)           # 连接期解析（钉死后应命中各自 pin）
+        return _R()
+    monkeypatch.setattr(checks.requests, "post", fake_post)
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        futs = [ex.submit(checks._run_service, _PR, {"url": f"https://{h}/hook"})
+                for h in ("a.example", "b.example")]
+        results = [f.result() for f in futs]
+    assert all(p is True for p, _ in results)
+    assert seen["a.example"] == pub["a.example"] and seen["b.example"] == pub["b.example"]
+    # 钉注消干净（无陈旧 pin）：后续同名解析走回原函数（fake_gai 计数应增长）
+    assert checks._pin_get("a.example") is None and checks._pin_get("b.example") is None
+    n0 = calls["n"]
+    assert S.getaddrinfo("a.example", 443) == pub["a.example"]   # 常驻派发器透传
+    assert calls["n"] > n0
+
+
+def test_service_allowlist_entry_normalization(monkeypatch):
+    """pr-agent 第五轮评审"silent mismatches"：allowlist 条目写成带 scheme/端口/路径/
+    尾点/大写时应仍与 URL 主机名匹配（两侧统一 _norm_host 归一）。"""
+    monkeypatch.setenv("TOUCHSTONE_SERVICE_ALLOW",
+                       "http://A.com/x, http://b.com:8443, c.com., plain.d")
+    def fake_post(url, json=None, timeout=None, **k):
+        return _FakeResp({"passed": True, "summary": "ok"})
+    monkeypatch.setattr(checks.requests, "post", fake_post)
+    # 裸 host（c.com./plain.d，含尾点/大小写容错）= 全端口豁免但【不授明文】（第十轮）；
+    # 显式 http:// 条目（A.com/b.com:8443）= 豁免 + 明文；b.com:8443 端口外回落 scheme 闸
+    for u in ("http://a.com/h", "http://b.com:8443/h", "https://c.com./h", "https://plain.d/h"):
+        assert checks._run_service(_PR, {"url": u}) == (True, "ok"), u
+    assert checks._run_service(_PR, {"url": "http://b.com:9000/h"})[0] is None   # 端口外：回落 scheme 闸
+    assert checks._run_service(_PR, {"url": "http://plain.d/h"})[0] is None      # 裸条目不授明文（第十轮）
+
+
+def test_service_allowlist_bad_entry_skipped(monkeypatch, capsys):
+    """pr-agent 第十三轮：TOUCHSTONE_SERVICE_ALLOW 坏条目（端口超界 :99999）跳过+告警，
+    不让一个运维手误以栈回溯打穿所有 service 检查；好条目照常生效。"""
+    monkeypatch.setenv("TOUCHSTONE_SERVICE_ALLOW", "good.corp, bad.corp:99999, ,ok.corp")
+    def fake_post(url, json=None, timeout=None, **k):
+        return _FakeResp({"passed": True, "summary": "ok"})
+    monkeypatch.setattr(checks.requests, "post", fake_post)
+    assert checks._run_service(_PR, {"url": "https://good.corp/x"}) == (True, "ok")
+    assert "bad.corp:99999" in capsys.readouterr().err           # 坏条目可见地跳过
+    assert checks._run_service(_PR, {"url": "https://bad.corp:99999/x"})[0] is None  # 不再豁免
+
+
+def test_service_url_invalid_port_rejected(monkeypatch):
+    """URL 端口值非法（:99999）——urlsplit 不报、.port 才抛；须在豁免分支前先拦，
+    以明确拒绝收场而非栈回溯。合法 URL（含缺省端口）不受影响。"""
+    monkeypatch.setenv("TOUCHSTONE_SERVICE_ALLOW", "svc")
+    ok, why = checks._service_url_allowed("https://svc:99999/x")
+    assert ok is False and "端口值非法" in why
+    assert checks._service_url_allowed("https://svc/x") == (True, "allowlist 豁免")
+
+
+def test_service_redirect_missing_location_rejected(monkeypatch):
+    """3xx 无 Location 头：显式拒绝——此前会落到 r.json() 以解码崩溃收场（被插件隔离
+    吞成"插件异常"，语义含糊且难排查）。"""
+    monkeypatch.setattr(checks.requests, "post",
+                        lambda *a, **k: _FakeResp({}, status_code=302, headers={}))
+    passed, summary = checks._run_service(_PR, {"url": "http://a"})
+    assert passed is None and "缺 Location 头" in summary
+
+
+def test_service_allowlist_bare_host_still_requires_https(monkeypatch):
+    """pr-agent 第十轮 PRA-SECURITY：豁免的是【目标可及性】不是【传输完整性】——
+    裸 host/https:// 条目对命中 URL 仍强制 https（明文响应可被链路伪造 passed=true，
+    豁免即免 scheme 闸 = 改 checks.yaml 的 author 可借豁免主域名走 http 拿伪造放行）；
+    明文仅当条目显式写 http://host 才放行（运维明示的无 TLS 内网服务）。"""
+    monkeypatch.setenv("TOUCHSTONE_SERVICE_ALLOW", "svc")
+    assert checks._service_url_allowed("https://svc/hook") == (True, "allowlist 豁免")
+    ok, why = checks._service_url_allowed("http://svc/hook")
+    assert ok is False and "https" in why                     # 裸条目：明文不放行
+    # 显式 http:// 条目：明文放行（同 host）
+    monkeypatch.setenv("TOUCHSTONE_SERVICE_ALLOW", "http://svc")
+    assert checks._service_url_allowed("http://svc/hook")[0] is True
+    # 端口条目同理：裸端口条目不授明文，http://host:port 显式才授
+    monkeypatch.setenv("TOUCHSTONE_SERVICE_ALLOW", "svc:8080")
+    assert checks._service_url_allowed("http://svc:8080/x")[0] is False
+    monkeypatch.setenv("TOUCHSTONE_SERVICE_ALLOW", "http://svc:8080")
+    assert checks._service_url_allowed("http://svc:8080/x")[0] is True
+    assert checks._service_url_allowed("https://svc:8080/x")[0] is True   # https 本就放行
+
+
+def test_service_url_policy_allowlist_exempts(monkeypatch):
+    monkeypatch.setenv("TOUCHSTONE_SERVICE_ALLOW", "http://my-svc.corp")   # 明文需显式声明（第十轮）
+    def fake_post(url, json=None, timeout=None, **k):
+        return _FakeResp({"passed": True, "summary": "ok"})
+    monkeypatch.setattr(checks.requests, "post", fake_post)
+    assert checks._run_service(_PR, {"url": "http://my-svc.corp/x"}) == (True, "ok")

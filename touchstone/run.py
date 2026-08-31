@@ -102,7 +102,7 @@ def main():
         standards = C.load_yaml(std_path)
         if not standards:
             sys.exit(f"未找到规范 {std_path}（用 --standards 指定你自己的）")
-        rule_index = {r["id"]: r for r in standards.get("rules", [])}
+        rule_index = C._rule_index(standards.get("rules", []))
         contract = C.load_yaml(os.path.join(repo_dir, ".touchstone/pr.yaml"))
         # schema_version 兼容性告警（pr.yaml 字段结构版本，与软件版本正交）：
         # 不匹配只告警不阻断——engine 版本与配置 schema 错配不是契约违规，不进 findings。

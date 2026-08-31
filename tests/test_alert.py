@@ -99,6 +99,20 @@ def test_deliver_pr_comment():
     assert any("/issues/7/comments" in c[1] for c in calls)
 
 
+def test_list_open_issues_encodes_label_query():
+    """pr-agent 评审：label 含空格/特殊字符时必须 URL 编码进 query——原样空格会被
+    requests 规范化或直接 422。与 metrics_issue._find_issue 的编码断言同款。"""
+    gets = []
+    def gh(method, path, token, data=None):
+        if method == "GET" and "issues?" in path:
+            gets.append(path)
+            return []                     # 短页 → 翻页循环即止
+        return {}
+    alert._list_open_issues(gh, "o", "r", "t", "kind: metrics board")
+    assert gets and "labels=kind%3A%20metrics%20board" in gets[0]
+    assert "kind: metrics board" not in gets[0]        # 原样空格/冒号不进 URL
+
+
 def test_deliver_issue_create_when_none_open():
     calls = []
     al = {"severity": "high", "kind": "reliable_rate_low", "title": "t", "body": "b", "scope": "repo"}

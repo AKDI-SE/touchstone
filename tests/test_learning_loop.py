@@ -187,6 +187,58 @@ def test_bootstrap_disabled_by_default(monkeypatch):
     assert L.bootstrap_from_calibrate(agg, {"experiences": []}) == []
 
 
+def test_main_snap_tolerates_malformed_entries(tmp_path, monkeypatch):
+    """pr-agent 第十三轮：存量经验库里的畸形条目（非 dict / source_prs 不可迭代）不得
+    打崩 changed 快照——旧版 _snap 直接 e.get(...) AttributeError 打穿整个学习轮。"""
+    store_path = tmp_path / "exp.json"
+    (tmp_path / "agg.json").write_text(
+        json.dumps({"aggregate": {"by_rule": {}}}), encoding="utf-8")
+    monkeypatch.setattr(L, "STORE_PATH", str(store_path))
+    monkeypatch.setenv("TOUCHSTONE_CALIB_AGG", str(tmp_path / "agg.json"))
+    monkeypatch.delenv("TOUCHSTONE_BOOTSTRAP_SEED", raising=False)
+    store_path.write_text(json.dumps({"experiences": [
+        "legacy-string-entry",                                    # 非 dict
+        {"id": "e1", "status": "candidate", "text": "t",
+         "evidence": ["x"], "source_prs": 123},                   # source_prs 不可迭代
+    ]}), encoding="utf-8")
+    L.main()                                   # 不抛即过：快照/changed 检测容忍畸形条目
+    assert store_path.exists()
+
+
+def test_main_writeback_guard_failclosed(monkeypatch, tmp_path):
+    """审计 #9 写回闸 + pr-agent 第十二轮扩展：①盘上有条目而 load_store 得空（EXPERIENCE_REF
+    瞬态失败）→ 拒绝运行；②【新增】盘上文件存在但读不了/解析不了（真值未知）→ 同样拒绝——
+    旧版吞异常按空库放行，save_store 会把空库写回覆盖（暂坏）文件；③文件缺失（首跑）→ 放行。"""
+    store_path = tmp_path / "exp.json"
+    (tmp_path / "agg.json").write_text(
+        json.dumps({"aggregate": {"by_rule": {}}}), encoding="utf-8")
+    monkeypatch.setattr(L, "STORE_PATH", str(store_path))
+    monkeypatch.setenv("TOUCHSTONE_CALIB_AGG", str(tmp_path / "agg.json"))
+    monkeypatch.delenv("TOUCHSTONE_BOOTSTRAP_SEED", raising=False)
+
+    # ① 盘上完好含条目、load_store 却得空（mock 瞬态失败）→ 拒绝、不写回
+    store_path.write_text(
+        json.dumps({"experiences": [{"id": "x", "status": "active"}]}), encoding="utf-8")
+    _real = L.load_store
+    monkeypatch.setattr(L, "load_store", lambda p=None: {"experiences": []})
+    with pytest.raises(SystemExit) as ei:
+        L.main()
+    assert "盘上有 1 条经验" in str(ei.value)
+    monkeypatch.setattr(L, "load_store", _real)
+
+    # ② 盘上文件存在但 JSON 损坏（真值未知）→ 拒绝、不写回（旧版按空库放行会覆盖）
+    store_path.write_text('{"experiences": [', encoding="utf-8")   # 截断 JSON
+    with pytest.raises(SystemExit) as ei2:
+        L.main()
+    assert "读取/解析失败" in str(ei2.value) and "真值未知" in str(ei2.value)
+    assert store_path.read_text(encoding="utf-8") == '{"experiences": ['   # 未被空库覆盖
+
+    # ③ 文件缺失 = 真空库（首跑）→ 放行，正常学习并落盘
+    store_path.unlink()
+    L.main()
+    assert json.loads(store_path.read_text(encoding="utf-8"))["experiences"] == []
+
+
 def test_main_bootstraps_active_before_merge_when_enabled(tmp_path, monkeypatch):
     """main 在 merge_candidates【前】调 bootstrap（env 开时）：高采纳全新 type 直接 seed active，
     随后 distill 同 id candidate 经 merge 补 evidence 但不降级 active。env 关时 distill 只产 candidate 无 active。"""
@@ -635,6 +687,7 @@ def test_main_graduates_candidate_when_ab_provided(tmp_path, monkeypatch):
 
 def test_main_retires_harming_experience_and_reports_lift(tmp_path, monkeypatch):
     # c2 main() 接通：active 经验注入反降采纳率 → retire_on_negative_lift 退役 + report 带 lift_summary
+    # 审计 #45：差分退役默认关（时序混杂），本测显式开启锁行为。
     store_path = tmp_path / "exp.json"
     store_path.write_text(json.dumps({"experiences": [
         {"id": "emphasize:PRA-HARM", "finding_type": "PRA-HARM", "kind": "emphasize",
@@ -648,6 +701,7 @@ def test_main_retires_harming_experience_and_reports_lift(tmp_path, monkeypatch)
     monkeypatch.setenv("TOUCHSTONE_CALIB_AGG", str(tmp_path / "agg.json"))
     monkeypatch.setenv("TOUCHSTONE_AB_RESULTS", str(tmp_path / "ab.json"))
     monkeypatch.setenv("TOUCHSTONE_DISTILLER", "counting")
+    monkeypatch.setenv("TOUCHSTONE_RETIRE_NEGATIVE_LIFT", "1")
     report = L.main()
     e = next(x for x in L.load_store(str(store_path))["experiences"]
              if x["finding_type"] == "PRA-HARM")
@@ -1583,11 +1637,67 @@ def test_orchestrator_review_pr_writes_shadow_to_marker_when_enabled(monkeypatch
     assert result2["shadow_types"] == [] and result2["shadow_experience_ids"] == []
 
 
+def test_injected_active_cap_semantics(monkeypatch):
+    """pr-agent 第五轮评审：cap=0 曾因 `if cap and ...` 的 falsy 判断变成"无上限"——
+    设 0 的运维意图是关掉 active 注入（kill-switch）。严格 cap：0=一条不注入；
+    默认 10；超限按证据强度降序截断。"""
+    monkeypatch.delenv("TOUCHSTONE_INJECT_MAX_ACTIVE", raising=False)
+    from touchstone import experience_store as ES
+    mk = lambda i, fires: {"id": f"e{i}", "finding_type": f"T{i}", "kind": "emphasize",
+                           "text": f"x{i}", "status": "active",
+                           "evidence": {"fires": fires, "adopted": 0, "ab_lift": 0.0}}
+    store = {"experiences": [mk(1, 5), mk(2, 50), mk(3, 9)]}
+    assert len(ES._injected_active(store)) == 3                 # 默认 10：不截断
+    monkeypatch.setenv("TOUCHSTONE_INJECT_MAX_ACTIVE", "2")
+    got = ES._injected_active(store)
+    assert [e["id"] for e in got] == ["e2", "e3"]                 # 按证据强度降序取前 2
+    monkeypatch.setenv("TOUCHSTONE_INJECT_MAX_ACTIVE", "0")
+    assert ES._injected_active(store) == []                     # 0=kill-switch（旧版会返回全部 3 条）
+
+
+def test_merge_candidates_malformed_no_crash(capsys):
+    """pr-agent 第三轮评审（审计 #12 同类、候选侧）：缺 id/缺 finding_type/非 dict 候选不再
+    KeyError 崩轮——留痕跳过；规范类型缺 id 的候选由 canonicalize 补齐后正常入池。"""
+    store = {"experiences": []}
+    L.merge_candidates(store, [
+        {"finding_type": "PRA-ACTIVE", "kind": "emphasize", "text": "t"},   # 缺 id → 补齐入池
+        {"kind": "emphasize", "text": "t2"},                                  # 缺 finding_type → 跳过
+        "not-a-dict", None,                                                   # 非 dict → 跳过
+    ], taxonomy=None)
+    assert len(store["experiences"]) == 1
+    e = store["experiences"][0]
+    assert e["id"].endswith("PRA-ACTIVE") and e["finding_type"] == "PRA-ACTIVE"
+    assert "畸形候选" in capsys.readouterr().err                 # 非静默：stderr 留痕
+    # 既有条目 + 只带部分键的更新候选（缺 text/updated_at）→ 保留旧值不 KeyError
+    L.merge_candidates(store, [{"id": e["id"], "finding_type": "PRA-ACTIVE",
+                                "kind": "emphasize"}], taxonomy=None)
+    assert store["experiences"][0]["text"] == "t"
+
+
+def test_collect_injection_pr_target_event_gated(monkeypatch):
+    """pr-agent 第三轮评审：GITHUB_EVENT_NAME=pull_request_target（本仓 workflow 真实触发器）
+    同样命中审计 #44 闸②——marker 不得声称注入了从未注入的经验。"""
+    from touchstone import orchestrator as orc
+    monkeypatch.delenv("TOUCHSTONE_EXPERIENCE_REF", raising=False)
+    monkeypatch.setattr(L, "load_store", lambda: {"experiences": []})
+    monkeypatch.setattr(L, "active_types", lambda s: ["PRA-A"])
+    monkeypatch.setattr(L, "active_ids", lambda s: ["emphasize:::PRA-A"])
+    for ev in ("pull_request_target", "pull_request_review"):
+        monkeypatch.setenv("GITHUB_EVENT_NAME", ev)
+        assert orc._collect_injection() == ([], [], [], []), ev      # PR 族事件：必拦
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "push")
+    assert orc._collect_injection()[0] == ["PRA-A"]                  # 非 PR：放行
+
+
 def test_shadow_failure_does_not_wipe_active_injection(monkeypatch):
     """shadow 取值抛异常不能 wipe 已成功取到的 active injection（pr-agent review #117：生产路径
     vs 实验路径失败隔离）。直接测 _collect_injection——shadow_types 抛异常时返回的 injected_types
     仍保留 active 结果、shadow 为空。"""
     from touchstone import orchestrator as orc
+    # PR CI 环境泄漏防御（审计 #44 闸 + Actions 自动注入 GITHUB_EVENT_NAME=pull_request）：
+    # 不清掉事件名则闸②命中、_collect_injection 短路返空——本测试在本地绿、在 Actions 红。
+    monkeypatch.delenv("GITHUB_EVENT_NAME", raising=False)
+    monkeypatch.delenv("TOUCHSTONE_EXPERIENCE_REF", raising=False)
     monkeypatch.setattr(L, "load_store", lambda: {"experiences": []})
     monkeypatch.setattr(L, "active_types", lambda s: ["PRA-ACTIVE"])
     monkeypatch.setattr(L, "active_ids", lambda s: ["emphasize:::PRA-ACTIVE"])
@@ -2531,7 +2641,7 @@ def test_build_ground_truth_carries_positions_to_gt_entry(tmp_path, monkeypatch)
     def fake_gh(path, token, accept="application/vnd.github+json"):
         if path.startswith("/repos/o/r/pulls?") or "/pulls?" in path:           # 已关闭 PR 列表
             return [{"number": 1, "title": "t", "user": {"login": "author"}, "merged_at": "m"}]
-        if path.endswith("/issues/1/comments?per_page=100"):                      # result marker（合法 JSON）
+        if "issues/1/comments" in path:                      # result marker（合法 JSON）
             return [{"body": ('<!-- touchstone-result: '
                               '{"findings":[{"rule_id":"PRA-A"}],'
                               '"injected_types":["PRA-A"]} -->'),
@@ -2540,7 +2650,7 @@ def test_build_ground_truth_carries_positions_to_gt_entry(tmp_path, monkeypatch)
             return []
         if path.endswith("/pulls/1") and accept.endswith("diff"):
             return "+diff"
-        if path.endswith("/pulls/1/files?per_page=100"):
+        if "/pulls/1/files" in path:
             return [{"filename": "src/a.py"}]
         return []
     monkeypatch.setattr(GT, "_gh_get", fake_gh)
@@ -2570,7 +2680,7 @@ def test_build_ground_truth_drops_findings_with_null_line(tmp_path, monkeypatch)
     def fake_gh(path, token, accept="application/vnd.github+json"):
         if "/pulls?" in path:                                  # 已关闭 PR 列表
             return [{"number": 1, "title": "t", "user": {"login": "author"}, "merged_at": "m"}]
-        if path.endswith("/issues/1/comments?per_page=100"):   # result marker（合法 JSON）
+        if "issues/1/comments" in path:   # result marker（合法 JSON）
             return [{"body": ('<!-- touchstone-result: '
                               '{"findings":[{"rule_id":"PRA-A"}],'
                               '"injected_types":["PRA-A"]} -->'),
@@ -2579,7 +2689,7 @@ def test_build_ground_truth_drops_findings_with_null_line(tmp_path, monkeypatch)
             return []
         if path.endswith("/pulls/1") and accept.endswith("diff"):
             return "+diff"
-        if path.endswith("/pulls/1/files?per_page=100"):
+        if "/pulls/1/files" in path:
             return [{"filename": "src/a.py"}]
         return []
     monkeypatch.setattr(GT, "_gh_get", fake_gh)
@@ -3292,7 +3402,8 @@ def test_main_bootstrap_reseeds_taxonomy_after_bootstrap(tmp_path, monkeypatch):
     # PRA-NEWTYPE 不在快照 → 候选被 fail-closed 丢弃，evidence 停留在 seed 的 {"seeded": True}。
     (e,) = [e for e in store["experiences"] if e["finding_type"] == "PRA-NEWTYPE"]
     assert e["status"] == "active" and e["source"] == "bootstrap"    # active 不被候选降级
-    assert e["evidence"] == {"fires": 20, "adoption": 0.9}           # 蒸馏证据并入 = 没被丢
+    # 审计 #12：merge update 分支保留旧证据的独有键（溯源标记不随蒸馏并入而丢）
+    assert e["evidence"] == {"fires": 20, "adoption": 0.9, "seeded": True}
 
 
 def test_main_taxonomy_staleness_no_bootstrap_no_reseeds(tmp_path, monkeypatch):

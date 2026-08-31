@@ -48,7 +48,8 @@ def _ok_inputs():
     return dict(risk=risk, findings=[], loop_decision="converged", gate="success",
                 autonomy_state={"tripped": False},
                 graduated_classes={"low|code|none|none"}, cls="low|code|none|none",
-                author_trusted=True)        # happy-path 前提：可信作者（默认已改 fail-closed）
+                author_trusted=True, base_fresh=True)
+    # happy-path 前提：可信作者 + 基线已验新（审计 #39 后两者默认都 fail-closed）
 
 
 def test_decide_disabled_by_default():
@@ -186,7 +187,8 @@ def _ok(**kw):
     base = dict(risk={"risk_band": "low"}, findings=[], loop_decision="converged",
                 gate="success", autonomy_state={"tripped": False},
                 graduated_classes={_CLS}, cls=_CLS, enabled=True, shadow=False,
-                author_trusted=True)        # happy-path 前提：可信作者（默认已改 fail-closed）
+                author_trusted=True, base_fresh=True)
+    # happy-path 前提：可信作者 + 基线已验新（审计 #39 后两者默认都 fail-closed）
     base.update(kw); return base
 
 
@@ -225,12 +227,15 @@ def test_graduate_from_calibration_and_decision_inputs():
 
 # ============ 第七道闸·基线新鲜度（merge skew 防护）回归 ============
 def test_base_fresh_gate_blocks_stale_base():
-    """基线过期（base_fresh=False）→ 即便其余闸全绿也拒绝自动放行；None（未评估）保持兼容不拦。"""
+    """审计 #39：基线闸只认显式 True——False（已确认过期）与 None（评估失败/未评估）都拒放行。
+    旧版 None 放行（fail-open）：check_base_fresh 两个 API 一起挂时，自动合会基于
+    "未知基线"执行；自动放行链路上"评不了"必须当"不新鲜"。"""
     from touchstone import autonomy as A
     kw = dict(risk={"risk_band": "low"}, findings=[], loop_decision="converged",
               gate="success", autonomy_state={}, graduated_classes={"low|code"},
               cls="low|code", enabled=True, shadow=False, author_trusted=True)
-    assert A.decide_auto_merge(**kw, base_fresh=None)["merge"] is True     # 未评估：兼容旧行为
+    dec = A.decide_auto_merge(**kw, base_fresh=None)
+    assert dec["merge"] is False and "base_fresh" in dec["failed"]         # 未评估：拒放行（fail-closed）
     dec = A.decide_auto_merge(**kw, base_fresh=False)
     assert dec["merge"] is False and "base_fresh" in dec["failed"]         # 过期：拒放行
     assert A.decide_auto_merge(**kw, base_fresh=True)["merge"] is True
