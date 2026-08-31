@@ -132,6 +132,7 @@ def test_run_unreviewed_missing_attr_and_cap(monkeypatch):
                         reviewer_cls=_mk_reviewer(remaining=[f"f{i}.py" for i in range(150)]))
     out = R.run("https://github.com/o/r/pull/1", "review")
     assert len(out["review"]["_unreviewed_files"]) == 100
+    assert out["review"]["_unreviewed_total"] == 150     # 截断保真：总数不随列表截小
 
 
 def test_run_tool_exception_degrades_llm_failed(monkeypatch):
@@ -164,11 +165,23 @@ def test_unreviewed_not_counted_as_engaged_content():
     assert RP._extract_engaged(data) is False
 
 
+def test_extract_unreviewed_total_defense():
+    """总数键：int 原样、bool 拒收（isinstance(True,int)）、负数/畸形 → None 回退 len。"""
+    raw = {"review": {"_unreviewed_total": 150}}
+    assert RP._extract_unreviewed_total(raw) == 150
+    assert RP._extract_unreviewed_total({"review": {"_unreviewed_total": True}}) is None
+    assert RP._extract_unreviewed_total({"review": {"_unreviewed_total": -1}}) is None
+    assert RP._extract_unreviewed_total({"review": {"_unreviewed_total": "9"}}) is None
+    assert RP._extract_unreviewed_total({}) is None
+
+
 def test_fetch_sets_unreviewed_meta():
     """fetch 出口把覆盖面清单写进 _LAST_META（注入路径同子进程路径同口径）。"""
     prov = RP.PRAgentProvider()
-    prov.fetch({"pr_agent_output": {"review": {"_unreviewed_files": ["x.py"], "key_issues_to_review": []}}})
+    prov.fetch({"pr_agent_output": {"review": {"_unreviewed_files": ["x.py"], "_unreviewed_total": 9,
+                                           "key_issues_to_review": []}}})
     assert RP.invoke_meta().get("unreviewed_files") == ["x.py"]
+    assert RP.invoke_meta().get("unreviewed_total") == 9
 
 
 # ---------------- 3. orchestrator（注入端到端）----------------
@@ -178,11 +191,14 @@ def test_review_pr_banners_unreviewed_files():
     diff = "diff --git a/f.py b/f.py\n--- a/f.py\n+++ b/f.py\n@@ -0,0 +1,2 @@\n+a\n+b\n"
     pr = {"diff": diff, "pr_agent_output": {
         "code_suggestions": [], "review": {"key_issues_to_review": [],
-                                           "_unreviewed_files": [f"big{i}.py" for i in range(7)]}}}
+                                           "_unreviewed_files": [f"big{i}.py" for i in range(7)],
+                                           "_unreviewed_total": 9}}}
     out = orc.review_pr(pr, {}, {})
     assert out["unreviewed_files"] == [f"big{i}.py" for i in range(7)]
+    assert out["unreviewed_total"] == 9
     note = [n for n in out["llm_notes"] if "评审覆盖面" in n]
-    assert note and "7 个文件" in note[0] and "big0.py" in note[0] and "等" in note[0]
+    # 总数按真值 9 报（列表只有 7）：截断/部分清单不得把覆盖缺口报小
+    assert note and "9 个文件" in note[0] and "big0.py" in note[0] and "等" in note[0]
 
 
 def test_review_pr_no_banner_when_fully_covered():
@@ -193,4 +209,5 @@ def test_review_pr_no_banner_when_fully_covered():
         "code_suggestions": [], "review": {"key_issues_to_review": [], "_unreviewed_files": []}}}
     out = orc.review_pr(pr, {}, {})
     assert out["unreviewed_files"] == []
+    assert out["unreviewed_total"] == 0
     assert not [n for n in out["llm_notes"] if "评审覆盖面" in n]

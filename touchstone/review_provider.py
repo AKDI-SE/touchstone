@@ -292,7 +292,8 @@ def _extract_json(stdout):
 # 都排除它们——否则内部标志键（如 _engaged=True、非空 _raw_excerpt）会被当成"评审段"灌水
 # engaged 计数（test_silent_failure 锁：仅 _engaged=True 无真段 → 旧实现误判 engaged=True →
 # 假 review_reliable）。_unreviewed_files 同理（pr-agent 0.44 覆盖面清单，非评审内容段）。
-_NONCONTENT_REVIEW_KEYS = ("key_issues_to_review", "_engaged", "_raw_excerpt", "_unreviewed_files")
+_NONCONTENT_REVIEW_KEYS = ("key_issues_to_review", "_engaged", "_raw_excerpt",
+                             "_unreviewed_files", "_unreviewed_total")
 _EXCERPT_SKIP_KEYS = _NONCONTENT_REVIEW_KEYS   # 同义别名，保持 excerpt 侧引用名
 
 
@@ -385,6 +386,18 @@ def _extract_unreviewed(data):
         return []
     # 只收 str：str(None)=="None" 会把空值伪装成文件名（测试锁）
     return [f.strip() for f in val if isinstance(f, str) and f.strip()]
+
+
+def _extract_unreviewed_total(data):
+    """覆盖面【真】总数（runner 在截断列表之外单独透传）：缺失/非计数 → None，
+    调用方回退 len(列表)——老协议（无总数键）语义不退化。"""
+    if not isinstance(data, dict):
+        return None
+    review = data.get("review")
+    if not isinstance(review, dict):
+        return None
+    val = review.get("_unreviewed_total")
+    return val if isinstance(val, int) and not isinstance(val, bool) and val >= 0 else None
 
 
 def load_nmap(repo_dir="."):
@@ -792,6 +805,7 @@ class PRAgentProvider:
         # 评审覆盖面：token 预算裁掉、未进 LLM 评审的文件（pr-agent 0.44，见 _extract_unreviewed）。
         # 绿灯结论的可信边界——非空时 orchestrator 横幅点名，防"看似全覆盖的绿灯"被过度解读。
         _LAST_META["unreviewed_files"] = _extract_unreviewed(data)
+        _LAST_META["unreviewed_total"] = _extract_unreviewed_total(data)
         return parse_pr_agent(data)
 
     def _invoke(self, pr_ctx):

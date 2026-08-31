@@ -589,8 +589,11 @@ def run(pr_url, mode, extra_instructions=None):
                 # dict（_degraded 载荷结构上不可能携带本键），仍让"覆盖面"只在评审产出成立
                 # 时存在——失败轮次谈覆盖面无意义，且防未来重构把降级返回改成透传 out。
                 _rfl = getattr(instances["rv"], "remaining_files_list", None) or []
-                out["review"]["_unreviewed_files"] = [f.strip() for f in _rfl
-                                                     if isinstance(f, str) and f.strip()][:100]
+                _clean = [f.strip() for f in _rfl if isinstance(f, str) and f.strip()]
+                out["review"]["_unreviewed_files"] = _clean[:100]
+                # 截断保真（PR #208 第二轮评审意见）：列表上限 100 防畸形巨表，但总数必须
+                # 原样透出——横幅/产物按真值报，"截到 100"不得把覆盖缺口报小。
+                out["review"]["_unreviewed_total"] = len(_clean)
             _ix(f"工具执行完成: code_suggestions={len(out['code_suggestions'])} "
                 f"key_issues={len(out['review']['key_issues_to_review'])}")
         except Exception as e:   # LLM 端点/鉴权/超时/解析失败等 —— 不静默吞掉，上报为 llm_failed
