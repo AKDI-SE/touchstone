@@ -17,6 +17,7 @@ import secrets
 import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 
 TEST_TIMEOUT = 300
@@ -63,7 +64,9 @@ def _run_tests(work_dir, test_code):
     with open(tf, "w", encoding="utf-8") as f:
         f.write(test_code)
     try:
-        r = subprocess.run(["python", "-m", "pytest", "-q", "_touchstone_spec_test.py"],
+        # 审计 #29：sys.executable 替代裸 "python"——PATH 无 python（仅 python3，如本仓 CI 的
+        # 部分 runner 镜像/Arch 系环境）时 FileNotFoundError 直接打穿 verify 门。
+        r = subprocess.run([sys.executable, "-m", "pytest", "-q", "_touchstone_spec_test.py"],
                            cwd=work_dir, capture_output=True, encoding="utf-8", errors="replace", timeout=TEST_TIMEOUT)
         return r.returncode == 0, (r.stdout + r.stderr)[-2000:]
     except subprocess.TimeoutExpired:
@@ -83,7 +86,7 @@ def _run_coverage_subprocess(work_dir, pytest_args):
     cov_file = os.path.join(work_dir, ".coverage")
     if os.path.exists(cov_file):
         os.remove(cov_file)          # 清旧数据——防上次 run 的 stale coverage 误导
-    r = subprocess.run(["python", "-m", "coverage", "run", "--source=."] + pytest_args,
+    r = subprocess.run([sys.executable, "-m", "coverage", "run", "--source=."] + pytest_args,
                        cwd=work_dir, capture_output=True, encoding="utf-8", errors="replace",
                        timeout=TEST_TIMEOUT)
     # 测试失败（pytest 非零退出）时 coverage 仍会写出 .coverage——这是有效覆盖数据，不应因
@@ -101,7 +104,10 @@ def _run_coverage_subprocess(work_dir, pytest_args):
 def _coverage_ratio(cov, py_files, changed_lines=None):
     """从 coverage.Coverage 对象算覆盖率。改动行级（若有）优先，否则文件级。
     用 cov.analysis2（Coverage 对象方法）而非 data.missing_lines（CoverageData 没有
-    此方法，会 AttributeError 被 except 吞掉静默返回 0.0——pr-agent 审计发现）。"""
+    此方法，会 AttributeError 被 except 吞掉静默返回 0.0——pr-agent 审计发现）。
+    审计 #33：coverage 对未测量文件抛自家异常族（coverage.exceptions.NoDataError 等），
+    非稳定类型——`(KeyError, Exception)` 元组里 Exception 已吞掉 KeyError，写法误导；
+    收窄为裸 `except Exception` + 注明捕获的是 coverage 自家异常族。"""
     if changed_lines:
         coverable = covered = 0
         for path, lines in (changed_lines or {}).items():
@@ -110,23 +116,32 @@ def _coverage_ratio(cov, py_files, changed_lines=None):
             line_set = set(lines) if lines else set()
             try:
                 _, statements, _, missing, _ = cov.analysis2(path)
-            except (KeyError, Exception):
+            except Exception:            # coverage 自家异常族（未测量文件等）→ 无数据，跳过
                 continue
             executed = set(statements) - set(missing)
             cov_set = (set(statements) | set(missing)) & line_set
             coverable += len(cov_set)
             covered += len(executed & cov_set)
         return (covered / coverable) if coverable else 1.0
+    # 审计 #30：零语句文件（空文件/纯注释）不再按 0.0 计入平均——与上行 changed_lines 路径
+    # 的 coverable==0 → 1.0 统一口径（"无可覆盖"≠"未覆盖"）。measured 区分两种 ratios 为空：
+    # 全部文件未被 coverage 测到（→0.0，诚实反映没跑到）vs 全部零语句（→1.0，无可覆盖）。
     ratios = []
+    measured = 0
     for f in py_files:
         try:
             _, statements, _, missing, _ = cov.analysis2(f)
-        except (KeyError, Exception):
+        except Exception:                # coverage 自家异常族（未测量文件等）→ 无数据，跳过
             continue
+        measured += 1
         total = len(set(statements) | set(missing))
+        if not total:
+            continue                     # 零语句文件：不拉低平均
         executed = len(set(statements) - set(missing))
-        ratios.append(executed / total if total else 0.0)
-    return sum(ratios) / len(ratios) if ratios else 0.0
+        ratios.append(executed / total)
+    if not measured:
+        return 0.0                       # 没有任何文件有覆盖数据——诚实 0.0，不是"无可覆盖"
+    return sum(ratios) / len(ratios) if ratios else 1.0
 
 
 def _changed_file_coverage(work_dir, test_code, changed_files, changed_lines=None):
@@ -324,21 +339,38 @@ def _ast_mutants(src):
     return mutants
 
 
-def _mutation_check(work_dir, test_code, changed_files):
-    """变异充分性：对改动的 .py 文件注入 AST 级变异，看生成的独立验收测试能否杀掉。
-    击杀率 = 测试挂掉的变异数 / 注入数。"""
+def _mutation_check(work_dir, test_code, changed_files, max_mutants=None):
+    """变异充分性：对改动的 .py 文件注入 AST 级变异，看测试能否杀掉。
+    击杀率 = 测试挂掉的变异数 / 注入数。
+
+    审计 #32：test_code 为 None（regression/full_suite 路径）时不再静默返回 None——
+    以【仓库自有全套件】为击杀 oracle（与 Maven 侧 PIT 跑整套测试同语义）。全套件
+    逐变异体代价高，max_mutants 截断预算（调用方传，默认无限制保持 spec 路径行为）。
+    审计 #31：orig 读取包 try——单个文件读失败（权限/编码）跳过该文件，不再 OSError
+    打穿整个 verify；句柄用 with 关闭。"""
+    def _oracle():
+        if test_code:
+            return _run_tests(work_dir, test_code)
+        return _run([sys.executable, "-m", "pytest", "-q"], work_dir)   # 全套件 oracle
     applied = killed = 0
     for fp in [f for f in changed_files if f.endswith(".py")]:
         path = os.path.join(work_dir, fp)
         if not os.path.exists(path):
             continue
-        orig = open(path, encoding="utf-8").read()
+        try:
+            with open(path, encoding="utf-8") as fh:
+                orig = fh.read()
+        except OSError as e:
+            print(f"[verify] 变异源文件读取失败（跳过该文件）: {path}: {e}", file=sys.stderr)
+            continue
         try:
             for mut in _ast_mutants(orig):
+                if max_mutants is not None and applied >= max_mutants:
+                    break                    # 全套件 oracle 的预算截断（截断即统计口径变小，分数仍为已注入部分的真实击杀率）
                 applied += 1
                 with open(path, "w", encoding="utf-8") as f:
                     f.write(mut)               # 注入一个变异
-                passed, _ = _run_tests(work_dir, test_code)
+                passed, _ = _oracle()
                 if not passed:                 # 测试挂掉 = 变异被杀
                     killed += 1
         finally:
@@ -367,7 +399,7 @@ class PythonRunner:
     supports_spec_blind = True
 
     def run_suite(self, work_dir):
-        return _run(["python", "-m", "pytest", "-q"], work_dir)
+        return _run([sys.executable, "-m", "pytest", "-q"], work_dir)   # 审计 #29：sys.executable
 
     def changed_coverage(self, work_dir, changed_files, changed_lines=None):
         return _suite_coverage_python(work_dir, changed_files, changed_lines)
@@ -376,7 +408,11 @@ class PythonRunner:
         ext = external_mutation_score(work_dir, changed_files)
         if ext is not None:
             return ext
-        return _mutation_check(work_dir, test_code, changed_files) if test_code else None
+        # 审计 #32：test_code=None（regression/full_suite）不再静默 return None——那等于
+        # 变异档整个蒸发、mut_ok 恒 True，弱回归测试照样 adequate。改以全套件为 oracle
+        # 真跑（max_mutants 截断预算：全套件逐变异体的运行代价远高于单文件 spec 测试）。
+        return _mutation_check(work_dir, test_code, changed_files,
+                               max_mutants=None if test_code else 10)
 
     def extract_interface(self, work_dir, changed_files):
         return _extract_interface(work_dir, changed_files)
@@ -435,39 +471,80 @@ class MavenRunner:
 
 
 def select_runner(repo_dir, changed_files):
-    if os.path.exists(os.path.join(repo_dir, "pom.xml")) or \
-       any(f.endswith(".java") for f in (changed_files or [])):
+    """审计 #36：按【本 PR 改了什么】优先于【仓库长什么样】——polyglot 仓（Java 主 +
+    Python 工具目录）里只改 .py 的 PR 旧版会因根 pom.xml 被派给 MavenRunner，对
+    Python 改动跑 mvn → 全是噪声。顺序：改 .java → Maven；改 .py → Python；
+    都没改但仓有 pom.xml（如纯资源/配置 PR）→ Maven；否则 None。"""
+    files = changed_files or []
+    if any(f.endswith(".java") for f in files):
         return MavenRunner()
-    if any(f.endswith(".py") for f in (changed_files or [])):
+    if any(f.endswith(".py") for f in files):
         return PythonRunner()
+    if os.path.exists(os.path.join(repo_dir, "pom.xml")):
+        return MavenRunner()
     return None     # 非 Python/Java：verify 参考实现不支持 → verify_change 给中性结果，不再误生成 pytest
 
 
 
 # --- JaCoCo 改动覆盖率 / PIT 变异率解析（Maven）------------------------------
+def _jacoco_sourcefiles(root):
+    """jacoco.xml → [(package_name, sourcefile_element)]。审计 #37 的基础遍历。
+    无 <package> 包裹的裸 <sourcefile>（default 包/简化 fixture）按包名 "" 处理。"""
+    out = []
+    for pkg in root.iter("package"):
+        for sf in pkg.iter("sourcefile"):
+            out.append((pkg.get("name") or "", sf))
+    if not out:
+        for sf in root.iter("sourcefile"):
+            out.append(("", sf))
+    return out
+
+
+def _jacoco_pkg_match(changed_java, pkg, sf_name):
+    """包限定匹配（审计 #37）：改动文件路径按 `pkg/name` 后缀匹配；default 包（pkg=""）
+    回落裸 basename。返回 (strict_hit, loose_hit)：strict=包路径命中，loose=仅 basename
+    命中（供"报告无包信息/调用方给裸文件名"的旧口径兜底）。"""
+    for f in changed_java:
+        if pkg:
+            key = f"{pkg}/{sf_name}"
+            if f == key or f.endswith("/" + key):
+                return True, True
+        if os.path.basename(f) == sf_name:
+            return False, True
+    return False, False
+
+
 def _jacoco_changed_coverage(work_dir, changed_files):
     import glob
     import xml.etree.ElementTree as ET
-    java = {os.path.basename(f) for f in changed_files if f.endswith(".java")}
-    if not java:
+    changed_java = [f for f in (changed_files or []) if f.endswith(".java")]
+    if not changed_java:
         return 1.0
     reports = (glob.glob(os.path.join(work_dir, "**/target/site/jacoco/jacoco.xml"), recursive=True)
                + glob.glob(os.path.join(work_dir, "**/target/site/jacoco-aggregate/jacoco.xml"),
                            recursive=True))
-    covered = missed = 0
+    # 审计 #37：同名类跨包（util/Common.java 在两个包各一份）时裸 basename 匹配会把两个包
+    # 的计数都算进改动覆盖 → 虚高/虚低。优先包限定路径匹配；无任何 strict 命中时才回落
+    # basename 口径（旧调用方传裸文件名的兼容路径）。
+    strict = {"covered": 0, "missed": 0}
+    loose = {"covered": 0, "missed": 0}
     for rep in reports:
         try:
             root = ET.parse(rep).getroot()
         except ET.ParseError:
             continue
-        for sf in root.iter("sourcefile"):
-            if sf.get("name") in java:
-                for ctr in sf.findall("counter"):
-                    if ctr.get("type") == "LINE":
-                        covered += int(ctr.get("covered", 0))
-                        missed += int(ctr.get("missed", 0))
-    total = covered + missed
-    return (covered / total) if total else 0.0
+        for pkg, sf in _jacoco_sourcefiles(root):
+            s_hit, l_hit = _jacoco_pkg_match(changed_java, pkg, sf.get("name"))
+            if not (s_hit or l_hit):
+                continue
+            for ctr in sf.findall("counter"):
+                if ctr.get("type") == "LINE":
+                    dst = strict if s_hit else loose
+                    dst["covered"] += int(ctr.get("covered", 0))
+                    dst["missed"] += int(ctr.get("missed", 0))
+    tally = strict if (strict["covered"] + strict["missed"]) > 0 else loose
+    total = tally["covered"] + tally["missed"]
+    return (tally["covered"] / total) if total else 0.0
 
 
 def _pit_has_report(work_dir):
@@ -569,16 +646,27 @@ def _basename_lines(changed_lines):
     return out
 
 
-def _jacoco_line_ratio(roots, basename_lines):
-    """ET 根列表 + {basename: 改动行} → 改动行覆盖率(ci>0 视为已覆盖)。纯函数。"""
+def _jacoco_line_ratio(roots, basename_lines, path_lines=None):
+    """ET 根列表 + {basename: 改动行} → 改动行覆盖率(ci>0 视为已覆盖)。纯函数。
+    审计 #37：path_lines（{完整路径: 改动行}）给出时优先包限定 `pkg/name` 后缀匹配，
+    同名类跨包不再互相串行号；无命中回落 basename 口径（旧调用方/测试兼容）。"""
     coverable = covered = 0
     for root in roots:
-        for sf in root.iter("sourcefile"):
-            want = basename_lines.get(sf.get("name"))
+        for pkg, sf in _jacoco_sourcefiles(root):
+            want = None
+            if path_lines and pkg:
+                key = f"{pkg}/{sf.get('name')}"
+                for p, ls in path_lines.items():
+                    if p == key or p.endswith("/" + key):
+                        want = ls
+                        break
+            if want is None:
+                want = basename_lines.get(sf.get("name"))
             if not want:
                 continue
+            wset = set(want) if not isinstance(want, set) else want
             for ln in sf.findall("line"):
-                if int(ln.get("nr", 0)) in want:
+                if int(ln.get("nr", 0)) in wset:
                     coverable += 1
                     if int(ln.get("ci", 0)) > 0:
                         covered += 1
@@ -597,7 +685,8 @@ def _jacoco_changed_line_coverage(work_dir, changed_files, changed_lines):
             roots.append(ET.parse(rep).getroot())
         except ET.ParseError:
             continue
-    return _jacoco_line_ratio(roots, _basename_lines(changed_lines))
+    path_lines = {p: ls for p, ls in (changed_lines or {}).items() if p.endswith(".java")}
+    return _jacoco_line_ratio(roots, _basename_lines(changed_lines), path_lines)
 
 
 # --- 独立验收测试 JUnit 放置（Java）：解析 package/class 放入 src/test/java ----------

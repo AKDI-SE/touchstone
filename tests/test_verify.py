@@ -754,10 +754,12 @@ def test_python_runner_mutation_branches(monkeypatch, tmp_path):
     assert r.mutation(str(tmp_path), ["a.py"], test_code="t") == 0.7
     # 外部返回 None + 有 test_code → _mutation_check
     monkeypatch.setattr(R, "external_mutation_score", lambda wd, cf: None)
-    monkeypatch.setattr(R, "_mutation_check", lambda wd, tc, cf: 0.4)
+    monkeypatch.setattr(R, "_mutation_check", lambda wd, tc, cf, **kw: 0.4)
     assert r.mutation(str(tmp_path), ["a.py"], test_code="t") == 0.4
-    # 外部 None + 无 test_code → None
-    assert r.mutation(str(tmp_path), ["a.py"]) is None
+    # 审计 #32：外部 None + 无 test_code（regression/full_suite）→ 以全套件为 oracle 真跑
+    # 变异（max_mutants 预算），不再静默 None（变异档蒸发 → mut_ok 恒 True）。
+    monkeypatch.setattr(R, "_mutation_check", lambda wd, tc, cf, **kw: 0.5)
+    assert r.mutation(str(tmp_path), ["a.py"]) == 0.5
 
 
 def test_python_runner_run_generated_and_cover(monkeypatch, tmp_path):
