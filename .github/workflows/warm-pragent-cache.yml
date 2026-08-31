@@ -81,6 +81,10 @@ jobs:
         # 目录从 pip 自身推导（尊重 PIP_CACHE_DIR/XDG 约定，不硬编码发行版默认），
         # 推导失败回落 Linux 默认。实测（workflow_dispatch run 33365981520，命中路径）：
         # post-save 正常存出 setup-python-…-pip-989de01c… 条目，job 绿。
+        # 解释器用 setup-python 的 python-path 输出（与 cache: pip 的计算同一解释器，
+        # 不受后续 PATH 漂移影响）；tail+去空白防「输出为空/多行」——空则回落默认。
         if: steps.pv.outputs.cache-hit == 'true'
         run: |
-          mkdir -p "$(python -m pip cache dir 2>/dev/null || echo "$HOME/.cache/pip")"
+          d="$("${{ steps.py.outputs.python-path }}" -m pip cache dir 2>/dev/null | tail -n 1)"
+          d="${d//[[:space:]]/}"
+          mkdir -p "${d:-$HOME/.cache/pip}"
