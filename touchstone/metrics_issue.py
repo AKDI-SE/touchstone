@@ -209,14 +209,25 @@ def _maybe_comment(record, ctx, env, gh_call, number):
 
 # ---- issue 去重（按 label 找已开看板；body 含本 sink marker 即命中）------------------
 def _find_issue(ctx, label, gh_call):
-    """返回 (number, body) 或 (None, "")。按 label 列已开 issue，命中 marker 的那个即看板。"""
+    """返回 (number, body) 或 (None, "")。按 label 列已开 issue，命中 marker 的那个即看板。
+    审计 #47：翻页取全——issues API 默认 per_page=30，同 label 开 issue >30 时既有看板
+    落在第 2 页 → 判"无" → 每轮重复开新看板（去重失效、看板刷屏）。"""
     owner, repo, token = ctx["owner"], ctx["repo"], ctx["token"]
     # label 来自 env（可含空格/特殊字符，如自定义 "my metrics"）；须 URL-encode，否则
     # 查询串 malformed → GET 失败被 run() 的 try/except 吞成 "failed:..." → 看板静默失败。
-    found = gh_call("GET",
-                    f"/repos/{owner}/{repo}/issues?state=open&labels={quote(label, safe='')}",
-                    token) or []
-    for i in found:
+    labels_q = quote(label, safe="")
+    out, page = [], 1
+    while page <= 20:
+        found = gh_call("GET",
+                        f"/repos/{owner}/{repo}/issues?state=open&labels={labels_q}"
+                        f"&page={page}&per_page=100", token) or []
+        if not isinstance(found, list) or not found:
+            break
+        out.extend(found)
+        if len(found) < 100:
+            break
+        page += 1
+    for i in out:
         body = i.get("body") or ""
         if _OPEN in body:
             return i.get("number"), body
