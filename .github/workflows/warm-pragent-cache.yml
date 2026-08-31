@@ -71,3 +71,22 @@ jobs:
         with:
           path: .pragent-venv
           key: pragent-venv-${{ runner.os }}-${{ runner.arch }}-py${{ steps.pyminor.outputs.minor }}-pragent${{ env.PRA_VERSION }}-lock${{ hashFiles('pragent-constraints.txt') }}-v2
+      - name: Keep pip cache dir present on venv-cache-hit runs
+        # 缓存命中路径的隐藏红：venv 命中 → Build venv 跳过 → 本轮无任何 pip 安装 →
+        # pip 缓存目录从未创建 → setup-python(cache: pip) 的 post-save 以
+        # "Cache folder path is retrieved for pip but doesn't exist on disk" 硬失败。
+        # 自 2026-08-12 venv 缓存进入稳定命中期后，warm 连续 7 次运行全红（run 8–14）。
+        # mkdir 保底让存在性检查通过：键不存在则存入一次（近乎空的）条目，键已存在时
+        # reserve 冲突在 actions/cache 里仅 warning——两种情况 job 均绿。
+        # 目录从 pip 自身推导（尊重 PIP_CACHE_DIR/XDG 约定，不硬编码发行版默认），
+        # 推导失败回落 Linux 默认。实测（workflow_dispatch run 33365981520，命中路径）：
+        # post-save 正常存出 setup-python-…-pip-989de01c… 条目，job 绿。
+        # 解释器用 setup-python 的 python-path 输出（与 cache: pip 的计算同一解释器，
+        # 不受后续 PATH 漂移影响）；tail+去空白防「输出为空/多行」——空则回落默认。
+        if: steps.pv.outputs.cache-hit == 'true'
+        run: |
+          d="$("${{ steps.py.outputs.python-path }}" -m pip cache dir 2>/dev/null | tail -n 1)"
+          d="${d#"${d%%[![:space:]]*}"}"     # 仅去【前导】空白：内部含空格的合法路径不被破坏
+          d="${d%"${d##*[![:space:]]}"}"     # 仅去【尾随】空白
+          case "$d" in /*) ;; *) d="" ;; esac  # 仅接受绝对路径：相对路径 mkdir 会落到 workspace
+          mkdir -p "${d:-$HOME/.cache/pip}"
