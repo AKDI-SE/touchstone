@@ -19,6 +19,7 @@ def test_run_relay_not_completed(monkeypatch):
 def test_run_service(monkeypatch):
     class _R:
         status_code = 200
+        headers = {}
         def raise_for_status(self): pass
         def json(self): return {"passed": True, "summary": "ok"}
     monkeypatch.setenv("TOUCHSTONE_SERVICE_ALLOW", "x")     # 审计 #40：URL 白名单豁免测试假主机

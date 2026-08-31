@@ -301,9 +301,12 @@ _PR = {"owner": "o", "repo": "r", "sha": "s", "token": "t", "files": []}
 
 
 class _FakeResp:
-    """假 requests.Response：只实现 _run_service 用到的 raise_for_status / json。"""
-    def __init__(self, payload):
+    """假 requests.Response：只实现 _run_service 用到的 raise_for_status / json /
+    status_code / headers（第九轮重定向跳循环）。"""
+    def __init__(self, payload, status_code=200, headers=None):
         self._p = payload
+        self.status_code = status_code
+        self.headers = headers or {}
 
     def raise_for_status(self):
         return None
@@ -504,6 +507,7 @@ def test_service_pins_dns_against_rebinding(monkeypatch):
     seen = {}
     class _R:
         status_code = 200
+        headers = {}
         def raise_for_status(self): pass
         def json(self): return {"passed": True, "summary": "ok"}
     def fake_post(url, json=None, timeout=None, **k):
@@ -525,6 +529,63 @@ def test_service_pins_dns_against_rebinding(monkeypatch):
     assert posted["n"] == 0                                 # 未发请求
 
 
+# ---------------- pr-agent 第九轮：豁免主重定向逐跳过闸 ----------------
+def test_service_redirect_hops_revalidated(monkeypatch):
+    """豁免放开重定向（第七轮）≠ 落点免检（第九轮）：豁免只豁免明示的 host[:port]，
+    被入侵/误配的豁免服务 302 到元数据/内网落点仍是 SSRF 借道面。跳循环里每一跳
+    Location 先过 _service_url_allowed，过闸才发下一跳——payload 永不发给未校验目标。"""
+    # ① 豁免主 → 302 到白名单外的内网主机：拒绝，且只发了第一跳
+    hits = []
+    def redir_post(url, json=None, timeout=None, **k):
+        hits.append(url)
+        return _FakeResp(None, status_code=302, headers={"Location": "http://evil.corp/x"})
+    monkeypatch.setattr(checks.requests, "post", redir_post)
+    passed, summary = checks._run_service(_PR, {"url": "http://a"})
+    assert passed is None and "落点不过闸" in summary
+    assert hits == ["http://a"]                             # payload 未发给 evil.corp
+
+    # ② 豁免主 → 302 到另一豁免主（相对 Location）：逐跳跟随，最终结果取末跳
+    hits2 = []
+    def follow_post(url, json=None, timeout=None, **k):
+        hits2.append(url)
+        if url == "http://a":
+            return _FakeResp(None, status_code=302, headers={"Location": "/v2/hook"})  # 相对落点
+        return _FakeResp({"passed": True, "summary": "final"})
+    monkeypatch.setattr(checks.requests, "post", follow_post)
+    passed, summary = checks._run_service(_PR, {"url": "http://a"})
+    assert passed is True and summary == "final"
+    assert hits2 == ["http://a", "http://a/v2/hook"]        # 相对 Location 以当前 URL 为基
+
+
+def test_service_redirect_loop_capped(monkeypatch):
+    """重定向成环（或链超长）必须封顶退出，不得无限跟随。"""
+    hits = []
+    def loop_post(url, json=None, timeout=None, **k):
+        hits.append(url)
+        return _FakeResp(None, status_code=302, headers={"Location": "loop"})
+    monkeypatch.setattr(checks.requests, "post", loop_post)
+    passed, summary = checks._run_service(_PR, {"url": "http://a"})
+    assert passed is None and "跳数超限" in summary
+    assert len(hits) == 6                                   # 初始 1 跳 + 上限 5 跳
+
+
+def test_service_non_exempt_redirect_blocked(monkeypatch):
+    """非豁免主维持重定向禁令（第七轮既有语义）：公网 https 主机 302 也拒——
+    落点不受任何校验约束，跟随即 SSRF 借道面。"""
+    import socket as S
+    pub = [(S.AF_INET, S.SOCK_STREAM, 6, "", ("93.184.216.34", 443))]
+    monkeypatch.delenv("TOUCHSTONE_SERVICE_ALLOW", raising=False)
+    monkeypatch.setattr(S, "getaddrinfo", lambda h, *a, **k: pub)
+    hits = []
+    def redir_post(url, json=None, timeout=None, **k):
+        hits.append(url)
+        return _FakeResp(None, status_code=302, headers={"Location": "http://evil.corp/x"})
+    monkeypatch.setattr(checks.requests, "post", redir_post)
+    passed, summary = checks._run_service(_PR, {"url": "https://pub.example/hook"})
+    assert passed is None and "非豁免主禁止重定向" in summary
+    assert hits == ["https://pub.example/hook"]
+
+
 def test_service_pin_serialized_under_concurrent_checks(monkeypatch):
     """pr-agent 第四轮 PRA-SECURITY：run_checks 用 ThreadPoolExecutor 并发——两个 service check
     同时进/出 _pin_dns 会互相覆盖还原（A exit 还原掉 B 的 pin / B exit 装回 A 的陈旧闭包，
@@ -544,6 +605,7 @@ def test_service_pin_serialized_under_concurrent_checks(monkeypatch):
     seen = {}
     class _R:
         status_code = 200
+        headers = {}
         def raise_for_status(self): pass
         def json(self): return {"passed": True, "summary": "ok"}
     def fake_post(url, json=None, timeout=None, **k):

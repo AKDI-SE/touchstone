@@ -265,40 +265,58 @@ def _run_service(pr, cfg):
     审计 #40：URL 经 _service_url_allowed 白名单校验（仅 https 公网、禁内网/元数据端点、
     禁重定向），不再对 checks.yaml 里的任意 URL 直接发请求。
     pr-agent 第三轮评审：校验与连接之间的 DNS rebinding 残留收口——非 IP 字面量 host
-    在请求前【再解析一次并复检】，然后把连接钉死到这批已校验 addrinfo（_pin_dns）。"""
+    在请求前【再解析一次并复检】，然后把连接钉死到这批已校验 addrinfo（_pin_dns）。
+    pr-agent 第七轮评审：重定向禁令对【豁免主】放开——内网服务常坐 http→https 或域前置
+    网关后（一跳重定向是常态），全禁重定向等于豁免名单形同虚设；非豁免主维持禁止。
+    pr-agent 第九轮评审：豁免放开 ≠ 落点免检。豁免只豁免【明示的 host[:port]】，不豁免
+    该 host 引出的任意落点（被入侵/误配的豁免服务 302 到 169.254.169.254 仍是 SSRF 借
+    道面）。改为手写跳循环（allow_redirects=False）：每一跳 Location 先过 _service_url_allowed，
+    过闸才发下一跳 POST——payload 永不发给未校验的目标；跳数封顶防环。"""
     url = cfg.get("url", "")
     ok, why = _service_url_allowed(url)
     if not ok:
         return None, f"service URL 不在白名单（{why}）"
-    u = urllib.parse.urlsplit(url)
-    host = _norm_host(u.hostname)
-    pin = None
-    if _service_exempt(u):
-        pass                                      # 豁免主：明示信任（内网名常无法公网解析），不解析不钉死
-    else:
-        try:
-            ipaddress.ip_address(host)            # IP 字面量：连接不再解析，无 rebinding 面
-        except ValueError:
+    max_hops = 5
+    hop = 0
+    r = None
+    while True:
+        u = urllib.parse.urlsplit(url)
+        if hop > 0:                                # 落点重过闸：豁免不继承到重定向目标
+            ok, why = _service_url_allowed(url)
+            if not ok:
+                return None, f"重定向第 {hop} 跳落点不过闸（{why}）"
+        pin = None
+        if not _service_exempt(u):                 # 豁免主：明示信任（内网名常无法公网解析），不解析不钉死
+            host = _norm_host(u.hostname)
             try:
-                addrinfos = socket.getaddrinfo(host, u.port or 443, proto=socket.IPPROTO_TCP)
-            except socket.gaierror as e:
-                return None, f"service URL 主机名解析失败（{e}）"
-            for ai in addrinfos:                  # 连接期复检：解析结果变化本身也要过闸
-                if not ipaddress.ip_address(ai[4][0]).is_global:
-                    return None, f"{host} 连接期解析到非公网地址 {ai[4][0]}（拒绝）"
-            pin = _pin_dns(host, addrinfos)
-    with (pin if pin is not None else contextlib.nullcontext()):
-        r = requests.post(url, json={
-            "owner": pr["owner"], "repo": pr["repo"], "sha": pr["sha"],
-            "files": pr.get("files", [])},
-            # pr-agent 第七轮评审：重定向禁令对【豁免主】放开——内网服务常坐 http→https 或
-            # 域前置网关后（一跳重定向是常态），全禁重定向等于豁免名单形同虚设。豁免=运维明示
-            # 信任该 host（scheme/网段检查本就已全免），其重定向落点属同一信任面；非豁免主维持
-            # 禁止（落点不受任何校验约束，是 SSRF 借道面）。
-            timeout=cfg.get("timeout", 60),
-            allow_redirects=_service_exempt(u))
-        r.raise_for_status()
-        d = r.json()
+                ipaddress.ip_address(host)         # IP 字面量：连接不再解析，无 rebinding 面
+            except ValueError:
+                try:
+                    addrinfos = socket.getaddrinfo(host, u.port or 443, proto=socket.IPPROTO_TCP)
+                except socket.gaierror as e:
+                    return None, f"service URL 主机名解析失败（{e}）"
+                for ai in addrinfos:               # 连接期复检：解析结果变化本身也要过闸
+                    if not ipaddress.ip_address(ai[4][0]).is_global:
+                        return None, f"{host} 连接期解析到非公网地址 {ai[4][0]}（拒绝）"
+                pin = _pin_dns(host, addrinfos)
+        with (pin if pin is not None else contextlib.nullcontext()):
+            r = requests.post(url, json={
+                "owner": pr["owner"], "repo": pr["repo"], "sha": pr["sha"],
+                "files": pr.get("files", [])},
+                timeout=cfg.get("timeout", 60),
+                allow_redirects=False)             # 重定向由本循环逐跳过闸后手动跟随
+        loc = r.headers.get("Location")
+        if r.status_code in (301, 302, 303, 307, 308) and loc:
+            if not _service_exempt(u):
+                return None, "非豁免主禁止重定向（落点不受校验约束）"
+            hop += 1
+            if hop > max_hops:
+                return None, f"重定向跳数超限（>{max_hops}）"
+            url = urllib.parse.urljoin(url, loc)   # 相对 Location 以当前 URL 为基
+            continue
+        break
+    r.raise_for_status()
+    d = r.json()
     return _truthy(d.get("passed")), str(d.get("summary", ""))
 
 

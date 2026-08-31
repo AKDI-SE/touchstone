@@ -56,7 +56,22 @@ jobs:
             git add data/ 2>/dev/null || true
             if git diff --cached --quiet; then echo "种子未产生改动"; exit 0; fi
             git commit -m "chore(bot): seed experiences update"
-            git push -f origin "$BOT_BRANCH"
+            # pr-agent 第九轮评审：`push -f` 会静默抹掉并发种子 run 已推的提交（后发者胜
+            # 且无痕）。先尝试普通推送（分支不存在/未动即成）；非快进（分支已被并发 run
+            # 推进）则 rebase 到远端头重推；仍冲突才回落 -f 并大声告警。
+            if ! git push origin "$BOT_BRANCH"; then
+              echo "[warn] 种子分支非快进（并发 run？）——rebase 远端头后重推"
+              if git fetch origin "$BOT_BRANCH" && git rebase FETCH_HEAD; then
+                git push origin "$BOT_BRANCH" || {
+                  echo "[warn] rebase 后仍推送失败——回落 force-push"
+                  git push -f origin "$BOT_BRANCH"
+                }
+              else
+                git rebase --abort 2>/dev/null || true
+                echo "[warn] 种子分支 rebase 失败（冲突）——回落 force-push，并发 run 的种子提交可能被覆盖"
+                git push -f origin "$BOT_BRANCH"
+              fi
+            fi
             # pr-agent 第六轮评审：已有 open PR 时优雅复用——force-push 已让 PR 自动带上新提交，
             # 不必关旧开新（关后 create 再失败会白丢一条待评审 PR）；仅清理同 head 的多余 PR。
             EXISTING=$(gh pr list --head "$BOT_BRANCH" --state open --json number -q '.[].number' 2>/dev/null || true)
