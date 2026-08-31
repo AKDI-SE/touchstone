@@ -276,7 +276,29 @@ def main(argv=None):
     report = {"steps": [], "distiller": None, "candidates": 0, "graduated": [],
               "retired": [], "active": 0, "total": 0, "ground_truth": 0}
     store = load_store(store_path)
-    before = {(e.get("id"), e.get("status"), e.get("text")) for e in store.get("experiences", [])}
+    # 审计 #9 写回闸：EXPERIENCE_REF 读取瞬态失败时 load_store 得空库，若放任走到
+    # save_store 会把【空库】当本轮产物提交（含 locked/human 全部蒸发）。盘上文件
+    # （learn.yml 的 checkout = main，即真值）仍有条目而读得空库 → 一律拒绝运行，
+    # fail-closed 退出；确要清空请人工删文件后重跑。
+    if not store.get("experiences"):
+        _disk = 0
+        try:
+            with open(store_path, encoding="utf-8") as _f:
+                _d = json.load(_f)
+            _disk = len((_d or {}).get("experiences") or []) if isinstance(_d, dict) else 0
+        except (OSError, ValueError):
+            _disk = 0
+        if _disk > 0:
+            sys.exit(f"[learn] 拒绝运行：经验库读得空（{store_path}）但该文件盘上有 {_disk} 条经验——"
+                     "疑似 TOUCHSTONE_EXPERIENCE_REF 读取瞬态失败，本轮不学习不写回；恢复后重跑。")
+    # 审计 #10：changed 检测此前只看 (id,status,text)——merge 更新分支只改 evidence/
+    # source_prs 时 changed=false → 学习产物永不提交、证据永不入库（graduate 永不可达）。
+    # 现把 evidence 与 source_prs 纳入快照（canonical JSON，键序无关）。
+    def _snap(e):
+        return (e.get("id"), e.get("status"), e.get("text"),
+                json.dumps(e.get("evidence"), sort_keys=True, ensure_ascii=False, default=str),
+                tuple(sorted(str(x) for x in (e.get("source_prs") or []))))
+    before = {_snap(e) for e in store.get("experiences", [])}
 
     # ① 真值集：按需从 GitHub 人审裁决重建（"人工合入好坏" → TF-GRPO 学习信号）
     ground_truth = None
@@ -429,9 +451,15 @@ def main(argv=None):
         report["steps"].append(f"graduate 达标转 active：{len(grad)} 条 {grad}")
         # c2：差分回滚——注入反降采纳率的 active 经验退役（与 graduate 对称），让坏经验不必
         # 等跌破 retire 绝对门槛才下线。lift 摘要让"经验净效果"可见（多少正/负 lift）。
-        neg = retire_on_negative_lift(store, ab)
-        if neg:
-            report["steps"].append(f"retire_on_negative_lift 注入反降退役：{len(neg)} 条 {neg}")
+        # 审计 #45：默认关（TOUCHSTONE_RETIRE_NEGATIVE_LIFT=1 显式开启）——A/B 两臂并非随机
+        # 分配（PR 到达顺序/评审人构成随时间漂移），with/without 采纳率差含时序混杂：注入期
+        # 恰逢团队收紧评审标准，好经验会被误判"有害"而退役。graduate（正向门槛、错了只是
+        # 多注入 advisory 文本）保留默认开；退役是对经验库的破坏性动作，混杂证据不足以默认
+        # 执行。与 retire_on_lift_decline（趋势回滚，本就 env 门控默认关）同款开关风格。
+        if os.environ.get("TOUCHSTONE_RETIRE_NEGATIVE_LIFT", "").strip().lower() in ("1", "true", "yes", "on"):
+            neg = retire_on_negative_lift(store, ab)
+            if neg:
+                report["steps"].append(f"retire_on_negative_lift 注入反降退役：{len(neg)} 条 {neg}")
         report["lift_summary"] = _lift_summary(ab)
     else:
         report["steps"].append("graduate 跳过（无 A/B 数据；自动达标需积累样本）")
@@ -459,8 +487,8 @@ def main(argv=None):
             report["steps"].append(f"retire_on_lift_decline 趋势退役：{len(declined)} 条 {declined}")
 
     save_store(store, store_path)
-    report["active"] = sum(1 for e in store["experiences"] if e["status"] == "active")
-    report["total"] = len(store["experiences"])
+    report["active"] = sum(1 for e in store.get("experiences", []) if e.get("status") == "active")
+    report["total"] = len(store.get("experiences", []))
 
     # 差距3b：save_store 成功后才推进水位（同 atomic 纪律——失败不推进，下轮重取，幂等）。
     # PRA round-1：新水位 = max(本轮条目 pr_id, 旧水位)——永不回退（含全量轮 since_pr=None）。
@@ -495,7 +523,7 @@ def main(argv=None):
         os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
         with open(out_path, "w", encoding="utf-8") as f:
             json.dump(report, f, ensure_ascii=False, indent=2)
-    after = {(e.get("id"), e.get("status"), e.get("text")) for e in store.get("experiences", [])}
+    after = {_snap(e) for e in store.get("experiences", [])}
     changed = "true" if before != after else "false"
     gho = os.environ.get("GITHUB_OUTPUT")
     if gho:

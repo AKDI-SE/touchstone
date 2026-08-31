@@ -635,6 +635,7 @@ def test_main_graduates_candidate_when_ab_provided(tmp_path, monkeypatch):
 
 def test_main_retires_harming_experience_and_reports_lift(tmp_path, monkeypatch):
     # c2 main() 接通：active 经验注入反降采纳率 → retire_on_negative_lift 退役 + report 带 lift_summary
+    # 审计 #45：差分退役默认关（时序混杂），本测显式开启锁行为。
     store_path = tmp_path / "exp.json"
     store_path.write_text(json.dumps({"experiences": [
         {"id": "emphasize:PRA-HARM", "finding_type": "PRA-HARM", "kind": "emphasize",
@@ -648,6 +649,7 @@ def test_main_retires_harming_experience_and_reports_lift(tmp_path, monkeypatch)
     monkeypatch.setenv("TOUCHSTONE_CALIB_AGG", str(tmp_path / "agg.json"))
     monkeypatch.setenv("TOUCHSTONE_AB_RESULTS", str(tmp_path / "ab.json"))
     monkeypatch.setenv("TOUCHSTONE_DISTILLER", "counting")
+    monkeypatch.setenv("TOUCHSTONE_RETIRE_NEGATIVE_LIFT", "1")
     report = L.main()
     e = next(x for x in L.load_store(str(store_path))["experiences"]
              if x["finding_type"] == "PRA-HARM")
@@ -2531,7 +2533,7 @@ def test_build_ground_truth_carries_positions_to_gt_entry(tmp_path, monkeypatch)
     def fake_gh(path, token, accept="application/vnd.github+json"):
         if path.startswith("/repos/o/r/pulls?") or "/pulls?" in path:           # 已关闭 PR 列表
             return [{"number": 1, "title": "t", "user": {"login": "author"}, "merged_at": "m"}]
-        if path.endswith("/issues/1/comments?per_page=100"):                      # result marker（合法 JSON）
+        if "issues/1/comments" in path:                      # result marker（合法 JSON）
             return [{"body": ('<!-- touchstone-result: '
                               '{"findings":[{"rule_id":"PRA-A"}],'
                               '"injected_types":["PRA-A"]} -->'),
@@ -2540,7 +2542,7 @@ def test_build_ground_truth_carries_positions_to_gt_entry(tmp_path, monkeypatch)
             return []
         if path.endswith("/pulls/1") and accept.endswith("diff"):
             return "+diff"
-        if path.endswith("/pulls/1/files?per_page=100"):
+        if "/pulls/1/files" in path:
             return [{"filename": "src/a.py"}]
         return []
     monkeypatch.setattr(GT, "_gh_get", fake_gh)
@@ -2570,7 +2572,7 @@ def test_build_ground_truth_drops_findings_with_null_line(tmp_path, monkeypatch)
     def fake_gh(path, token, accept="application/vnd.github+json"):
         if "/pulls?" in path:                                  # 已关闭 PR 列表
             return [{"number": 1, "title": "t", "user": {"login": "author"}, "merged_at": "m"}]
-        if path.endswith("/issues/1/comments?per_page=100"):   # result marker（合法 JSON）
+        if "issues/1/comments" in path:   # result marker（合法 JSON）
             return [{"body": ('<!-- touchstone-result: '
                               '{"findings":[{"rule_id":"PRA-A"}],'
                               '"injected_types":["PRA-A"]} -->'),
@@ -2579,7 +2581,7 @@ def test_build_ground_truth_drops_findings_with_null_line(tmp_path, monkeypatch)
             return []
         if path.endswith("/pulls/1") and accept.endswith("diff"):
             return "+diff"
-        if path.endswith("/pulls/1/files?per_page=100"):
+        if "/pulls/1/files" in path:
             return [{"filename": "src/a.py"}]
         return []
     monkeypatch.setattr(GT, "_gh_get", fake_gh)
@@ -3292,7 +3294,8 @@ def test_main_bootstrap_reseeds_taxonomy_after_bootstrap(tmp_path, monkeypatch):
     # PRA-NEWTYPE 不在快照 → 候选被 fail-closed 丢弃，evidence 停留在 seed 的 {"seeded": True}。
     (e,) = [e for e in store["experiences"] if e["finding_type"] == "PRA-NEWTYPE"]
     assert e["status"] == "active" and e["source"] == "bootstrap"    # active 不被候选降级
-    assert e["evidence"] == {"fires": 20, "adoption": 0.9}           # 蒸馏证据并入 = 没被丢
+    # 审计 #12：merge update 分支保留旧证据的独有键（溯源标记不随蒸馏并入而丢）
+    assert e["evidence"] == {"fires": 20, "adoption": 0.9, "seeded": True}
 
 
 def test_main_taxonomy_staleness_no_bootstrap_no_reseeds(tmp_path, monkeypatch):
