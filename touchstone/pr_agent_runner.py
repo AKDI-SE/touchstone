@@ -551,16 +551,6 @@ def run(pr_url, mode, extra_instructions=None):
                 out["code_suggestions"] = (_cs_data or {}).get("code_suggestions") or []
             if "rv" in instances:
                 asyncio.run(instances["rv"].run())           # rv.prediction 是原始 YAML 串；自行解析
-                # 评审覆盖面（pr-agent 0.44 的 remaining_files_list，0.39-0.43 无此属性）：
-                # diff 总 token 超预算时被裁掉、未经 LLM 评审的文件清单。上游只把它渲染进
-                # 发布评论的 coverage footer（pr_reviewer._get_review_coverage_footer），而
-                # publish_output=False 闸掉了整条发布路径——展示被屏蔽、数据可绕：实例属性
-                # 在 diff 处理期填充（构造后即有值），这里直接取数跨 JSON 边界透出，由
-                # orchestrator 贴横幅。缺失（旧版/local provider 差异）→ 空清单：不过度
-                # 声明覆盖缺口，也不静默假装全覆盖。上限 100 防畸形巨表撑爆产物。
-                _rfl = getattr(instances["rv"], "remaining_files_list", None) or []
-                out["review"]["_unreviewed_files"] = [f.strip() for f in _rfl
-                                                     if isinstance(f, str) and f.strip()][:100]
                 _pred = (instances["rv"].prediction or "").strip()
                 if not _pred:
                     print("[runner] review produced empty prediction（LLM 空响应或早退，真实原因见上文日志）",
@@ -588,6 +578,19 @@ def run(pr_url, mode, extra_instructions=None):
                 # 原始反馈快照（effort/tests/security 等非空段）：0 原始建议时贴进报告横幅，打消
                 # "是否真审过"疑虑（PR #55 评审意见）。跨子进程 JSON 边界透出，父进程 _extract_excerpt 读取。
                 out["review"]["_raw_excerpt"] = extract_review_excerpt({"review": _rv_dict})
+                # 评审覆盖面（pr-agent 0.44 的 remaining_files_list，0.39-0.43 无此属性）：
+                # diff 总 token 超预算时被裁掉、未经 LLM 评审的文件清单。上游只把它渲染进
+                # 发布评论的 coverage footer（pr_reviewer._get_review_coverage_footer），而
+                # publish_output=False 闸掉了整条发布路径——展示被屏蔽、数据可绕：实例属性
+                # 在 diff 处理期填充（构造后即有值），这里直接取数跨 JSON 边界透出，由
+                # orchestrator 贴横幅。缺失（旧版/local provider 差异）→ 空清单：不过度
+                # 声明覆盖缺口，也不静默假装全覆盖。上限 100 防畸形巨表撑爆产物。
+                # 【刻意放在解析成功之后写入】（PR #208 评审意见）：虽则降级路径返回的是全新
+                # dict（_degraded 载荷结构上不可能携带本键），仍让"覆盖面"只在评审产出成立
+                # 时存在——失败轮次谈覆盖面无意义，且防未来重构把降级返回改成透传 out。
+                _rfl = getattr(instances["rv"], "remaining_files_list", None) or []
+                out["review"]["_unreviewed_files"] = [f.strip() for f in _rfl
+                                                     if isinstance(f, str) and f.strip()][:100]
             _ix(f"工具执行完成: code_suggestions={len(out['code_suggestions'])} "
                 f"key_issues={len(out['review']['key_issues_to_review'])}")
         except Exception as e:   # LLM 端点/鉴权/超时/解析失败等 —— 不静默吞掉，上报为 llm_failed
