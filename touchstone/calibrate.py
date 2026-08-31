@@ -37,10 +37,12 @@ def gh(path, token):
     return ghclient.request("GET", base + path, token)
 
 
-def gh_paginate(path, token):
-    """翻页版 gh：自动跟 ?page=N&per_page=100 直到无更多（防 >100 条截断）。"""
+def gh_paginate(path, token, *, per_page=ghclient.PAGINATE_PER_PAGE,
+                max_pages=ghclient.PAGINATE_MAX_PAGES):
+    """翻页版 gh：自动跟 ?page=N&per_page=… 直到无更多（防 >100 条截断）。
+    per_page/max_pages 缺省取 ghclient 常量（单一事实源，pr-agent 第十一轮）。"""
     base = os.environ.get("GITHUB_API_URL", "https://api.github.com")
-    return ghclient.paginate(base + path, token)
+    return ghclient.paginate(base + path, token, per_page=per_page, max_pages=max_pages)
 
 
 # --- GitHub GraphQL：取 PR 评论线程的 isResolved（REST 不暴露线程解决状态）------
@@ -395,12 +397,18 @@ def main():
     owner, repo = os.environ["GITHUB_REPOSITORY"].split("/", 1)
     bot = os.environ.get("TOUCHSTONE_BOT_LOGIN", "github-actions[bot]")
     # pr-agent 第十轮：不要把 WINDOW 塞进 per_page——GitHub 硬顶 100，CALIBRATE_WINDOW>100
-    # 会被静默截到 100（校准窗口悄悄缩水）；且 gh_paginate 追加自己的 per_page=100，路径里
-    # 再带一个 per_page 会产生重复参数。改为翻页取全（100/页）后截到 WINDOW。
-    prs = gh_paginate("/repos/{o}/{r}/pulls?state=closed&sort=updated&direction=desc"
-                      .format(o=owner, r=repo), token)[:WINDOW]
-    if WINDOW > len(prs) == 2000:             # 撞翻页硬顶（20 页 × 100）才算截断；小仓不足窗口是正常
-        print(f"[calibrate] ⚠️ 翻页上限截断：窗口要求 {WINDOW}，只取到 2000——校准样本不足")
+    # 会被静默截到 100（校准窗口悄悄缩水）；且 gh_paginate 追加自己的 per_page，路径里
+    # 再带一个 per_page 会产生重复参数。改为翻页取全后截到 WINDOW。
+    # pr-agent 第十一轮：翻页上限从 ghclient 常量推导（不本地硬编码），且「取不满窗口」
+    # 无论原因（撞上限/小仓不足）都要打印——静默提前停不可见。
+    _pp, _mp = ghclient.PAGINATE_PER_PAGE, ghclient.PAGINATE_MAX_PAGES
+    _pages = min(_mp, (WINDOW + _pp - 1) // _pp)
+    prs = gh_paginate(f"/repos/{owner}/{repo}/pulls?state=closed&sort=updated&direction=desc",
+                      token, max_pages=_pages)[:WINDOW]
+    if WINDOW > _pages * _pp:
+        print(f"[calibrate] ⚠️ 翻页上限截断：窗口要求 {WINDOW}，最多可取 {_pages * _pp}——校准样本不足")
+    elif len(prs) < WINDOW:
+        print(f"[calibrate] 已关闭 PR 共 {len(prs)} 个 < 窗口 {WINDOW}，样本按实际数量")
     records = []
     skipped = 0
     for pr in prs:

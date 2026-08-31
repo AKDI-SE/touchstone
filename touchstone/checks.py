@@ -230,12 +230,22 @@ def _pin_dispatcher(h, *a, **k):
     return _PIN_ORIG_GAI(h, *a, **k)
 
 
+_PIN_INSTALL_LOCK = threading.Lock()     # 装派发器的双检锁（pr-agent 第十一轮）
+
+
 def _ensure_pin_dispatcher():
     """安装常驻派发器（幂等）。首次 service 请求时装一次、进程内常驻——不随请求卸载，
     规避并发线程互相覆盖还原的窗口（pr-agent 第四轮 PRA-SECURITY）。非钉死 host 的解析
-    语义不变（透传原函数）。"""
+    语义不变（透传原函数）。
+    pr-agent 第十一轮：原 check-then-act 在【并发首调用】下有竞态——A 装完后 B 才执行
+    `_PIN_ORIG_GAI = socket.getaddrinfo`，读到的已是派发器本身 → 未钉死 host 的解析
+    无限自递归（RecursionError）。双检锁收口：锁内二次确认后才绑定原函数。"""
     global _PIN_ORIG_GAI
-    if socket.getaddrinfo is not _pin_dispatcher:
+    if socket.getaddrinfo is _pin_dispatcher:
+        return                               # 快路径：已装（常态无锁）
+    with _PIN_INSTALL_LOCK:
+        if socket.getaddrinfo is _pin_dispatcher:
+            return                           # 双检：等锁期间他人已装
         _PIN_ORIG_GAI = socket.getaddrinfo
         socket.getaddrinfo = _pin_dispatcher
 
@@ -284,13 +294,17 @@ def _run_service(pr, cfg):
     pr-agent 第九轮评审：豁免放开 ≠ 落点免检。豁免只豁免【明示的 host[:port]】，不豁免
     该 host 引出的任意落点（被入侵/误配的豁免服务 302 到 169.254.169.254 仍是 SSRF 借
     道面）。改为手写跳循环（allow_redirects=False）：每一跳 Location 先过 _service_url_allowed，
-    过闸才发下一跳 POST——payload 永不发给未校验的目标；跳数封顶防环。"""
+    过闸才发下一跳——payload 永不发给未校验的目标；跳数封顶防环。
+    pr-agent 第十一轮评审：跟随跳的方法按 RFC 语义分派——303（及现代实现的 301/302）
+    语义为「换 GET 再看」，307/308 才保方法重发 POST；GET 跳天然不携带 payload，
+    暴露面更小。"""
     url = cfg.get("url", "")
     ok, why = _service_url_allowed(url)
     if not ok:
         return None, f"service URL 不在白名单（{why}）"
     max_hops = 5
     hop = 0
+    method = "POST"
     r = None
     while True:
         u = urllib.parse.urlsplit(url)
@@ -313,11 +327,14 @@ def _run_service(pr, cfg):
                         return None, f"{host} 连接期解析到非公网地址 {ai[4][0]}（拒绝）"
                 pin = _pin_dns(host, addrinfos)
         with (pin if pin is not None else contextlib.nullcontext()):
-            r = requests.post(url, json={
-                "owner": pr["owner"], "repo": pr["repo"], "sha": pr["sha"],
-                "files": pr.get("files", [])},
-                timeout=cfg.get("timeout", 60),
-                allow_redirects=False)             # 重定向由本循环逐跳过闸后手动跟随
+            if method == "POST":
+                r = requests.post(url, json={
+                    "owner": pr["owner"], "repo": pr["repo"], "sha": pr["sha"],
+                    "files": pr.get("files", [])},
+                    timeout=cfg.get("timeout", 60),
+                    allow_redirects=False)         # 重定向由本循环逐跳过闸后手动跟随
+            else:
+                r = requests.get(url, timeout=cfg.get("timeout", 60), allow_redirects=False)
         loc = r.headers.get("Location")
         if r.status_code in (301, 302, 303, 307, 308) and loc:
             if not _service_exempt(u):
@@ -326,6 +343,7 @@ def _run_service(pr, cfg):
             if hop > max_hops:
                 return None, f"重定向跳数超限（>{max_hops}）"
             url = urllib.parse.urljoin(url, loc)   # 相对 Location 以当前 URL 为基
+            method = "POST" if r.status_code in (307, 308) else "GET"   # 303/301/302 → GET
             continue
         break
     r.raise_for_status()

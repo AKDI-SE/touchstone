@@ -30,6 +30,13 @@ def _base_url():
     return os.environ.get("GITHUB_API_URL", "https://api.github.com")
 
 
+# 翻页参数单一事实源（pr-agent 第十一轮）：单页条数与页数上限此前散落 4 个签名默认值，
+# 调用方（如 calibrate 推导「最多能取多少条」）只能本地硬编码同款数字——两处漂移即静默
+# 截断。常量化后调用方 `PAGINATE_PER_PAGE * PAGINATE_MAX_PAGES` 推导上限。
+PAGINATE_PER_PAGE = 100      # GitHub 列表接口单页硬顶
+PAGINATE_MAX_PAGES = 20      # 翻页安全顶（防异常大列表把 job 拖死）
+
+
 def make_session():
     # 只重试幂等的 GET：POST 评论/check-run/issue 并非幂等——5xx 后重放会造成重复副作用
     # （重复评审评论、重复 check-run、重复看板 issue）。POST 的 5xx 直接抛给调用方处理，
@@ -125,7 +132,7 @@ def client(token):
         # 【重试】，不约束可发 method）；403+Retry-After 的二级限流兜底在 _req 内仍生效。
         return _req("PATCH", path, data=data)
 
-    def paginate(path, per_page=100, max_pages=20):
+    def paginate(path, per_page=PAGINATE_PER_PAGE, max_pages=PAGINATE_MAX_PAGES):
         # 分隔符按【原 path】一次性判定且不再变更（审计 #2）：旧实现翻到第 2 页时无条件
         # sep="&"，对不带 "?" 的 path 产出 `path&page=2` 这类无查询串起点的畸形 URL → 404
         # → raise_for_status 抛 HTTPError 打穿调用链（>100 条记录的列表必然触发）。
@@ -140,7 +147,7 @@ def client(token):
                 break
         return out
 
-    def paginate_check_runs(path, per_page=100, max_pages=20):
+    def paginate_check_runs(path, per_page=PAGINATE_PER_PAGE, max_pages=PAGINATE_MAX_PAGES):
         q = "&" if "?" in path else "?"   # 同 paginate：sep 恒定（审计 #2）
         all_runs = []
         for page in range(1, max_pages + 1):
@@ -186,7 +193,8 @@ def request(method, url, token, data=None, accept="application/vnd.github+json",
     return r.json() if r.text else {}
 
 
-def paginate(url, token, *, per_page=100, max_pages=20, accept="application/vnd.github+json"):
+def paginate(url, token, *, per_page=PAGINATE_PER_PAGE, max_pages=PAGINATE_MAX_PAGES,
+             accept="application/vnd.github+json"):
     """GitHub 列表翻页（旧接口，逐步迁移到 client(token).paginate）。
 
     分隔符按原 url 一次判定、全程不变（审计 #2）：旧实现第 2 页起无条件用 "&"，
@@ -203,7 +211,7 @@ def paginate(url, token, *, per_page=100, max_pages=20, accept="application/vnd.
     return out
 
 
-def paginate_check_runs(url, token, *, per_page=100, max_pages=20):
+def paginate_check_runs(url, token, *, per_page=PAGINATE_PER_PAGE, max_pages=PAGINATE_MAX_PAGES):
     """check-runs 专用翻页（旧接口，逐步迁移到 client(token).paginate_check_runs）。"""
     q = "&" if "?" in url else "?"   # 同 paginate：sep 恒定（审计 #2）
     all_runs = []

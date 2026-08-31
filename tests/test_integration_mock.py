@@ -886,7 +886,7 @@ def test_calibrate_main(monkeypatch, tmp_path, capsys):
     monkeypatch.setenv("GITHUB_TOKEN", "tok")
     monkeypatch.setenv("GITHUB_REPOSITORY", "o/r")
 
-    def fake_gh(path, token):
+    def fake_gh(path, token, **k):
         if "/pulls?state=closed" in path:
             return [{"number": 1, "merged_at": "t", "merge_commit_sha": "sha"}]
         if "/issues/1/comments" in path:
@@ -915,7 +915,7 @@ def test_calibrate_main_excludes_author_self_resolve(monkeypatch, tmp_path, caps
     threads = [{'isResolved': True, 'resolved_by': 'author1',     # 作者 = 线程解决者
                 'comments': [{'author': 'github-actions[bot]', 'body': body}]}]
 
-    def fake_gh(path, token):
+    def fake_gh(path, token, **k):
         if "/pulls?state=closed" in path:
             return [{"number": 1, "merged_at": "t", "merge_commit_sha": "sha",
                      "user": {"login": "author1"}}]
@@ -957,7 +957,7 @@ def test_calibrate_main_writes_to_calibration_json_override(monkeypatch, tmp_pat
     custom = tmp_path / "sub" / "my-cal.json"            # 非默认名+子目录，排除巧合
     monkeypatch.setenv("CALIBRATION_JSON", str(custom))
 
-    def fake_gh(path, token):
+    def fake_gh(path, token, **k):
         if "/pulls?state=closed" in path:
             return [{"number": 1, "merged_at": "t", "merge_commit_sha": "sha"}]
         if "/issues/1/comments" in path:

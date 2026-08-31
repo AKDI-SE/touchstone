@@ -545,29 +545,74 @@ def test_service_redirect_hops_revalidated(monkeypatch):
     assert passed is None and "落点不过闸" in summary
     assert hits == ["http://a"]                             # payload 未发给 evil.corp
 
-    # ② 豁免主 → 302 到另一豁免主（相对 Location）：逐跳跟随，最终结果取末跳
+    # ② 豁免主 → 302 到另一豁免主（相对 Location）：逐跳跟随，最终结果取末跳；
+    #    302 语义 = 换 GET（第十一轮）：第二跳不带 payload，method 分派正确
     hits2 = []
     def follow_post(url, json=None, timeout=None, **k):
-        hits2.append(url)
-        if url == "http://a":
-            return _FakeResp(None, status_code=302, headers={"Location": "/v2/hook"})  # 相对落点
+        hits2.append(("POST", url))
+        return _FakeResp(None, status_code=302, headers={"Location": "/v2/hook"})  # 相对落点
+    def follow_get(url, timeout=None, **k):
+        hits2.append(("GET", url))
         return _FakeResp({"passed": True, "summary": "final"})
     monkeypatch.setattr(checks.requests, "post", follow_post)
+    monkeypatch.setattr(checks.requests, "get", follow_get)
     passed, summary = checks._run_service(_PR, {"url": "http://a"})
     assert passed is True and summary == "final"
-    assert hits2 == ["http://a", "http://a/v2/hook"]        # 相对 Location 以当前 URL 为基
+    assert hits2 == [("POST", "http://a"), ("GET", "http://a/v2/hook")]   # 302→GET + 相对落点
+
+    # ③ 307 语义 = 保方法重发 POST（第十一轮）：method 仍是 POST、payload 重发
+    hits3 = []
+    def keep_post(url, json=None, timeout=None, **k):
+        hits3.append(("POST", url))
+        if url == "http://a":
+            return _FakeResp(None, status_code=307, headers={"Location": "http://b/hook"})
+        return _FakeResp({"passed": True, "summary": "final307"})
+    monkeypatch.setattr(checks.requests, "post", keep_post)
+    monkeypatch.setattr(checks.requests, "get",
+                        lambda url, timeout=None, **k: hits3.append(("GET", url)) or _FakeResp({}))
+    passed, summary = checks._run_service(_PR, {"url": "http://a"})
+    assert passed is True and summary == "final307"
+    assert hits3 == [("POST", "http://a"), ("POST", "http://b/hook")]     # 307 保 POST
 
 
 def test_service_redirect_loop_capped(monkeypatch):
     """重定向成环（或链超长）必须封顶退出，不得无限跟随。"""
     hits = []
-    def loop_post(url, json=None, timeout=None, **k):
+    def loop_req(url, **k):
         hits.append(url)
         return _FakeResp(None, status_code=302, headers={"Location": "loop"})
-    monkeypatch.setattr(checks.requests, "post", loop_post)
+    monkeypatch.setattr(checks.requests, "post", loop_req)
+    monkeypatch.setattr(checks.requests, "get", loop_req)
     passed, summary = checks._run_service(_PR, {"url": "http://a"})
     assert passed is None and "跳数超限" in summary
     assert len(hits) == 6                                   # 初始 1 跳 + 上限 5 跳
+
+
+def test_pin_dispatcher_install_race_free(monkeypatch):
+    """pr-agent 第十一轮：_ensure_pin_dispatcher 的 check-then-act 在并发首调用下有竞态
+    ——A 装完后 B 才执行 `_PIN_ORIG_GAI = socket.getaddrinfo`，读到的已是派发器本身
+    → 未钉死 host 的解析无限自递归。双检锁后：N 线程同时首装，_PIN_ORIG_GAI 恒为
+    装前原函数（绝不捕获派发器自身），派发器常驻且透传语义不变。"""
+    import socket as S
+    import threading as T
+    from concurrent.futures import ThreadPoolExecutor
+    real = S.getaddrinfo
+    def fake_orig(h, *a, **k):
+        return [(S.AF_INET, S.SOCK_STREAM, 6, "", ("93.184.216.34", 0))]
+    S.getaddrinfo = fake_orig                 # 复位到「未装」状态的可识别原函数
+    try:
+        bar = T.Barrier(8)
+        def racer():
+            bar.wait()                        # 全员就位再冲，最大化交错窗口
+            checks._ensure_pin_dispatcher()
+        with ThreadPoolExecutor(max_workers=8) as ex:
+            list(ex.map(lambda _: racer(), range(8)))
+        assert S.getaddrinfo is checks._pin_dispatcher      # 派发器已装
+        assert checks._PIN_ORIG_GAI is fake_orig            # 原函数=装前真身，绝非派发器自身
+        assert S.getaddrinfo("any.host", None) == fake_orig("any.host", None)   # 透传不递归
+    finally:
+        S.getaddrinfo = real
+        checks._PIN_ORIG_GAI = real
 
 
 def test_service_non_exempt_redirect_blocked(monkeypatch):
