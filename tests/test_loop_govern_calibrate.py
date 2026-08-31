@@ -271,7 +271,9 @@ def test_ghclient_session_retry_config():
     assert 429 in retry.status_forcelist and 503 in retry.status_forcelist
     assert 403 not in retry.status_forcelist
     assert retry.respect_retry_after_header is True
-    assert {"GET", "POST"} <= set(retry.allowed_methods)
+    # 只自动重试幂等的 GET（审计 #1）：POST 评论/check-run/issue 非幂等，5xx 重放会造成
+    # 重复副作用（重复评审评论/重复 check-run/重复看板 issue）——POST 失败交给调用方决定。
+    assert set(retry.allowed_methods) == {"GET"}
 
 
 # ---------------- ④ 反馈循环联动 CI/verify 判定 ----------------
@@ -305,7 +307,9 @@ def test_loop_marker_roundtrips_last_verdict():
 # ---------------- ci_verdict：读 check-runs，排除自身、未完成=未知 ----------------
 def test_ci_verdict_excludes_self_and_detects_failure(monkeypatch):
     from touchstone import orchestrator as C
-    monkeypatch.setattr(C, "gh", lambda m, p, t: {"check_runs": [
+    # 审计 #8：ci_verdict 改走 ghclient.paginate_check_runs（翻页取全），mock 点随之更新。
+    monkeypatch.setattr(C.ghclient, "paginate_check_runs",
+                        lambda url, token: {"check_runs": [
         {"name": "touchstone", "status": "completed", "conclusion": "neutral"},
         {"name": "build", "status": "completed", "conclusion": "success"},
         {"name": "unit", "status": "completed", "conclusion": "failure"}]})
@@ -314,17 +318,20 @@ def test_ci_verdict_excludes_self_and_detects_failure(monkeypatch):
 
 def test_ci_verdict_all_green(monkeypatch):
     from touchstone import orchestrator as C
-    monkeypatch.setattr(C, "gh", lambda m, p, t: {"check_runs": [
+    monkeypatch.setattr(C.ghclient, "paginate_check_runs",
+                        lambda url, token: {"check_runs": [
         {"name": "build", "status": "completed", "conclusion": "success"}]})
     assert C.ci_verdict("o", "r", "sha", "t") is True
 
 
 def test_ci_verdict_in_progress_is_unknown(monkeypatch):
     from touchstone import orchestrator as C
-    monkeypatch.setattr(C, "gh", lambda m, p, t: {"check_runs": [
+    monkeypatch.setattr(C.ghclient, "paginate_check_runs",
+                        lambda url, token: {"check_runs": [
         {"name": "build", "status": "in_progress", "conclusion": None}]})
     assert C.ci_verdict("o", "r", "sha", "t") is None
-    monkeypatch.setattr(C, "gh", lambda m, p, t: {"check_runs": [
+    monkeypatch.setattr(C.ghclient, "paginate_check_runs",
+                        lambda url, token: {"check_runs": [
         {"name": "touchstone/verify", "status": "completed", "conclusion": "neutral"}]})
     assert C.ci_verdict("o", "r", "sha", "t") is None
 

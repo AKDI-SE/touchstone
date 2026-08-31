@@ -172,9 +172,13 @@ def anchor_inline(findings, diff):
         else:                              # 就近锚定，并注明原始行号
             anchored = min(addl, key=lambda n: abs(n - line))
             note = f"（原指 :{line}）"
+        # 审计 #6：内联正文与主评论同一呈现边界——rationale 常引用 diff/LLM 原文，
+        # 凭据形子串须同样过 _redact_secrets（此前只脱敏主评论 body）。
+        _body = _redact_secrets(f.get('rationale', '')) or ""
+        _dir = _redact_secrets(f.get('fix_direction') or f.get('suggested_fix', '') or "")
         out.append({"path": path, "line": anchored, "side": "RIGHT",
-                    "body": f"`{f['rule_id']}`{note} {f.get('rationale', '')}"
-                            f"\n方向：{f.get('fix_direction') or f.get('suggested_fix', '')}\n{_fm(f)}"})
+                    "body": f"`{f['rule_id']}`{note} {_body}"
+                            f"\n方向：{_dir}\n{_fm(f)}"})
     return out
 
 
@@ -183,7 +187,10 @@ def ci_verdict(owner, repo, head_sha, token):
     排除 touchstone 自身的 check（neutral·advisory，不参与）。
     返回 True=全绿/中性、False=有失败、None=仍有未完成或无数据（未知不强制 author 继续）。"""
     try:
-        data = gh("GET", f"/repos/{owner}/{repo}/commits/{head_sha}/check-runs", token)
+        # 审计 #8：check-runs 翻页取全（默认单页仅 30 条，矩阵 CI 产 >30 个 check 的大仓
+        # 会把 touchstone 自己的 check 截出首屏 → CI 判定基于残缺事实）。
+        data = ghclient.paginate_check_runs(
+            f"{_api_base()}/repos/{owner}/{repo}/commits/{head_sha}/check-runs", token)
     except requests.exceptions.RequestException:
         return None
     runs = [r for r in (data.get("check_runs") or [])
@@ -626,7 +633,8 @@ def post_results(owner, repo, number, head_sha, token, risk, findings, loop_info
                     + json.dumps({"rule_id": f.get("rule_id"), "agent": f.get("agent")},
                                  ensure_ascii=False) + " -->")
         inline = [{"path": f["file"], "line": f["line"], "side": "RIGHT",
-                   "body": f"`{f['rule_id']}` {f.get('rationale','')}\n方向：{f.get('fix_direction') or f.get('suggested_fix','')}"
+                   "body": f"`{f['rule_id']}` {_redact_secrets(f.get('rationale',''))}"
+                           f"\n方向：{_redact_secrets(f.get('fix_direction') or f.get('suggested_fix',''))}"
                            f"\n{_finding_marker(f)}"}
                   for f in findings if f.get("file") and f.get("line")]
     # GitCode 适配：无 /pulls/{n}/reviews 与 /check-runs 端点（404）——内联与 check run
@@ -652,6 +660,18 @@ def post_results(owner, repo, number, head_sha, token, risk, findings, loop_info
 
 
 # --- main ---------------------------------------------------------------------
+def _stack_from_diff(diff):
+    """审计 #51：diff → 技术栈粗判（供 seeds.yaml 按栈过滤）。与 ground_truth._stack_of
+    同口径（.java→java / .py→python / .go→go / ts|tsx|js|jsx→typescript，不确定→""=通用），
+    复用同一实现避免两套判定漂移。"""
+    from touchstone.ground_truth import _stack_of
+    try:
+        changed, _added = contract_check.parse_diff(diff or "")
+        return _stack_of(list(changed.keys()))
+    except Exception:
+        return ""
+
+
 def _collect_injection():
     """取本轮要写入 result marker 的经验注入类型：active（生产路径）+ shadow（实验路径，env 开时）。
     与 review_provider._experience_injection 同源（只读经验库、失败即空）。
@@ -661,6 +681,16 @@ def _collect_injection():
     需 step4 review_provider include_shadow 透传后才不归因失真——见 _shadow_injection_enabled）。"""
     injected_types, injected_experience_ids = [], []
     shadow_types, shadow_experience_ids = [], []
+    # 审计 #44：与 review_provider._experience_injection 同门控（同源同闸）——
+    # ① TOUCHSTONE_EXPERIENCE_ENABLED=false：评审侧整体不注入，marker 也不得记 active，
+    #   否则归因数据声称注入了从未注入的经验，A/B 采纳率分臂失真；
+    # ② PR 事件未配 TOUCHSTONE_EXPERIENCE_REF：引擎库被防投毒闸整段跳过（load_store
+    #   会读到 PR 可篡改的工作树），marker 同样必须空。
+    if os.environ.get("TOUCHSTONE_EXPERIENCE_ENABLED", "true").lower() not in ("1", "true", "yes", "on"):
+        return [], [], [], []
+    if os.environ.get("GITHUB_EVENT_NAME") == "pull_request" \
+            and not os.environ.get("TOUCHSTONE_EXPERIENCE_REF"):
+        return [], [], [], []
     try:
         from touchstone import learning_loop as _ll
         _store = _ll.load_store()
@@ -691,6 +721,22 @@ def _max_diff_lines():
         return 1000
 
 
+
+def _rule_index(rules, src="standards.yaml"):
+    """rules 列表 → {id: rule}。缺 id 的条目跳过并告警（审计 #7）。
+
+    旧实现 ``{r["id"]: r for r in rules}`` 对缺 id 的规则（YAML 手写漏键很常见）直接
+    KeyError——整条评审链以无诊断信息的 traceback 崩掉。现：跳过坏条目 + stderr 指名，
+    其余规则照常生效（fail-degraded 而非 fail-crash）。"""
+    out = {}
+    for r in rules or []:
+        rid = (r or {}).get("id") if isinstance(r, dict) else None
+        if not rid:
+            print(f"[warn] {src} 规则缺 id（跳过该条）: {r!r}"[:300], file=sys.stderr)
+            continue
+        out[rid] = r
+    return out
+
 def review_pr(pr, contract, standards, provider=None):
     """§4.1 主入口：复用 PR-Agent 评审 → 发现归一 → 提交契约核对 + 栈专项确定性规则 → 裁决映射。
     等价于 map_verdict( normalize(fetch(pr)) + check_contract_consistency(...) + check_stack_rules(...) )。
@@ -698,7 +744,7 @@ def review_pr(pr, contract, standards, provider=None):
     评审层只产建议与风险分流，不产准入（准入只由质量门禁/总闸决定）。"""
     nmap = review_provider.load_nmap(os.environ.get("REPO_DIR", "."))
     rules = standards.get("rules", []) if isinstance(standards, dict) else (standards or [])
-    rule_index = {r["id"]: r for r in rules}
+    rule_index = _rule_index(rules)
     diff = pr.get("diff", "")
     changed_files, added = contract_check.parse_diff(diff)
     added_lines = sum(len(v) for v in added.values())
@@ -786,7 +832,7 @@ def main():
     if not standards:
         sys.exit(f"未找到规范 {STANDARDS_PATH}")
     contract = load_yaml(CONTRACT_PATH)
-    rule_index = {r["id"]: r for r in standards.get("rules", [])}
+    rule_index = _rule_index(standards.get("rules", []))
 
     diff = get_pr_diff(owner, repo, number, token)
     changed_files, _ = contract_check.parse_diff(diff)
@@ -803,7 +849,8 @@ def main():
         if _gc0.enabled():
             _pre_cmt_path = (f"/repos/{owner}/{repo}/pulls/{number}/comments" if _is_gitcode()
                              else f"/repos/{owner}/{repo}/issues/{number}/comments")
-            _pre_comments = gh("GET", _pre_cmt_path, token)
+            # 审计 #5：翻页取全（默认单页 30 条，>30 评论的 PR 最早的 marker 会被截掉）
+            _pre_comments = ghclient.paginate(_api_base() + _pre_cmt_path, token)
             _pre_bodies = loop.trusted_bodies(
                 _pre_comments if isinstance(_pre_comments, list) else [], None)
             _pre_cl = checklist_mod.parse_latest(_pre_bodies)
@@ -818,7 +865,11 @@ def main():
     pr_ctx_review = {"owner": owner, "repo": repo, "number": number, "sha": head_sha,
                      "token": token, "diff": diff, "standards": standards,
                      "repo_dir": os.environ.get("REPO_DIR", "."),
-                     "guard_adjudication": guard_adjudication}
+                     "guard_adjudication": guard_adjudication,
+                     # 审计 #51：改动文件后缀粗判的技术栈 → review_provider 据此对 seeds.yaml
+                     # 按栈过滤（load_seed_injection(stack=...)，原本"已知 gap"里永不生效的
+                     # stack 字段由此接通；不确定=空串=通用，不过滤）。
+                     "stack": _stack_from_diff(diff)}
     _t_rev0 = time.monotonic()
     _out = review_pr(pr_ctx_review, contract, standards)
     _t_review = round(time.monotonic() - _t_rev0, 2)
@@ -849,7 +900,9 @@ def main():
         # GitCode 适配：PR 评论读取同走 /pulls/{n}/comments（与回贴端点一致）。
         _cmt_path = (f"/repos/{owner}/{repo}/pulls/{number}/comments" if _is_gitcode()
                      else f"/repos/{owner}/{repo}/issues/{number}/comments")
-        comments = gh("GET", _cmt_path, token)
+        # 审计 #5：翻页取全（默认单页 30 条）——loop marker/checklist marker/ack 申报常在
+        # 最早的评论里，单页截断会让轮次预算、震荡/无推进闸、销项全部失明。
+        comments = ghclient.paginate(_api_base() + _cmt_path, token)
         comments = comments if isinstance(comments, list) else []
         all_bodies = [c.get("body", "") for c in comments]
         try:

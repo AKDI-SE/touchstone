@@ -468,15 +468,16 @@ def test_anchor_inline_in_diff_nearest_and_skip():
 
 
 def test_ci_verdict_branches(monkeypatch):
+    # 审计 #8：ci_verdict 改走 ghclient.paginate_check_runs（翻页取全），mock 点随之更新。
     def mk(runs):
         return lambda *a, **k: {"check_runs": runs}
-    monkeypatch.setattr(ORC, "gh", mk([{"name": "ci", "status": "completed", "conclusion": "success"}]))
+    monkeypatch.setattr(ORC.ghclient, "paginate_check_runs", mk([{"name": "ci", "status": "completed", "conclusion": "success"}]))
     assert ORC.ci_verdict("o", "r", "s", "t") is True
-    monkeypatch.setattr(ORC, "gh", mk([{"name": "ci", "status": "completed", "conclusion": "failure"}]))
+    monkeypatch.setattr(ORC.ghclient, "paginate_check_runs", mk([{"name": "ci", "status": "completed", "conclusion": "failure"}]))
     assert ORC.ci_verdict("o", "r", "s", "t") is False
-    monkeypatch.setattr(ORC, "gh", mk([{"name": "ci", "status": "in_progress"}]))
+    monkeypatch.setattr(ORC.ghclient, "paginate_check_runs", mk([{"name": "ci", "status": "in_progress"}]))
     assert ORC.ci_verdict("o", "r", "s", "t") is None
-    monkeypatch.setattr(ORC, "gh", mk([]))            # 仅 touchstone/无数据 → None
+    monkeypatch.setattr(ORC.ghclient, "paginate_check_runs", mk([]))            # 仅 touchstone/无数据 → None
     assert ORC.ci_verdict("o", "r", "s", "t") is None
 
 
