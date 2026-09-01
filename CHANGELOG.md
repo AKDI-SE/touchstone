@@ -5,6 +5,14 @@
 
 ## [未发布]
 
+（下个版本的新变更记于此。）
+
+## [0.3.2] — 2026-08-31（PR-Agent 0.44.0：供应链清零 + fail-closed 活化 + 评审覆盖面透出）
+
+补丁版：评审引擎（PR-Agent venv）从 0.39.0 升至 0.44.0，确定性门禁/CLI/checks 契约零变化；
+`touchstone-findings.json` 产物【增量】新增 `unreviewed_files`/`unreviewed_total` 两字段（下游
+不读即无感）。收录 PR #208（3 commits，评审 3 轮收敛）。全量测试 1249 通过 / 11 跳过（+10 用例）。
+
 ### PR-Agent 0.39.0 → 0.44.0（供应链 + fail-closed + 评审覆盖面）
 
 - **升级动机（实测驱动）**：0.44.0 全新解析树 `pip-audit` 零已知漏洞，对照 0.39/0.43 树
