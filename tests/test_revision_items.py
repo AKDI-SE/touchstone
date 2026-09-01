@@ -11,6 +11,8 @@
 """
 import json
 
+import pytest
+
 from touchstone import checklist as cl
 from touchstone import contract_check as cc
 from touchstone import lineage
@@ -1649,8 +1651,9 @@ def test_collapse_archive_keeps_quoted_marker_and_blank_lines():
 def test_post_results_collapses_only_after_post_success(monkeypatch):
     """round-9（PRA-POSSIBLE_ISSUE:596）验证：折叠只在摘要评论 POST 真成功后发生。
     gh 非非 2xx 不可能"不抛异常返回 404 dict"——ghclient.request 末尾 raise_for_status
-    （HTTPError ⊂ RequestException）→ except 吞掉 → posted=False → 绝不折叠。若丢掉
-    posted 门禁：旧 marker 折叠转义后不可解析、新评论又不存在 → round 状态归零。"""
+    （HTTPError ⊂ RequestException）→ except 捕获 → posted=False → 绝不折叠（issue #211
+    起失败统一转函数末尾的大声 raise）。若丢掉 posted 门禁：旧 marker 折叠转义后不可
+    解析、新评论又不存在 → round 状态归零。"""
     import requests as _rq
     from touchstone import orchestrator as orc
     risk = {"risk_band": "low", "human_action": "skip", "verification_decision": "cheap_only",
@@ -1667,7 +1670,8 @@ def test_post_results_collapses_only_after_post_success(monkeypatch):
         return {}
 
     monkeypatch.setattr(orc, "gh", gh_fail)
-    orc.post_results("o", "r", 9, "sha", "t", risk, [], stale_comments=stale)
+    with pytest.raises(RuntimeError, match="摘要评论未发布"):      # issue #211：大声失败
+        orc.post_results("o", "r", 9, "sha", "t", risk, [], stale_comments=stale)
     assert not any(m == "PATCH" for m, _ in calls)                # POST 失败 → 不折叠
 
     calls.clear()

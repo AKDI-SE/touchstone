@@ -18,6 +18,7 @@ import os
 import time
 import re
 import sys
+import traceback
 
 import requests
 
@@ -515,7 +516,8 @@ def post_results(owner, repo, number, head_sha, token, risk, findings, loop_info
                  review_reliable=True,
                  llm_notes=None, raw_excerpt=None, unverified_claims=0, telemetry_status="disabled",
                  engine_detail="", stale_comments=None):
-    # (1) 摘要评论——总是成功；按 v2 六段版面模板组装：
+    # (1) 摘要评论——本轮评审的契约载体；发布失败=大声失败（issue #211：无评论+绿灯
+    #     =评审结果静默丢失，机器销项循环永远等不到评论）。按 v2 六段版面模板组装：
     #     ①标题+状态行 ②告警 ③静态检查 ④评审发现与销项 ⑤参考信息 ⑥机器 marker
     # 评审不可信时，降级说明/0-发现溯源统一并入 render 层的 [!CAUTION] 置顶告警
     # （见 render.render_unreliable_callout；判定层的 review_reliable 信号在此接到呈现层）；
@@ -612,6 +614,7 @@ def post_results(owner, repo, number, head_sha, token, risk, findings, loop_info
         print(f"[review_pr] 报告正文 HTML 注释配对违例，已中性化 {_n_fixes} 处（L1 转义漏点，"
               f"详见 render.sanitize_report_body）", file=sys.stderr)
     posted = False
+    _post_err = None
     try:
         # GitCode 适配：PR 评论端点是 /pulls/{n}/comments（GitHub 是 /issues/{n}/comments）。
         _cmt = (f"/repos/{owner}/{repo}/pulls/{number}/comments" if _is_gitcode()
@@ -619,7 +622,11 @@ def post_results(owner, repo, number, head_sha, token, risk, findings, loop_info
         gh("POST", _cmt, token, {"body": body})
         posted = True
     except requests.exceptions.RequestException as e:
-        print(f"[warn] 摘要评论失败: {e}", file=sys.stderr)
+        # issue #211：摘要评论发不出去时若继续走完主流程 = 「绿灯 job + 无评论」——评审
+        # 结果静默丢失。此处先 stderr 留痕（[error] 而非 [warn]：这不是可忽略的旁路），
+        # 内联评论/check-run 仍尽力而为（有限诊断面），函数末尾统一转大声失败。
+        _post_err = e
+        print(f"[error] 摘要评论失败: {e}", file=sys.stderr)
     # 新评论已落地 → 历史轮次评论折叠（视觉降噪，原文与 marker 全保留）。仅在 posted 后做：
     # 若新评论没发出去就折叠旧的，旧 marker（转义后不再可解析）会丢状态——round 归零。
     if posted and stale_comments is not None:
@@ -658,6 +665,14 @@ def post_results(owner, repo, number, head_sha, token, risk, findings, loop_info
             })
         except requests.exceptions.RequestException as e:
             print(f"[info] check run 跳过: {e}", file=sys.stderr)
+    # issue #211 契约收口：摘要评论没落地 → 本轮评审结果无法送达 PR（机器 marker/销项
+    # 循环都读它）。宁可 job 红（触发重跑/人工介入），绝不静默成功。gh() 对 POST 有意
+    # 不重试（防重复评论），单发失败即此路径——secondary rate limit / 权限收紧是常见
+    # 触发。raise 穿透 main() → 顶层看门狗（_run_with_watchdog）兜 exit 1。
+    if not posted:
+        raise RuntimeError(
+            f"摘要评论未发布——评审结果无法送达 PR（issue #211：无评论+绿灯=静默丢评审，"
+            f"改判大声失败；run 日志与产物仍有本轮数据，re-run 可重试）。原始异常：{_post_err!r}")
 
 
 # --- main ---------------------------------------------------------------------
@@ -1182,5 +1197,61 @@ def main():
     print(f"[touchstone] 风险={risk['risk_band']} 发现={len(findings)} 条")
 
 
+def _emergency_comment(reason):
+    """看门狗最后通牒（issue #211）：main() 未正常完成时把「本轮评审未完成」贴到 PR。
+    此刻 main() 局部变量已不可用 → 从环境自重导上下文（GITHUB_REPOSITORY /
+    GITHUB_EVENT_PATH 里的 pull_request.number / GITHUB_TOKEN）。看门狗自身绝不抛
+    （否则压过原始退出语义）——任何失败只 stderr 留痕，job 仍以非零码收场，守住
+    「绝不静默」下限。评论体刻意**不携带**正常轮的 touchstone-result marker（销项
+    循环会把残缺状态当完整轮记账），改用独立的 touchstone-incomplete marker 供机器分诊。"""
+    try:
+        repo = os.environ.get("GITHUB_REPOSITORY", "")
+        token = os.environ.get("GITHUB_TOKEN") or ""
+        number = None
+        _evp = os.environ.get("GITHUB_EVENT_PATH", "")
+        if _evp and os.path.exists(_evp):
+            with open(_evp, encoding="utf-8") as f:
+                number = ((json.load(f) or {}).get("pull_request") or {}).get("number")
+        if not (repo and token and number):
+            print(f"[watchdog] PR 上下文不完整，跳过降级评论（job 仍失败）: "
+                  f"repo={repo!r} number={number!r} token={'有' if token else '缺'}", file=sys.stderr)
+            return
+        _cmt = (f"/repos/{repo}/pulls/{number}/comments" if _is_gitcode()
+                else f"/repos/{repo}/issues/{number}/comments")
+        body = ("⚠️ **本轮评审未完成**：touchstone 编排器异常终止，本轮没有评审结论。\n\n"
+                f"原因：{_redact_secrets(str(reason))[:800]}\n\n"
+                "job 已按失败收场；请结合 run 日志排查后 re-run。"
+                "<!-- touchstone-incomplete -->")
+        gh("POST", _cmt, token, {"body": body})
+        print(f"[watchdog] 已在 {repo}#{number} 贴出降级评论", file=sys.stderr)
+    except Exception as e:
+        print(f"[watchdog] 降级评论发布失败（job 仍将失败，守住『绝不静默』下限）: "
+              f"{type(e).__name__}: {e}", file=sys.stderr)
+
+
+def _run_with_watchdog():
+    """issue #211：编排器顶层看门狗——「崩溃 + 绿灯」组合自此不可能。三类结局归一：
+      ① main() 正常完成（尾部最终 print 是唯一完成宣言）→ 自然退出 0；
+      ② SystemExit(0/None)——Python 语义下**无 traceback 的静默成功退出**（库层裸
+         sys.exit()/未来的早退路径都落这；SystemExit 非 Exception 子类，会穿透 main()
+         里所有 except Exception 块）→ 贴降级评论 + 转 exit 1；
+      ③ 其余未捕获异常（含穿透性 BaseException）→ traceback 留档 + 贴降级评论 + exit 1。
+    例外：KeyboardInterrupt（concurrency cancel-in-progress 的平台取消）原样放行——
+    新轮自会接管该 SHA，贴「未完成」只是噪音；取消语义由平台标记，不归看门狗管。"""
+    try:
+        main()
+    except KeyboardInterrupt:
+        raise
+    except SystemExit as e:
+        if e.code is None or e.code == 0:
+            _emergency_comment(f"编排器异常退出 SystemExit({e.code!r})——无 traceback 的静默成功路径")
+            sys.exit(1)
+        raise    # 带信息/非零码的主动退出（非 PR 跳过 / 规范缺失）：本就大声，保持原样
+    except BaseException as e:
+        traceback.print_exc()
+        _emergency_comment(f"未捕获异常 {type(e).__name__}: {e}")
+        sys.exit(1)
+
+
 if __name__ == "__main__":
-    main()
+    _run_with_watchdog()

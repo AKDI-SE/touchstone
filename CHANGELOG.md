@@ -5,7 +5,22 @@
 
 ## [未发布]
 
-（下个版本的新变更记于此。）
+### 修复（issue #211：编排器不得「崩溃 + 绿灯」）
+
+- **摘要评论发布失败改为大声失败**：此前摘要评论 POST 失败（secondary rate limit / 权限收紧等）
+  只在 stderr 留一行 `[warn]` 后主流程继续走完 → job 绿灯、PR 无评论——评审结果静默丢失，
+  机器销项循环永远等不到评论（卡死）。现在 `post_results` 在内联评论/check-run 尽力而为之后
+  统一 `raise`，job 置红触发重跑/人工介入。内联评论与 check-run 仍是 `[info]` 级降级
+  （旁路载体，摘要评论才是契约本体）。
+- **编排器顶层看门狗**（`_run_with_watchdog`）：`main()` 未正常完成的三类结局归一——
+  ① `SystemExit(0/None)`（Python 语义下无 traceback 的静默成功退出，会穿透 main() 里所有
+  `except Exception` 块）→ 贴降级评论 + 转 exit 1；② 其余未捕获异常 → traceback 留档 +
+  贴降级评论 + exit 1；③ 主动跳过路径（非 PR 事件 / 规范缺失，带信息 string-arg `sys.exit`）
+  原样放行。`KeyboardInterrupt`（concurrency 平台取消）放行不贴评论——新轮自会接管。
+- **看门狗降级评论**（`_emergency_comment`）：从环境自重导 PR 上下文（GITHUB_REPOSITORY /
+  GITHUB_EVENT_PATH / GITHUB_TOKEN），贴「⚠️ 本轮评审未完成：〈原因〉」；携带独立的
+  `touchstone-incomplete` marker 而**非** `touchstone-result` marker（销项循环不会把残缺
+  状态当完整轮记账）；看门狗自身绝不抛（任何失败只 stderr 留痕，非零退出码守住下限）。
 
 ## [0.3.2] — 2026-08-31（PR-Agent 0.44.0：供应链清零 + fail-closed 活化 + 评审覆盖面透出）
 
