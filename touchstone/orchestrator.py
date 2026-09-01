@@ -754,6 +754,8 @@ def review_pr(pr, contract, standards, provider=None):
     engaged = False         # glm 是否给出实质性多段评审（runner 经 _LAST_META 透出，见 review_provider）
     raw_excerpt = {}        # LLM 原始 review 段快照（0 原始建议时贴横幅，打消"是否真审过"疑虑）
     llm_notes = []          # LLM 侧非致命注记（部分降级/截断修复），进报告横幅
+    unreviewed = []         # 覆盖面清单：仅 engine ok 路径有值（降级=没评审，无覆盖面可言）
+    unreviewed_total = 0    # 覆盖面真·总数（列表截 100 后的保真口径）
     engine_detail = ""      # 降级/失败时的具体原始错误（PR#68 做准的 reason）——留给渲染层
     max_lines = _max_diff_lines()
     size_findings = []
@@ -780,6 +782,11 @@ def review_pr(pr, contract, standards, provider=None):
             _meta = review_provider.invoke_meta()
             engaged = _meta.get("review_engaged", False)   # review_reliable 据此区分"审完无问题"与"裁空/吞没"
             raw_excerpt = _meta.get("raw_review_excerpt") or {}  # 0 原始建议时贴横幅的 LLM 原始 review 段
+            unreviewed = _meta.get("unreviewed_files") or []     # token 预算裁掉、未进 LLM 评审的文件（0.44）
+            # 真·总数：列表在 runner 侧截 100 防畸形巨表，横幅/产物必须按真值报（截断保真）
+            unreviewed_total = _meta.get("unreviewed_total")
+            if not (isinstance(unreviewed_total, int) and unreviewed_total >= 0):
+                unreviewed_total = len(unreviewed)                # 老协议回退：len(列表)
             # 部分降级/修复解析：整轮仍可信（另一侧有真实产出/条目仍在），不触发降级，
             # 但必须在报告可见——improve 连挂数日而 review 正常时，建议侧信号长期缺失
             # 却无人察觉；截断修复则意味着条目可能被静默修丢（本次静默故障排查 S1/S3）。
@@ -792,6 +799,14 @@ def review_pr(pr, contract, standards, provider=None):
             if _meta.get("repaired_parses"):
                 llm_notes.append(f"ℹ️ 本轮有 {_meta['repaired_parses']} 次 LLM 预测经修复解析"
                                  "（输出截断/畸形的弱信号，条目可能被修复丢弃），原文见交互日志。")
+            if unreviewed_total:
+                # 评审覆盖面（pr-agent 0.44）：绿灯结论的可信边界。总数按真值（截断保真），
+                # 点名前 5 个，与上游 coverage footer 同款克制（MAX_REVIEW_COVERAGE_FILES）——
+                # 横幅是提示不是文件浏览器；截断后的清单在 touchstone-findings.json 产物里。
+                _shown = "、".join(f"`{f}`" for f in unreviewed[:5])
+                llm_notes.append(f"⚠️ **评审覆盖面**：{unreviewed_total} 个文件因 diff 超 token 预算"
+                                 f"未进入 LLM 评审（{_shown}{' 等' if unreviewed_total > 5 else ''}）"
+                                 "——本轮绿灯结论不含这些文件。")
         except review_provider.ReviewEngineDegraded as e:
             engine_status = e.degraded
             engine_detail = e.reason or ""      # PR#68 做准的具体原因（工具 + litellm 真实异常 + 过滤后 stderr）
@@ -815,7 +830,8 @@ def review_pr(pr, contract, standards, provider=None):
             "det_warning": det_warning, "ai_raw_count": ai_raw_count,
             "added_lines": added_lines, "changed_files": changed_files,
             "scope_facts": sf, "llm_notes": llm_notes, "engaged": engaged,
-            "raw_excerpt": raw_excerpt, "engine_detail": engine_detail}
+            "raw_excerpt": raw_excerpt, "engine_detail": engine_detail,
+            "unreviewed_files": unreviewed, "unreviewed_total": unreviewed_total}
 
 
 def main():
@@ -885,6 +901,8 @@ def main():
     n_changed = len(_out.get("changed_files") or [])
     engaged = _out.get("engaged", False)
     raw_excerpt = _out.get("raw_excerpt") or {}
+    unreviewed_files = _out.get("unreviewed_files") or []   # 覆盖面清单：进 findings 产物（横幅已由 llm_notes 承担）
+    unreviewed_total = _out.get("unreviewed_total") or len(unreviewed_files)  # 真·总数（截断保真）
     # 本轮 LLM 评审是否可靠（engine_status + 可疑空收敛判据 + engaged 逃生口）。不可靠时
     # checklist 不予自动销项、loop 不收敛、autonomy 不自动放行--防"diff 被裁空/LLM 随机性"
     # 假收敛放行未评审代码。engaged 让"glm 审完无问题"的干净 PR 不再被误判可疑（PR #51）。
@@ -1138,6 +1156,10 @@ def main():
                      "review_engaged": engaged,
                      # LLM 原始 review 段快照（0 原始建议时的"真审过"证据，见 _clean_review_trace）
                      "raw_review_excerpt": raw_excerpt,
+                     # 评审覆盖面（pr-agent 0.44 remaining_files_list 透传）：token 预算裁掉、
+                     # 未进 LLM 评审的文件。绿灯结论的可信边界，供 autonomy/下游对账。
+                     "unreviewed_files": unreviewed_files,
+                     "unreviewed_total": unreviewed_total,
                      # author 自证但未经人核准的销项数（waived/split）——autonomy 独立闸据此
                      # 拒放行（多层：即便 loop_decision 被虚报，本计数由 touchstone 侧写入）。
                      "unverified_claims": n_unverified,

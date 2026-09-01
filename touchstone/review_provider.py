@@ -288,10 +288,12 @@ def _extract_json(stdout):
 
 
 # 非真评审内容的 review 段键：key_issues_to_review（"0 意见"本体）+ runner 注入的内部标志
-# （_engaged/_raw_excerpt）。compute_engaged 计段、extract_review_excerpt 抽段都排除它们——
-# 否则内部标志键（如 _engaged=True、非空 _raw_excerpt）会被当成"评审段"灌水 engaged 计数
-# （test_silent_failure 锁：仅 _engaged=True 无真段 → 旧实现误判 engaged=True → 假 review_reliable）。
-_NONCONTENT_REVIEW_KEYS = ("key_issues_to_review", "_engaged", "_raw_excerpt")
+# （_engaged/_raw_excerpt/_unreviewed_files）。compute_engaged 计段、extract_review_excerpt 抽段
+# 都排除它们——否则内部标志键（如 _engaged=True、非空 _raw_excerpt）会被当成"评审段"灌水
+# engaged 计数（test_silent_failure 锁：仅 _engaged=True 无真段 → 旧实现误判 engaged=True →
+# 假 review_reliable）。_unreviewed_files 同理（pr-agent 0.44 覆盖面清单，非评审内容段）。
+_NONCONTENT_REVIEW_KEYS = ("key_issues_to_review", "_engaged", "_raw_excerpt",
+                             "_unreviewed_files", "_unreviewed_total")
 _EXCERPT_SKIP_KEYS = _NONCONTENT_REVIEW_KEYS   # 同义别名，保持 excerpt 侧引用名
 
 
@@ -367,6 +369,35 @@ def _extract_excerpt(data):
         val = review.get("_raw_excerpt")
         return val if isinstance(val, dict) else {}
     return extract_review_excerpt(data)
+
+
+def _extract_unreviewed(data):
+    """读 runner 写的 review._unreviewed_files：token 预算裁掉、未经 LLM 评审的文件清单
+    （pr-agent 0.44 remaining_files_list 跨子进程 JSON 边界透出，见 pr_agent_runner 阶段二）。
+    镜像 _extract_engaged/_extract_excerpt 的边界防御（raw 形状不可信），但【无现算回退】——
+    离线注入/老协议路径没有这个数据源，缺失即空清单：不过度声明覆盖缺口。"""
+    if not isinstance(data, dict):
+        return []
+    review = data.get("review")
+    if not isinstance(review, dict):
+        return []
+    val = review.get("_unreviewed_files")
+    if not isinstance(val, list):
+        return []
+    # 只收 str：str(None)=="None" 会把空值伪装成文件名（测试锁）
+    return [f.strip() for f in val if isinstance(f, str) and f.strip()]
+
+
+def _extract_unreviewed_total(data):
+    """覆盖面【真】总数（runner 在截断列表之外单独透传）：缺失/非计数 → None，
+    调用方回退 len(列表)——老协议（无总数键）语义不退化。"""
+    if not isinstance(data, dict):
+        return None
+    review = data.get("review")
+    if not isinstance(review, dict):
+        return None
+    val = review.get("_unreviewed_total")
+    return val if isinstance(val, int) and not isinstance(val, bool) and val >= 0 else None
 
 
 def load_nmap(repo_dir="."):
@@ -771,6 +802,10 @@ class PRAgentProvider:
         _LAST_META["review_engaged"] = _extract_engaged(data)
         # 原始反馈快照：0 原始建议时贴进报告横幅打消"是否真审过"疑虑（见 extract_review_excerpt）。
         _LAST_META["raw_review_excerpt"] = _extract_excerpt(data)
+        # 评审覆盖面：token 预算裁掉、未进 LLM 评审的文件（pr-agent 0.44，见 _extract_unreviewed）。
+        # 绿灯结论的可信边界——非空时 orchestrator 横幅点名，防"看似全覆盖的绿灯"被过度解读。
+        _LAST_META["unreviewed_files"] = _extract_unreviewed(data)
+        _LAST_META["unreviewed_total"] = _extract_unreviewed_total(data)
         return parse_pr_agent(data)
 
     def _invoke(self, pr_ctx):

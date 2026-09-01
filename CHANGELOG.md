@@ -5,7 +5,23 @@
 
 ## [未发布]
 
-（下个版本的新变更记于此。）
+### PR-Agent 0.39.0 → 0.44.0（供应链 + fail-closed + 评审覆盖面）
+
+- **升级动机（实测驱动）**：0.44.0 全新解析树 `pip-audit` 零已知漏洞，对照 0.39/0.43 树
+  37+ 条（GitPython 3.1.41×13、PyJWT 2.10.1×12、ujson 5.8.0×5……上游精确钉死无法越过）；
+  0.44 起上游把硬钉放宽为补丁范围（#2881），后续 CVE 修复不再依赖上游发版。API 兼容面
+  （导入/签名/settings 键/litellm 内部符号/tenacity 结构）在 Python 3.13 venv 逐项验证通过。
+- **`propagate_tool_errors=True`**（runner）：0.44 新旋钮——此前工具 `run()` 顶层吞异常，
+  "评审内部崩了"与"模型没发现问题"不可区分（假绿灯面）；开启后 re-raise 落进既有
+  `_degraded=llm_failed` 路径，与全线 fail-closed 哲学同构。0.39- 无此键，回退安全。
+- **评审覆盖面透出**（runner → review_provider → orchestrator）：0.44 的
+  `remaining_files_list`（diff 超 token 预算被裁、未经 LLM 评审的文件）此前只渲染进被
+  `publish_output=False` 闸掉的评论 footer；现从实例属性直接取数，经 `review._unreviewed_files`
+  跨 JSON 边界透传，横幅点名前 5 个 + 总数，完整清单落 `touchstone-findings.json`——
+  绿灯结论自此附带可信边界声明。
+- **`pragent-constraints.txt` 重生成**：131 个发行版（较 0.39 锁少 4：上游 uv 迁移把
+  pytest 系移出运行时），头部诚实声明同步更新（0 漏洞实测、放宽钉语义、再生成协议不变）。
+- `SECURITY.md`「供应链信任边界」：死结解除 + 当前树零漏洞的实测记录。
 
 ## [0.3.1] — 2026-08-31（审计 51 项全量修复 + 评审 14 轮淬炼 + CI 三修）
 
