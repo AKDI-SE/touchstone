@@ -685,8 +685,10 @@ def test_main_gate_crash_does_not_suppress_review(monkeypatch, tmp_path):
     assert out["gate"] is None       # gate 崩溃 → 保持 None（未算出）
 
 
-def test_main_post_results_fail_swallowed(monkeypatch, tmp_path):
-    # 摘要评论/内联/check-run POST 失败 → 走 warn/info 分支，main 不崩
+def test_main_post_results_fail_loud(monkeypatch, tmp_path):
+    """issue #211：摘要评论 POST 失败 → main() 大声失败（旧契约是 [warn] 吞掉 + 绿灯
+    收场 = 评审结果静默丢失）。内联/check-run 失败仍是 [info] 降级（旁路，可吞）。
+    findings 落盘位于 post_results 之后——大声失败下不落盘，re-run 重来。"""
     import requests
     def fgh(method, path, token, data=None, accept="application/vnd.github+json"):
         if accept.endswith("diff"):
@@ -698,8 +700,9 @@ def test_main_post_results_fail_swallowed(monkeypatch, tmp_path):
         raise requests.exceptions.HTTPError(f"403 forbidden: {path}")
     _setup_main(monkeypatch, tmp_path, fgh)
     monkeypatch.setenv("TOUCHSTONE_SKIP_GATE", "1")
-    ORC.main()                       # 各 POST 失败被吞，落盘仍完成
-    assert (tmp_path / "touchstone-findings.json").exists()
+    with pytest.raises(RuntimeError, match="摘要评论未发布"):
+        ORC.main()
+    assert not (tmp_path / "touchstone-findings.json").exists()
 
 
 def test_main_telemetry_status_flows_into_report(monkeypatch, tmp_path):

@@ -12,6 +12,7 @@
 import json
 import os
 import subprocess as _sp
+import sys
 
 import pytest
 
@@ -277,3 +278,154 @@ def test_e2e_engine_failure_does_not_burn_round(monkeypatch, rule_index,
                                           engine_failed=engine_failed)
     assert dec == "continue" and "不计入轮次" in reason
     assert ns.round == 4 and ns.history == [["OE-001:f:1"]]
+
+
+# ============================================================================
+# issue #211：编排器不得「崩溃 + 绿灯」——摘要评论契约收口 + 顶层看门狗
+# ============================================================================
+_RISK211 = {"risk_band": "low", "human_action": "skip",
+            "verification_decision": "cheap_only", "blast_radius": []}
+_DIFF211 = "--- a/x.py\n+++ b/x.py\n@@ -0,0 +1,1 @@\n+a\n"
+_F211 = [{"rule_id": "R1", "confidence": 0.9, "agent": "pr-agent:review",
+          "file": "x.py", "line": 1, "rationale": "r", "suggested_fix": "fix"}]
+
+
+def test_summary_comment_failure_raises(monkeypatch):
+    """issue #211 主症状：摘要评论 POST 失败（secondary rate limit 403 等）→ post_results
+    大声失败，不再 [warn] 吞掉后绿灯收场（绿灯 job 里 stderr 一行不可见 = 静默）。"""
+    def _gh(method, path, token, data=None, accept=""):
+        if method == "POST" and path.endswith("/issues/1/comments"):
+            import requests as _rq
+            raise _rq.exceptions.HTTPError("403 secondary rate limit")
+        return {}
+    monkeypatch.setattr(orc, "gh", _gh)
+    with pytest.raises(RuntimeError, match="摘要评论未发布"):
+        orc.post_results("o", "r", 1, "sha", "tok", _RISK211, [], diff=_DIFF211)
+
+
+def test_summary_comment_failure_still_attempts_inline_and_checkrun(monkeypatch):
+    """失败后内联评论/check-run 仍尽力而为（诊断面留档），再统一转大声——顺序契约。"""
+    calls = []
+
+    def _gh(method, path, token, data=None, accept=""):
+        calls.append(path)
+        if method == "POST" and path.endswith("/issues/1/comments"):
+            import requests as _rq
+            raise _rq.exceptions.ConnectionError("boom")
+        return {}
+    monkeypatch.setattr(orc, "gh", _gh)
+    with pytest.raises(RuntimeError):
+        orc.post_results("o", "r", 1, "sha", "tok", _RISK211, _F211, diff=_DIFF211)
+    joined = " ".join(calls)
+    assert "/pulls/1/reviews" in joined and "/check-runs" in joined   # 尽力而为先于大声失败
+
+
+def test_summary_comment_success_no_raise(monkeypatch):
+    """正常路径不受影响：评论落地 → 不 raise（回归护栏，防收口误伤）。"""
+    monkeypatch.setattr(orc, "gh", lambda m, p, t, data=None, accept="": {})
+    orc.post_results("o", "r", 1, "sha", "tok", _RISK211, _F211, diff=_DIFF211)   # 不抛即通过
+
+
+def test_watchdog_converts_silent_exit0_to_loud(monkeypatch):
+    """SystemExit(0/None) = 无 traceback 的静默成功退出（穿透一切 except Exception）——
+    看门狗必须转成 exit 1 + 降级评论（fail-closed：完成只能由 main() 走到底来宣告）。"""
+    seen = []
+    monkeypatch.setattr(orc, "_emergency_comment", seen.append)
+    monkeypatch.setattr(orc, "main", lambda: sys.exit(0))
+    with pytest.raises(SystemExit) as ei:
+        orc._run_with_watchdog()
+    assert ei.value.code == 1
+    assert seen and "SystemExit(0)" in seen[0]
+
+
+def test_watchdog_exit_none_same_as_zero(monkeypatch):
+    monkeypatch.setattr(orc, "_emergency_comment", lambda r: None)
+    monkeypatch.setattr(orc, "main", lambda: sys.exit())
+    with pytest.raises(SystemExit) as ei:
+        orc._run_with_watchdog()
+    assert ei.value.code == 1
+
+
+def test_watchdog_intentional_string_exit_untouched(monkeypatch):
+    """主动跳过路径（非 PR 事件 / 规范缺失，string-arg sys.exit）本就大声——原样放行，
+    不贴降级评论（没有丢失评审结果，只是没开审）。"""
+    monkeypatch.setattr(orc, "_emergency_comment",
+                        lambda r: pytest.fail("主动跳过不应贴降级评论"))
+    monkeypatch.setattr(orc, "main", lambda: sys.exit("非 PR 事件，跳过。"))
+    with pytest.raises(SystemExit) as ei:
+        orc._run_with_watchdog()
+    assert ei.value.code == "非 PR 事件，跳过。"
+
+
+def test_watchdog_uncaught_exception_comments_and_exits_1(monkeypatch, capsys):
+    seen = []
+    monkeypatch.setattr(orc, "_emergency_comment", seen.append)
+
+    def _main():
+        raise RuntimeError("boom")
+    monkeypatch.setattr(orc, "main", _main)
+    with pytest.raises(SystemExit) as ei:
+        orc._run_with_watchdog()
+    assert ei.value.code == 1
+    assert seen and "RuntimeError" in seen[0] and "boom" in seen[0]
+    assert "RuntimeError" in capsys.readouterr().err          # traceback 留档 stderr
+
+
+def test_watchdog_keyboardinterrupt_passes_through(monkeypatch):
+    """concurrency 取消（SIGINT）不贴降级噪音：新轮自会接管该 SHA，取消语义归平台。"""
+    monkeypatch.setattr(orc, "_emergency_comment",
+                        lambda r: pytest.fail("平台取消不应贴降级评论"))
+    monkeypatch.setattr(orc, "main", _raise_ki)
+    with pytest.raises(KeyboardInterrupt):
+        orc._run_with_watchdog()
+
+
+def _raise_ki():
+    raise KeyboardInterrupt()
+
+
+def test_emergency_comment_posts_without_result_marker(monkeypatch, tmp_path):
+    """降级评论贴到 PR；携带 touchstone-incomplete 而非 touchstone-result marker
+    （后者是销项循环的完整轮记账入口——残缺状态不得被当完整轮）。"""
+    ev = tmp_path / "event.json"
+    ev.write_text(json.dumps({"pull_request": {"number": 7}}), encoding="utf-8")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "o/r")
+    monkeypatch.setenv("GITHUB_TOKEN", "t")
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(ev))
+    posted = {}
+    monkeypatch.setattr(orc, "gh",
+                        lambda m, p, t, data=None, accept="": posted.update(path=p, data=data))
+    orc._emergency_comment("未捕获异常 RuntimeError: boom")
+    assert posted["path"] == "/repos/o/r/issues/7/comments"
+    body = posted["data"]["body"]
+    assert "本轮评审未完成" in body and "boom" in body
+    assert "touchstone-incomplete" in body
+    assert "touchstone-result" not in body
+
+
+def test_emergency_comment_no_context_skips_quietly(monkeypatch, capsys):
+    """PR 上下文不完整（非 PR 事件/缺 token）→ 不触网不抛，stderr 留痕（看门狗自身
+    绝不压过原始退出语义）。"""
+    for k in ("GITHUB_REPOSITORY", "GITHUB_TOKEN", "GITHUB_EVENT_PATH"):
+        monkeypatch.delenv(k, raising=False)
+    called = []
+    monkeypatch.setattr(orc, "gh", lambda *a, **k: called.append(1) or {})
+    orc._emergency_comment("x")                                   # 不抛即通过
+    assert not called
+    assert "跳过降级评论" in capsys.readouterr().err
+
+
+def test_emergency_comment_post_failure_never_raises(monkeypatch, tmp_path, capsys):
+    """评论 POST 也挂（API 大面积故障）→ 留痕后返回；退出码仍非零（看门狗主路径保证）。"""
+    ev = tmp_path / "event.json"
+    ev.write_text(json.dumps({"pull_request": {"number": 7}}), encoding="utf-8")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "o/r")
+    monkeypatch.setenv("GITHUB_TOKEN", "t")
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(ev))
+
+    def _gh(m, p, t, data=None, accept=""):
+        import requests as _rq
+        raise _rq.exceptions.ConnectionError("api down")
+    monkeypatch.setattr(orc, "gh", _gh)
+    orc._emergency_comment("reason")                              # 不抛即通过
+    assert "降级评论发布失败" in capsys.readouterr().err
