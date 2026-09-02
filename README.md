@@ -198,10 +198,7 @@ jobs:
 | `LLM_BASE_URL` | ✅ | LLM 的 OpenAI 兼容端点 | `https://open.bigmodel.cn/api/coding/paas/v4` |
 | `LLM_API_KEY` | ✅ | LLM 端点的 API key | `your-key-here` |
 | `LLM_MODEL` | ✅ | 评审用的模型名 | `glm-5.2` |
-| `TOUCHSTONE_LLM_CONTEXT_TOKENS` | 推荐 | 模型上下文窗口（token）。2000 行 diff 约需 64K（含 prompt 开销 + 输出预留）；GLM-5.2 支持 128K | `131072` |
-| `TOUCHSTONE_LLM_OUTPUT_TOKENS` | 推荐 | 模型最大输出（token）。2000 行 PR 的建议产出上限 ~7.5K，8192 覆盖不截断 | `8192` |
 | `TOUCHSTONE_LLM_REFLECT_MODEL` | 可选 | improve 自评（self-reflection 打分，第二次 LLM 调用）专用的小模型；不设则沿用主模型。`touchstone.yml` 已默认 `glm-4.5-air`（自评是浅任务，小模型即可，improve 健康路径耗时近乎减半） | `glm-4.5-air` |
-| `TOUCHSTONE_LLM_THINKING` | 可选 | 思考模式开关：`disabled`/`enabled`，逐调用注入请求体 `{"thinking":{"type":...}}`（GLM 方言）。思考型端点默认开思考时每调用先烧数千 reasoning token（大 diff 单调用 10min+ 的头号成因）；优先在网关侧对 key 默认关（治本），网关不可改时配 `disabled`。`touchstone.yml` 仅透传此 secret、不预置默认值，故未设=随端点默认（思考型端点须显式配 `disabled` 才关） | `disabled` |
 
 > `GITHUB_TOKEN` 由 GitHub Actions 自动提供，无需手动配。
 
@@ -210,6 +207,12 @@ jobs:
 | Variable 名 | 默认 | 说明 |
 |---|---|---|
 | `TOUCHSTONE_MAX_DIFF_LINES` | `1000` | 单 PR 行数上限，超限不调 LLM 直接 block 并提示拆分。设 `0` 关闭；建议 `500`–`2000` |
+| `TOUCHSTONE_LLM_CONTEXT_TOKENS` | 未设回退 128000 | 模型上下文窗口（token）。2000 行 diff 约需 64K（含 prompt 开销 + 输出预留）；GLM-5.2 支持 128K | 
+| `TOUCHSTONE_LLM_OUTPUT_TOKENS` | `4096` | 模型最大输出（token）。2000 行 PR 的建议产出上限 ~7.5K，8192 覆盖不截断 | 
+| `TOUCHSTONE_LLM_NUM_RETRIES` | `0` | tenacity 层重试次数（轮内重试实证救回率 0，默认不重试；秒级抖动类失败快窗内自动 N+1） | 
+| `TOUCHSTONE_LLM_THINKING` | 未设=随端点默认 | 思考模式开关：`disabled`/`enabled`（GLM 方言逐调用注入；思考型端点默认开思考是大 diff 单调用 10min+ 头号成因，网关不可改时配 `disabled`） | 
+
+> **迁移注记**：`TOUCHSTONE_LLM_CONTEXT_TOKENS` / `TOUCHSTONE_LLM_OUTPUT_TOKENS` / `TOUCHSTONE_LLM_NUM_RETRIES` / `TOUCHSTONE_LLM_THINKING` 原经 Secrets 配置——它们是非敏感调优值，不应占用 secret（且值如 `8192`/`disabled` 被 secret 化后会在全仓日志里把同串打码，排障看不见真值）。模板已改为 **variable 优先、secret 兜底**的双读：老部署把值从 Secrets 复制到 Variables（值不变即平移），迁移完成后可删除旧 secret。
 
 **Step 4**：分支保护（Settings → Branches → Branch protection rules）:
 - 把 `touchstone/gate` 设为 **Required status check**——确定性检查不过就拦。

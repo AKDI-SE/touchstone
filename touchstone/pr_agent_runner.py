@@ -118,7 +118,7 @@ def _write_interaction_log(out):
 
 
 def _llm_num_retries():
-    """N：tenacity 层重试次数（secret env 控制）。默认 0 = 不重试；非法 env fail-loud 回 0。"""
+    """N：tenacity 层重试次数（repo variable env 控制）。默认 0 = 不重试；非法 env fail-loud 回 0。"""
     _raw = os.environ.get("TOUCHSTONE_LLM_NUM_RETRIES", "0")
     try:
         return max(0, int(_raw or 0))
@@ -174,7 +174,7 @@ def _make_stop(n_retries):
 
 
 def _llm_thinking_extra_body():
-    """思考模式开关（secret env TOUCHSTONE_LLM_THINKING）→ 注入请求体的 extra_body。
+    """思考模式开关（variable env TOUCHSTONE_LLM_THINKING）→ 注入请求体的 extra_body。
     值：disabled / enabled；未设/空 = 不注入（随端点默认）。方言为 GLM 系
     `{"thinking": {"type": ...}}`（对 litellm 1.84.0 实测 extra_body 原样落到请求 JSON 顶层）。
     背景：思考型端点默认开思考时，每次调用先烧数千 reasoning token 再出正文——大 diff
@@ -384,7 +384,7 @@ def run(pr_url, mode, extra_instructions=None):
         # 故此值必须填【模型上下文窗口】(context_tokens)，绝不能填【输出】(output_tokens=默认4096)：
         # 填 4096 = 告诉 pr-agent"整个窗口只有 4096"→ 改动 diff 被裁成空 → LLM 拿到空 diff → 0 建议。
         # 这正是 PR #44（及 #42 收敛的运气成分）"LLM 没给意见"的真根因：output_tokens 语义用反。
-        # 部署方用 secret TOUCHSTONE_LLM_CONTEXT_TOKENS 按模型卡声明上下文窗口；未声明时回退
+        # 部署方用 repo variable TOUCHSTONE_LLM_CONTEXT_TOKENS 按模型卡声明上下文窗口；未声明时回退
         # 128000（现代模型典型窗口）而非 4096——宁可让 LLM 看全 diff，不可裁空。
         try:
             from touchstone.llm_budget import context_tokens
@@ -395,7 +395,7 @@ def run(pr_url, mode, extra_instructions=None):
             # custom_model_max_tokens)。configuration.toml:34 默认 max_model_tokens=32000
             # （"防输入太长降智"全局 cap）。不覆盖则不管上面 custom 设多大都被 min 成 32000 →
             # 大 PR diff 被裁、review 看不全（run 29082805842：39518 token 裁到 32000）。
-            # 与 custom 同设同一 window，让 diff 上限跟模型真实窗口走（部署方经 secret 钉值）。
+            # 与 custom 同设同一 window，让 diff 上限跟模型真实窗口走（部署方经 variable 钉值）。
             s.config.max_model_tokens = window
         except Exception:
             s.config.custom_model_max_tokens = 128000

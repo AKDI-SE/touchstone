@@ -1,7 +1,7 @@
 """LLM 上下文/输出 token 预算的单一事实源。
 
 设计原则：
-  • 真实模型规格经 env 声明（部署方按模型卡填，如 GitHub secret）——不再硬编码魔法数字：
+  • 真实模型规格经 env 声明（部署方按模型卡填，如 GitHub Actions variable——非敏感值不占 secret）——不再硬编码魔法数字：
       TOUCHSTONE_LLM_CONTEXT_TOKENS — 模型上下文窗口（token），0 = 未知/不限。
       TOUCHSTONE_LLM_OUTPUT_TOKENS  — 模型最大输出（token），默认 4096。
   • token 计数用启发式估计（无模型分词器时的近似；量级够用，精确预算需真实 tokenizer，

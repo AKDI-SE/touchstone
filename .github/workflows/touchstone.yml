@@ -237,11 +237,14 @@ jobs:
           # SIZE-001 体量门禁阈值经 repo variable 可调（orchestrator._max_diff_lines 读 env；空串=未设
           # 回落默认 1000、"0"=关闭）。接线修复：此前从未透传，vars.TOUCHSTONE_MAX_DIFF_LINES 是死配置。
           TOUCHSTONE_MAX_DIFF_LINES: ${{ vars.TOUCHSTONE_MAX_DIFF_LINES }}
-          # LLM 上下文/输出 token 预算（部署方按模型卡填 secret）。
+          # LLM 上下文/输出 token 预算（部署方按模型卡填【repo variable】，非敏感值不占 secret——
+          # 同 TOUCHSTONE_MAX_ROUNDS 教义。迁移期双读：variable 优先、旧 secret 兜底，部署方把值
+          # 从 Secrets 挪到 Variables 后模板可平移；迁移完成后可删 `|| secrets.*` 兜底。secret 化的
+          # 副作用实测有害：值如 "8192"/"131072" 会在全仓日志里把同串一律打码，排障时看不见真值）。
           # TOUCHSTONE_LLM_CONTEXT_TOKENS 是【输入侧上下文窗口】——pr-agent 的 get_max_tokens 用它作 diff
           # 裁剪预算；不接或过小（如 4096）会把改动 diff 裁空→LLM 0 建议（PR #44 真根因）。未设则 runner 回退 128000。
-          TOUCHSTONE_LLM_CONTEXT_TOKENS: ${{ secrets.TOUCHSTONE_LLM_CONTEXT_TOKENS }}
-          TOUCHSTONE_LLM_OUTPUT_TOKENS:  ${{ secrets.TOUCHSTONE_LLM_OUTPUT_TOKENS }}
+          TOUCHSTONE_LLM_CONTEXT_TOKENS: ${{ vars.TOUCHSTONE_LLM_CONTEXT_TOKENS || secrets.TOUCHSTONE_LLM_CONTEXT_TOKENS }}
+          TOUCHSTONE_LLM_OUTPUT_TOKENS:  ${{ vars.TOUCHSTONE_LLM_OUTPUT_TOKENS || secrets.TOUCHSTONE_LLM_OUTPUT_TOKENS }}
           TOUCHSTONE_PRAGENT_CMD: ".pragent-venv/bin/python -m touchstone.pr_agent_runner"
           TOUCHSTONE_INTERACTION_LOG: "pr-agent-interaction.log"   # 完整 LLM 交互日志（artifact，评审评论里贴链接）
           TOUCHSTONE_PRAGENT_TIMEOUT: "3600"            # pr-agent 子进程超时（秒）。glm-5.2 慢（单次 360s+），
@@ -254,7 +257,8 @@ jobs:
                                                           # self-reflection 打分）专用模型 = config.model_reasoning，
                                                           # 【不是】fallback_models（后者是主调用失败换模清单，已清空）。
                                                           # 自评是浅任务，小模型即可，improve 健康路径耗时近乎减半。
-          TOUCHSTONE_LLM_NUM_RETRIES: ${{ secrets.TOUCHSTONE_LLM_NUM_RETRIES }}
+          TOUCHSTONE_LLM_NUM_RETRIES: ${{ vars.TOUCHSTONE_LLM_NUM_RETRIES || secrets.TOUCHSTONE_LLM_NUM_RETRIES }}
+                                                          # ↑ 同上：非敏感调优值走 variable（迁移期 secret 兜底）。
                                                           # tenacity 层重试次数 N。未设/空 = 默认 0 = 不重试——全量
                                                           # 183 run 实证：真实失败（超时+长生成断连）全部发生在 600s+
                                                           # 后，轮内重试救回率 0/8。快窗内抖动类失败自动 N+1（见下）。
@@ -262,7 +266,7 @@ jobs:
           # TOUCHSTONE_LLM_RETRY_FAST_WINDOW: "120"     # 快窗（秒）：失败发生在此窗内且为抖动类（秒级瞬断/快速 5xx）
                                                           # 才享受 N+1；窗外一律视为系统性失败按 N（默认0）处理。0=关闭加成。
           TOUCHSTONE_LLM_STREAM: "true"                 # glm 系列（主模型+自评模型）流式调用。false 回退非流式。
-          TOUCHSTONE_LLM_THINKING: ${{ secrets.TOUCHSTONE_LLM_THINKING }}
+          TOUCHSTONE_LLM_THINKING: ${{ vars.TOUCHSTONE_LLM_THINKING || secrets.TOUCHSTONE_LLM_THINKING }}
                                                           # 思考模式开关：disabled / enabled，未设=端点默认。注入请求体
                                                           # {"thinking":{"type":...}}（GLM 方言，litellm extra_body 透传
                                                           # 已实测）。思考型端点默认开思考时每调用先烧数千 reasoning
