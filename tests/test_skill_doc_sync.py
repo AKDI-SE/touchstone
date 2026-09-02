@@ -87,7 +87,7 @@ def test_render_digest_phrases_exist_in_skill_doc():
     from touchstone import render
     digest = render._ack_skill_ref().replace("<br>\n", "\n")
     skill = _skill_text()
-    for phrase in ("改码 → 提交 → 发 ack 评论 → 推送",
+    for phrase in ("改码 → 提交 → 发 ack 评论（并空提交触发评审） → 推送",
                    "行内评论线程一律不计数",
                    "空提交",
                    "每 2 分钟检查一次",        # ⑤ 多轮轮询节奏（用户 2026-08-29 指定）
