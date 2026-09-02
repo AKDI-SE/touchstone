@@ -5,7 +5,15 @@
 
 ## [未发布]
 
-（下个版本的新变更记于此。）
+### 变更（非敏感调优值从 Secrets 迁到 Variables）
+
+- `TOUCHSTONE_LLM_CONTEXT_TOKENS` / `TOUCHSTONE_LLM_OUTPUT_TOKENS` / `TOUCHSTONE_LLM_NUM_RETRIES` /
+  `TOUCHSTONE_LLM_THINKING` 四个非敏感调优值改经 **Actions Variables** 配置（对齐
+  `TOUCHSTONE_MAX_ROUNDS` 等既有教义：非敏感 + 可被读到不影响安全 → variable 不占 secret）。
+  模板采用迁移期双读：**variable 优先、旧 secret 兜底**——老部署把值从 Secrets 复制到
+  Variables 即平移，零行为变化；迁移完成后可删兜底。secret 化的实测危害：值如
+  `8192`/`131072`/`disabled` 会在全仓日志把同串一律打码（token 计数与状态词处处出现），
+  排障时看不见真值。README Secrets/Variables 两表同步重排 + 迁移注记。
 
 ## [0.3.5] — 2026-09-02（销项时序指引：空提交并入主流程）
 
