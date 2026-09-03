@@ -5,6 +5,12 @@
 
 ## [未发布]
 
+（下个版本的新变更记于此。）
+
+## [0.3.6] — 2026-09-03（非敏感调优值 Secrets → Variables）
+
+补丁版：工作流配置面迁移，PR #216；判定/引擎/Python 行为零变化（仍读同名 env，空值回退语义不变）。
+
 ### 变更（非敏感调优值从 Secrets 迁到 Variables）
 
 - `TOUCHSTONE_LLM_CONTEXT_TOKENS` / `TOUCHSTONE_LLM_OUTPUT_TOKENS` / `TOUCHSTONE_LLM_NUM_RETRIES` /
