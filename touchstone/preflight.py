@@ -46,12 +46,13 @@ def check_config(env):
     # 「不设就撞默认坑」的配置强校验（运维成熟度）——这些不设不会立刻报错，但会在真实
     # 运行中触发已知故障，preflight 必须提前 WARN 并说明后果，而非等线上撞坑再排查：
     #
-    # TOUCHSTONE_LLM_CONTEXT_TOKENS 未按模型卡设置 → 回退 32768；若模型真实窗口 < 32768
-    # 会超窗被端点 400 拒（大 PR 触发），> 32768 则没吃满上下文。是 PR #47 被拒的根因类别。
+    # TOUCHSTONE_LLM_CONTEXT_TOKENS 未按模型卡设置 → runner 回退 128000（pr_agent_runner.py
+    # 「宁可让 LLM 看全 diff，不可裁空」）；若模型真实窗口 < 128000 会在大 PR 上超窗被端点
+    # 400 拒，> 128000 则没吃满上下文。是 PR #47 被拒的根因类别。
     ctx = env.get("TOUCHSTONE_LLM_CONTEXT_TOKENS")
     if not ctx:
         rows.append(("LLM 上下文窗口", True,
-                     "未设 TOUCHSTONE_LLM_CONTEXT_TOKENS → 回退 32768。强烈建议按模型卡显式设置："
+                     "未设 TOUCHSTONE_LLM_CONTEXT_TOKENS → 回退 128000。强烈建议按模型卡显式设置："
                      "过小端点会因输入超窗拒绝大 PR，过大则浪费上下文（见 SECURITY/CHANGELOG）"))
     else:
         try:
