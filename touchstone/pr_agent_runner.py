@@ -369,8 +369,28 @@ def run(pr_url, mode, extra_instructions=None):
                 return p.get("diff") if isinstance(p, dict) else p
             _gh_file.patch = property(_patch_prop)
             _ix("PyGithub File.patch → 从 dict 提取 diff（GitCode files 格式适配）")
+
+            def _status_prop(self):
+                try:
+                    v = self._status.value
+                except Exception:
+                    v = None
+                if v:
+                    return v
+                raw = getattr(self, "_rawData", None) or {}
+                p = raw.get("patch")
+                if isinstance(p, dict):
+                    if p.get("new_file"):
+                        return "added"
+                    if p.get("deleted_file"):
+                        return "removed"
+                    if p.get("renamed_file"):
+                        return "renamed"
+                return "modified"
+            _gh_file.status = property(_status_prop)
+            _ix("PyGithub File.status → GitCode patch dict booleans 推断（适配）")
         except Exception as e:
-            _ix(f"File.patch monkeypatch 失败: {type(e).__name__}: {e}")
+            _ix(f"File.patch/status monkeypatch 失败: {type(e).__name__}: {e}")
     if model_override:
         s.config.model = f"openai/{model_override}"   # LiteLLM：openai 前缀走 OpenAI 兼容端点
         # pr-agent 的 get_max_tokens(model) 要求模型在内置 MAX_TOKENS 表里，否则报
