@@ -13,6 +13,7 @@
 # ============================================================================
 
 import html
+from urllib.parse import quote          # 标签名 URL 编码（含 ":" 的名字进路径段）
 import json
 import os
 import time
@@ -508,6 +509,120 @@ def _collapse_stale_reviews(owner, repo, token, stale):
             print(f"[warn] 历史评论折叠失败(id={c.get('id')})，保持原样: {e}", file=sys.stderr)
 
 
+_TS_OPEN_LABELS = ("touchstone:open-findings",
+                   "touchstone:open-1-3", "touchstone:open-4-10", "touchstone:open-11+")
+_TS_BUCKETS = _TS_OPEN_LABELS[1:]    # 三个量级桶（对账清桶用）
+_TS_LABEL_COLORS = {
+    "touchstone:converged": ("0E8A16", "销项闭环：可机器验证发现已全销（waived/split 仍待人核准）"),
+    "touchstone:open-findings": ("D93F0B", "销项进行中：仍有未销项发现（量级见 open-* 桶标签）"),
+    "touchstone:open-1-3": ("FBCA04", "未销项发现 1–3 条"),
+    "touchstone:open-4-10": ("FBCA04", "未销项发现 4–10 条"),
+    "touchstone:open-11+": ("B60205", "未销项发现 11+ 条"),
+}
+
+
+def _ensure_label(owner, repo, token, name):
+    """标签存在性保障（幂等 best-effort）：GET 404 → POST 建带色标签。已存在即返。
+    失败向上抛由 _set_labels 统一 [warn]（加标签时 GitHub 对缺失名自动建灰色默认标签，
+    故此处失败不致命——只是徽章不好看）。"""
+    try:
+        gh("GET", f"/repos/{owner}/{repo}/labels/{quote(name)}", token)
+        return
+    except requests.exceptions.RequestException:
+        pass    # 静默豁免：GET 404/瞬断只说明"可能缺标签"，落到下方 POST 预建/加标签路径统一处置
+    _color, _desc = _TS_LABEL_COLORS.get(name, ("CCCCCC", ""))
+    gh("POST", f"/repos/{owner}/{repo}/labels", token,
+       {"name": name, "color": _color, "description": _desc})
+
+
+def _set_labels(owner, repo, number, token, add, remove=()):
+    """GitHub PR 标签外科式增删：POST /issues/{n}/labels 增、DELETE 单条删——不用 PUT 整组
+    覆盖（竞窗内会抹掉他人并发加的标签）。绝不抛：任何失败只 [warn]（标签是传达渠道，
+    评论/check-run 才是契约本体）。GitCode 无此通路（POST labels 400，且列表页标签渲染
+    未核实）——调用方负责平台分流，本函数不做 GitCode 适配。"""
+    try:
+        add = [a for a in add if a]
+        remove = [r for r in remove if r]
+        if not add and not remove:
+            return
+        for name in add:
+            try:
+                _ensure_label(owner, repo, token, name)
+            except Exception as e:            # 建标签失败不阻断加标签（灰色默认也是信号）
+                print(f"[warn] 标签预建失败（{name}）: {type(e).__name__}: {e}", file=sys.stderr)
+        if add:
+            gh("POST", f"/repos/{owner}/{repo}/issues/{number}/labels", token, {"labels": add})
+        for name in remove:
+            try:
+                gh("DELETE", f"/repos/{owner}/{repo}/issues/{number}/labels/{quote(name)}", token)
+            except Exception as e:            # 删旧失败只留双标签（下轮再清），不致命
+                print(f"[warn] 旧状态标签移除失败（{name}）: {type(e).__name__}: {e}", file=sys.stderr)
+    except Exception as e:
+        print(f"[warn] 标签增删失败（add={add} remove={remove}）: "
+              f"{type(e).__name__}: {e}", file=sys.stderr)
+
+
+def _open_count(checklist):
+    """未销项数——列表标签桶与 check-run 标题的**同一口径**（round-2 评审意见：两处
+    各自数数迟早语义漂移，标签说 3 条标题说 4 条即互相说谎）。"""
+    return sum(1 for i in (checklist or {}).get("items", [])
+               if isinstance(i, dict) and i.get("status") not in checklist_mod.RESOLVED)
+
+
+def _loop_state(decision, checklist):
+    """决策 → 循环状态的**单一映射**（round-2 评审：标签与标题两份并行实现迟早漂移
+    ——PRA-DRIFT；与 _open_count 统一计数口径同一理由）。返回三元组：
+
+    - kind：converged / escalate / continue / unknown——标签侧选绿/红徽章用；
+    - title_state：check-run 标题的状态段；"" = 未知态（loop_info 缺失 / 未来新增的
+      决策名）——**显式匹配已知决策、不落 else 兜底**，未知值与 None 一样省略状态段，
+      不谎称进行中；
+    - bucket：未销项量级桶标签名；None = 不进桶（converged；未闭环但 0 未销项——
+      open-1-3 谎称「1–3 条」，反向说谎的徽章比没有更糟）。escalate 也打桶：
+      needs-human + 量级 = 「多少人时的活」一眼可见；escalate 标题不带计数是刻意的
+      ——状态归标题、量级归标签桶。"""
+    if decision == "converged":
+        return "converged", "✅ 已闭环", None
+    if decision not in ("escalate", "continue"):
+        return "unknown", "", None
+    n = _open_count(checklist)
+    bucket = ("touchstone:open-1-3" if 1 <= n <= 3 else
+              "touchstone:open-4-10" if 4 <= n <= 10 else
+              "touchstone:open-11+" if n >= 11 else None)
+    if decision == "escalate":
+        return "escalate", "⬆️ 已升级到人", bucket
+    # continue 且 0 未销项（清单全销、CI/verify 待绿）：报「未闭环」不带计数——
+    # 「未销项 0 项」与红 open-findings 徽章是自相矛盾信号。
+    return "continue", (f"🔁 未销项 {n} 项" if n else "🔁 未闭环"), bucket
+
+
+def _sync_state_labels(owner, repo, number, token, decision, checklist):
+    """PR 列表页零点击可见性（用户诉求：不想每个 PR 点进去拖到底才知道销项状态）：
+    converged → touchstone:converged（绿徽章）；未闭环 → touchstone:open-findings +
+    未销项量级桶（1–3 / 4–10 / 11+，桶选法与标题状态同走 _loop_state 单一映射）。
+    每轮全量对账（先清旧状态/桶标签再打新）——桶随轮次变化，残留即说谎。未知决策值
+    不谎称也不冒充——保持上轮标签 + [info] 留痕。GitCode 平台跳过（标签通路与渲染均
+    未核实，同 #219 折叠守卫模式）：[info] 留痕，不做半吊子适配。escalate 的
+    needs-human 由既有块负责（含其自有 GitCode 兜底），本函数不碰。"""
+    if _is_gitcode():
+        print("[info] GitCode 平台暂不同步销项状态标签（标签通路未核实，GitHub 生效）",
+              file=sys.stderr)
+        return
+    kind, _state, bucket = _loop_state(decision, checklist)
+    if kind == "unknown":
+        print(f"[info] 未知循环决策 {decision!r}，跳过本轮销项状态标签同步（保持上轮）",
+              file=sys.stderr)
+        return
+    if kind == "converged":
+        _set_labels(owner, repo, number, token, add=["touchstone:converged"],
+                    remove=_TS_OPEN_LABELS)
+        return
+    _set_labels(owner, repo, number, token,
+                add=["touchstone:open-findings"] + ([bucket] if bucket else []),
+                remove=("touchstone:converged",) + tuple(
+                    b for b in _TS_BUCKETS if b != bucket))
+
+
 def post_results(owner, repo, number, head_sha, token, risk, findings, loop_info=None,
                  change_class=None, diff=None, injected_types=None, injected_experience_ids=None,
                  shadow_types=None, shadow_experience_ids=None,
@@ -653,14 +768,21 @@ def post_results(owner, repo, number, head_sha, token, risk, findings, loop_info
                {"event": "COMMENT", "comments": inline})
         except requests.exceptions.RequestException as e:
             print(f"[info] 内联评论降级(行不在 diff 内属正常): {e}", file=sys.stderr)
-    # (3) 中性 check run（advisory，永不 failure）
+    # (3) 中性 check run（advisory，永不 failure）。标题带销项状态：PR 列表页悬停
+    #     checks 图标即可见，不必点进 PR 拖到底（与 _sync_state_labels 标签互补：
+    #     标签零点击常驻、标题带精确未销项数）。
     if head_sha and not _is_gitcode():
         flag = "⚠️ 评审降级 · " if (engine_status != "ok" or det_warning) else ""
+        _dec = loop_info[0] if loop_info else None
+        # 状态段与标签桶同走 _loop_state 单一映射（round-2 评审：两份并行实现迟早
+        # 漂移；未知决策值与 None 同归未知态、省略状态段，不落 else 谎称进行中）。
+        _kind, _state, _bucket = _loop_state(_dec, checklist)
+        _suffix = f" · {_state}" if _state else ""
         try:
             gh("POST", f"/repos/{owner}/{repo}/check-runs", token, {
                 "name": "touchstone", "head_sha": head_sha, "status": "completed",
                 "conclusion": "neutral",
-                "output": {"title": f"{flag}风险等级 {risk['risk_band']} · {len(findings)} 条发现",
+                "output": {"title": f"{flag}风险等级 {risk['risk_band']} · {len(findings)} 条发现{_suffix}",
                            "summary": body[:600]},
             })
         except requests.exceptions.RequestException as e:
@@ -1122,6 +1244,10 @@ def main():
                  review_reliable=reliable, llm_notes=llm_notes,
                  raw_excerpt=raw_excerpt, unverified_claims=n_unverified,
                  telemetry_status=_tel_res, engine_detail=engine_detail)
+
+    # PR 列表页零点击可见性：销项状态 + 未销项量级标签（best-effort，绝不阻塞主链；
+    # GitCode 守卫跳过——通路未核实，同 #219 折叠守卫模式）
+    _sync_state_labels(owner, repo, number, token, decision, cur_cl)
 
     # 升级到人：打标签（best-effort）
     if decision == "escalate":

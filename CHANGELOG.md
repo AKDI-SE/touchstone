@@ -5,6 +5,16 @@
 
 ## [未发布]
 
+### 新增（PR 列表页零点击可见性）
+
+- **销项状态标签**（GitHub）：每轮评审后自动同步——`touchstone:converged`（绿，已闭环）/
+  `touchstone:open-findings`（红，进行中）+ 未销项量级桶 `touchstone:open-1-3` / `open-4-10` /
+  `open-11+`；每轮全量对账不残留。不必点进 PR 拖到底才知道销项状态。
+- **check run 标题带状态**：`风险等级 X · N 条发现 · ✅ 已闭环 / 🔁 未销项 M 项 / ⬆️ 已升级到人`
+  ——悬停 PR 列表 checks 图标即见（精确未销项数）。
+- 标签通路为外科式增删（POST/DELETE 单条，不 PUT 整组覆盖），缺失标签自动预建带色；
+  best-effort 绝不阻塞评审主链。GitCode 守卫跳过（通路未核实，同 #219 折叠守卫模式）。
+
 ### 修复
 
 - `preflight` 未设 `TOUCHSTONE_LLM_CONTEXT_TOKENS` 的告警文案陈旧（写"回退 32768"）——
