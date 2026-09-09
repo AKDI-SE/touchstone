@@ -561,6 +561,13 @@ def _set_labels(owner, repo, number, token, add, remove=()):
               f"{type(e).__name__}: {e}", file=sys.stderr)
 
 
+def _open_count(checklist):
+    """未销项数——列表标签桶与 check-run 标题的**同一口径**（round-2 评审意见：两处
+    各自数数迟早语义漂移，标签说 3 条标题说 4 条即互相说谎）。"""
+    return sum(1 for i in (checklist or {}).get("items", [])
+               if isinstance(i, dict) and i.get("status") not in checklist_mod.RESOLVED)
+
+
 def _sync_state_labels(owner, repo, number, token, decision, checklist):
     """PR 列表页零点击可见性（用户诉求：不想每个 PR 点进去拖到底才知道销项状态）：
     converged → touchstone:converged（绿徽章）；未闭环 → touchstone:open-findings +
@@ -572,16 +579,18 @@ def _sync_state_labels(owner, repo, number, token, decision, checklist):
         print("[info] GitCode 平台暂不同步销项状态标签（标签通路未核实，GitHub 生效）",
               file=sys.stderr)
         return
-    open_n = sum(1 for i in (checklist or {}).get("items", [])
-                 if isinstance(i, dict) and i.get("status") not in checklist_mod.RESOLVED)
+    open_n = _open_count(checklist)
     if decision == "converged":
         _set_labels(owner, repo, number, token, add=["touchstone:converged"],
                     remove=_TS_OPEN_LABELS)
         return
-    bucket = ("touchstone:open-1-3" if open_n <= 3 else
-              "touchstone:open-4-10" if open_n <= 10 else "touchstone:open-11+")
+    # 未闭环但 0 未销项（如"清单已全销、CI/verify 待绿"的 continue）→ 只打 open-findings
+    # 不进桶（round-2 评审意见：open-1-3 谎称"1–3 条"，反向说谎的徽章比没有更糟）。
+    bucket = ("touchstone:open-1-3" if 1 <= open_n <= 3 else
+              "touchstone:open-4-10" if 4 <= open_n <= 10 else
+              "touchstone:open-11+" if open_n >= 11 else None)
     _set_labels(owner, repo, number, token,
-                add=["touchstone:open-findings", bucket],
+                add=["touchstone:open-findings"] + ([bucket] if bucket else []),
                 remove=("touchstone:converged",) + tuple(
                     b for b in ("touchstone:open-1-3", "touchstone:open-4-10",
                                 "touchstone:open-11+") if b != bucket))
@@ -738,15 +747,23 @@ def post_results(owner, repo, number, head_sha, token, risk, findings, loop_info
     if head_sha and not _is_gitcode():
         flag = "⚠️ 评审降级 · " if (engine_status != "ok" or det_warning) else ""
         _dec = loop_info[0] if loop_info else None
-        _open = sum(1 for i in (checklist or {}).get("items", [])
-                    if isinstance(i, dict) and i.get("status") not in checklist_mod.RESOLVED)
-        _state = ("✅ 已闭环" if _dec == "converged" else
-                  "⬆️ 已升级到人" if _dec == "escalate" else f"🔁 未销项 {_open} 项")
+        if _dec == "converged":
+            _state = "✅ 已闭环"
+        elif _dec == "escalate":
+            _state = "⬆️ 已升级到人"
+        elif _dec is None:
+            _state = ""    # 未知态（loop_info 缺失/首建前）不谎称进行中（round-2 评审意见）
+        else:
+            _open = _open_count(checklist)
+            # 0 未销项的 continue（清单已全销、CI 待绿）：报"未闭环"不报"0 项"——
+            # "未销项 0 项"与红 open-findings 徽章组合是自相矛盾的信号。
+            _state = f"🔁 未销项 {_open} 项" if _open else "🔁 未闭环"
+        _suffix = f" · {_state}" if _state else ""
         try:
             gh("POST", f"/repos/{owner}/{repo}/check-runs", token, {
                 "name": "touchstone", "head_sha": head_sha, "status": "completed",
                 "conclusion": "neutral",
-                "output": {"title": f"{flag}风险等级 {risk['risk_band']} · {len(findings)} 条发现 · {_state}",
+                "output": {"title": f"{flag}风险等级 {risk['risk_band']} · {len(findings)} 条发现{_suffix}",
                            "summary": body[:600]},
             })
         except requests.exceptions.RequestException as e:

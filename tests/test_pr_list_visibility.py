@@ -53,7 +53,7 @@ def test_sync_converged_adds_green_removes_open(monkeypatch):
     assert pre and pre[0][2]["color"] == "0E8A16"     # 预建带色（非灰默认）
 
 
-@pytest.mark.parametrize("open_n,want", [(0, "touchstone:open-1-3"), (2, "touchstone:open-1-3"),
+@pytest.mark.parametrize("open_n,want", [(1, "touchstone:open-1-3"), (2, "touchstone:open-1-3"),
                                          (3, "touchstone:open-1-3"), (4, "touchstone:open-4-10"),
                                          (10, "touchstone:open-4-10"), (11, "touchstone:open-11+"),
                                          (99, "touchstone:open-11+")])
@@ -71,6 +71,20 @@ def test_sync_open_bucket_selection(monkeypatch, open_n, want):
             assert quote(b) in dels
         else:
             assert quote(b) not in dels
+
+
+def test_sync_zero_open_skips_bucket(monkeypatch):
+    """round-2 评审：未闭环但 0 未销项（清单全销、CI 待绿的 continue）→ 只打
+    open-findings 不进桶——open-1-3 谎称"1–3 条"，反向说谎的徽章比没有更糟；
+    三个桶全清（残留旧桶同样说谎）。"""
+    gh = _GH()
+    monkeypatch.setattr(orc, "gh", gh)
+    orc._sync_state_labels("o", "r", 1, "t", "continue", _cl("done", "done"))
+    adds = [c for c in gh.calls if c[0] == "POST" and c[1].endswith("/issues/1/labels")]
+    assert adds and adds[0][2]["labels"] == ["touchstone:open-findings"]
+    dels = {c[1].rsplit("/", 1)[-1] for c in gh.calls if c[0] == "DELETE"}
+    for b in ("touchstone:open-1-3", "touchstone:open-4-10", "touchstone:open-11+"):
+        assert quote(b) in dels
 
 
 def test_sync_escalate_keeps_open_labels(monkeypatch):
@@ -108,7 +122,8 @@ def test_set_labels_noop_on_empty(monkeypatch):
 
 # ---------------- check-run 标题 ----------------
 def test_checkrun_title_carries_loop_state(monkeypatch):
-    """标题三态：✅ 已闭环 / 🔁 未销项 N 项（精确数） / ⬆️ 已升级到人。"""
+    """标题态：✅ 已闭环 / 🔁 未销项 N 项（精确数） / ⬆️ 已升级到人；
+    loop_info 缺失（未知态）省略状态段——不谎称进行中（round-2 评审）。"""
     titles = []
 
     def fake_gh(method, path, token, data=None, accept=""):
@@ -122,7 +137,31 @@ def test_checkrun_title_carries_loop_state(monkeypatch):
     for loop_info, cl, frag in (
             (("converged", "r", "<!-- m -->"), _cl("done"), "✅ 已闭环"),
             (("continue", "r", "<!-- m -->"), _cl("open", "done"), "🔁 未销项 1 项"),
-            (("escalate", "r", "<!-- m -->"), _cl("open"), "⬆️ 已升级到人")):
+            (("escalate", "r", "<!-- m -->"), _cl("open"), "⬆️ 已升级到人"),
+            (None, _cl("open"), None)):
         orc.post_results("o", "r", 5, "sha", "t", _RISK, [], loop_info=loop_info, checklist=cl)
-        assert frag in titles[-1]
+        if frag is None:
+            # 未知态：无状态段——标题止于「N 条发现」，不带尾随「 · 」
+            assert titles[-1].endswith("条发现") and "闭环" not in titles[-1] and "未销项" not in titles[-1]
+        else:
+            assert frag in titles[-1]
     assert "风险等级" in titles[0]        # 原有信息不丢
+
+
+def test_checkrun_title_zero_open_says_unclosed_not_zero(monkeypatch):
+    """round-2 评审：continue + 清单全销 → 🔁 未闭环（不带"0 项"）——"未销项 0 项"
+    与红 open-findings 徽章组合是自相矛盾的信号。"""
+    titles = []
+
+    def fake_gh(method, path, token, data=None, accept=""):
+        if method == "GET" and "/labels/" in path:
+            raise requests.exceptions.HTTPError("404")
+        if method == "POST" and path.endswith("/check-runs"):
+            titles.append(data["output"]["title"])
+        return {}
+
+    monkeypatch.setattr(orc, "gh", fake_gh)
+    orc.post_results("o", "r", 5, "sha", "t", _RISK, [],
+                     loop_info=("continue", "r", "<!-- m -->"), checklist=_cl("done", "waived"))
+    assert "🔁 未闭环" in titles[-1]
+    assert "未销项" not in titles[-1] and "0 项" not in titles[-1]
