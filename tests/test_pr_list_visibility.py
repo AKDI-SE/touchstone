@@ -105,6 +105,16 @@ def test_sync_gitcode_guard_skips(monkeypatch):
     assert not gh.calls
 
 
+def test_sync_unknown_decision_skips(monkeypatch, capsys):
+    """round-2 评审：未知决策值（未来新增决策名）不谎称也不冒充——零 API 调用，
+    保持上轮标签 + [info] 留痕。"""
+    gh = _GH()
+    monkeypatch.setattr(orc, "gh", gh)
+    orc._sync_state_labels("o", "r", 1, "t", "paused", _cl("open"))
+    assert not gh.calls
+    assert "未知循环决策" in capsys.readouterr().err
+
+
 def test_set_labels_never_raises(monkeypatch, capsys):
     """API 全挂 → 只 [warn] 不抛（标签是传达渠道，评论/check-run 才是契约本体）。"""
     monkeypatch.setattr(orc, "gh", _GH(fail_all=True))
@@ -138,7 +148,8 @@ def test_checkrun_title_carries_loop_state(monkeypatch):
             (("converged", "r", "<!-- m -->"), _cl("done"), "✅ 已闭环"),
             (("continue", "r", "<!-- m -->"), _cl("open", "done"), "🔁 未销项 1 项"),
             (("escalate", "r", "<!-- m -->"), _cl("open"), "⬆️ 已升级到人"),
-            (None, _cl("open"), None)):
+            (None, _cl("open"), None),
+            (("paused", "r", "<!-- m -->"), _cl("open"), None)):   # 意外决策值=未知态
         orc.post_results("o", "r", 5, "sha", "t", _RISK, [], loop_info=loop_info, checklist=cl)
         if frag is None:
             # 未知态：无状态段——标题止于「N 条发现」，不带尾随「 · 」

@@ -511,6 +511,7 @@ def _collapse_stale_reviews(owner, repo, token, stale):
 
 _TS_OPEN_LABELS = ("touchstone:open-findings",
                    "touchstone:open-1-3", "touchstone:open-4-10", "touchstone:open-11+")
+_TS_BUCKETS = _TS_OPEN_LABELS[1:]    # 三个量级桶（对账清桶用）
 _TS_LABEL_COLORS = {
     "touchstone:converged": ("0E8A16", "销项闭环：可机器验证发现已全销（waived/split 仍待人核准）"),
     "touchstone:open-findings": ("D93F0B", "销项进行中：仍有未销项发现（量级见 open-* 桶标签）"),
@@ -568,32 +569,58 @@ def _open_count(checklist):
                if isinstance(i, dict) and i.get("status") not in checklist_mod.RESOLVED)
 
 
+def _loop_state(decision, checklist):
+    """决策 → 循环状态的**单一映射**（round-2 评审：标签与标题两份并行实现迟早漂移
+    ——PRA-DRIFT；与 _open_count 统一计数口径同一理由）。返回三元组：
+
+    - kind：converged / escalate / continue / unknown——标签侧选绿/红徽章用；
+    - title_state：check-run 标题的状态段；"" = 未知态（loop_info 缺失 / 未来新增的
+      决策名）——**显式匹配已知决策、不落 else 兜底**，未知值与 None 一样省略状态段，
+      不谎称进行中；
+    - bucket：未销项量级桶标签名；None = 不进桶（converged；未闭环但 0 未销项——
+      open-1-3 谎称「1–3 条」，反向说谎的徽章比没有更糟）。escalate 也打桶：
+      needs-human + 量级 = 「多少人时的活」一眼可见；escalate 标题不带计数是刻意的
+      ——状态归标题、量级归标签桶。"""
+    if decision == "converged":
+        return "converged", "✅ 已闭环", None
+    if decision not in ("escalate", "continue"):
+        return "unknown", "", None
+    n = _open_count(checklist)
+    bucket = ("touchstone:open-1-3" if 1 <= n <= 3 else
+              "touchstone:open-4-10" if 4 <= n <= 10 else
+              "touchstone:open-11+" if n >= 11 else None)
+    if decision == "escalate":
+        return "escalate", "⬆️ 已升级到人", bucket
+    # continue 且 0 未销项（清单全销、CI/verify 待绿）：报「未闭环」不带计数——
+    # 「未销项 0 项」与红 open-findings 徽章是自相矛盾信号。
+    return "continue", (f"🔁 未销项 {n} 项" if n else "🔁 未闭环"), bucket
+
+
 def _sync_state_labels(owner, repo, number, token, decision, checklist):
     """PR 列表页零点击可见性（用户诉求：不想每个 PR 点进去拖到底才知道销项状态）：
     converged → touchstone:converged（绿徽章）；未闭环 → touchstone:open-findings +
-    未销项量级桶（1–3 / 4–10 / 11+）。每轮全量对账（先清旧状态/桶标签再打新）——
-    桶随轮次变化，残留即说谎。GitCode 平台跳过（标签通路与渲染均未核实，同 #219
-    折叠守卫模式）：[info] 留痕，不做半吊子适配。escalate 的 needs-human 由既有
-    块负责（含其自有 GitCode 兜底），本函数不碰。"""
+    未销项量级桶（1–3 / 4–10 / 11+，桶选法与标题状态同走 _loop_state 单一映射）。
+    每轮全量对账（先清旧状态/桶标签再打新）——桶随轮次变化，残留即说谎。未知决策值
+    不谎称也不冒充——保持上轮标签 + [info] 留痕。GitCode 平台跳过（标签通路与渲染均
+    未核实，同 #219 折叠守卫模式）：[info] 留痕，不做半吊子适配。escalate 的
+    needs-human 由既有块负责（含其自有 GitCode 兜底），本函数不碰。"""
     if _is_gitcode():
         print("[info] GitCode 平台暂不同步销项状态标签（标签通路未核实，GitHub 生效）",
               file=sys.stderr)
         return
-    open_n = _open_count(checklist)
-    if decision == "converged":
+    kind, _state, bucket = _loop_state(decision, checklist)
+    if kind == "unknown":
+        print(f"[info] 未知循环决策 {decision!r}，跳过本轮销项状态标签同步（保持上轮）",
+              file=sys.stderr)
+        return
+    if kind == "converged":
         _set_labels(owner, repo, number, token, add=["touchstone:converged"],
                     remove=_TS_OPEN_LABELS)
         return
-    # 未闭环但 0 未销项（如"清单已全销、CI/verify 待绿"的 continue）→ 只打 open-findings
-    # 不进桶（round-2 评审意见：open-1-3 谎称"1–3 条"，反向说谎的徽章比没有更糟）。
-    bucket = ("touchstone:open-1-3" if 1 <= open_n <= 3 else
-              "touchstone:open-4-10" if 4 <= open_n <= 10 else
-              "touchstone:open-11+" if open_n >= 11 else None)
     _set_labels(owner, repo, number, token,
                 add=["touchstone:open-findings"] + ([bucket] if bucket else []),
                 remove=("touchstone:converged",) + tuple(
-                    b for b in ("touchstone:open-1-3", "touchstone:open-4-10",
-                                "touchstone:open-11+") if b != bucket))
+                    b for b in _TS_BUCKETS if b != bucket))
 
 
 def post_results(owner, repo, number, head_sha, token, risk, findings, loop_info=None,
@@ -747,17 +774,9 @@ def post_results(owner, repo, number, head_sha, token, risk, findings, loop_info
     if head_sha and not _is_gitcode():
         flag = "⚠️ 评审降级 · " if (engine_status != "ok" or det_warning) else ""
         _dec = loop_info[0] if loop_info else None
-        if _dec == "converged":
-            _state = "✅ 已闭环"
-        elif _dec == "escalate":
-            _state = "⬆️ 已升级到人"
-        elif _dec is None:
-            _state = ""    # 未知态（loop_info 缺失/首建前）不谎称进行中（round-2 评审意见）
-        else:
-            _open = _open_count(checklist)
-            # 0 未销项的 continue（清单已全销、CI 待绿）：报"未闭环"不报"0 项"——
-            # "未销项 0 项"与红 open-findings 徽章组合是自相矛盾的信号。
-            _state = f"🔁 未销项 {_open} 项" if _open else "🔁 未闭环"
+        # 状态段与标签桶同走 _loop_state 单一映射（round-2 评审：两份并行实现迟早
+        # 漂移；未知决策值与 None 同归未知态、省略状态段，不落 else 谎称进行中）。
+        _kind, _state, _bucket = _loop_state(_dec, checklist)
         _suffix = f" · {_state}" if _state else ""
         try:
             gh("POST", f"/repos/{owner}/{repo}/check-runs", token, {
