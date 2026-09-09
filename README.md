@@ -253,6 +253,14 @@ pr-agent **取 PR** 用 workflow 自带的 `GITHUB_TOKEN`——**无需额外配
 `<details>「🔁 历史评审已折叠」</details>` 归档(逐行转义、原文保全、可展开)。
 收敛清单在每条新评论里自足累积——人与 agent 永远只需读最新一条。
 
+**PR 列表页零点击可见性**:每个 PR 的销项状态不必点进去拖到底——
+- 标签徽章(GitHub,列表页常驻):`touchstone:converged`(绿,已闭环)/ `touchstone:open-findings`
+  (红,销项进行中)+ 未销项量级桶 `touchstone:open-1-3` / `open-4-10` / `open-11+`(黄→深红);
+  每轮自动对账(收敛即换绿,桶随轮次更新,不残留旧状态)。escalate 时另有既有
+  `touchstone:needs-human`。GitCode 暂不同步(标签通路未核实,同折叠守卫,#219)。
+- check run 标题(悬停 PR 列表 checks 图标即见):`风险等级 X · N 条发现 · ✅ 已闭环 /
+  🔁 未销项 M 项 / ⬆️ 已升级到人`。
+
 **三层注释防御**:LLM 生成的自由文字(处置方向/依据/提醒等)若含字面 `<!--`,会在
 `<details>` HTML 区块内打开一段**真** HTML 注释、把后文整段吞掉——曾实际发生:某轮
 评审的「参考信息 / 如何申报销项」整节在 GitHub 渲染后消失。防御分三层,任一层漏了
