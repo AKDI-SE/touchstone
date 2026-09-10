@@ -493,6 +493,13 @@ def render_findings_checklist(findings, checklist, review_reliable=True):
         else:
             title = "（已销项）"
         lines.append(f"{mark} {title}" + (f" {label}" if label else "") + f" — `{it['sig']}`")
+        # 守卫事实不再单列一行（v3 瘦身，用户 2026-09-10：人不怎么看）——折叠为行尾 <sub>
+        # 小字：优先挂「依据」行尾，无依据挂「问题」行尾，两皆无才单列小字行。marker 的
+        # item["guard"] 原样持久化，C 面核销注入与 waived 反证引用不受影响（数据层零改动）。
+        # guard 可含字面 `<module>`（裸路径守卫的函数名占位）——不转义会被浏览器当
+        # 未知内联标签吞掉（round-7 实测：`函数 <module>：无守卫` 渲染丢 `<module>`）
+        guard = it.get("guard") or ""
+        gsub = f" <sub>（守卫：{_html_text(guard)}）</sub>" if guard else ""
         # rationale（问题陈述）作首条子项；与 direction 同文则省（去冗余，同 _finding_entry 纪律）
         if rationale and rationale != direction:
             lines.append(f"  - {_html_text(rationale)}")
@@ -502,7 +509,11 @@ def render_findings_checklist(findings, checklist, review_reliable=True):
         if reasoning and reasoning != rationale and reasoning != direction:
             r = _render_reasoning(reasoning, indent="  ")   # task list 子项缩进 2 空格
             if r:
-                lines.append(r)
+                lines.append(r + gsub)
+                gsub = ""
+        elif gsub and rationale and rationale != direction:
+            lines[-1] += gsub                                # 无依据行 → 挂「问题」行尾
+            gsub = ""
         dc_line = _render_done_criteria(dc)
         if dc_line:
             lines.append(f"  - 达成判据：{dc_line}")
@@ -511,10 +522,8 @@ def render_findings_checklist(findings, checklist, review_reliable=True):
         # author 内容（waived/split 反证）与受理失败原因照常显示。
         if it.get("note") and it["note"] not in MACHINE_DONE_NOTES:
             lines.append(f"  - 说明：{_html_text(it['note'])}")
-        if it.get("guard"):                    # 守卫事实（issue #139）：确定性 AST 事实，供 waived 佐证
-            # guard 可含字面 `<module>`（裸路径守卫的函数名占位）——不转义会被浏览器当
-            # 未知内联标签吞掉（round-7 实测：`函数 <module>：无守卫` 渲染丢 `<module>`）
-            lines.append(f"  - 守卫事实：{_html_text(it['guard'])}")
+        if gsub:                                             # 问题/依据行皆无 → 单列小字行兜底
+            lines.append(f"  - <sub>守卫：{_html_text(guard)}</sub>")
         if f:
             lines.append(_render_finding_meta(f))
     if capped:

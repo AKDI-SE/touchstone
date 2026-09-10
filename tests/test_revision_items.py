@@ -169,6 +169,45 @@ def test_degraded_criteria_and_machine_done_note_silenced_in_checklist():
     assert "说明：" in md4 and "测试夹具" in md4
 
 
+def test_guard_fact_folds_into_reasoning_or_rationale_line():
+    """v3 瘦身（用户 2026-09-10：人不怎么看）——守卫事实不再单列「守卫事实：」行，折叠为
+    行尾 <sub> 小字：① 有依据行 → 挂依据行尾（含长依据折叠后的 </details> 同行）；② 依据被
+    去冗余省略但有「问题」行 → 挂问题行尾；③ 两皆无 → 单列小字行兜底。数据层零改动
+    （item["guard"] 照旧持久化，C 面核销注入与 waived 反证引用不受影响）。"""
+    from touchstone import checklist as cl
+    from touchstone import render
+
+    def _mk(guard, **kw):
+        f = _rf("PRA-X:a.py:1", **kw)
+        c = cl.from_findings([f])
+        c["items"][0]["guard"] = guard
+        return f, c
+
+    g = "函数 f：前置早退[if not x: return]"
+    # ① 有依据行（短依据平铺）→ 挂依据行尾
+    f, c = _mk(g, rationale="问题", reasoning="具体依据")
+    md = render.render_findings_checklist([f], c)
+    assert "守卫事实：" not in md                            # 单列行已删
+    gl = [ln for ln in md.split("\n") if "守卫" in ln][0]
+    assert gl.lstrip().startswith("- 依据：") and gl.rstrip().endswith("</sub>")
+    assert f"（守卫：{g}）</sub>" in gl
+    # ①' 长依据折叠 → 挂 </details> 同行尾
+    f, c = _mk(g, rationale="问题", reasoning="长依据" * 120)
+    md = render.render_findings_checklist([f], c)
+    gl = [ln for ln in md.split("\n") if "守卫" in ln][0]
+    assert "</details>" in gl and gl.rstrip().endswith("</sub>")
+    # ② 依据与问题同文被省（去冗余）→ 挂「问题」行尾
+    f, c = _mk(g, rationale="问题", reasoning="问题")
+    md = render.render_findings_checklist([f], c)
+    gl = [ln for ln in md.split("\n") if "守卫" in ln][0]
+    assert gl.lstrip().startswith("- 问题") and "</sub>" in gl and "依据" not in gl
+    # ③ 问题/依据皆无（rationale 空、与 direction 同文省略）→ 单列小字行兜底
+    f, c = _mk(g, rationale="", direction="方向", reasoning="")
+    md = render.render_findings_checklist([f], c)
+    gl = [ln for ln in md.split("\n") if "守卫" in ln][0]
+    assert gl.lstrip().startswith("- <sub>守卫：")
+
+
 # ---------------- 意见 3：收敛清单 ----------------
 def _finding(rid, file="a.py", line=1, direction="改这里", kind="deterministic"):
     dc = ({"kind": "deterministic", "spec": {"recheck": rid}} if kind == "deterministic"
