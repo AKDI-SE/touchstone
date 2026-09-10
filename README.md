@@ -1,12 +1,10 @@
-# Touchstone
+# Touchstone — AI Committer
 
-**给 AI 时代的代码合入装一把试金石。** 挂在 GitHub PR 上的 AI 评审 + 客观质量门禁：
+**用 AI 来检视 AI 生成的代码。** 挂在 GitHub PR 上的 AI 评审 + 客观质量门禁：
 
 - **AI 评审（advisory）**：复用 [PR-Agent](https://github.com/qodo-ai/pr-agent) 评审你的 PR，发现回贴成带 checkbox 的待办清单，只给建议、**不拦截合入**；
 - **质量门禁**：契约核对、栈专项规则、密钥/危险代码扫描等确定性检查（无 LLM），聚合成唯一总闸 `touchstone/gate`——它绿，才满足分支保护；
 - **可选能力（默认关）**：独立验证 verify（异模型盲测验收测试）、自动合并 autonomy、学习回路（评审越用越准，含 TF-GRPO）。
-
-判断可以来自 AI，但"准予合入"不押在判断上——只认客观、可复现、可审计的机制。自主边界 = 验证边界。
 
 ## 快速部署到你的仓库（3 分钟）
 
@@ -109,8 +107,6 @@ jobs:
 | `TOUCHSTONE_LLM_NUM_RETRIES` | `0` | tenacity 重试次数（实证轮内重试救回率 0，默认不重试） |
 | `TOUCHSTONE_LLM_THINKING` | 未设=随端点默认 | 思考模式开关：`disabled`/`enabled`（思考型端点默认开思考是大 diff 单调用 10min+ 的头号成因，网关改不了时配 `disabled`） |
 
-> **迁移注记**：上表四个 LLM 值为非敏感调优值，模板对它们 **variable 优先、secret 兜底**双读——老部署把值从 Secrets 复制到 Variables 即平移，完成后可删旧 secret。
-
 **Step 4**：分支保护（Settings → Branches）——把 `touchstone/gate` 设为 **Required status check**。
 
 **Step 5**：验证——开一个测试 PR，应看到：
@@ -146,20 +142,6 @@ mkdir -p .claude/skills && cp -r /path/to/touchstone/skills/touchstone-ack .clau
 - **学习回路（`learn.yml`，含 TF-GRPO）**——从历史 PR 的采纳/忽略自动蒸馏经验，需积累历史 + 旗舰模型端点；新经验先 shadow A/B 达标才启用，只调建议、不碰合入。
 
 两者都受 `TOUCHSTONE_EXPERIENCE_ENABLED` 总闸控制，机制详见 `docs/learning-loop-design.html`。
-
-## 本地命令（自检 / 手动跑）
-
-```bash
-pip install -e .                        # 依赖见 pyproject.toml
-touchstone doctor                       # 上线自检：配置+连通+一次自检评审（退出 0=可上线）
-python -m touchstone.run --repo owner/name --pr 314   # dry-run 评审；加 --post 真回贴
-```
-
-所有测试与确定性核对离线可跑，无需 LLM/网络。仓内策略配置见 `.touchstone/`（standards.yaml 规范、pr.yaml 契约模板、checks.yaml 门禁策略等，随仓库版本化）。
-
-## 规模与状态
-
-生产代码约 14100 行 / 39 个模块；测试 1286 个用例 / 45 个文件，全绿、离线；行覆盖率 91%。遵循 SemVer，版本单一来源 `touchstone/__init__.py`（当前 v0.3.7）。verify/autonomy 默认关（verify 为参考级实现）；每轮评审产出 `touchstone-metrics.json` 运维指标，并发评审多 PR 时设 `TOUCHSTONE_OUTPUT_DIR` 隔离产物。
 
 ## 更多文档
 
