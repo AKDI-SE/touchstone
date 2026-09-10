@@ -24,7 +24,7 @@ def test_empty_env_falls_back_to_default(monkeypatch):
 
 
 def test_max_diff_lines_empty_keeps_gate(monkeypatch):
-    """上游报告问题三：空串此前经 `or 0` 静默关闭 SIZE-001 体量门禁。现空串→默认 1000，仅显式 0 关闭。"""
+    """上游报告问题三：空串此前经 `or 0` 静默关闭 SIZE-001 体量门禁。现空串→默认 3000，仅显式 0 关闭。"""
     from touchstone import orchestrator as O
     monkeypatch.setenv("TOUCHSTONE_MAX_DIFF_LINES", "")
     assert O._max_diff_lines() == 3000
