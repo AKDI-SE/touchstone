@@ -138,7 +138,7 @@ mkdir -p .claude/skills && cp -r /path/to/touchstone/skills/touchstone-ack .clau
 #   本仓 PR 被 Touchstone 评审；销项协议见 touchstone 仓 skills/touchstone-ack/SKILL.md
 ```
 
-**销项不是一发即中**：每轮复检可能新增 findings（评审看到修复后给出下一层意见是常态）——agent 推送申报后应每 2 分钟检查一次最新 bot 评论，直到 ✅ 收敛或 ⬆️ 升级到人才停。
+**销项不是一发即中**：每轮复检可能新增 findings（评审看到修复后给出下一层意见是常态）——agent 推送申报后应每 1 分钟检查一次最新 bot 评论，直到 ✅ 收敛或 ⬆️ 升级到人才停。
 
 ## 让评审懂你的团队（可选）
 

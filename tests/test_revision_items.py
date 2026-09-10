@@ -1255,11 +1255,12 @@ def test_ack_section_readable_layout():
     from touchstone import render
     md = render.render_reference(has_checklist_items=True)
     frag = md.split("<details><summary>如何申报销项</summary>")[1].split("</details>")[0]
-    assert frag.count("<br>") == 7                              # 8 行（指引/链接/速览①-⑤）= 7 个行间分隔
+    assert frag.count("<br>") == 8                              # 9 行（指引/链接/速览①-⑥）= 8 个行间分隔
     assert frag.rstrip("\n").count("\n") >= 2                  # 源码层仍逐行（可 diff）
     assert "<pre>" not in frag and "skill 正本全文" not in frag  # 无正文源码/无二级折叠
-    assert len(frag) < 600                                      # 打开一级 = 短指引，非糊文
-    assert "每 2 分钟检查一次" in frag and "直到 ✅ 收敛" in frag  # ⑤ 多轮轮询提醒在速览里
+    assert len(frag) < 700                                      # 打开一级 = 短指引，非糊文（5 行时 600；6 行按比例 700）
+    assert "每 1 分钟检查一次" in frag and "直到 ✅ 收敛" in frag  # ⑤ 多轮轮询提醒在速览里
+    assert "本地全量测试不必每轮跑" in frag and "findings 清零后" in frag  # ⑥ 全量测试降频在速览里
     assert "可安装为 skill" in frag                             # 链接指针仍在（参考入口不丢）
     assert "\n\n" not in frag                                 # 无空行（#168）
 
