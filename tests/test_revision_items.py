@@ -316,9 +316,9 @@ def test_ack_help_details_has_no_blank_lines_inside():
     """回归 #171：如何申报销项 <details> 内有空行（summary/body 间、body/</details> 间各一）
     → CommonMark type-6 HTML block 在首个空行处截断 → <details> 变空壳、申报指引正文渲染成
     <details> 之外的松散段落（始终可见）。去空行让整段留在同一 HTML block 内才可折叠。
-    v2：申报指引迁至 render_reference（参考信息段）。"""
+    v2：申报指引迁至 render_reference；v3：参考信息段壳移除，直接渲染 <details>。"""
     from touchstone import render
-    md = render.render_reference(verification_blocks=None, has_checklist_items=True)
+    md = render.render_reference(has_checklist_items=True)
     assert "<details>" in md and "</details>" in md
     block = md[md.index("<details>"):md.index("</details>") + len("</details>")]
     assert "\n\n" not in block, (
@@ -912,8 +912,9 @@ def test_loop_reliable_converges_normally(rule_index):
 
 # ---------------- 易读性改版：排版铁律回归（2026-07-04；v2 2026-08 六段重设计）----------------
 def test_report_layout_invariants():
-    """铁律（v2）：全文唯一 H2；③④⑤ 并列段一律 H3；状态行 blockquote（循环+风险合一）。
-    v2 版面：七段→六段——AI 评审 + 清单合为「评审发现与销项」；验证/日志 + 申报指引折进「参考信息」。"""
+    """铁律（v3）：全文唯一 H2；③④ 并列段一律 H3；状态行 blockquote（循环+风险合一）。
+    v3 版面：⑤「参考信息」段壳与「验证与日志」折叠块移除——申报指引 <details> 直接渲染、
+    无段标题；运行日志不进评论（check-run 页可达）。"""
     import re as _re
     from touchstone import render, checklist as cl
     risk = {"risk_band": "mid", "human_action": "a", "verification_decision": "v",
@@ -925,7 +926,6 @@ def test_report_layout_invariants():
     body = render.render_report(
         risk, [f], scope_facts=sf, checklist=cl.from_findings([f]),
         loop_info=("continue", "待 author 逐项申报", ""),
-        verification_blocks=["📄 完整 LLM 交互日志：http://x"],
         markers="<!-- m -->", gate_line="1/1")
     # <pre> 内的 skill 正文按字面渲染（## 不会成标题）——版面不变量只看会被渲染的行
     visible = _re.sub(r"<pre>.*?</pre>", "", body, flags=_re.DOTALL)
@@ -933,12 +933,12 @@ def test_report_layout_invariants():
     h2 = [l for l in lines if l.startswith("## ")]
     h3 = [l for l in lines if l.startswith("### ") and not l.startswith("#### ")]
     assert len(h2) == 1 and "Touchstone · AI Committer 代码检视" in h2[0]  # 唯一 H2 承载品牌与定位
-    # v2 六段：静态检查（③）+ 评审发现与销项（④）+ 参考信息（⑤）三段 H3 并列
-    assert {l.split("（")[0] for l in h3} == {"### 静态检查", "### 评审发现与销项",
-                                              "### 参考信息"}  # 并列段同级
+    # v3：静态检查（③）+ 评审发现与销项（④）两段 H3 并列；⑤ 无段标题壳
+    assert {l.split("（")[0] for l in h3} == {"### 静态检查", "### 评审发现与销项"}
+    assert "### 参考信息" not in body                            # v3：参考信息段壳已移除
+    assert "验证与日志" not in body                              # v3：验证/日志折叠块已移除
     assert any(l.startswith("> ") for l in lines)                   # 状态行 blockquote
-    assert "完整 LLM 交互日志：" in body
-    assert "<details><summary>如何申报销项</summary>" in body        # 申报指引折叠（参考信息段）
+    assert "<details><summary>如何申报销项</summary>" in body        # 申报指引折叠（直接渲染）
     assert "风险等级：" in body and "触发因子" in body               # 状态行含风险+触发因子
     assert "| 风险等级 | 建议动作 | 验证建议 | 影响面 |" not in body    # 旧四列枚举表已移除
 

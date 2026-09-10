@@ -53,7 +53,7 @@ def _fill_template(template, parts):
 
 def render_unreliable_callout(engine_status, ai_raw_count=0, added_lines=0, engine_detail=""):
     """本轮评审不可信时的置顶告警——[!CAUTION] 红框置顶，替代常规溯源/降级横幅。精简到两行：
-    点明【失败环节】+ 后果 + 指向。具体可靠的原始错误详列在「验证与日志」段（本框不塞原始
+    点明【失败环节】+ 后果 + 指向。具体可靠的原始错误在紧随其后的折叠块（本框不塞原始
     dump）。判定层（销项/收敛/放行）已由 review_reliable 挡住；本函数把同一信号接到呈现层。"""
     _WHERE = {
         "no_engine": "评审引擎未启动",
@@ -62,12 +62,30 @@ def render_unreliable_callout(engine_status, ai_raw_count=0, added_lines=0, engi
         "skipped_large_diff": "diff 超预算被跳过",
     }
     where = _WHERE.get(engine_status) or f"疑似空收敛（约 {added_lines} 行改动却 {ai_raw_count} 建议）"
-    tail = "；原始错误见下方「验证与日志」" if (engine_status != "ok" and engine_detail) else ""
+    tail = "；原始错误见下方折叠块" if (engine_status != "ok" and engine_detail) else ""
     return "\n".join([
         "> [!CAUTION]",
         f"> **本轮 AI 评审不可信**：{where}。",
         f"> 请人工评审{tail}。",
     ])
+
+
+def _engine_detail_fold(engine_status, engine_detail):
+    """降级原始错误折叠块（v3：「验证与日志」段移除后并入②告警区——诊断不丢，默认折叠不占屏）。
+
+    入参须已经 orchestrator._redact_secrets 脱敏（呈现边界纪律，PR #74）；本层补齐 HTML 转义
+    （_html_text——错误正文可含 <script>/反引号等）+ 1500 截断标记（不静默砍尾）+ <pre> 包裹
+    （<details> 内是 type-6 HTML block，markdown 围栏不解析——用 <pre>，同申报指引段纪律）+
+    空行折叠为单换行（空行会终止 HTML block，#168 同源教训）。纯函数、可测。"""
+    if engine_status == "ok" or not engine_detail:
+        return ""
+    d = re.sub(r"\n\s*\n+", "\n", engine_detail.strip())
+    shown = d[:1500] + (
+        "\n[…]（已截断：原始错误超 1500 字符，完整内容见 pr-agent-interaction.log artifact）"
+        if len(d) > 1500 else "")
+    return ("<details><summary>评审引擎降级（" + _html_text(engine_status)
+            + "）——原始错误</summary>\n"
+            f"<pre>{_html_text(shown)}</pre>\n</details>")
 
 
 # v2：_location（v1 位置串渲染）已移除——sig 兼作位置显示（checklist.sig_of 在构造时
@@ -537,37 +555,33 @@ def _ack_skill_ref():
             "中间轮跑定向测试即可。")
 
 
-def render_reference(verification_blocks=None, has_checklist_items=False):
-    """⑤ v2 参考信息（观测意见 5）：验证/日志 + 申报指引，全部 <details> 折叠（默认不占屏）。
-    无内容时整段省略。<details> 是 CommonMark type-6 HTML block——summary/body/</details>
-    之间不得有空行（#168 回归）；行内 code 用 <code> 标签（HTML block 不解析 markdown）。"""
-    blocks = []
-    if verification_blocks:
-        content = "\n\n".join(verification_blocks)
-        blocks.append(f"<details><summary>验证与日志</summary>\n{content}\n</details>")
-    if has_checklist_items:
-        body = ("发评论，内容为 <code>touchstone-ack</code> 代码块，每行 "
-                "<code>&lt;签名&gt;: done|waived: 理由|split: 链接</code>。"
-                "勾选/申报是输入信号，以评审方按达成判据复核后的本清单为准。<br>\n")
-        body += _ack_skill_ref()                    # 恒出现（受评仓无 skills/ 也提醒）；
-                                                   # 只留链接不贴正文（#192 后用户拍板）
-        blocks.append(f"<details><summary>如何申报销项</summary>\n{body}\n</details>")
-    if not blocks:
+def render_reference(has_checklist_items=False):
+    """⑤ 申报指引（v3 瘦身：「参考信息」段壳与「验证与日志」折叠块移除——健康轮它只承载一行
+    运行链接且 check-run 页可达，降级轮原始错误并入②告警区折叠块；只剩「如何申报销项」一块，
+    直接渲染、不加段标题）。无清单项时整段省略。<details> 是 CommonMark type-6 HTML block——
+    summary/body/</details> 之间不得有空行（#168 回归）；行内 code 用 <code> 标签（HTML block
+    不解析 markdown）。"""
+    if not has_checklist_items:
         return ""
-    return "### 参考信息\n\n" + "\n\n".join(blocks)
+    body = ("发评论，内容为 <code>touchstone-ack</code> 代码块，每行 "
+            "<code>&lt;签名&gt;: done|waived: 理由|split: 链接</code>。"
+            "勾选/申报是输入信号，以评审方按达成判据复核后的本清单为准。<br>\n")
+    body += _ack_skill_ref()                    # 恒出现（受评仓无 skills/ 也提醒）；
+                                               # 只留链接不贴正文（#192 后用户拍板）
+    return f"<details><summary>如何申报销项</summary>\n{body}\n</details>"
 
 
 def render_report(risk, findings, alerts="", scope_facts=None, checklist=None,
-                  rounds_left=None, loop_info=None, verification_blocks=None,
+                  rounds_left=None, loop_info=None,
                   markers="", gate_line="",
                   review_reliable=True, engine_status="ok", ai_raw_count=0, added_lines=0,
                   engine_detail=""):
-    """v2 六段版面（模板唯一定义，代码只填充）：
+    """v3 六段版面（模板唯一定义，代码只填充；v2 版面去冗余、v3 再瘦身）：
       ① 标题 + 状态行（循环 + 风险合一，观测意见 1+6）
-      ② 告警（降级/CAUTION/溯源/同源提示，blockquote）
+      ② 告警（降级/CAUTION/溯源/同源提示，blockquote；降级原始错误以折叠块附于其后）
       ③ 静态检查（敏感路径/门禁，简单 PR 整段省略——观测意见 7）
       ④ 评审发现与销项（AI 评审 + 清单合一 - [ ] task list——观测意见 2+3+4）
-      ⑤ 参考信息（验证/日志 + 申报指引，<details> 折叠——观测意见 5）
+      ⑤ 申报指引（如何申报销项 <details>；v3：参考信息壳与验证/日志折叠移除）
       ⑥ 机器 marker
     alerts 取代旧 banner 参数（不再含循环行——循环行归①状态行）。"""
     status = render_status_line(risk, loop_info, checklist, rounds_left, review_reliable)
@@ -587,13 +601,18 @@ def render_report(risk, findings, alerts="", scope_facts=None, checklist=None,
         alerts_md = "\n".join(("> " + ln if ln.strip() else ">") for ln in alerts.split("\n"))
     else:
         alerts_md = ""
+    # 降级原始错误折叠块（v3：原「验证与日志」段的诊断部分并入②告警区，默认折叠不占屏）。
+    # 不进 blockquote——它是 CAUTION 的附件而非告警本身（引用块内嵌 <details> 渲染易碎）。
+    _ed_fold = _engine_detail_fold(engine_status, engine_detail)
+    if _ed_fold:
+        alerts_md = f"{alerts_md}\n\n{_ed_fold}" if alerts_md else _ed_fold
     has_items = bool((checklist or {}).get("items"))
     parts = {
         "status": status,
         "alerts": alerts_md,
         "facts": render_facts_v2(scope_facts, gate_line) if scope_facts else "",
         "findings": render_findings_checklist(findings, checklist, review_reliable),
-        "reference": render_reference(verification_blocks, has_items),
+        "reference": render_reference(has_items),
         "markers": markers or "",
     }
     out = _fill_template(_load_template(), parts)   # 单遍填充（A2-F1）：不重扫已填入内容，防占位符注入
