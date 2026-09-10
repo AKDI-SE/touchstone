@@ -18,6 +18,7 @@ import sys
 
 from touchstone.llm_budget import MAX_FINDINGS_IN_SUMMARY
 from touchstone.checklist import sig_of          # 清单签名构造（finding → sig，做 findings↔清单项 join）
+from touchstone.checklist import MACHINE_DONE_NOTES   # 机器核销固定 note——呈现层静默（数据层保留审计）
 
 _TEMPLATE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                               "templates", "review_report.md")
@@ -319,9 +320,11 @@ def _render_done_criteria(dc):
         return f"规则 `{_spec.get('recheck', '?')}` 复检不再命中"
     if (dc or {}).get("kind") == "review":
         q = _spec.get("question", "")
-        # q 非空=有具体复核问题；q 空=诚实降级（描述 reconcile 实际机制）。
+        # q 非空=有具体复核问题；q 空=机器无逐条判据——唯一核验机制是 sig 级 reconcile，
+        # 该机制已由要点速览②与条目 sig 锚点表达，逐条复读模板是纯 boilerplate → 不渲染行
+        # （#159 诚实降级的呈现面收尾：不伪造具体问题，也不复读机制模板）。
         # q 是 LLM 自由文本（进 HTML block 语境，须中性化——见 render._html_text）
-        return f"需人工复核：{_html_text(q)}" if q else "下一轮复检不再命中即销项"
+        return f"需人工复核：{_html_text(q)}" if q else ""
     return ""
 
 
@@ -485,7 +488,10 @@ def render_findings_checklist(findings, checklist, review_reliable=True):
         dc_line = _render_done_criteria(dc)
         if dc_line:
             lines.append(f"  - 达成判据：{dc_line}")
-        if it.get("note"):
+        # 说明行只在携带非机制信息时渲染：机器核销 done 的固定 note（MACHINE_DONE_NOTES）
+        # 与「✅ 已复核销项」标签同义，逐条复读是 boilerplate → 静默（marker 仍留审计轨迹）；
+        # author 内容（waived/split 反证）与受理失败原因照常显示。
+        if it.get("note") and it["note"] not in MACHINE_DONE_NOTES:
             lines.append(f"  - 说明：{_html_text(it['note'])}")
         if it.get("guard"):                    # 守卫事实（issue #139）：确定性 AST 事实，供 waived 佐证
             # guard 可含字面 `<module>`（裸路径守卫的函数名占位）——不转义会被浏览器当

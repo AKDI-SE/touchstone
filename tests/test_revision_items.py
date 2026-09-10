@@ -113,22 +113,60 @@ def test_review_source_gets_review_done_criteria():
 
 
 def test_review_done_criteria_renders_honest_degradation():
-    """model 来源判据 question 留空 → 渲染诚实降级行（不套 direction 模板复读）。
+    """model 来源判据 question 留空 → 渲染层省略判据行（不伪造具体问题，也不复读机制模板）。
 
     设计意见 1 要求 review 类带「一句可回答的具体复核问题」（示例：回滚路径是否覆盖跨模块
-    调用失败）。normalize 层给不出 → 诚实留空。渲染层退为「下一轮复检不再命中即销项」
-    （reconcile 实际机制：sig 不再现即自动销项）。对比：确定性来源渲染「规则 X 复检不再命中」。
+    调用失败）。normalize 层给不出 → 诚实留空。渲染层对降级判据【不渲染行】——reconcile 机制
+    （sig 不再现即自动销项）已由要点速览②与条目 sig 锚点表达，逐条复读模板是纯 boilerplate。
+    对比：确定性来源渲染「规则 X 复检不再命中」；带具体问题的 review 渲染「需人工复核：…」。
     v2：达成判据行由纯函数 _render_done_criteria 产出（从 _finding_entry 抽出，合并段复用）。"""
     from touchstone.render import _render_done_criteria
-    # model 来源：question 空 → 诚实降级
+    # model 来源：question 空 → 空串 = 渲染层省略整行（调用方 `if dc_line:` 守卫）
     dc_model = {"kind": "review", "spec": {"question": ""}}
-    assert _render_done_criteria(dc_model) == "下一轮复检不再命中即销项"
+    assert _render_done_criteria(dc_model) == ""
     # 带具体复核问题的 review（如 guard_context / 未来 prompt 工程产出）→ 渲染「需人工复核」
     dc_specific = {"kind": "review", "spec": {"question": "回滚路径是否覆盖跨模块调用失败？"}}
     assert _render_done_criteria(dc_specific) == "需人工复核：回滚路径是否覆盖跨模块调用失败？"
     # 确定性来源不变：规则复检
     dc_det = {"kind": "deterministic", "spec": {"recheck": "SCOPE-001"}}
     assert _render_done_criteria(dc_det) == "规则 `SCOPE-001` 复检不再命中"
+
+
+def test_degraded_criteria_and_machine_done_note_silenced_in_checklist():
+    """渲染降噪（用户 2026-09-10：两条恒定 boilerplate 每条 finding 都复读一遍）：
+
+    1. 降级判据（PRA-* 的 question 空模板）→ 清单里不出现「达成判据」行；
+    2. 机器核销 done 的固定 note（复检未再命中/申报并经复核销项）→ 不出现「说明」行——
+       「✅ 已复核销项」标签已表达同等信息，marker 仍保留审计轨迹；
+    3. 携带真实信息的行不受影响：具体复核问题渲染「需人工复核」、author waived 反证渲染「说明」。
+    """
+    from touchstone import checklist as cl
+    from touchstone import render
+
+    def _mk(f, status, note):
+        it = cl.from_findings([f])["items"][0]           # 清单项由该 finding 生成（sig 对得上 join）
+        it.update({"status": status, "note": note})
+        return {"round": 1, "items": [it]}
+
+    f_degraded = {"rule_id": "PRA-REVIEW", "file": "a.py", "line": 1, "rationale": "问题",
+                  "fix_direction": "方向", "fix_reasoning": "依据",
+                  "done_criteria": {"kind": "review", "spec": {"question": ""}}}
+    # 1+2：降级判据 + 机器核销 note → 两行都不渲染
+    c1 = _mk(f_degraded, "done", cl.NOTE_AUTO_DONE)
+    md1 = render.render_findings_checklist([f_degraded], c1)
+    assert "达成判据" not in md1
+    assert "说明" not in md1
+    assert "✅ 已复核销项" in md1                       # 状态标签仍在（信息未丢）
+    c2 = _mk(f_degraded, "done", cl.NOTE_ACK_DONE)
+    assert "说明" not in render.render_findings_checklist([f_degraded], c2)
+    # 3a：带具体复核问题的判据照常渲染
+    md3 = render.render_findings_checklist([_rf("R-1")], _mk(_rf("R-1"), "open", ""))
+    assert "达成判据" in md3 and "需人工复核：?" in md3
+    # 3b：author waived 反证（非机制信息）照常渲染「说明」
+    f4 = _rf("R-1")
+    c4 = _mk(f4, "waived", "author 宣称可豁免（待人核准，机器未验证）：测试夹具")
+    md4 = render.render_findings_checklist([f4], c4)
+    assert "说明：" in md4 and "测试夹具" in md4
 
 
 # ---------------- 意见 3：收敛清单 ----------------
