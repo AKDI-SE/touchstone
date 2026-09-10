@@ -170,8 +170,11 @@ def test_render_engine_detail_redacts_fences_truncates():
     assert "<pre>" in block and "</pre>" in block                # <pre> 包裹（非 markdown 围栏）
     assert "&lt;b&gt;Traceback&lt;/b&gt;" in block               # HTML 转义（防注入/防吞段）
     assert "已截断" in block                                     # 截断标记
-    inner = block[block.index("<details>"):block.index("</details>")]
-    assert "\n\n" not in inner                                   # 空行折叠（#168：空行终止 HTML block）
+    assert "pr-agent-interaction.log" in block                   # llm_failed：子进程真跑过，指向交互日志
+    # PRA-REVIEW round-3：no_engine/provider_failed 下 PR-Agent 没起、该 artifact 不存在——
+    # 指过去是死链。截断指针按状态切换到 job 运行日志，不再误导。
+    block_ne = render._engine_detail_fold("no_engine", blob)
+    assert "pr-agent-interaction.log" not in block_ne and "本 job 运行日志" in block_ne
     # engine 正常 / 无 detail → 不出块
     assert render._engine_detail_fold("ok", blob) == ""
     assert render._engine_detail_fold("llm_failed", "") == ""

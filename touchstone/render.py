@@ -80,9 +80,15 @@ def _engine_detail_fold(engine_status, engine_detail):
     if engine_status == "ok" or not engine_detail:
         return ""
     d = re.sub(r"\n\s*\n+", "\n", engine_detail.strip())
-    shown = d[:1500] + (
-        "\n[…]（已截断：原始错误超 1500 字符，完整内容见 pr-agent-interaction.log artifact）"
-        if len(d) > 1500 else "")
+    # 截断指针按状态区分（PRA-REVIEW round-3）：仅 llm_failed 下 PR-Agent 子进程真跑过、
+    # pr-agent-interaction.log artifact 才存在；no_engine/provider_failed 时引擎没起/取数
+    # 失败，指过去是死链——误导人工排障。被截内容仍完整落 runner stderr（Actions 日志）。
+    if len(d) > 1500:
+        ptr = ("，完整内容见 pr-agent-interaction.log artifact"
+               if engine_status == "llm_failed" else "，完整内容见本 job 运行日志")
+        shown = d[:1500] + f"\n[…]（已截断：原始错误超 1500 字符{ptr}）"
+    else:
+        shown = d
     return ("<details><summary>评审引擎降级（" + _html_text(engine_status)
             + "）——原始错误</summary>\n"
             f"<pre>{_html_text(shown)}</pre>\n</details>")
@@ -500,6 +506,10 @@ def render_findings_checklist(findings, checklist, review_reliable=True):
         # 未知内联标签吞掉（round-7 实测：`函数 <module>：无守卫` 渲染丢 `<module>`）
         guard = it.get("guard") or ""
         gsub = f" <sub>（守卫：{_html_text(guard)}）</sub>" if guard else ""
+        # 挂载判定以「是否已挂上」为准、不以「走没走依据分支」为准（PRA-REVIEW round-3：
+        # 旧 elif 挂在依据分支的条件上——若 _render_reasoning 对真值输入返回空（未来演化），
+        # gsub 未消费、elif 又不评估，守卫会跳过「问题」行直落兜底行，违背优先级）。
+        guard_attached = False
         # rationale（问题陈述）作首条子项；与 direction 同文则省（去冗余，同 _finding_entry 纪律）
         if rationale and rationale != direction:
             lines.append(f"  - {_html_text(rationale)}")
@@ -510,10 +520,10 @@ def render_findings_checklist(findings, checklist, review_reliable=True):
             r = _render_reasoning(reasoning, indent="  ")   # task list 子项缩进 2 空格
             if r:
                 lines.append(r + gsub)
-                gsub = ""
-        elif gsub and rationale and rationale != direction:
+                guard_attached = True
+        if gsub and not guard_attached and rationale and rationale != direction:
             lines[-1] += gsub                                # 无依据行 → 挂「问题」行尾
-            gsub = ""
+            guard_attached = True
         dc_line = _render_done_criteria(dc)
         if dc_line:
             lines.append(f"  - 达成判据：{dc_line}")
@@ -522,7 +532,7 @@ def render_findings_checklist(findings, checklist, review_reliable=True):
         # author 内容（waived/split 反证）与受理失败原因照常显示。
         if it.get("note") and it["note"] not in MACHINE_DONE_NOTES:
             lines.append(f"  - 说明：{_html_text(it['note'])}")
-        if gsub:                                             # 问题/依据行皆无 → 单列小字行兜底
+        if gsub and not guard_attached:                      # 问题/依据行皆无 → 单列小字行兜底
             lines.append(f"  - <sub>守卫：{_html_text(guard)}</sub>")
         if f:
             lines.append(_render_finding_meta(f))

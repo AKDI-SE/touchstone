@@ -27,7 +27,9 @@
   每条 PRA 发现 4 行 → 2 行；author waived/split 反证与受理失败原因照常显示。
 - 「守卫事实」不再单列一行（人不怎么看）——折叠为行尾 `<sub>` 小字：优先挂「依据」行尾、无依据
   挂「问题」行尾、两皆无才单列小字行。marker 的 `item["guard"]` 原样持久化，C 面核销注入与
-  waived 反证引用不受影响（数据层零改动）。
+  waived 反证引用不受影响（数据层零改动）。挂载判定以「是否已挂上」为准（评审 round-3 收口：
+  防 `_render_reasoning` 未来对真值输入返回空时优先级旁路）；降级折叠块截断指针按 engine_status
+  区分——仅 `llm_failed` 指向 pr-agent-interaction.log artifact，其余指向 job 运行日志（死链修复）。
 
 ### 变更（销项规程：本地全量测试降频 + 轮询节奏 1 分钟）
 
