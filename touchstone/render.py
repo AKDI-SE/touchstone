@@ -526,7 +526,9 @@ def _ack_skill_ref():
             "无代码改动的纯 ack 轮同理）；<br>\n"
             "④ 修复须落进测试套件；同根因发现逐条列出并注明同源；<br>\n"
             "⑤ 销项是多轮交互：每轮复检可能新增 findings——推送申报后自行启动定时"
-            "任务，每 2 分钟检查一次最新评审评论，直到 ✅ 收敛或 ⬆️ 升级到人。")
+            "任务，每 1 分钟检查一次最新评审评论，直到 ✅ 收敛或 ⬆️ 升级到人；<br>\n"
+            "⑥ 本地全量测试不必每轮跑：首次申报前与 findings 清零后各一次，"
+            "中间轮跑定向测试即可。")
 
 
 def render_reference(verification_blocks=None, has_checklist_items=False):
