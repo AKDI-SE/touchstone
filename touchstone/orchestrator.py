@@ -149,6 +149,62 @@ def get_pr_diff(owner, repo, number, token):
               accept="application/vnd.github.v3.diff")
 
 
+def sync_touchstone_config(owner, repo, number, token, repo_dir="."):
+    """Sync .touchstone/ config from base branch if missing.
+
+    Fork PRs may not include .touchstone/ config that exists on the target
+    repo's base branch. This fetches missing yaml files from the base branch
+    via the API, ensuring repo-level rules (seeds.yaml, pr.yaml, etc.) always
+    apply. Never overwrites files the PR author included.
+    """
+    import base64 as _b64
+    ts_dir = os.path.join(repo_dir, ".touchstone")
+    if os.path.isdir(ts_dir) and any(
+        f.endswith((".yaml", ".yml")) for f in os.listdir(ts_dir)
+    ):
+        return
+    try:
+        api = _api_base()
+        pr_info = ghclient.request(
+            "GET", f"{api}/repos/{owner}/{repo}/pulls/{number}", token)
+        base_sha = ((pr_info or {}).get("base") or {}).get("sha")
+        if not base_sha:
+            return
+        items = ghclient.request(
+            "GET",
+            f"{api}/repos/{owner}/{repo}/contents/.touchstone?ref={base_sha}",
+            token)
+        if not isinstance(items, list):
+            return
+        os.makedirs(ts_dir, exist_ok=True)
+        synced = 0
+        for item in items:
+            if item.get("type") != "file":
+                continue
+            fname = item.get("name", "")
+            if not fname.endswith((".yaml", ".yml")):
+                continue
+            local_path = os.path.join(ts_dir, fname)
+            if os.path.exists(local_path):
+                continue
+            fdata = ghclient.request(
+                "GET",
+                f"{api}/repos/{owner}/{repo}/contents/.touchstone/{fname}"
+                f"?ref={base_sha}",
+                token)
+            content_b64 = fdata.get("content") if isinstance(fdata, dict) else None
+            if content_b64:
+                with open(local_path, "wb") as f:
+                    f.write(_b64.b64decode(content_b64))
+                synced += 1
+        if synced:
+            print(f"[touchstone] synced {synced} .touchstone/ config file(s) "
+                  f"from base branch", file=sys.stderr)
+    except Exception as e:
+        print(f"[warn] sync .touchstone/ from base branch failed: {e}",
+              file=sys.stderr)
+
+
 # --- 回贴 ---------------------------------------------------------------------
 def anchor_inline(findings, diff):
     """把发现锚到 PR diff 的可评论行(RIGHT 侧新增行)。
@@ -486,16 +542,8 @@ def _stale_review_comments(comments, bot_login):
 def _collapse_stale_reviews(owner, repo, token, stale):
     """就地编辑（PATCH）历史评论为折叠体。逐条隔离：单条失败只告警，不阻塞评审主链。
 
-    GitCode 平台整体跳过（合并 origin/main #186 后补的守卫）：GitCode 的 PR 评论走
-    /pulls/{n}/comments，其评论 id 与 GitHub /issues/comments 命名空间未必一致——
-    拿 pulls 侧 id 去 PATCH issues/comments/{id} 有改错评论的风险，而 GitCode 的
-    编辑端点无法离线核实（不猜端点）。折叠是纯视觉功能：跳过 = 历史评论保持原样
-    （marker 完整，状态无损），等端点核实后再开。"""
-    if _is_gitcode():
-        if stale:
-            print("[info] GitCode 平台暂不折叠历史评审评论（编辑端点未核实，保持原样）",
-                  file=sys.stderr)
-        return
+    GitCode 适配：评论编辑走 PATCH /pulls/comments/{id}（form data）。
+    GitHub 走 PATCH /issues/comments/{id}（JSON）。折叠是纯视觉功能：失败只告警。"""
     for c in stale:
         folded = _collapse_review_body(c.get("body", "") or "")
         if folded is None:
@@ -503,8 +551,15 @@ def _collapse_stale_reviews(owner, repo, token, stale):
                   file=sys.stderr)
             continue
         try:
-            gh("PATCH", f"/repos/{owner}/{repo}/issues/comments/{c['id']}", token,
-               {"body": folded})
+            if _is_gitcode():
+                _edit_url = _api_base() + f"/repos/{owner}/{repo}/pulls/comments/{c['id']}"
+                _resp = requests.patch(_edit_url, headers={"Authorization": "Bearer " + token,
+                                       "Accept": "application/json"},
+                                       data={"body": folded}, timeout=30)
+                _resp.raise_for_status()
+            else:
+                gh("PATCH", f"/repos/{owner}/{repo}/issues/comments/{c['id']}", token,
+                   {"body": folded})
         except requests.exceptions.RequestException as e:
             print(f"[warn] 历史评论折叠失败(id={c.get('id')})，保持原样: {e}", file=sys.stderr)
 
@@ -983,6 +1038,9 @@ def main():
     if not number:
         sys.exit("非 PR 事件，跳过。")
 
+    sync_touchstone_config(owner, repo, number, token,
+                           os.environ.get("REPO_DIR", "."))
+
     standards = load_yaml(STANDARDS_PATH)
     if not standards:
         sys.exit(f"未找到规范 {STANDARDS_PATH}")
@@ -1253,27 +1311,23 @@ def main():
     if decision == "escalate":
         try:
             if _is_gitcode():
-                # GitCode 适配：不支持 POST /issues/{n}/labels（400）；PATCH /pulls/{n} 是
-                # 覆盖式 labels——须先 GET 现有 labels 合并后再 PATCH，避免抹掉他人标签
-                # （GET→PATCH 存在竞窗，覆盖面限于标签、escalate 为 best-effort，可接受）。
-                _pr_full = gh("GET", f"/repos/{owner}/{repo}/pulls/{number}", token)
-                if not isinstance(_pr_full, dict):
-                    raise requests.exceptions.RequestException(
-                        f"GET PR 返回非 dict: {type(_pr_full).__name__}")
-                _existing = []
-                for l in (_pr_full.get("labels") or []):
-                    if isinstance(l, dict):
-                        _n = l.get("name")
-                        if _n:
-                            _existing.append(_n)
-                    elif isinstance(l, str) and l:
-                        _existing.append(l)
-                _new_labels = list(dict.fromkeys(_existing + ["touchstone:needs-human"]))
-                _patch_url = _api_base() + f"/repos/{owner}/{repo}/pulls/{number}"
-                _resp = requests.patch(_patch_url, headers={"Authorization": "Bearer " + token,
-                                       "Accept": "application/json", "Content-Type": "application/json"},
-                                       json={"labels": _new_labels}, timeout=30)
-                _resp.raise_for_status()
+                # GitCode: POST /issues/{n}/labels returns 400 but actually adds
+                # the label (API quirk). PATCH /pulls/{n} with labels overwrites
+                # all existing labels (data format issue) — avoid it.
+                _label_url = _api_base() + f"/repos/{owner}/{repo}/issues/{number}/labels"
+                _resp = requests.post(_label_url, headers={"Authorization": "Bearer " + token,
+                                      "Accept": "application/json", "Content-Type": "application/json"},
+                                      json={"labels": ["touchstone:needs-human"]}, timeout=30)
+                if not _resp.ok:
+                    # 400 is expected but label may still be added; verify
+                    _pr_chk = gh("GET", f"/repos/{owner}/{repo}/pulls/{number}", token)
+                    _names = [l.get("name") for l in (_pr_chk.get("labels") or [])
+                              if isinstance(l, dict)]
+                    if "touchstone:needs-human" not in _names:
+                        raise requests.exceptions.RequestException(
+                            f"label add failed (HTTP {_resp.status_code}) and label not present")
+                    print("[info] GitCode label API returned 400 but label was added",
+                          file=sys.stderr)
             else:
                 gh("POST", f"/repos/{owner}/{repo}/issues/{number}/labels", token,
                    {"labels": ["touchstone:needs-human"]})
