@@ -122,7 +122,7 @@ def get_pr_diff(owner, repo, number, token):
     LLM 侧的上下文限制由 pr-agent 自己管理（它取全文 PR + 用 custom_model_max_tokens 做
     max_tokens）；touchstone 的确定性核对（密钥扫描/契约/栈规则）是纯正则/AST，不进 LLM，
     不受 diff 体量影响。超大体量 PR 默认走 SIZE-001 体量门禁拆分（TOUCHSTONE_MAX_DIFF_LINES
-    默认 1000 行；设 0 关闭、或调高/调低阈值）。
+    默认 3000 行；设 0 关闭、或调高/调低阈值）。
     GitCode 适配：GitCode/Gitea 不支持 Accept: application/vnd.github.v3.diff（400），
     改走 /pulls/{n}/files 取每文件 patch 拼 unified diff；GitHub/GHE 路径不变。
     files 端点是分页的——必须 paginate 取全量（per_page=100 × 30 页 = 3000 文件，
@@ -847,17 +847,17 @@ def _collect_injection():
 
 
 def _max_diff_lines():
-    """SIZE-001 体量门禁阈值。空串（vars 未创建时 `${{ vars.X }}` 透传的常态）回落默认 1000，
+    """SIZE-001 体量门禁阈值。空串（vars 未创建时 `${{ vars.X }}` 透传的常态）回落默认 3000（128K 上下文窗口实测可容），
     只有显式 "0" 才关闭——上游报告问题三：此前空串经 `or 0` 静默关闭门禁，超大 PR 直送 LLM 且无提示。"""
     raw = (os.environ.get("TOUCHSTONE_MAX_DIFF_LINES") or "").strip()
     if not raw:
-        return 1000
+        return 3000
     try:
         return int(raw)
     except ValueError:
-        print(f"[warn] TOUCHSTONE_MAX_DIFF_LINES={raw!r} 非数字，回落默认 1000（SIZE-001 门禁保持生效）",
+        print(f"[warn] TOUCHSTONE_MAX_DIFF_LINES={raw!r} 非数字，回落默认 3000（SIZE-001 门禁保持生效）",
               file=sys.stderr)
-        return 1000
+        return 3000
 
 
 
