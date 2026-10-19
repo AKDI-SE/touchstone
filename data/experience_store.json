@@ -67,17 +67,20 @@
       "stack": "python",
       "finding_type": "PRA-SECURITY",
       "kind": "emphasize",
-      "text": "Confirm that new configuration parsing features do not inadvertently bypass security validations.",
+      "text": "Lead with concrete fail-open paths — get_pr_diff returning an empty diff for >=3000-file PRs or on auth/404/limit failures, silently skipping key-scan/contract/stack checks — and demand fail-closed behavior.",
       "evidence": {
         "tfgrpo": true,
         "group_rewards": [
+          -3.0,
+          -5.5,
+          -6.0,
           -2.0,
           0.0,
           -1.5,
           -2.5,
           -1.0
         ],
-        "pr": "167"
+        "pr": "186"
       },
       "status": "candidate",
       "source": "tfgrpo",
@@ -85,10 +88,11 @@
       "source_prs": [
         "104",
         "128",
-        "167"
+        "167",
+        "186"
       ],
       "created_at": 1785132660,
-      "updated_at": 1788181946
+      "updated_at": 1792408300
     },
     {
       "id": "suppress:touchstone:python:PRA-POSSIBLE_BUG",
@@ -260,13 +264,14 @@
       "stack": "",
       "finding_type": "PRA-MAINTAINABILITY",
       "kind": "suppress",
-      "text": "Keep PRA-MAINTAINABILITY suppressed for data chores — the repo's own experience store carries multi-PR evidence for this suppression, and idempotency/reproducibility lectures in these -3.5/-4.0 reviews were ignored.",
+      "text": "Skip documentation-only maintainability suggestions, which appear exclusively in the worst-rewarded reviews; fold version signaling into the design finding instead.",
       "evidence": {
         "tfgrpo": true,
         "group_rewards": [
-          0.0,
-          -3.5,
           -4.0,
+          -3.0,
+          -3.5,
+          0.0,
           -1.0,
           -1.5,
           -0.5,
@@ -283,7 +288,7 @@
         "184"
       ],
       "created_at": 1785411910,
-      "updated_at": 1788776288
+      "updated_at": 1792409032
     },
     {
       "id": "suppress:touchstone::PRA-SECURITY",
@@ -291,26 +296,29 @@
       "stack": "",
       "finding_type": "PRA-SECURITY",
       "kind": "suppress",
-      "text": "Refrain from auditing implementation-level security measures based solely on documentation text.",
+      "text": "Drop PRA-SECURITY's admin-bypass governance framing for a repo-variable knob — it appears only in the worst-rewarded review and humans dismiss speculative policy concerns.",
       "evidence": {
         "tfgrpo": true,
         "group_rewards": [
-          -1.5,
+          -3.0,
           -2.5,
+          -3.5,
+          -1.5,
           -2.0,
           0.0
         ],
-        "pr": "170"
+        "pr": "205"
       },
       "status": "candidate",
       "source": "tfgrpo",
       "locked": false,
       "source_prs": [
         "141",
-        "170"
+        "170",
+        "205"
       ],
       "created_at": 1786950738,
-      "updated_at": 1788180255
+      "updated_at": 1792402196
     },
     {
       "id": "emphasize:touchstone::PRA-LOGIC",
@@ -370,25 +378,27 @@
       "stack": "",
       "finding_type": "PRA-STYLE",
       "kind": "suppress",
-      "text": "Do not flag mixed language comments unless the repository has a strict English-only policy.",
+      "text": "Drop PRA-STYLE; CHANGELOG wording issues belong in PRA-NIT.",
       "evidence": {
         "tfgrpo": true,
         "group_rewards": [
+          0.0,
+          -2.0,
+          -1.5,
           -0.5,
-          -0.5,
-          -1.0,
-          -1.5
+          -1.0
         ],
-        "pr": "205"
+        "pr": "226"
       },
       "status": "candidate",
       "source": "tfgrpo",
       "locked": false,
       "source_prs": [
-        "205"
+        "205",
+        "226"
       ],
       "created_at": 1788164787,
-      "updated_at": 1788164787
+      "updated_at": 1792395938
     },
     {
       "id": "suppress:touchstone::PRA-DOCUMENTATION",
@@ -448,16 +458,20 @@
       "stack": "python",
       "finding_type": "PRA-TEST",
       "kind": "emphasize",
-      "text": "Always pair user-facing text changes with a regression test asserting the warning contains the runner's imported constant, and grep existing tests for '32768' string pins that will now fail.",
+      "text": "Keep test-gap findings concrete and code-level, like the missing explicit-null-thinking and multi-field setdefault merge assertions in tests/test_llm_call_tuning.py, pinned with specific new assertions.",
       "evidence": {
         "tfgrpo": true,
         "group_rewards": [
-          -2.5,
           -3.0,
+          -5.5,
+          -6.0,
+          0.0,
+          -5.0,
+          -2.5,
           -1.5,
           -1.0
         ],
-        "pr": "218"
+        "pr": "186"
       },
       "status": "candidate",
       "source": "tfgrpo",
@@ -467,10 +481,12 @@
         "183",
         "196",
         "204",
-        "218"
+        "218",
+        "189",
+        "186"
       ],
       "created_at": 1788165221,
-      "updated_at": 1788765018
+      "updated_at": 1792408300
     },
     {
       "id": "emphasize:touchstone:python:PRA-ISSUE",
@@ -530,25 +546,27 @@
       "stack": "python",
       "finding_type": "PRA-ROBUSTNESS",
       "kind": "suppress",
-      "text": "Dismiss generic warnings about missing configuration files unless their absence is definitively proven to break the workflow.",
+      "text": "Suppress architecture redesigns like ownership checks before every PATCH; proposing new safety layers against unseen orchestrator code reads as noise and is never implemented.",
       "evidence": {
         "tfgrpo": true,
         "group_rewards": [
-          -1.5,
-          -1.0,
+          0.0,
+          -4.5,
+          -4.0,
           -1.5,
           -1.0
         ],
-        "pr": "204"
+        "pr": "191"
       },
       "status": "candidate",
       "source": "tfgrpo",
       "locked": false,
       "source_prs": [
-        "204"
+        "204",
+        "191"
       ],
       "created_at": 1788165221,
-      "updated_at": 1788165221
+      "updated_at": 1792405435
     },
     {
       "id": "suppress:touchstone:python:PRA-LOGIC",
@@ -717,16 +735,16 @@
       "stack": "python",
       "finding_type": "PRA-TEST",
       "kind": "suppress",
-      "text": "Skip advisory suggestions to add a CI check asserting CHANGELOG version equals __version__ — unrequested tooling ideas are acknowledged but never acted on.",
+      "text": "Don't demand CI re-verification of changelog test counts inherited from previously merged PRs—test-number provenance audits on a diff with no test changes get dismissed.",
       "evidence": {
         "tfgrpo": true,
         "group_rewards": [
-          -3.0,
+          0.0,
           -2.5,
-          -1.5,
-          0.0
+          -3.0,
+          -1.5
         ],
-        "pr": "217"
+        "pr": "210"
       },
       "status": "candidate",
       "source": "tfgrpo",
@@ -741,10 +759,11 @@
         "198",
         "194",
         "215",
-        "217"
+        "217",
+        "210"
       ],
       "created_at": 1788168005,
-      "updated_at": 1788773834
+      "updated_at": 1792406722
     },
     {
       "id": "suppress:touchstone:python:PRA-REVIEW",
@@ -805,14 +824,16 @@
       "stack": "python",
       "finding_type": "PRA-TEST_COUPLING",
       "kind": "suppress",
-      "text": "Dismiss feedback regarding high coupling between tests and prompt templates, as this is often intentional for integration validation.",
+      "text": "Don't file copy-pinning complaints about the 'Touchstone 历史轮次' placeholder or endswith assertions; centralizing user-facing strings is refactoring advice reviewers ignore on feature PRs.",
       "evidence": {
         "tfgrpo": true,
         "group_rewards": [
+          0.0,
+          -4.5,
+          -4.0,
           -0.5,
           -1.0,
-          -1.5,
-          -1.0
+          -1.5
         ],
         "pr": "191"
       },
@@ -823,7 +844,7 @@
         "191"
       ],
       "created_at": 1788168875,
-      "updated_at": 1788168875
+      "updated_at": 1792405435
     },
     {
       "id": "suppress:touchstone:python:PRA-TEST_IMPL_DETAIL",
@@ -1093,14 +1114,14 @@
       "stack": "python",
       "finding_type": "PRA-ROBUSTNESS",
       "kind": "emphasize",
-      "text": "Ensure API error handling fails explicitly rather than returning empty strings to prevent false negatives in security scans.",
+      "text": "Flag concrete crash-chain gaps such as the Windows guard covering os.fchmod while _fsync_dir's directory os.open will still throw, and unverified unidiff parsing of hunk-less rename-only entries feeding ghost changed_files.",
       "evidence": {
         "tfgrpo": true,
         "group_rewards": [
           -3.0,
-          -4.5,
-          -4.5,
-          -5.5
+          -5.5,
+          -6.0,
+          -4.5
         ],
         "pr": "186"
       },
@@ -1112,7 +1133,7 @@
         "186"
       ],
       "created_at": 1788172674,
-      "updated_at": 1788181946
+      "updated_at": 1792408300
     },
     {
       "id": "emphasize:touchstone:python:PRA-LOGIC",
@@ -1200,26 +1221,29 @@
       "stack": "python",
       "finding_type": "PRA-COMPAT",
       "kind": "suppress",
-      "text": "Suppress warnings about platform compatibility heuristics that are covered by explicit configuration checks.",
+      "text": "Drop PRA-COMPAT — the offline-agent text loss is a deliberate #192 product decision, so mention it once inside PRA-MINOR (changelog + permalink) rather than as a compatibility finding.",
       "evidence": {
         "tfgrpo": true,
         "group_rewards": [
+          -3.5,
+          -2.5,
           -3.0,
-          -4.5,
+          -1.5,
           -4.5,
           -5.5
         ],
-        "pr": "186"
+        "pr": "194"
       },
       "status": "candidate",
       "source": "tfgrpo",
       "locked": false,
       "source_prs": [
         "186",
-        "189"
+        "189",
+        "194"
       ],
       "created_at": 1788172674,
-      "updated_at": 1788172905
+      "updated_at": 1792406722
     },
     {
       "id": "suppress:touchstone:python:PRA-BUG",
@@ -1227,25 +1251,28 @@
       "stack": "python",
       "finding_type": "PRA-BUG",
       "kind": "suppress",
-      "text": "Do not report potential TypeErrors from deserializing legacy JSON markers when fields are removed from state dataclasses.",
+      "text": "Drop PRA-BUG — labeling the speculative `html.escape`-elsewhere scenario as a bug reads as alarmist; the PRA-MAJOR verify-by-grep framing is what humans act on.",
       "evidence": {
         "tfgrpo": true,
         "group_rewards": [
+          -3.5,
+          -2.5,
+          -3.0,
+          -1.5,
           -1.0,
-          -1.0,
-          0.0,
-          -1.0
+          0.0
         ],
-        "pr": "189"
+        "pr": "194"
       },
       "status": "candidate",
       "source": "tfgrpo",
       "locked": false,
       "source_prs": [
-        "189"
+        "189",
+        "194"
       ],
       "created_at": 1788172905,
-      "updated_at": 1788172905
+      "updated_at": 1792406722
     },
     {
       "id": "emphasize:touchstone::PRA-COMPLETENESS",
@@ -1253,10 +1280,13 @@
       "stack": "",
       "finding_type": "PRA-COMPLETENESS",
       "kind": "emphasize",
-      "text": "Verify that the remaining items provide sufficient coverage for essential review dimensions after the cleanup.",
+      "text": "Require the committed deterministic cleaning script plus a per-entry kept/dropped manifest citing the exact disqualifying rule so the 310→11 result is reproducible and auditable rather than a hand edit.",
       "evidence": {
         "tfgrpo": true,
         "group_rewards": [
+          -4.0,
+          -3.0,
+          -3.5,
           0.0,
           -1.0,
           -1.5,
@@ -1271,7 +1301,7 @@
         "184"
       ],
       "created_at": 1788173321,
-      "updated_at": 1788173321
+      "updated_at": 1792409032
     },
     {
       "id": "suppress:touchstone::PRA-CORRECTNESS",
@@ -1568,17 +1598,19 @@
       "stack": "python",
       "finding_type": "PRA-STYLE",
       "kind": "suppress",
-      "text": "Skip standalone style nits like hoisting the magic number to a module constant — it merely restates the stronger PRA-DRIFT single-source-of-truth recommendation and dilutes the review.",
+      "text": "Skip log-message style nits such as one warn covering both genuinely-empty and failed fetches unless the ambiguity causes real misbehavior.",
       "evidence": {
         "tfgrpo": true,
         "group_rewards": [
-          -2.5,
           -3.0,
+          -5.5,
+          -6.0,
+          -1.5,
           -2.0,
-          0.0,
-          -1.5
+          -2.5,
+          0.0
         ],
-        "pr": "218"
+        "pr": "186"
       },
       "status": "candidate",
       "source": "tfgrpo",
@@ -1590,10 +1622,12 @@
         "194",
         "215",
         "217",
-        "218"
+        "218",
+        "202",
+        "186"
       ],
       "created_at": 1788174186,
-      "updated_at": 1788778947
+      "updated_at": 1792408300
     },
     {
       "id": "emphasize:touchstone::PRA-REVIEW",
@@ -1627,25 +1661,28 @@
       "stack": "",
       "finding_type": "PRA-DOC",
       "kind": "suppress",
-      "text": "Ignore findings flagging future-dated comments in snapshot files as these are likely intentional simulation placeholders.",
+      "text": "Stop filing documentation-content loss as PRA-DOC; restate it under the MAJOR/MINOR severity ladder with a migrate-and-pointer fix, since only the lowest-reward review used this off-ladder type.",
       "evidence": {
         "tfgrpo": true,
         "group_rewards": [
+          0.0,
+          -2.0,
+          -1.5,
           -1.0,
-          -0.5,
-          -0.5,
-          0.0
+          -0.5
         ],
-        "pr": "182"
+        "pr": "226"
       },
       "status": "candidate",
       "source": "tfgrpo",
       "locked": false,
       "source_prs": [
-        "182"
+        "182",
+        "205",
+        "226"
       ],
       "created_at": 1788175342,
-      "updated_at": 1788175342
+      "updated_at": 1792402196
     },
     {
       "id": "suppress:touchstone::PRA-MAINT",
@@ -1680,25 +1717,27 @@
       "stack": "python",
       "finding_type": "PRA-COMPLETENESS",
       "kind": "suppress",
-      "text": "Do not request documentation updates for simple configuration downgrades or internal security fixes that do not change user-facing behavior.",
+      "text": "Drop PRA-COMPLETENESS — re-enumerating every removed call site from a truncated diff duplicates the single PRA-MAJOR grep request.",
       "evidence": {
         "tfgrpo": true,
         "group_rewards": [
+          -3.5,
+          -2.5,
+          -3.0,
           -1.5,
-          0.0,
-          0.0,
           0.0
         ],
-        "pr": "181"
+        "pr": "194"
       },
       "status": "candidate",
       "source": "tfgrpo",
       "locked": false,
       "source_prs": [
-        "181"
+        "181",
+        "194"
       ],
       "created_at": 1788175824,
-      "updated_at": 1788175824
+      "updated_at": 1792406722
     },
     {
       "id": "emphasize:touchstone:python:PRA-DIFF_INTEGRITY",
@@ -1784,16 +1823,17 @@
       "stack": "python",
       "finding_type": "PRA-DOC",
       "kind": "suppress",
-      "text": "Avoid speculative doc findings on version-bump PRs (confirm PR #214 is merged, sweep hypothetical pinning docs for stale version references) unless you can cite an actual stale file — unverifiable 'confirm/sweep' doc asks get ignored on release commits.",
+      "text": "Skip changelog structure nitpicks such as heading-level attribution under '未发布' and missing Keep-a-Changelog compare-link footers—humans dismiss these doc-convention findings.",
       "evidence": {
         "tfgrpo": true,
         "group_rewards": [
           0.0,
+          -2.5,
           -2.0,
           -1.0,
           -1.5
         ],
-        "pr": "215"
+        "pr": "210"
       },
       "status": "candidate",
       "source": "tfgrpo",
@@ -1804,10 +1844,11 @@
         "180",
         "194",
         "210",
-        "215"
+        "215",
+        "189"
       ],
       "created_at": 1788176110,
-      "updated_at": 1788773834
+      "updated_at": 1792408758
     },
     {
       "id": "suppress:touchstone:python:PRA-RESOURCE_LEAK",
@@ -2206,25 +2247,27 @@
       "stack": "python",
       "finding_type": "PRA-DESIGN",
       "kind": "suppress",
-      "text": "Avoid criticizing design decisions for report truncation limits or demanding user-facing indicators for 'big PR caps'.",
+      "text": "Do not relitigate the threat model the postmortem retired; rearguing a decided design after #188 — even with the honest 'payoff is low' concession — reads as noise and earns negative reward.",
       "evidence": {
         "tfgrpo": true,
         "group_rewards": [
-          -1.0,
+          -2.5,
+          0.0,
           -3.0,
-          -3.5,
+          -1.0,
           -3.5
         ],
-        "pr": "172"
+        "pr": "189"
       },
       "status": "candidate",
       "source": "tfgrpo",
       "locked": false,
       "source_prs": [
-        "172"
+        "172",
+        "189"
       ],
       "created_at": 1788179640,
-      "updated_at": 1788179640
+      "updated_at": 1792408758
     },
     {
       "id": "suppress:touchstone:python:PRA-UX",
@@ -2440,13 +2483,14 @@
       "stack": "",
       "finding_type": "PRA-ROBUSTNESS",
       "kind": "suppress",
-      "text": "Suppress 'grep the codebase for consumers' and silent-reset warnings on data shrinks — authors dismiss consumer-impact speculation that cites no actual broken lookup.",
+      "text": "Drop standalone robustness notes (tag-before-delete safety nets, hand-edit reproducibility) that merely restate the script and manifest asks already covered under completeness and coverage.",
       "evidence": {
         "tfgrpo": true,
         "group_rewards": [
-          0.0,
-          -3.5,
           -4.0,
+          -3.0,
+          -3.5,
+          0.0,
           -1.5,
           -2.5,
           -2.0
@@ -2461,7 +2505,7 @@
         "184"
       ],
       "created_at": 1788180255,
-      "updated_at": 1788776288
+      "updated_at": 1792409032
     },
     {
       "id": "suppress:touchstone:python:PRA-MISSING_IMPLEMENTATION",
@@ -2782,25 +2826,26 @@
       "stack": "python",
       "finding_type": "PRA-DRIFT",
       "kind": "emphasize",
-      "text": "Lead every stale-value fix with the root cause — import the fallback constant from pr_agent_runner.py instead of swapping one hardcoded literal (32768) for another (128000) that will silently drift again.",
+      "text": "Escalate the PRA_VERSION duplicated between .github and .gitcode touchstone workflows to a single enforced source, since comment-only sync is exactly how the JSON contract diverged before.",
       "evidence": {
         "tfgrpo": true,
         "group_rewards": [
-          -2.5,
-          -2.5,
+          0.0,
+          -5.0,
           -3.0,
           -2.5
         ],
-        "pr": "218"
+        "pr": "204"
       },
       "status": "candidate",
       "source": "tfgrpo",
       "locked": false,
       "source_prs": [
-        "218"
+        "218",
+        "204"
       ],
       "created_at": 1788765018,
-      "updated_at": 1788765018
+      "updated_at": 1792402649
     },
     {
       "id": "emphasize:touchstone:python:PRA-VERIFY",
@@ -2808,25 +2853,26 @@
       "stack": "python",
       "finding_type": "PRA-VERIFY",
       "kind": "emphasize",
-      "text": "Verify deeply, not generically: check the runner's unset-vs-empty-string fallback semantics, whether 128000 is provider-dependent, and that quoted comments match source verbatim (reviewers caught CHANGELOG.md's shortened 「宁可看全 diff」 quote diverging from the code).",
+      "text": "Demand evidence for the changelog's 'zero behavior change' claim by verifying the Secrets→Variables migration in PR #216 preserves names, values, and fallback semantics before release.",
       "evidence": {
         "tfgrpo": true,
         "group_rewards": [
-          -2.5,
-          -2.5,
           -3.0,
+          -1.5,
+          -2.0,
           -2.5
         ],
-        "pr": "218"
+        "pr": "217"
       },
       "status": "candidate",
       "source": "tfgrpo",
       "locked": false,
       "source_prs": [
-        "218"
+        "218",
+        "217"
       ],
       "created_at": 1788765018,
-      "updated_at": 1788765018
+      "updated_at": 1792397974
     },
     {
       "id": "emphasize:touchstone:python:PRA-SWEEP",
@@ -2938,26 +2984,29 @@
       "stack": "python",
       "finding_type": "PRA-QUESTION",
       "kind": "emphasize",
-      "text": "Frame findings as cheap, checkable consistency questions on the changed files — SECURITY.md supported range, hardcoded 0.2.7 literals in tests/scripts, changelog date vs actual tag date.",
+      "text": "Raise the patch-vs-minor question as a single brief question that acknowledges the 0.x convention may deliberately differ, instead of asserting what the version should be.",
       "evidence": {
         "tfgrpo": true,
         "group_rewards": [
-          -2.5,
-          -3.0,
           -3.5,
+          -3.0,
+          -2.5,
+          -2.0,
           -1.5
         ],
-        "pr": "180"
+        "pr": "223"
       },
       "status": "candidate",
       "source": "tfgrpo",
       "locked": false,
       "source_prs": [
         "217",
-        "180"
+        "180",
+        "204",
+        "223"
       ],
       "created_at": 1788765604,
-      "updated_at": 1788778947
+      "updated_at": 1792402649
     },
     {
       "id": "emphasize:touchstone:python:PRA-MINOR",
@@ -2965,26 +3014,28 @@
       "stack": "python",
       "finding_type": "PRA-MINOR",
       "kind": "emphasize",
-      "text": "Prioritize sharp catches inside the files actually changed, such as a README version example that is stale the moment this same release bumps __version__ past it.",
+      "text": "Use MINOR for release-integrity checks humans act on: verify the referenced #203/#205/#206 are actually merged into this release branch before tagging, flag the unexplained missing #204, and demand end-to-end verification that a clean checkout reports 0.3.1 with a matching v0.3.1 tag and SECURITY.md scope.",
       "evidence": {
         "tfgrpo": true,
         "group_rewards": [
-          -2.5,
           -3.0,
-          -3.5,
-          -1.5
+          -2.5,
+          -1.5,
+          -3.5
         ],
-        "pr": "180"
+        "pr": "207"
       },
       "status": "candidate",
       "source": "tfgrpo",
       "locked": false,
       "source_prs": [
         "217",
-        "180"
+        "180",
+        "194",
+        "207"
       ],
       "created_at": 1788765604,
-      "updated_at": 1788778947
+      "updated_at": 1792406722
     },
     {
       "id": "emphasize:touchstone:python:PRA-PRAISE",
@@ -3018,26 +3069,28 @@
       "stack": "python",
       "finding_type": "PRA-RISK",
       "kind": "suppress",
-      "text": "Drop speculative risks about CI re-runs of older tags now sourcing Variables instead of Secrets — humans dismiss this as out of scope for a metadata-only release PR.",
+      "text": "Drop vague 'this pattern is fragile' hedging about hypothetical self-hosted proxies or other platforms misfiring when you cannot demonstrate the failure from the diff.",
       "evidence": {
         "tfgrpo": true,
         "group_rewards": [
           -3.0,
+          -5.5,
+          -6.0,
           -2.5,
-          -3.0,
           -1.5
         ],
-        "pr": "217"
+        "pr": "186"
       },
       "status": "candidate",
       "source": "tfgrpo",
       "locked": false,
       "source_prs": [
         "193",
-        "217"
+        "217",
+        "186"
       ],
       "created_at": 1788765604,
-      "updated_at": 1788774257
+      "updated_at": 1792408300
     },
     {
       "id": "suppress:touchstone:python:PRA-CLAIM_VERIFICATION",
@@ -3071,26 +3124,27 @@
       "stack": "python",
       "finding_type": "PRA-PROCESS",
       "kind": "suppress",
-      "text": "Omit post-merge release mechanics advice about tag naming and publish-workflow triggers — it lives outside the diff and gets dismissed.",
+      "text": "Don't audit release bookkeeping like whether the hardcoded date matches the future tag or whether __version__, tag name, and artifact name agree—process consistency checks on a release PR are ignored.",
       "evidence": {
         "tfgrpo": true,
         "group_rewards": [
-          -3.0,
+          0.0,
           -2.5,
           -3.0,
           -1.5
         ],
-        "pr": "217"
+        "pr": "210"
       },
       "status": "candidate",
       "source": "tfgrpo",
       "locked": false,
       "source_prs": [
         "215",
-        "217"
+        "217",
+        "210"
       ],
       "created_at": 1788765604,
-      "updated_at": 1788766403
+      "updated_at": 1792400248
     },
     {
       "id": "suppress:touchstone:python:PRA-RELEASE_CHECKLIST",
@@ -3124,14 +3178,13 @@
       "stack": "python",
       "finding_type": "PRA-SEMVER",
       "kind": "suppress",
-      "text": "Stop relitigating patch-vs-minor bumps for additive artifact fields or demanding full field schemas on release PRs — maintainers dismiss versioning pedantry when the changelog already discloses the addition.",
+      "text": "Avoid speculating on the project's semver policy (patch vs minor for additive JSON fields) in a release-only PR; policy lectures like this earned negative reward.",
       "evidence": {
         "tfgrpo": true,
         "group_rewards": [
           0.0,
-          0.0,
-          -3.0,
-          0.0
+          -2.5,
+          -3.0
         ],
         "pr": "210"
       },
@@ -3142,7 +3195,7 @@
         "210"
       ],
       "created_at": 1788767946,
-      "updated_at": 1788767946
+      "updated_at": 1792400248
     },
     {
       "id": "suppress:touchstone:python:PRA-CONTRACT",
@@ -3150,14 +3203,13 @@
       "stack": "python",
       "finding_type": "PRA-CONTRACT",
       "kind": "suppress",
-      "text": "Drop wording audits of '契约零变化'-style claims that hinge on zero-change vs no-breaking-change distinctions; humans treat these as semantic quibbles on a release-only diff and ignore them.",
+      "text": "Don't litigate changelog semantics—arguing that adding two output fields contradicts a 'zero contract change' phrasing is a pedantic interpretation quibble reviewers dismissed here.",
       "evidence": {
         "tfgrpo": true,
         "group_rewards": [
           0.0,
-          0.0,
-          -3.0,
-          0.0
+          -2.5,
+          -3.0
         ],
         "pr": "210"
       },
@@ -3168,7 +3220,7 @@
         "210"
       ],
       "created_at": 1788767946,
-      "updated_at": 1788767946
+      "updated_at": 1792400248
     },
     {
       "id": "emphasize:touchstone:python:PRA-PROCESS",
@@ -3202,25 +3254,26 @@
       "stack": "python",
       "finding_type": "PRA-CONSISTENCY",
       "kind": "emphasize",
-      "text": "Check every surface that echoes __version__ (release tag, published artifacts, SECURITY.md supported range) is updated in lockstep, because a silently stale copied version is an actionable bug humans act on immediately.",
+      "text": "Point out platform-adaptation mismatches: substring 'gitcode' matching arbitrary URLs instead of exact domain suffixes, and inline-comment/escalate-label endpoints left un-adapted on the GitCode path.",
       "evidence": {
         "tfgrpo": true,
         "group_rewards": [
-          0.0,
-          0.0,
           -3.0,
+          -5.5,
+          -6.0,
           0.0
         ],
-        "pr": "210"
+        "pr": "186"
       },
       "status": "candidate",
       "source": "tfgrpo",
       "locked": false,
       "source_prs": [
-        "210"
+        "210",
+        "186"
       ],
       "created_at": 1788767946,
-      "updated_at": 1788767946
+      "updated_at": 1792408300
     },
     {
       "id": "suppress:touchstone:python:PRA-DEADCODE",
@@ -3228,13 +3281,14 @@
       "stack": "python",
       "finding_type": "PRA-DEADCODE",
       "kind": "suppress",
-      "text": "Don't request repo-wide dangling-reference sweeps for a deletion PR whose own tests already assert the removed content is absent.",
+      "text": "Drop PRA-DEADCODE — it restates the PRA-MAJOR dangling-reference grep under an invented label and gets skipped as a duplicate.",
       "evidence": {
         "tfgrpo": true,
         "group_rewards": [
+          -3.5,
           -2.5,
-          0.0,
-          0.0,
+          -3.0,
+          -1.5,
           0.0
         ],
         "pr": "194"
@@ -3246,7 +3300,7 @@
         "194"
       ],
       "created_at": 1788773834,
-      "updated_at": 1788773834
+      "updated_at": 1792406722
     },
     {
       "id": "suppress:touchstone:python:PRA-LINT",
@@ -3306,14 +3360,14 @@
       "stack": "",
       "finding_type": "PRA-CORRECTNESS",
       "kind": "emphasize",
-      "text": "On data-chore PRs, raise PRA-CORRECTNESS only for defects demonstrable inside the diff itself (malformed JSON, dangling commas, duplicate IDs, broken lookups) — one concrete bug lands, while unverifiable 'verify the 310→11 arithmetic' audit demands were dismissed outright.",
+      "text": "Lead with the recoverability violation: hard-deleting 299 entries enacts the store's own documented anti-pattern, so demand a quarantine/archive file with a re-admission path instead of deletion.",
       "evidence": {
         "tfgrpo": true,
         "group_rewards": [
-          0.0,
-          0.0,
+          -4.0,
+          -3.0,
           -3.5,
-          -4.0
+          0.0
         ],
         "pr": "184"
       },
@@ -3324,7 +3378,7 @@
         "184"
       ],
       "created_at": 1788776288,
-      "updated_at": 1788776288
+      "updated_at": 1792409032
     },
     {
       "id": "suppress:touchstone::PRA-COMPLETENESS",
@@ -3462,25 +3516,27 @@
       "stack": "python",
       "finding_type": "PRA-MAJOR",
       "kind": "emphasize",
-      "text": "On release PRs whose diff is only CHANGELOG plus the version bump, raise the changelog-vs-diff artifact reconciliation once as a concrete verification action (confirm each advertised file actually landed via its linked PR before tagging).",
+      "text": "Escalate to MAJOR any release note that contradicts itself — the 1239+11=1250 pass/skip total versus the claimed 1250→1278 growth, and the 'zero interface change' claim versus self-admitted fail-closed behavior changes (SSRF allowlist rejecting existing URLs, POST no longer retried, base_fresh=None gated) — because humans fix self-refuting claims before tagging.",
       "evidence": {
         "tfgrpo": true,
         "group_rewards": [
-          -2.5,
           -3.0,
-          -3.5,
-          -3.0
+          -2.5,
+          -1.5,
+          -3.5
         ],
-        "pr": "180"
+        "pr": "207"
       },
       "status": "candidate",
       "source": "tfgrpo",
       "locked": false,
       "source_prs": [
-        "180"
+        "180",
+        "194",
+        "207"
       ],
       "created_at": 1788778947,
-      "updated_at": 1788778947
+      "updated_at": 1792406722
     },
     {
       "id": "emphasize:touchstone:python:PRA-NIT",
@@ -3488,25 +3544,27 @@
       "stack": "python",
       "finding_type": "PRA-NIT",
       "kind": "emphasize",
-      "text": "When hand-maintained README metrics have already drifted once, recommend the specific mechanical fix (CI-injected cloc/coverage numbers between markers) rather than merely noting the drift.",
+      "text": "Reserve NIT for one concrete, actionable style fix — compressing implementation-detail bullets (Retry-After parsing, double-checked locking, redirect semantics) into a consumer-facing summary linking the PRs — which authors actually apply.",
       "evidence": {
         "tfgrpo": true,
         "group_rewards": [
-          -2.5,
           -3.0,
-          -3.5,
-          -3.0
+          -2.5,
+          -1.5,
+          -3.5
         ],
-        "pr": "180"
+        "pr": "207"
       },
       "status": "candidate",
       "source": "tfgrpo",
       "locked": false,
       "source_prs": [
-        "180"
+        "180",
+        "194",
+        "207"
       ],
       "created_at": 1788778947,
-      "updated_at": 1788778947
+      "updated_at": 1792406722
     },
     {
       "id": "suppress:touchstone:python:PRA-BLOCKER",
@@ -3696,25 +3754,2770 @@
       "stack": "python",
       "finding_type": "PRA-DOC_DATE",
       "kind": "suppress",
-      "text": "Do not comment on the changelog date's format, timezone, or tag-day alignment; date-style nitpicks are ignored on version-bump PRs.",
+      "text": "Do not raise the pre-written 2026-08-31 release date as a standalone finding; fold a one-line date check into a hygiene remark at most.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          -3.0,
+          -2.5,
+          -1.5,
+          0.0,
+          -3.5
+        ],
+        "pr": "207"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "176",
+        "207"
+      ],
+      "created_at": 1788780079,
+      "updated_at": 1792401034
+    },
+    {
+      "id": "emphasize:touchstone:python:PRA-DOC",
+      "repo": "touchstone",
+      "stack": "python",
+      "finding_type": "PRA-DOC",
+      "kind": "emphasize",
+      "text": "Lead with the concrete content gap: the summary claims #218 is included but no changelog entry documents it—demand a matching 变更/修复 entry (or an explicit note) before any other comment.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          -3.5,
+          -3.0,
+          -2.5,
+          -2.0
+        ],
+        "pr": "223"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "217",
+        "223"
+      ],
+      "created_at": 1792395130,
+      "updated_at": 1792397974
+    },
+    {
+      "id": "emphasize:touchstone:python:PRA-DOCS_CONSISTENCY",
+      "repo": "touchstone",
+      "stack": "python",
+      "finding_type": "PRA-DOCS_CONSISTENCY",
+      "kind": "emphasize",
+      "text": "Check the file's existing bottom-of-file link definitions and, if the Keep-a-Changelog compare-link convention is in use, request the missing [0.3.7] definition as a specific actionable fix.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          -3.5,
+          -3.0,
+          -2.5,
+          -2.0
+        ],
+        "pr": "223"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "223"
+      ],
+      "created_at": 1792395130,
+      "updated_at": 1792395130
+    },
+    {
+      "id": "emphasize:touchstone:python:PRA-ACCURACY",
+      "repo": "touchstone",
+      "stack": "python",
+      "finding_type": "PRA-ACCURACY",
+      "kind": "emphasize",
+      "text": "Verify the hardcoded 2026-09-10 date against the actual merge/tag date in one short, checkable sentence rather than a lecture on release hygiene.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          -3.5,
+          -3.0,
+          -2.5,
+          -2.0
+        ],
+        "pr": "223"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "223"
+      ],
+      "created_at": 1792395130,
+      "updated_at": 1792395130
+    },
+    {
+      "id": "emphasize:touchstone:python:PRA-STYLE",
+      "repo": "touchstone",
+      "stack": "python",
+      "finding_type": "PRA-STYLE",
+      "kind": "emphasize",
+      "text": "Point out once that internal review-process narration (评审 3 轮收敛) belongs in the PR description, not user-facing release notes.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          -3.5,
+          -3.0,
+          -2.5,
+          -2.0
+        ],
+        "pr": "223"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "223"
+      ],
+      "created_at": 1792395130,
+      "updated_at": 1792395130
+    },
+    {
+      "id": "suppress:touchstone:python:PRA-RELEASE_PROCESS",
+      "repo": "touchstone",
+      "stack": "python",
+      "finding_type": "PRA-RELEASE_PROCESS",
+      "kind": "suppress",
+      "text": "Drop sprawling hypothetical release checklists (tag from this commit, CI assertions, --version output, build pipeline) that turn one 'confirm the tag' into a multi-paragraph process audit.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          -3.5,
+          -3.0,
+          -2.5,
+          -2.0
+        ],
+        "pr": "223"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "213",
+        "223"
+      ],
+      "created_at": 1792395130,
+      "updated_at": 1792399480
+    },
+    {
+      "id": "suppress:touchstone:python:PRA-CHANGELOG_CLAIM",
+      "repo": "touchstone",
+      "stack": "python",
+      "finding_type": "PRA-CHANGELOG_CLAIM",
+      "kind": "suppress",
+      "text": "Do not speculate about unverified PR-number gaps like #219–#221 that cannot be grounded in the diff—either check the actual git log or omit the claim entirely.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          -3.5,
+          -3.0,
+          -2.5,
+          -2.0
+        ],
+        "pr": "223"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "223"
+      ],
+      "created_at": 1792395130,
+      "updated_at": 1792395130
+    },
+    {
+      "id": "suppress:touchstone:python:PRA-VERSION_CONSISTENCY",
+      "repo": "touchstone",
+      "stack": "python",
+      "finding_type": "PRA-VERSION_CONSISTENCY",
+      "kind": "suppress",
+      "text": "Suppress repo-wide grep instructions and SECURITY.md staleness speculation; at most one short note asking whether the supported-range bump is intended.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          -3.5,
+          -3.0,
+          -2.5,
+          -2.0
+        ],
+        "pr": "223"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "207",
+        "213",
+        "223"
+      ],
+      "created_at": 1792395130,
+      "updated_at": 1792401034
+    },
+    {
+      "id": "suppress:touchstone:python:PRA-CHANGELOG_STRUCTURE",
+      "repo": "touchstone",
+      "stack": "python",
+      "finding_type": "PRA-CHANGELOG_STRUCTURE",
+      "kind": "suppress",
+      "text": "Do not restate the missing-#218 finding as a separate structural suggestion—it is the same defect as the coverage gap and repeating it dilutes the primary ask.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          -3.5,
+          -3.0,
+          -2.5,
+          -2.0
+        ],
+        "pr": "223"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "223"
+      ],
+      "created_at": 1792395130,
+      "updated_at": 1792395130
+    },
+    {
+      "id": "emphasize:touchstone::PRA-MAJOR",
+      "repo": "touchstone",
+      "stack": "",
+      "finding_type": "PRA-MAJOR",
+      "kind": "emphasize",
+      "text": "Lead with PRA-MAJOR when a deletion removes the only documented operational path — `touchstone doctor` self-check, `.touchstone/` policy config, Secrets→Variables migration — and always pair it with a concrete fix (migrate content to docs/DEPLOYMENT.md plus a one-line README pointer, not pure removal).",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          0.0,
+          -2.0,
+          -2.0,
+          -1.5
+        ],
+        "pr": "226"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "226"
+      ],
+      "created_at": 1792395938,
+      "updated_at": 1792395938
+    },
+    {
+      "id": "emphasize:touchstone::PRA-MINOR",
+      "repo": "touchstone",
+      "stack": "",
+      "finding_type": "PRA-MINOR",
+      "kind": "emphasize",
+      "text": "Use PRA-MINOR for capability-trust misstatements such as the 'AI Committer' label contradicting advisory-only review, dropped verify-maturity disclaimers, and lost operational footguns like TOUCHSTONE_OUTPUT_DIR isolation.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          0.0,
+          -2.0,
+          -2.0,
+          -1.5
+        ],
+        "pr": "226"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "226"
+      ],
+      "created_at": 1792395938,
+      "updated_at": 1792395938
+    },
+    {
+      "id": "emphasize:touchstone::PRA-NIT",
+      "repo": "touchstone",
+      "stack": "",
+      "finding_type": "PRA-NIT",
+      "kind": "emphasize",
+      "text": "Reserve PRA-NIT for mechanical follow-ups like grepping for broken `#本地命令`/`#规模与状态` anchors and stripping '（用户指示）' meta-commentary from CHANGELOG.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          0.0,
+          -2.0,
+          -2.0,
+          -1.5
+        ],
+        "pr": "226"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "226"
+      ],
+      "created_at": 1792395938,
+      "updated_at": 1792395938
+    },
+    {
+      "id": "suppress:touchstone::PRA-CONSISTENCY",
+      "repo": "touchstone",
+      "stack": "",
+      "finding_type": "PRA-CONSISTENCY",
+      "kind": "suppress",
+      "text": "Drop the PRA-CONSISTENCY label; fold anchor-breakage and cross-doc naming checks into PRA-MINOR or PRA-NIT findings instead.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          0.0,
+          -2.0,
+          -2.0,
+          -1.5
+        ],
+        "pr": "226"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "226"
+      ],
+      "created_at": 1792395938,
+      "updated_at": 1792395938
+    },
+    {
+      "id": "suppress:touchstone::PRA-RISK",
+      "repo": "touchstone",
+      "stack": "",
+      "finding_type": "PRA-RISK",
+      "kind": "suppress",
+      "text": "Drop PRA-RISK; raise concrete footguns like concurrent-run output overwrites as PRA-MAJOR/PRA-MINOR so they carry actionable severity.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          0.0,
+          -2.0,
+          -2.0,
+          -1.5
+        ],
+        "pr": "226"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "226"
+      ],
+      "created_at": 1792395938,
+      "updated_at": 1792395938
+    },
+    {
+      "id": "suppress:touchstone::PRA-PRAISE",
+      "repo": "touchstone",
+      "stack": "",
+      "finding_type": "PRA-PRAISE",
+      "kind": "suppress",
+      "text": "Omit PRA-PRAISE on content-deletion PRs — it adds no actionable signal and appeared only in a lowest-reward review.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          0.0,
+          -2.0,
+          -2.0,
+          -1.5
+        ],
+        "pr": "226"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "226"
+      ],
+      "created_at": 1792395938,
+      "updated_at": 1792395938
+    },
+    {
+      "id": "emphasize:touchstone:python:PRA-COMMENT_CLARITY",
+      "repo": "touchstone",
+      "stack": "python",
+      "finding_type": "PRA-COMMENT_CLARITY",
+      "kind": "emphasize",
+      "text": "Keep flagging concrete in-diff factual errors like the `== 8` comment claiming nine items, since verifiable mistakes inside the diff are what humans act on in docs PRs.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          -4.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "pr": "225"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "225"
+      ],
+      "created_at": 1792396374,
+      "updated_at": 1792396374
+    },
+    {
+      "id": "emphasize:touchstone:python:PRA-SPEC_AMBIGUITY",
+      "repo": "touchstone",
+      "stack": "python",
+      "finding_type": "PRA-SPEC_AMBIGUITY",
+      "kind": "emphasize",
+      "text": "Surface semantic gaps in the spec being updated itself, such as waived/split endings bypassing the 'findings 清零' full-run rule, because they are answerable from the diff and change agent behavior.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          -4.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "pr": "225"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "225"
+      ],
+      "created_at": 1792396374,
+      "updated_at": 1792396374
+    },
+    {
+      "id": "emphasize:touchstone:python:PRA-GUARD_EROSION",
+      "repo": "touchstone",
+      "stack": "python",
+      "finding_type": "PRA-GUARD_EROSION",
+      "kind": "emphasize",
+      "text": "Report in-diff test-threshold relaxations like 600 to 700 as a single tight item paired with a concrete fix (fixed budget or derived bound), the one anti-pattern here worth acting on.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          -4.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "pr": "225"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "225"
+      ],
+      "created_at": 1792396374,
+      "updated_at": 1792396374
+    },
+    {
+      "id": "suppress:touchstone:python:PRA-STALE_REF",
+      "repo": "touchstone",
+      "stack": "python",
+      "finding_type": "PRA-STALE_REF",
+      "kind": "suppress",
+      "text": "Drop repo-wide 'go grep for stale wording' sweeps on a docs-only PR; humans dismiss unverifiable check-everything requests as noise.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          -4.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "pr": "225"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "225"
+      ],
+      "created_at": 1792396374,
+      "updated_at": 1792396374
+    },
+    {
+      "id": "suppress:touchstone:python:PRA-DOC_DRIFT",
+      "repo": "touchstone",
+      "stack": "python",
+      "finding_type": "PRA-DOC_DRIFT",
+      "kind": "suppress",
+      "text": "Skip hypothetical future-drift warnings about README not being covered by a sync test; speculative next-time risks earn no action and add bulk.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          -4.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "pr": "225"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "194",
+        "225"
+      ],
+      "created_at": 1792396374,
+      "updated_at": 1792406722
+    },
+    {
+      "id": "suppress:touchstone:python:PRA-SPEC_CLARITY",
+      "repo": "touchstone",
+      "stack": "python",
+      "finding_type": "PRA-SPEC_CLARITY",
+      "kind": "suppress",
+      "text": "Skip soft rewording advice that restates the spec's existing intent; humans dismiss polish suggestions on docs they just authored.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          -4.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "pr": "225"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "225"
+      ],
+      "created_at": 1792396374,
+      "updated_at": 1792396374
+    },
+    {
+      "id": "suppress:touchstone:python:PRA-OPERATIONAL_COST",
+      "repo": "touchstone",
+      "stack": "python",
+      "finding_type": "PRA-OPERATIONAL_COST",
+      "kind": "suppress",
+      "text": "Drop multi-part operational speculation (poll granularity, rate limits, combined semantics) not grounded in code; this added bulk is what dragged the review to -4.0.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          -4.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "pr": "225"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "225"
+      ],
+      "created_at": 1792396374,
+      "updated_at": 1792396374
+    },
+    {
+      "id": "suppress:touchstone:python:PRA-DRY",
+      "repo": "touchstone",
+      "stack": "python",
+      "finding_type": "PRA-DRY",
+      "kind": "suppress",
+      "text": "Refuse architecture refactor pitches like rendering the quick-view from SKILL.md on a docs-only PR; scope creep beyond the diff gets the whole review penalized.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          -4.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "pr": "225"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "225"
+      ],
+      "created_at": 1792396374,
+      "updated_at": 1792396374
+    },
+    {
+      "id": "emphasize:touchstone:python:PRA-BEHAVIOR",
+      "repo": "touchstone",
+      "stack": "python",
+      "finding_type": "PRA-BEHAVIOR",
+      "kind": "emphasize",
+      "text": "Flag docs-typed PRs that actually flip runtime defaults (SIZE-001 1000→3000, reflect-model swap): demand a commit-type fix or split PR plus a migration note for deployers pinning the old threshold — this was the one finding every reviewer raised and humans acted on.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          -4.5,
+          -4.0,
+          -2.5,
+          -4.5
+        ],
+        "pr": "224"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "224"
+      ],
+      "created_at": 1792397077,
+      "updated_at": 1792397077
+    },
+    {
+      "id": "emphasize:touchstone:python:PRA-DOCS_CODE_DRIFT",
+      "repo": "touchstone",
+      "stack": "python",
+      "finding_type": "PRA-DOCS_CODE_DRIFT",
+      "kind": "emphasize",
+      "text": "Verify that CHANGELOG-claimed syncs (orchestrator _max_diff_lines default, warning text, tests, e2e fallback) are really present in the diff, so comments and README don't document defaults the code lacks.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          -4.5,
+          -4.0,
+          -2.5,
+          -4.5
+        ],
+        "pr": "224"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "224"
+      ],
+      "created_at": 1792397077,
+      "updated_at": 1792397077
+    },
+    {
+      "id": "emphasize:touchstone:python:PRA-MODEL_AVAILABILITY",
+      "repo": "touchstone",
+      "stack": "python",
+      "finding_type": "PRA-MODEL_AVAILABILITY",
+      "kind": "emphasize",
+      "text": "Require pre-merge proof that newly hardcoded model ids (glm-4.7, glm-5.3) are actually served by the endpoints, since a wrong id silently breaks improve self-reflection and e2e fallbacks for every deployer copying the defaults.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          -4.5,
+          -4.0,
+          -2.5,
+          -4.5
+        ],
+        "pr": "224"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "224"
+      ],
+      "created_at": 1792397077,
+      "updated_at": 1792397077
+    },
+    {
+      "id": "emphasize:touchstone:python:PRA-STALE_JUSTIFICATION",
+      "repo": "touchstone",
+      "stack": "python",
+      "finding_type": "PRA-STALE_JUSTIFICATION",
+      "kind": "emphasize",
+      "text": "When model ids change, force updates or re-measurement of the measurement-based comments (『小模型近乎减半』, TOUCHSTONE_PRAGENT_TIMEOUT=3600 justified by glm-5.2) because stale rationales mislead future tuning.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          -4.5,
+          -4.0,
+          -2.5,
+          -4.5
+        ],
+        "pr": "224"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "224"
+      ],
+      "created_at": 1792397077,
+      "updated_at": 1792397077
+    },
+    {
+      "id": "emphasize:touchstone:python:PRA-DOC_LOSS",
+      "repo": "touchstone",
+      "stack": "python",
+      "finding_type": "PRA-DOC_LOSS",
+      "kind": "emphasize",
+      "text": "Insist the README rewrite keep or link the trust/guardrail content (三类判定表, fail-closed semantics, degradation-annotation promise) instead of silently deleting user-facing guarantees.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          -4.5,
+          -4.0,
+          -2.5,
+          -4.5
+        ],
+        "pr": "224"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "224"
+      ],
+      "created_at": 1792397077,
+      "updated_at": 1792397077
+    },
+    {
+      "id": "emphasize:touchstone:python:PRA-RISK",
+      "repo": "touchstone",
+      "stack": "python",
+      "finding_type": "PRA-RISK",
+      "kind": "emphasize",
+      "text": "Call out that the 3000-line default bakes in a 128K-context assumption and tell small-context deployers to override the repo variable or annotate the assumption next to the default.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          -4.5,
+          -4.0,
+          -2.5,
+          -4.5
+        ],
+        "pr": "224"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "224"
+      ],
+      "created_at": 1792397077,
+      "updated_at": 1792397077
+    },
+    {
+      "id": "suppress:touchstone:python:PRA-QUICKSTART_COMPLETENESS",
+      "repo": "touchstone",
+      "stack": "python",
+      "finding_type": "PRA-QUICKSTART_COMPLETENESS",
+      "kind": "suppress",
+      "text": "Skip speculative 'quickstart undercounts the setup steps' critiques enumerating hypothetical missing secrets/vars — unverifiable from the diff and dismissed by humans.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          -4.5,
+          -4.0,
+          -2.5,
+          -4.5
+        ],
+        "pr": "224"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "224"
+      ],
+      "created_at": 1792397077,
+      "updated_at": 1792397077
+    },
+    {
+      "id": "suppress:touchstone:python:PRA-LINK_ROT",
+      "repo": "touchstone",
+      "stack": "python",
+      "finding_type": "PRA-LINK_ROT",
+      "kind": "suppress",
+      "text": "Avoid nitpicks about removed design-doc pointers (learning-loop section) unless the diff shows the audience actually loses access to load-bearing content.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          -4.5,
+          -4.0,
+          -2.5,
+          -4.5
+        ],
+        "pr": "224"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "224"
+      ],
+      "created_at": 1792397077,
+      "updated_at": 1792397077
+    },
+    {
+      "id": "suppress:touchstone:python:PRA-SYNC_MECHANISM",
+      "repo": "touchstone",
+      "stack": "python",
+      "finding_type": "PRA-SYNC_MECHANISM",
+      "kind": "suppress",
+      "text": "Drop generic process-improvement proposals like adding a test that asserts docs match code defaults — out of scope for this PR and treated as padding.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          -4.5,
+          -4.0,
+          -2.5,
+          -4.5
+        ],
+        "pr": "224"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "224"
+      ],
+      "created_at": 1792397077,
+      "updated_at": 1792397077
+    },
+    {
+      "id": "suppress:touchstone:python:PRA-POLICY_CONFIRM",
+      "repo": "touchstone",
+      "stack": "python",
+      "finding_type": "PRA-POLICY_CONFIRM",
+      "kind": "suppress",
+      "text": "Don't restate the gate loosening as a separate 'confirm maintainers accept this' finding — it duplicates the behavior-change callout and dilutes the actionable core.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          -4.5,
+          -4.0,
+          -2.5,
+          -4.5
+        ],
+        "pr": "224"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "224"
+      ],
+      "created_at": 1792397077,
+      "updated_at": 1792397077
+    },
+    {
+      "id": "emphasize:touchstone:python:PRA-PROC",
+      "repo": "touchstone",
+      "stack": "python",
+      "finding_type": "PRA-PROC",
+      "kind": "emphasize",
+      "text": "Lead with concrete post-merge verification steps — confirm the referenced PR (#216) is merged, run one CI job against the migrated Variables to prove no empty-value fallback fires, and check built metadata reports 0.3.6 before tagging.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          -3.0,
+          -1.5,
+          -2.0,
+          -2.5
+        ],
+        "pr": "217"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "217"
+      ],
+      "created_at": 1792397974,
+      "updated_at": 1792397974
+    },
+    {
+      "id": "suppress:touchstone:python:PRA-DOC_ACCURACY",
+      "repo": "touchstone",
+      "stack": "python",
+      "finding_type": "PRA-DOC_ACCURACY",
+      "kind": "suppress",
+      "text": "Drop pedantic rewording of the 'zero change' phrasing (e.g. version-string output changes); humans dismiss this as noise on a routine version bump.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          -3.0,
+          -1.5,
+          -2.0,
+          -2.5
+        ],
+        "pr": "217"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "217"
+      ],
+      "created_at": 1792397974,
+      "updated_at": 1792397974
+    },
+    {
+      "id": "suppress:touchstone:python:PRA-NIT",
+      "repo": "touchstone",
+      "stack": "python",
+      "finding_type": "PRA-NIT",
+      "kind": "suppress",
+      "text": "Omit typo and blank-line nits (烧不動, missing section separator, streak count in reason strings) entirely — cosmetic flags are what humans dismiss first.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          -2.5,
+          0.0,
+          -3.0,
+          -1.5,
+          -2.0
+        ],
+        "pr": "189"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "217",
+        "189"
+      ],
+      "created_at": 1792397974,
+      "updated_at": 1792408758
+    },
+    {
+      "id": "suppress:touchstone:python:PRA-CHANGELOG_DATE",
+      "repo": "touchstone",
+      "stack": "python",
+      "finding_type": "PRA-CHANGELOG_DATE",
+      "kind": "suppress",
+      "text": "Do not raise the hardcoded release date as a standalone finding; every reviewer notes it and humans only reconcile it in passing when cutting the tag.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          -3.0,
+          -1.5,
+          -2.0,
+          -2.5
+        ],
+        "pr": "217"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "217"
+      ],
+      "created_at": 1792397974,
+      "updated_at": 1792397974
+    },
+    {
+      "id": "suppress:touchstone:python:PRA-RELEASE_ORDER",
+      "repo": "touchstone",
+      "stack": "python",
+      "finding_type": "PRA-RELEASE_ORDER",
+      "kind": "suppress",
+      "text": "Avoid boilerplate 'verify #216 merged first' reminders as their own finding type; state the dependency once inside a PRA-PROC verification note instead.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          -3.0,
+          -1.5,
+          -2.0,
+          -2.5
+        ],
+        "pr": "217"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "217"
+      ],
+      "created_at": 1792397974,
+      "updated_at": 1792397974
+    },
+    {
+      "id": "suppress:touchstone:python:PRA-RELEASE_TAG",
+      "repo": "touchstone",
+      "stack": "python",
+      "finding_type": "PRA-RELEASE_TAG",
+      "kind": "suppress",
+      "text": "Skip generic 'tag from the merge commit and run the release pipeline' instructions as standalone findings; they duplicate release-process docs and get dismissed.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          -3.0,
+          -1.5,
+          -2.0,
+          -2.5
+        ],
+        "pr": "217"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "217"
+      ],
+      "created_at": 1792397974,
+      "updated_at": 1792397974
+    },
+    {
+      "id": "suppress:touchstone:python:PRA-CHANGELOG_LINKS",
+      "repo": "touchstone",
+      "stack": "python",
+      "finding_type": "PRA-CHANGELOG_LINKS",
+      "kind": "suppress",
+      "text": "Do not emit the missing compare link as its own bespoke finding; cover it inside the PRA-DOC consistency note where humans actually act on it.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          -3.0,
+          -1.5,
+          -2.0,
+          -2.5
+        ],
+        "pr": "217"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "213",
+        "217"
+      ],
+      "created_at": 1792397974,
+      "updated_at": 1792399480
+    },
+    {
+      "id": "suppress:touchstone:python:PRA-RELEASE_COMPLETENESS",
+      "repo": "touchstone",
+      "stack": "python",
+      "finding_type": "PRA-RELEASE_COMPLETENESS",
+      "kind": "suppress",
+      "text": "On touchstone release-bump PRs, suppress demands for cross-PR merge-SHA provenance (e.g., proof that #212 landed before cutting 0.3.3) — reviewers dismiss release-traceability checks as release-engineering work outside code review, and this review's -3.0 reward shows such comments read as noise.",
       "evidence": {
         "tfgrpo": true,
         "group_rewards": [
           0.0,
           0.0,
           0.0,
-          -3.5
+          -3.0
         ],
-        "pr": "176"
+        "pr": "213"
       },
       "status": "candidate",
       "source": "tfgrpo",
       "locked": false,
       "source_prs": [
-        "176"
+        "213"
       ],
-      "created_at": 1788780079,
-      "updated_at": 1788780079
+      "created_at": 1792399480,
+      "updated_at": 1792399480
+    },
+    {
+      "id": "suppress:touchstone:python:PRA-UNRELEASED_SCOPING",
+      "repo": "touchstone",
+      "stack": "python",
+      "finding_type": "PRA-UNRELEASED_SCOPING",
+      "kind": "suppress",
+      "text": "Suppress requests to re-triage every [Unreleased] CHANGELOG entry into the new version section on two-line release PRs — humans treat changelog scoping as maintainer discretion and ignore these findings (empty reviews here scored 0.0 versus -3.0 for raising them).",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          0.0,
+          0.0,
+          0.0,
+          -3.0
+        ],
+        "pr": "213"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "213"
+      ],
+      "created_at": 1792399480,
+      "updated_at": 1792399480
+    },
+    {
+      "id": "suppress:touchstone:python:PRA-DOCS_ACCURACY",
+      "repo": "touchstone",
+      "stack": "python",
+      "finding_type": "PRA-DOCS_ACCURACY",
+      "kind": "suppress",
+      "text": "Suppress fact-checking of changelog dates, regression-test counts, and 'zero contract change' claims against issue #211 history — humans verify release-note content on their own and penalize (reward -3.0) these unverifiable-from-diff nitpicks on otherwise trivial release PRs.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          0.0,
+          0.0,
+          0.0,
+          -3.0
+        ],
+        "pr": "213"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "213"
+      ],
+      "created_at": 1792399480,
+      "updated_at": 1792399480
+    },
+    {
+      "id": "suppress:touchstone:python:PRA-DOC_LINKS",
+      "repo": "touchstone",
+      "stack": "python",
+      "finding_type": "PRA-DOC_LINKS",
+      "kind": "suppress",
+      "text": "Do not spend a finding on a missing [0.3.1] link-reference definition at the bottom of CHANGELOG.md; only the lowest-reward reviews raised this markdown trivia and humans dismiss it.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          -3.0,
+          -2.5,
+          -2.5,
+          -1.5
+        ],
+        "pr": "207"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "207"
+      ],
+      "created_at": 1792401034,
+      "updated_at": 1792401034
+    },
+    {
+      "id": "suppress:touchstone:python:PRA-TRACEABILITY",
+      "repo": "touchstone",
+      "stack": "python",
+      "finding_type": "PRA-TRACEABILITY",
+      "kind": "suppress",
+      "text": "Do not demand commit SHAs or per-bullet links for every changelog entry; this repo's changelog style cites PR numbers and authors will not restructure it.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          -3.0,
+          -2.5,
+          -2.5,
+          -1.5
+        ],
+        "pr": "207"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "207"
+      ],
+      "created_at": 1792401034,
+      "updated_at": 1792401034
+    },
+    {
+      "id": "suppress:touchstone:python:PRA-SEC_ADVISORY",
+      "repo": "touchstone",
+      "stack": "python",
+      "finding_type": "PRA-SEC_ADVISORY",
+      "kind": "suppress",
+      "text": "Do not enumerate required regression-test cases (307/308 POST preservation, Location-less 3xx, exemption rules) in a security-advisory finding; the top-reward review folded security-sync reminders into the release-verification note instead.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          -3.0,
+          -2.5,
+          -2.5,
+          -1.5
+        ],
+        "pr": "207"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "207"
+      ],
+      "created_at": 1792401034,
+      "updated_at": 1792401034
+    },
+    {
+      "id": "suppress:touchstone:python:PRA-DOC_CLAIM",
+      "repo": "touchstone",
+      "stack": "python",
+      "finding_type": "PRA-DOC_CLAIM",
+      "kind": "suppress",
+      "text": "Do not file a separate finding asking the author to cite how the compatibility claim was verified; it duplicates the MAJOR about misleading 'zero interface change' wording — merge it there.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          -3.0,
+          -2.5,
+          -2.5,
+          -1.5
+        ],
+        "pr": "207"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "207"
+      ],
+      "created_at": 1792401034,
+      "updated_at": 1792401034
+    },
+    {
+      "id": "emphasize:touchstone::PRA-BUG",
+      "repo": "touchstone",
+      "stack": "",
+      "finding_type": "PRA-BUG",
+      "kind": "emphasize",
+      "text": "Lead with one concrete PRA-BUG: wiring the env var makes the key always present, so an unset repo variable yields \"\" and int(\"\") crashes at the GHA→Python boundary — demand the exact parsing line or a unit test proving unset/''→1000.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          -3.0,
+          -2.5,
+          -3.5,
+          -3.0
+        ],
+        "pr": "205"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "201",
+        "205"
+      ],
+      "created_at": 1792402196,
+      "updated_at": 1792403521
+    },
+    {
+      "id": "emphasize:touchstone::PRA-RISK",
+      "repo": "touchstone",
+      "stack": "",
+      "finding_type": "PRA-RISK",
+      "kind": "emphasize",
+      "text": "Carry the rollout hazard as a single PRA-RISK: the knob was dead so everyone effectively ran 1000, and \"0\" reads as block-everything unless explicitly mapped to disabled — verify the live repo variable value and the 0→disabled code path before merge.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          -3.0,
+          -2.5,
+          -3.5,
+          -3.0
+        ],
+        "pr": "205"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "205"
+      ],
+      "created_at": 1792402196,
+      "updated_at": 1792402196
+    },
+    {
+      "id": "emphasize:touchstone::PRA-VALIDATION",
+      "repo": "touchstone",
+      "stack": "",
+      "finding_type": "PRA-VALIDATION",
+      "kind": "emphasize",
+      "text": "Keep PRA-VALIDATION asking for tolerant parsing of the freeform repo variable ('abc', ' 1000', '1_000') so a typo warns and falls back to 1000 instead of failing the job far from where the mistake was made.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          -3.0,
+          -2.5,
+          -3.5,
+          -3.0
+        ],
+        "pr": "205"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "205"
+      ],
+      "created_at": 1792402196,
+      "updated_at": 1792402196
+    },
+    {
+      "id": "emphasize:touchstone::PRA-SCOPE",
+      "repo": "touchstone",
+      "stack": "",
+      "finding_type": "PRA-SCOPE",
+      "kind": "emphasize",
+      "text": "Focus PRA-SCOPE on auditing sibling TOUCHSTONE_* knobs and any other job, caller, or container that reads the same env, wiring or deleting each so no half-dead config survives.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          -3.0,
+          -2.5,
+          -3.5,
+          -3.0
+        ],
+        "pr": "205"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "205"
+      ],
+      "created_at": 1792402196,
+      "updated_at": 1792402196
+    },
+    {
+      "id": "emphasize:touchstone::PRA-TEST",
+      "repo": "touchstone",
+      "stack": "",
+      "finding_type": "PRA-TEST",
+      "kind": "emphasize",
+      "text": "Demand PRA-TEST executable proof of the plumbing: a scratch run with a tiny threshold that makes SIZE-001 fire, plus unit tests pinning the unset/''/'0'/non-numeric contract of _max_diff_lines.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          -3.0,
+          -2.5,
+          -3.5,
+          -3.0
+        ],
+        "pr": "205"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "205"
+      ],
+      "created_at": 1792402196,
+      "updated_at": 1792402196
+    },
+    {
+      "id": "suppress:touchstone::PRA-CI",
+      "repo": "touchstone",
+      "stack": "",
+      "finding_type": "PRA-CI",
+      "kind": "suppress",
+      "text": "Suppress PRA-CI proposals to build env-vs-workflow lint tooling — reviewers reward an inline sibling audit under SCOPE, not new infrastructure asks.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          -3.0,
+          -2.5,
+          -3.5,
+          -3.0
+        ],
+        "pr": "205"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "205"
+      ],
+      "created_at": 1792402196,
+      "updated_at": 1792402196
+    },
+    {
+      "id": "suppress:touchstone::PRA-VERIFY_PROPAGATION",
+      "repo": "touchstone",
+      "stack": "",
+      "finding_type": "PRA-VERIFY_PROPAGATION",
+      "kind": "suppress",
+      "text": "Never emit fragmented one-off labels like PRA-VERIFY-PROPAGATION, PRA-REACHABILITY, or PRA-VERIFY-RUNTIME-CLAIM — fold the does-it-reach-the-reader question into the SCOPE audit instead.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          -3.0,
+          -2.5,
+          -3.5,
+          -3.0
+        ],
+        "pr": "205"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "205"
+      ],
+      "created_at": 1792402196,
+      "updated_at": 1792402196
+    },
+    {
+      "id": "suppress:touchstone::PRA-OPS",
+      "repo": "touchstone",
+      "stack": "",
+      "finding_type": "PRA-OPS",
+      "kind": "suppress",
+      "text": "Do not split the silent-activation warning into PRA-OPS or PRA-CONFIG-ACTIVATION-RISK duplicates — the top-reward review carries it once as PRA-RISK, and repetition plus type fragmentation tracks the worst reward.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          -3.0,
+          -2.5,
+          -3.5,
+          -3.0
+        ],
+        "pr": "205"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "205"
+      ],
+      "created_at": 1792402196,
+      "updated_at": 1792402196
+    },
+    {
+      "id": "suppress:touchstone::PRA-OBSERVABILITY",
+      "repo": "touchstone",
+      "stack": "",
+      "finding_type": "PRA-OBSERVABILITY",
+      "kind": "suppress",
+      "text": "Fold any log-the-effective-threshold suggestion into the PRA-RISK note rather than a standalone PRA-OBSERVABILITY finding, which only appears in dismissed reviews.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          -3.0,
+          -2.5,
+          -3.5,
+          -3.0
+        ],
+        "pr": "205"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "205"
+      ],
+      "created_at": 1792402196,
+      "updated_at": 1792402196
+    },
+    {
+      "id": "emphasize:touchstone:python:PRA-CI",
+      "repo": "touchstone",
+      "stack": "python",
+      "finding_type": "PRA-CI",
+      "kind": "emphasize",
+      "text": "Flag workflow steps that hard-fail or silently skip the AI review — pragent-constraints.txt not at the exact repo_workspace-relative path, CI_PULL_REQUEST_NUMBER never explicitly mapped in env, and pip piped through tail without pipefail — stating the concrete failure each causes.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          0.0,
+          0.0,
+          -5.0,
+          -3.0
+        ],
+        "pr": "204"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "204"
+      ],
+      "created_at": 1792402649,
+      "updated_at": 1792402649
+    },
+    {
+      "id": "emphasize:touchstone:python:PRA-BUG",
+      "repo": "touchstone",
+      "stack": "python",
+      "finding_type": "PRA-BUG",
+      "kind": "emphasize",
+      "text": "Report verifiable API-contract and logic bugs, e.g. summary comments posted to /pulls/{n}/comments instead of Gitea/GitCode's /issues/{n}/comments, and `if not checklist` clobbering an explicitly empty checklist when the comment and code say checklist is None.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          -3.0,
+          -5.5,
+          -6.0,
+          0.0,
+          -5.0
+        ],
+        "pr": "186"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "189",
+        "204",
+        "186"
+      ],
+      "created_at": 1792402649,
+      "updated_at": 1792408300
+    },
+    {
+      "id": "suppress:touchstone:python:PRA-SCOPE",
+      "repo": "touchstone",
+      "stack": "python",
+      "finding_type": "PRA-SCOPE",
+      "kind": "suppress",
+      "text": "Don't police PR-title audit-range bookkeeping like '#45 leaked into the #1-28 PR' — reviewers dismiss title-labeling complaints as noise.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          0.0,
+          0.0,
+          -5.0,
+          -3.0
+        ],
+        "pr": "204"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "204"
+      ],
+      "created_at": 1792402649,
+      "updated_at": 1792402649
+    },
+    {
+      "id": "suppress:touchstone:python:PRA-BEHAVIOR_CHANGE",
+      "repo": "touchstone",
+      "stack": "python",
+      "finding_type": "PRA-BEHAVIOR_CHANGE",
+      "kind": "suppress",
+      "text": "Skip documentation demands to add env flags like TOUCHSTONE_RETIRE_NEGATIVE_LIFT to config/README — defer-to-docs comments are dropped in this repo.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          0.0,
+          0.0,
+          -5.0,
+          -3.0
+        ],
+        "pr": "204"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "194",
+        "204"
+      ],
+      "created_at": 1792402649,
+      "updated_at": 1792406722
+    },
+    {
+      "id": "suppress:touchstone:python:PRA-CI_EDGE",
+      "repo": "touchstone",
+      "stack": "python",
+      "finding_type": "PRA-CI_EDGE",
+      "kind": "suppress",
+      "text": "Don't invent hypothetical env hygiene like whitespace or non-numeric CI_PULL_REQUEST_NUMBER validation — speculative edge cases with no observed failure get ignored.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          0.0,
+          0.0,
+          -5.0,
+          -3.0
+        ],
+        "pr": "204"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "204"
+      ],
+      "created_at": 1792402649,
+      "updated_at": 1792402649
+    },
+    {
+      "id": "suppress:touchstone:python:PRA-IMPL_NOT_IN_DIFF",
+      "repo": "touchstone",
+      "stack": "python",
+      "finding_type": "PRA-IMPL_NOT_IN_DIFF",
+      "kind": "suppress",
+      "text": "Avoid hedged 'implementation not visible in the truncated diff' confirmations — either name the stale caller or drop the comment.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          0.0,
+          0.0,
+          -5.0,
+          -3.0
+        ],
+        "pr": "204"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "204"
+      ],
+      "created_at": 1792402649,
+      "updated_at": 1792402649
+    },
+    {
+      "id": "suppress:touchstone:python:PRA-SEMANTICS",
+      "repo": "touchstone",
+      "stack": "python",
+      "finding_type": "PRA-SEMANTICS",
+      "kind": "suppress",
+      "text": "Don't raise vague 'consider logging which source produced the empty diff' semantics concerns — unproven fail-open paths without a reachable trigger are dismissed.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          0.0,
+          0.0,
+          -5.0,
+          -3.0
+        ],
+        "pr": "204"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "204"
+      ],
+      "created_at": 1792402649,
+      "updated_at": 1792402649
+    },
+    {
+      "id": "emphasize:touchstone:python:PRA-DOC_CONSISTENCY",
+      "repo": "touchstone",
+      "stack": "python",
+      "finding_type": "PRA-DOC_CONSISTENCY",
+      "kind": "emphasize",
+      "text": "Emphasize release-version drift in docs: reviewers consistently flag the README pinned-tag example lagging behind the shipped version, so in release PRs demand tag examples be bumped to the version this PR produces (v0.3.0), not the previous release's tag.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          -2.0,
+          0.0,
+          -3.0,
+          0.0
+        ],
+        "pr": "202"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "202"
+      ],
+      "created_at": 1792403071,
+      "updated_at": 1792403071
+    },
+    {
+      "id": "emphasize:touchstone:python:PRA-TEST_COVERAGE",
+      "repo": "touchstone",
+      "stack": "python",
+      "finding_type": "PRA-TEST_COVERAGE",
+      "kind": "emphasize",
+      "text": "Emphasize hardening the new version/CHANGELOG sync test so this drift class actually goes red pre-merge — compare README's referenced tag against __version__ and parse the latest CHANGELOG section exactly rather than relying on substring matches that historical sections permanently satisfy.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          -2.0,
+          0.0,
+          -3.0,
+          0.0
+        ],
+        "pr": "202"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "202"
+      ],
+      "created_at": 1792403071,
+      "updated_at": 1792403071
+    },
+    {
+      "id": "suppress:touchstone:python:PRA-QUALITY",
+      "repo": "touchstone",
+      "stack": "python",
+      "finding_type": "PRA-QUALITY",
+      "kind": "suppress",
+      "text": "Suppress quality findings that merely repackage the same style nits (file-handle leak plus import placement) as a separate finding type — duplicating trivia across types reads as noise and drags the whole review down.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          -2.0,
+          0.0,
+          -3.0,
+          0.0
+        ],
+        "pr": "202"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "202"
+      ],
+      "created_at": 1792403071,
+      "updated_at": 1792403071
+    },
+    {
+      "id": "suppress:touchstone:python:PRA-ADVISORY",
+      "repo": "touchstone",
+      "stack": "python",
+      "finding_type": "PRA-ADVISORY",
+      "kind": "suppress",
+      "text": "Suppress unverifiable release-process advisories (confirm all 20 listed PRs are merged and the 1220-test count is accurate before tagging) — checklist speculation reviewers cannot verify from the diff and humans do not act on.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          -2.0,
+          0.0,
+          -3.0,
+          0.0
+        ],
+        "pr": "202"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "202"
+      ],
+      "created_at": 1792403071,
+      "updated_at": 1792403071
+    },
+    {
+      "id": "emphasize:touchstone::PRA-DOC",
+      "repo": "touchstone",
+      "stack": "",
+      "finding_type": "PRA-DOC",
+      "kind": "emphasize",
+      "text": "Ground doc findings in checkable specifics — coverage still 93% while production lines grew ~40%, protocol details duplicated against the SKILL.md the same paragraph declares authoritative, stats unverifiable from a docs-only diff — instead of generic drift warnings.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          -4.5,
+          -4.0,
+          -2.5,
+          -3.5
+        ],
+        "pr": "201"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "201"
+      ],
+      "created_at": 1792403521,
+      "updated_at": 1792403521
+    },
+    {
+      "id": "emphasize:touchstone::PRA-STYLE",
+      "repo": "touchstone",
+      "stack": "",
+      "finding_type": "PRA-STYLE",
+      "kind": "emphasize",
+      "text": "Flag diff-verifiable convention breaks like this PR mixing full-width punctuation into an otherwise half-width file, since same-PR inconsistencies against the file's existing style get fixed immediately.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          -4.5,
+          -4.0,
+          -2.5,
+          -3.5
+        ],
+        "pr": "201"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "201"
+      ],
+      "created_at": 1792403521,
+      "updated_at": 1792403521
+    },
+    {
+      "id": "suppress:touchstone::PRA-NIT",
+      "repo": "touchstone",
+      "stack": "",
+      "finding_type": "PRA-NIT",
+      "kind": "suppress",
+      "text": "Don't spend a finding softening single words like '永远' to '正常路径下'; humans dismiss self-labeled nitpicks on wording.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          -4.5,
+          -4.0,
+          -2.5,
+          -3.5
+        ],
+        "pr": "201"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "201"
+      ],
+      "created_at": 1792403521,
+      "updated_at": 1792403521
+    },
+    {
+      "id": "suppress:touchstone::PRA-DESIGN_QUESTION",
+      "repo": "touchstone",
+      "stack": "",
+      "finding_type": "PRA-DESIGN_QUESTION",
+      "kind": "suppress",
+      "text": "Cut speculative design musings such as folded historical comments no longer being trustworthy marker sources, which cannot be validated against any code in a docs-only diff.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          -4.5,
+          -4.0,
+          -2.5,
+          -3.5
+        ],
+        "pr": "201"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "201"
+      ],
+      "created_at": 1792403521,
+      "updated_at": 1792403521
+    },
+    {
+      "id": "suppress:touchstone::PRA-GATE_COVERAGE",
+      "repo": "touchstone",
+      "stack": "",
+      "finding_type": "PRA-GATE_COVERAGE",
+      "kind": "suppress",
+      "text": "Avoid 'does the L2 gate also cover the PATCH/edit folding path?' questions about implementation paths absent from the diff; unverifiable hypotheticals about invisible code get dismissed.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          -4.5,
+          -4.0,
+          -2.5,
+          -3.5
+        ],
+        "pr": "201"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "201"
+      ],
+      "created_at": 1792403521,
+      "updated_at": 1792403521
+    },
+    {
+      "id": "suppress:touchstone::PRA-EDGE_CASE_TIMING",
+      "repo": "touchstone",
+      "stack": "",
+      "finding_type": "PRA-EDGE_CASE_TIMING",
+      "kind": "suppress",
+      "text": "Drop contrived edge cases like same-second created_at collisions requiring tie-breaker rules; over-engineered timing hypotheticals read as review padding.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          -4.5,
+          -4.0,
+          -2.5,
+          -3.5
+        ],
+        "pr": "201"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "201"
+      ],
+      "created_at": 1792403521,
+      "updated_at": 1792403521
+    },
+    {
+      "id": "emphasize:touchstone:python:PRA-IMPL_NOT_IN_DIFF",
+      "repo": "touchstone",
+      "stack": "python",
+      "finding_type": "PRA-IMPL_NOT_IN_DIFF",
+      "kind": "emphasize",
+      "text": "Open every review by reconciling diff visibility: when tests/test_revision_items.py exercises _collapse_stale_reviews/_collapse_review_body but touchstone/orchestrator.py is absent from the shown diff, block the PR until the implementation is included and reviewed together.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          0.0,
+          0.0,
+          -4.5,
+          -4.0
+        ],
+        "pr": "191"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "191"
+      ],
+      "created_at": 1792405435,
+      "updated_at": 1792405435
+    },
+    {
+      "id": "emphasize:touchstone:python:PRA-TEST_GAP_IDEMPOTENCY",
+      "repo": "touchstone",
+      "stack": "python",
+      "finding_type": "PRA-TEST_GAP_IDEMPOTENCY",
+      "kind": "emphasize",
+      "text": "Demand a regression proving collapse over an already-folded comment emits zero PATCHes, since re-folding stale rounds on every run is this repo's realistic production failure mode.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          0.0,
+          0.0,
+          -4.5,
+          -4.0
+        ],
+        "pr": "191"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "191"
+      ],
+      "created_at": 1792405435,
+      "updated_at": 1792405435
+    },
+    {
+      "id": "emphasize:touchstone:python:PRA-TEST_GAP_ERROR_HANDLING",
+      "repo": "touchstone",
+      "stack": "python",
+      "finding_type": "PRA-TEST_GAP_ERROR_HANDLING",
+      "kind": "emphasize",
+      "text": "Require a test where the first gh('PATCH', ...) raises and the remaining stale comments still collapse, proving the fan-out is individually error-isolated rather than aborting the round.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          0.0,
+          0.0,
+          -4.5,
+          -4.0
+        ],
+        "pr": "191"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "191"
+      ],
+      "created_at": 1792405435,
+      "updated_at": 1792405435
+    },
+    {
+      "id": "emphasize:touchstone:python:PRA-RISK_DEDUP_KEEP_LAST",
+      "repo": "touchstone",
+      "stack": "python",
+      "finding_type": "PRA-RISK_DEDUP_KEEP_LAST",
+      "kind": "emphasize",
+      "text": "Challenge position-only keep-last marker dedup with a fake-marker-after-real-marker test plus payload validation, because a quoted marker winning dedup can silently hijack parse_latest.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          0.0,
+          0.0,
+          -4.5,
+          -4.0
+        ],
+        "pr": "191"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "191"
+      ],
+      "created_at": 1792405435,
+      "updated_at": 1792405435
+    },
+    {
+      "id": "emphasize:touchstone:python:PRA-BEHAVIOR_DEGRADATION",
+      "repo": "touchstone",
+      "stack": "python",
+      "finding_type": "PRA-BEHAVIOR_DEGRADATION",
+      "kind": "emphasize",
+      "text": "Ask for a stderr warning when an unrepairable legacy comment is left expanded, mirroring the GitCode skip so the only-latest-round-expanded invariant degrades observably instead of silently.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          0.0,
+          0.0,
+          -4.5,
+          -4.0
+        ],
+        "pr": "191"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "191"
+      ],
+      "created_at": 1792405435,
+      "updated_at": 1792405435
+    },
+    {
+      "id": "suppress:touchstone:python:PRA-STYLE_CONSISTENCY",
+      "repo": "touchstone",
+      "stack": "python",
+      "finding_type": "PRA-STYLE_CONSISTENCY",
+      "kind": "suppress",
+      "text": "Drop monkeypatch-versus-mock.patch.object and assert-splitting nits on tests/test_revision_items.py; they carry no behavioral risk and humans dismiss them as churn.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          0.0,
+          0.0,
+          -4.5,
+          -4.0
+        ],
+        "pr": "191"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "191"
+      ],
+      "created_at": 1792405435,
+      "updated_at": 1792405435
+    },
+    {
+      "id": "suppress:touchstone:python:PRA-BRITTLE_SENTINEL",
+      "repo": "touchstone",
+      "stack": "python",
+      "finding_type": "PRA-BRITTLE_SENTINEL",
+      "kind": "suppress",
+      "text": "Skip suggestions to delete the html_comment_safe_json source-grep sentinel; humans rarely act on advice to remove existing test assertions.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          0.0,
+          0.0,
+          -4.5,
+          -4.0
+        ],
+        "pr": "191"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "191"
+      ],
+      "created_at": 1792405435,
+      "updated_at": 1792405435
+    },
+    {
+      "id": "suppress:touchstone:python:PRA-EDGE_CASE",
+      "repo": "touchstone",
+      "stack": "python",
+      "finding_type": "PRA-EDGE_CASE",
+      "kind": "suppress",
+      "text": "Don't speculate about unbounded status-line scans in touchstone/orchestrator.py when that file is absent from the visible diff; findings not anchored to changed files get dismissed.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          0.0,
+          0.0,
+          -4.5,
+          -4.0
+        ],
+        "pr": "191"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "191"
+      ],
+      "created_at": 1792405435,
+      "updated_at": 1792405435
+    },
+    {
+      "id": "suppress:touchstone:python:PRA-DOCS",
+      "repo": "touchstone",
+      "stack": "python",
+      "finding_type": "PRA-DOCS",
+      "kind": "suppress",
+      "text": "Don't file README/changelog requests documenting the GitCode collapse degradation; docs chores attached to a code PR get deferred and ignored.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          0.0,
+          0.0,
+          -4.5,
+          -4.0
+        ],
+        "pr": "191"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "191"
+      ],
+      "created_at": 1792405435,
+      "updated_at": 1792405435
+    },
+    {
+      "id": "suppress:touchstone:python:PRA-UNUSED_CODE",
+      "repo": "touchstone",
+      "stack": "python",
+      "finding_type": "PRA-UNUSED_CODE",
+      "kind": "suppress",
+      "text": "Drop PRA-UNUSED-CODE — the os/re import check belongs inside the existing PRA-MINOR import-hygiene note, not a bespoke category.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          -3.5,
+          -2.5,
+          -3.0,
+          -1.5
+        ],
+        "pr": "194"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "194"
+      ],
+      "created_at": 1792406722,
+      "updated_at": 1792406722
+    },
+    {
+      "id": "suppress:touchstone:python:PRA-UNUSED_IMPORT",
+      "repo": "touchstone",
+      "stack": "python",
+      "finding_type": "PRA-UNUSED_IMPORT",
+      "kind": "suppress",
+      "text": "Drop PRA-UNUSED-IMPORT — it is the same `import html`/os/re point a third time; folding it into PRA-MINOR is what got actioned in the best-rewarded review.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          -3.5,
+          -2.5,
+          -3.0,
+          -1.5
+        ],
+        "pr": "194"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "194"
+      ],
+      "created_at": 1792406722,
+      "updated_at": 1792406722
+    },
+    {
+      "id": "suppress:touchstone:python:PRA-LATENT_BUG",
+      "repo": "touchstone",
+      "stack": "python",
+      "finding_type": "PRA-LATENT_BUG",
+      "kind": "suppress",
+      "text": "Drop PRA-LATENT-BUG — hedged NameError-on-untested-input framing gets dismissed; make the check a direct PRA-MAJOR verification ask instead.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          -3.5,
+          -2.5,
+          -3.0,
+          -1.5
+        ],
+        "pr": "194"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "194"
+      ],
+      "created_at": 1792406722,
+      "updated_at": 1792406722
+    },
+    {
+      "id": "suppress:touchstone:python:PRA-LEFTOVER_REFERENCE",
+      "repo": "touchstone",
+      "stack": "python",
+      "finding_type": "PRA-LEFTOVER_REFERENCE",
+      "kind": "suppress",
+      "text": "Drop PRA-LEFTOVER-REFERENCE — it is the dangling-symbol check yet again, and the third restatement of one issue is read as noise.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          -3.5,
+          -2.5,
+          -3.0,
+          -1.5
+        ],
+        "pr": "194"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "194"
+      ],
+      "created_at": 1792406722,
+      "updated_at": 1792406722
+    },
+    {
+      "id": "suppress:touchstone:python:PRA-TEST_GAP",
+      "repo": "touchstone",
+      "stack": "python",
+      "finding_type": "PRA-TEST_GAP",
+      "kind": "suppress",
+      "text": "Drop PRA-TEST-GAP — the zero-file-dependency regression test (monkeypatch builtins.open to raise) is requested as a PRA-NIT recipe, and the missing-coverage label itself gets dismissed.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          -3.5,
+          -2.5,
+          -3.0,
+          -1.5
+        ],
+        "pr": "194"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "194"
+      ],
+      "created_at": 1792406722,
+      "updated_at": 1792406722
+    },
+    {
+      "id": "suppress:touchstone:python:PRA-DESIGN_NOTE",
+      "repo": "touchstone",
+      "stack": "python",
+      "finding_type": "PRA-DESIGN_NOTE",
+      "kind": "suppress",
+      "text": "Drop PRA-DESIGN-NOTE — commentary confirming a settled #192 decision adds no action and reads as filler.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          -3.5,
+          -2.5,
+          -3.0,
+          -1.5
+        ],
+        "pr": "194"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "194"
+      ],
+      "created_at": 1792406722,
+      "updated_at": 1792406722
+    },
+    {
+      "id": "suppress:touchstone:python:PRA-DRIFT_RISK",
+      "repo": "touchstone",
+      "stack": "python",
+      "finding_type": "PRA-DRIFT_RISK",
+      "kind": "suppress",
+      "text": "Drop PRA-DRIFT-RISK — the render.py↔SKILL.md §4 sync concern is already covered by the PRA-MINOR consistency-test suggestion.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          -3.5,
+          -2.5,
+          -3.0,
+          -1.5
+        ],
+        "pr": "194"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "194"
+      ],
+      "created_at": 1792406722,
+      "updated_at": 1792406722
+    },
+    {
+      "id": "suppress:touchstone:python:PRA-ASSERTION_ROBUSTNESS",
+      "repo": "touchstone",
+      "stack": "python",
+      "finding_type": "PRA-ASSERTION_ROBUSTNESS",
+      "kind": "suppress",
+      "text": "Drop PRA-ASSERTION-ROBUSTNESS — assertion-scope and magic-number nits belong in the PRA-NIT bucket, not a one-off invented type.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          -3.5,
+          -2.5,
+          -3.0,
+          -1.5
+        ],
+        "pr": "194"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "194"
+      ],
+      "created_at": 1792406722,
+      "updated_at": 1792406722
+    },
+    {
+      "id": "emphasize:touchstone:python:PRA-TEST_GAP",
+      "repo": "touchstone",
+      "stack": "python",
+      "finding_type": "PRA-TEST_GAP",
+      "kind": "emphasize",
+      "text": "Lead with the missing companion case that monkeypatches _ack_skill_path to a nonexistent tmp_path file and asserts graceful level-1-only rendering (no IndexError, no nested <details>) — every reviewer across all reward tiers flagged the uncovered gate-closed branch as the PR's one substantive gap.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          -3.5,
+          -2.5,
+          -3.0,
+          -2.5
+        ],
+        "pr": "193"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "193"
+      ],
+      "created_at": 1792407147,
+      "updated_at": 1792407147
+    },
+    {
+      "id": "emphasize:touchstone:python:PRA-TEST_SEAM",
+      "repo": "touchstone",
+      "stack": "python",
+      "finding_type": "PRA-TEST_SEAM",
+      "kind": "emphasize",
+      "text": "Consistently flag monkeypatching the private render._ack_skill_path as fragile, requesting a stable injection seam (optional skill_path parameter on render_reference) or at minimum a comment plus *args/**kwargs stub declaring the patch surface the tested contract — all four reviews independently raised the silent-patch-no-op risk.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          -3.5,
+          -2.5,
+          -3.0,
+          -2.5
+        ],
+        "pr": "193"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "193"
+      ],
+      "created_at": 1792407147,
+      "updated_at": 1792407147
+    },
+    {
+      "id": "emphasize:touchstone:python:PRA-DOC_STALE",
+      "repo": "touchstone",
+      "stack": "python",
+      "finding_type": "PRA-DOC_STALE",
+      "kind": "emphasize",
+      "text": "Require the docstring update replacing the stale '4300 字符 skill 正本' description with the hermetic-fixture rationale, since three of four reviewers called the now-misleading wording out and it is a one-line fix.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          -3.5,
+          -2.5,
+          -3.0,
+          -2.5
+        ],
+        "pr": "193"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "193"
+      ],
+      "created_at": 1792407147,
+      "updated_at": 1792407147
+    },
+    {
+      "id": "suppress:touchstone:python:PRA-DESIGN_INJECTABILITY",
+      "repo": "touchstone",
+      "stack": "python",
+      "finding_type": "PRA-DESIGN_INJECTABILITY",
+      "kind": "suppress",
+      "text": "Drop the follow-up render_reference dependency-injection refactor proposal — its own reviewer marked it out of scope and it merely restates the seam point already carried by PRA-TEST-SEAM.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          -3.5,
+          -2.5,
+          -3.0,
+          -2.5
+        ],
+        "pr": "193"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "193"
+      ],
+      "created_at": 1792407147,
+      "updated_at": 1792407147
+    },
+    {
+      "id": "suppress:touchstone:python:PRA-TEST_BRITTLE_ASSERT",
+      "repo": "touchstone",
+      "stack": "python",
+      "finding_type": "PRA-TEST_BRITTLE_ASSERT",
+      "kind": "suppress",
+      "text": "Do not push semantic-assertion helpers or loosened markup matching for this test, whose explicit purpose is layout regression — the lone reviewer already concedes literal-marker assertions are appropriate here.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          -3.5,
+          -2.5,
+          -3.0,
+          -2.5
+        ],
+        "pr": "193"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "193"
+      ],
+      "created_at": 1792407147,
+      "updated_at": 1792407147
+    },
+    {
+      "id": "suppress:touchstone:python:PRA-TEST_FIXTURE_COUPLING",
+      "repo": "touchstone",
+      "stack": "python",
+      "finding_type": "PRA-TEST_FIXTURE_COUPLING",
+      "kind": "suppress",
+      "text": "Skip demands to annotate which fixture line drives which assertion or to derive expected values from the fixture — over-engineering a four-line inline stub that only the lowest-reward review requested.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          -3.5,
+          -2.5,
+          -3.0,
+          -2.5
+        ],
+        "pr": "193"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "193"
+      ],
+      "created_at": 1792407147,
+      "updated_at": 1792407147
+    },
+    {
+      "id": "suppress:touchstone:python:PRA-TEST_TAUTOLOGY",
+      "repo": "touchstone",
+      "stack": "python",
+      "finding_type": "PRA-TEST_TAUTOLOGY",
+      "kind": "suppress",
+      "text": "Do not ask for a committed trimmed snapshot of the real SKILL.md under tests/fixtures — the synthetic inline fixture is the PR's deliberate hermeticity design and no other reviewer contested it.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          -3.5,
+          -2.5,
+          -3.0,
+          -2.5
+        ],
+        "pr": "193"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "193"
+      ],
+      "created_at": 1792407147,
+      "updated_at": 1792407147
+    },
+    {
+      "id": "suppress:touchstone:python:PRA-VERIFY",
+      "repo": "touchstone",
+      "stack": "python",
+      "finding_type": "PRA-VERIFY",
+      "kind": "suppress",
+      "text": "Stop asking the author to 'confirm' that referenced helpers like ghclient.paginate, from_findings, or import sys exist — resolve them against the repo yourself or omit the finding.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          -3.0,
+          -3.0,
+          -5.5,
+          -6.0
+        ],
+        "pr": "186"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "186"
+      ],
+      "created_at": 1792408300,
+      "updated_at": 1792408300
+    },
+    {
+      "id": "suppress:touchstone:python:PRA-OK",
+      "repo": "touchstone",
+      "stack": "python",
+      "finding_type": "PRA-OK",
+      "kind": "suppress",
+      "text": "Never pad reviews with praise or 'no change needed' items like the atomicio fchmod note — zero-signal entries dilute the actionable findings and cost reward.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          -3.0,
+          -3.0,
+          -5.5,
+          -6.0
+        ],
+        "pr": "186"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "186"
+      ],
+      "created_at": 1792408300,
+      "updated_at": 1792408300
+    },
+    {
+      "id": "emphasize:touchstone:python:PRA-COMPAT",
+      "repo": "touchstone",
+      "stack": "python",
+      "finding_type": "PRA-COMPAT",
+      "kind": "emphasize",
+      "text": "Flag the one crash vector that matters: every in-flight PR's posted markers already contain \"unreliable_streak\", so verify parse_latest_state in touchstone/loop.py tolerates the extra key and pin it with a test parsing a literal old-format marker string.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          -2.5,
+          0.0,
+          -3.0,
+          0.0
+        ],
+        "pr": "189"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "189"
+      ],
+      "created_at": 1792408758,
+      "updated_at": 1792408758
+    },
+    {
+      "id": "emphasize:touchstone:python:PRA-LEFTOVER",
+      "repo": "touchstone",
+      "stack": "python",
+      "finding_type": "PRA-LEFTOVER",
+      "kind": "emphasize",
+      "text": "Require same-PR cleanup of residual references — the deleted same-round tie-break comparing unreliable_streak, banner/CAUTION streak rendering, and any positional LoopState construction — not deferred follow-ups.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          -2.5,
+          0.0,
+          -3.0,
+          0.0
+        ],
+        "pr": "189"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "189"
+      ],
+      "created_at": 1792408758,
+      "updated_at": 1792408758
+    },
+    {
+      "id": "suppress:touchstone:python:PRA-QUESTION",
+      "repo": "touchstone",
+      "stack": "python",
+      "finding_type": "PRA-QUESTION",
+      "kind": "suppress",
+      "text": "Stop asking the author to confirm externalities (banner rendering, bot self-trigger invariants, workflow routing) that the #188 postmortem already establishes — unverifiable outside-the-diff confirmation requests get dismissed.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          -2.5,
+          0.0,
+          -3.0,
+          0.0
+        ],
+        "pr": "189"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "189"
+      ],
+      "created_at": 1792408758,
+      "updated_at": 1792408758
+    },
+    {
+      "id": "emphasize:touchstone::PRA-PREVENT",
+      "repo": "touchstone",
+      "stack": "",
+      "finding_type": "PRA-PREVENT",
+      "kind": "emphasize",
+      "text": "Insist on a write-time validation gate that rejects any new experience whose finding_type is outside the canonical enum so the tfgrpo writer cannot re-pollute the store.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          -4.0,
+          -3.0,
+          -4.0,
+          -3.5
+        ],
+        "pr": "184"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "184"
+      ],
+      "created_at": 1792409032,
+      "updated_at": 1792409032
+    },
+    {
+      "id": "emphasize:touchstone::PRA-TESTABILITY",
+      "repo": "touchstone",
+      "stack": "",
+      "finding_type": "PRA-TESTABILITY",
+      "kind": "emphasize",
+      "text": "Demand a regression test validating the store against its schema (finding_type enum membership, field consistency, sane timestamps) so pollution is caught before it reaches hundreds of entries.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          -4.0,
+          -3.0,
+          -4.0,
+          -3.5
+        ],
+        "pr": "184"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "184"
+      ],
+      "created_at": 1792409032,
+      "updated_at": 1792409032
+    },
+    {
+      "id": "emphasize:touchstone::PRA-DESIGN",
+      "repo": "touchstone",
+      "stack": "",
+      "finding_type": "PRA-DESIGN",
+      "kind": "emphasize",
+      "text": "Flag that a ~96% destructive rewrite leaving 'version' at 1.0 needs a version bump or migration marker so consumers keying on ids or coverage detect the reset instead of silently degrading.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          -4.0,
+          -3.0,
+          -4.0,
+          -3.5
+        ],
+        "pr": "184"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "184"
+      ],
+      "created_at": 1792409032,
+      "updated_at": 1792409032
+    },
+    {
+      "id": "emphasize:touchstone::PRA-COVERAGE",
+      "repo": "touchstone",
+      "stack": "",
+      "finding_type": "PRA-COVERAGE",
+      "kind": "emphasize",
+      "text": "Ask for the survivor/dropped distribution by kind, status, and finding_type plus confirmation that no locked or promoted entries were swept out, since an 8k-line diff cannot be reviewed entry-by-entry.",
+      "evidence": {
+        "tfgrpo": true,
+        "group_rewards": [
+          -4.0,
+          -3.0,
+          -4.0,
+          -3.5
+        ],
+        "pr": "184"
+      },
+      "status": "candidate",
+      "source": "tfgrpo",
+      "locked": false,
+      "source_prs": [
+        "184"
+      ],
+      "created_at": 1792409032,
+      "updated_at": 1792409032
     }
   ],
   "metadata": {
